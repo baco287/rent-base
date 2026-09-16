@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { customerName, fmtDateTime, toDateInput } from "@/lib/format";
 import { BookingStatusChip, Card, Chip, Content, PageHeader, Plate, VehicleStatusChip } from "@/components/ui";
 import { deleteVehicleAction, updateVehicleAction } from "../actions";
+import { loadGroupOptions } from "../groups";
 import { VehicleForm } from "../vehicle-form";
 
 export default async function VehiclePage({ params, searchParams }: PageProps<"/fahrzeuge/[id]">) {
@@ -19,12 +20,13 @@ export default async function VehiclePage({ params, searchParams }: PageProps<"/
     },
   });
   if (!vehicle) notFound();
+  const groups = await loadGroupOptions(tenant.id);
 
   const values = {
     plate: vehicle.plate,
     make: vehicle.make,
     model: vehicle.model,
-    category: vehicle.category,
+    groupId: vehicle.groupId ?? "",
     fuel: vehicle.fuel,
     status: vehicle.status,
     year: vehicle.year?.toString() ?? "",
@@ -54,7 +56,7 @@ export default async function VehiclePage({ params, searchParams }: PageProps<"/
         {sp.gespeichert === "1" && <Chip tone="good">Gespeichert</Chip>}
         <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-4 items-start">
           <Card className="p-5">
-            <VehicleForm action={update} values={values} submitLabel="Speichern" cancelHref="/fahrzeuge" />
+            <VehicleForm action={update} values={values} groups={groups} submitLabel="Speichern" cancelHref="/fahrzeuge" />
             {user.role === "OWNER" && (
               <form action={remove} className="mt-6 pt-4 border-t border-line-soft">
                 <button type="submit" className="btn btn-danger">

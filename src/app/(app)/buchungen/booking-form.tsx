@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Field, FormError } from "@/components/ui";
 import type { FormState } from "./actions";
 
-export type VehicleOption = { id: string; plate: string; label: string; dailyRate: string; deposit: string; status: string };
+export type VehicleOption = { id: string; plate: string; label: string; group: string; dailyRate: string; deposit: string; status: string };
 export type CustomerOption = { id: string; label: string; blocked: boolean; discountPercent: number };
 
 export type BookingFormValues = {
@@ -71,10 +71,14 @@ export function BookingForm({
       <Field label="Fahrzeug" htmlFor="vehicleId" hint="Preis und Kaution werden aus dem Fahrzeug übernommen und können angepasst werden">
         <select id="vehicleId" name="vehicleId" value={vehicleId} onChange={(e) => pickVehicle(e.target.value)} required className="input">
           <option value="">Bitte wählen…</option>
-          {vehicles.map((v) => (
-            <option key={v.id} value={v.id} disabled={v.status === "INACTIVE"}>
-              {v.plate} · {v.label}{v.status === "WORKSHOP" ? " (Werkstatt)" : v.status === "BLOCKED" ? " (gesperrt)" : ""}
-            </option>
+          {Array.from(new Set(vehicles.map((v) => v.group))).map((g) => (
+            <optgroup key={g} label={g}>
+              {vehicles.filter((v) => v.group === g).map((v) => (
+                <option key={v.id} value={v.id} disabled={v.status === "INACTIVE"}>
+                  {v.plate} · {v.label}{v.status === "WORKSHOP" ? " (Werkstatt)" : v.status === "BLOCKED" ? " (gesperrt)" : ""}
+                </option>
+              ))}
+            </optgroup>
           ))}
         </select>
       </Field>

@@ -6,7 +6,7 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
-import { FUELS, VEHICLE_CATEGORIES, VEHICLE_STATUS } from "@/lib/constants";
+import { FUELS, VEHICLE_STATUS } from "@/lib/constants";
 import { normalizePlate } from "@/lib/format";
 
 export type FormState = { error?: string } | undefined;
@@ -21,7 +21,7 @@ const vehicleSchema = z.object({
   plate: z.string().trim().min(3, "Bitte das Kennzeichen eingeben.").transform(normalizePlate),
   make: z.string().trim().min(1, "Bitte die Marke eingeben."),
   model: z.string().trim().min(1, "Bitte das Modell eingeben."),
-  category: z.enum(Object.keys(VEHICLE_CATEGORIES) as [string, ...string[]]),
+  groupId: z.string().min(1, "Bitte eine Fahrzeuggruppe wählen."),
   fuel: z.enum(Object.keys(FUELS) as [string, ...string[]]),
   status: z.enum(Object.keys(VEHICLE_STATUS) as [string, ...string[]]),
   year: optInt,
@@ -51,10 +51,15 @@ function toData(d: z.infer<typeof vehicleSchema>) {
   };
 }
 
+async function groupBelongsToTenant(groupId: string, tenantId: string) {
+  return (await db.vehicleGroup.count({ where: { id: groupId, tenantId } })) === 1;
+}
+
 export async function createVehicleAction(_prev: FormState, formData: FormData): Promise<FormState> {
   const { tenant } = await requireRole("DISPO");
   const parsed = vehicleSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
+  if (!(await groupBelongsToTenant(parsed.data.groupId, tenant.id))) return { error: "Fahrzeuggruppe nicht gefunden." };
 
   let id: string;
   try {
@@ -73,6 +78,7 @@ export async function updateVehicleAction(id: string, _prev: FormState, formData
   const { tenant } = await requireRole("DISPO");
   const parsed = vehicleSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
+  if (!(await groupBelongsToTenant(parsed.data.groupId, tenant.id))) return { error: "Fahrzeuggruppe nicht gefunden." };
 
   try {
     // tenantId in der where-Klausel: niemand kann fremde Fahrzeuge ändern.

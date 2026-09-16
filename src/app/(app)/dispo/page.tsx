@@ -34,7 +34,7 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
   const days = Array.from({ length: DAYS }, (_, i) => addDays(from, i));
 
   const [vehicles, bookings] = await Promise.all([
-    db.vehicle.findMany({ where: { tenantId: tenant.id, status: { not: "INACTIVE" } }, orderBy: [{ category: "asc" }, { plate: "asc" }] }),
+    db.vehicle.findMany({ where: { tenantId: tenant.id, status: { not: "INACTIVE" } }, include: { group: true }, orderBy: [{ group: { sortOrder: "asc" } }, { plate: "asc" }] }),
     db.booking.findMany({
       where: { tenantId: tenant.id, status: { in: ["RESERVED", "ACTIVE"] }, startAt: { lt: to }, endAt: { gt: from } },
       include: { customer: true },
@@ -90,11 +90,18 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
                 );
               })}
 
-              {vehicles.map((v) => {
+              {vehicles.map((v, i) => {
                 const list = byVehicle.get(v.id) ?? [];
                 const blocked = v.status === "WORKSHOP" || v.status === "BLOCKED";
+                const groupName = v.group?.name ?? "Ohne Gruppe";
+                const newGroup = i === 0 || (vehicles[i - 1].group?.name ?? "Ohne Gruppe") !== groupName;
                 return (
                   <div key={v.id} className="contents">
+                    {newGroup && (
+                      <div className="col-span-full sticky left-0 bg-panel-2 px-2.5 py-1 border-b border-line label-xs !text-ink-2">
+                        {groupName}
+                      </div>
+                    )}
                     <div className="sticky left-0 z-10 bg-panel px-2.5 py-2 border-b border-line-soft flex flex-col gap-0.5 justify-center">
                       <Link href={`/fahrzeuge/${v.id}`}><Plate>{v.plate}</Plate></Link>
                       <small className="text-ink-3 truncate">{v.make} {v.model}</small>

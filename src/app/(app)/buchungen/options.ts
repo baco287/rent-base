@@ -3,10 +3,10 @@ import { db } from "@/lib/db";
 import { customerName } from "@/lib/format";
 import type { CustomerOption, VehicleOption } from "./booking-form";
 
-/** Auswahllisten für das Buchungsformular. */
+/** Auswahllisten für das Buchungsformular. Fahrzeuge sortiert nach Gruppe, dann Kennzeichen. */
 export async function loadBookingOptions(tenantId: string): Promise<{ vehicles: VehicleOption[]; customers: CustomerOption[] }> {
   const [vehicles, customers] = await Promise.all([
-    db.vehicle.findMany({ where: { tenantId }, orderBy: [{ category: "asc" }, { plate: "asc" }] }),
+    db.vehicle.findMany({ where: { tenantId }, include: { group: true }, orderBy: [{ group: { sortOrder: "asc" } }, { plate: "asc" }] }),
     db.customer.findMany({ where: { tenantId }, orderBy: [{ lastName: "asc" }, { firstName: "asc" }] }),
   ]);
   return {
@@ -14,6 +14,7 @@ export async function loadBookingOptions(tenantId: string): Promise<{ vehicles: 
       id: v.id,
       plate: v.plate,
       label: `${v.make} ${v.model}`,
+      group: v.group?.name ?? "Ohne Gruppe",
       dailyRate: v.dailyRate.toString().replace(".", ","),
       deposit: v.deposit.toString().replace(".", ","),
       status: v.status,

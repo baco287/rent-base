@@ -24,6 +24,7 @@ model Tenant {
   updatedAt DateTime @updatedAt
 
   users     User[]
+  groups    VehicleGroup[]
   vehicles  Vehicle[]
   customers Customer[]
   bookings  Booking[]
@@ -57,13 +58,36 @@ model Session {
   @@index([userId])
 }
 
+// Fahrzeuggruppe: z. B. Transporter 3,5 t, Kompaktklasse. Preise dienen als Vorgabe beim Anlegen eines Fahrzeugs.
+model VehicleGroup {
+  id               String   @id @default(cuid())
+  tenantId         String
+  name             String
+  description      String?
+  sortOrder        Int      @default(0)
+  dailyRate        Decimal  @default(0)
+  weeklyRate       Decimal?
+  monthlyRate      Decimal?
+  kmIncludedPerDay Int      @default(200)
+  extraKmRate      Decimal  @default(0.25)
+  deposit          Decimal  @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  vehicles Vehicle[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, sortOrder])
+}
+
 model Vehicle {
   id               String    @id @default(cuid())
   tenantId         String
   plate            String
   make             String
   model            String
-  category         String    @default("KOMPAKT") // TRANSPORTER | KOMPAKT | KOMBI | LIMOUSINE | SUV | KLEINBUS | SONSTIGE
+  groupId          String?
   fuel             String    @default("DIESEL") // DIESEL | BENZIN | ELEKTRO | HYBRID
   year             Int?
   vin              String?
@@ -81,10 +105,12 @@ model Vehicle {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant   Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  group    VehicleGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
   bookings Booking[]
 
   @@unique([tenantId, plate])
+  @@index([tenantId, groupId])
   @@index([tenantId, status])
 }
 

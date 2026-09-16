@@ -21,15 +21,21 @@ async function main() {
   }
   const t = tenant.id;
 
+  const [gTransporter, gKombi, gKompakt] = await Promise.all([
+    db.vehicleGroup.create({ data: { tenantId: t, name: "Transporter", description: "Kastenwagen bis 3,5 t, Führerschein B", sortOrder: 10, dailyRate: 99, weeklyRate: 540, kmIncludedPerDay: 200, extraKmRate: 0.25, deposit: 500 } }),
+    db.vehicleGroup.create({ data: { tenantId: t, name: "Kombi", description: "Kombis und Hochdachkombis", sortOrder: 20, dailyRate: 59, weeklyRate: 320, kmIncludedPerDay: 250, extraKmRate: 0.2, deposit: 300 } }),
+    db.vehicleGroup.create({ data: { tenantId: t, name: "Kompaktklasse", description: "Kleinwagen und Kompakte", sortOrder: 30, dailyRate: 45, weeklyRate: 240, kmIncludedPerDay: 250, extraKmRate: 0.2, deposit: 300 } }),
+  ]);
+
   const vehicles = await Promise.all([
-    db.vehicle.create({ data: { tenantId: t, plate: "H-MB 2041", make: "VW", model: "T6.1 Transporter Kasten", category: "TRANSPORTER", fuel: "DIESEL", year: 2022, mileage: 61230, huDate: new Date("2027-03-31"), dailyRate: 89, weeklyRate: 490, deposit: 500 } }),
-    db.vehicle.create({ data: { tenantId: t, plate: "H-MB 887", make: "Mercedes", model: "Sprinter 316 CDI", category: "TRANSPORTER", fuel: "DIESEL", year: 2020, mileage: 142870, huDate: at(9, 0), dailyRate: 109, weeklyRate: 590, deposit: 750 } }),
-    db.vehicle.create({ data: { tenantId: t, plate: "H-MB 3310", make: "VW", model: "Crafter L3H2", category: "TRANSPORTER", fuel: "DIESEL", year: 2023, mileage: 38410, huDate: new Date("2027-05-31"), dailyRate: 119, weeklyRate: 640, deposit: 750 } }),
-    db.vehicle.create({ data: { tenantId: t, plate: "H-MB 1188", make: "VW", model: "Golf 8 1.5 TSI", category: "KOMPAKT", fuel: "BENZIN", year: 2023, mileage: 27905, huDate: new Date("2027-11-30"), dailyRate: 49, weeklyRate: 260, deposit: 300 } }),
-    db.vehicle.create({ data: { tenantId: t, plate: "H-MB 1190", make: "VW", model: "Polo 1.0 TSI", category: "KOMPAKT", fuel: "BENZIN", year: 2021, mileage: 54120, huDate: new Date("2027-02-28"), dailyRate: 39, weeklyRate: 210, deposit: 300 } }),
-    db.vehicle.create({ data: { tenantId: t, plate: "H-MB 4507", make: "Skoda", model: "Octavia Combi", category: "KOMBI", fuel: "DIESEL", year: 2022, mileage: 71640, huDate: new Date("2027-06-30"), dailyRate: 59, weeklyRate: 320, deposit: 300 } }),
-    db.vehicle.create({ data: { tenantId: t, plate: "H-MB 720", make: "Ford", model: "Transit Custom", category: "TRANSPORTER", fuel: "DIESEL", year: 2019, mileage: 168300, huDate: new Date("2027-01-31"), dailyRate: 89, weeklyRate: 490, deposit: 500, status: "WORKSHOP", notes: "Kupplung, Werkstatt Meyer" } }),
-    db.vehicle.create({ data: { tenantId: t, plate: "H-MB 918", make: "VW", model: "Caddy Maxi", category: "KOMBI", fuel: "DIESEL", year: 2021, mileage: 88200, huDate: new Date("2027-04-30"), dailyRate: 55, weeklyRate: 300, deposit: 300 } }),
+    db.vehicle.create({ data: { tenantId: t, plate: "H-MB 2041", make: "VW", model: "T6.1 Transporter Kasten", groupId: gTransporter.id, fuel: "DIESEL", year: 2022, mileage: 61230, huDate: new Date("2027-03-31"), dailyRate: 89, weeklyRate: 490, deposit: 500 } }),
+    db.vehicle.create({ data: { tenantId: t, plate: "H-MB 887", make: "Mercedes", model: "Sprinter 316 CDI", groupId: gTransporter.id, fuel: "DIESEL", year: 2020, mileage: 142870, huDate: at(9, 0), dailyRate: 109, weeklyRate: 590, deposit: 750 } }),
+    db.vehicle.create({ data: { tenantId: t, plate: "H-MB 3310", make: "VW", model: "Crafter L3H2", groupId: gTransporter.id, fuel: "DIESEL", year: 2023, mileage: 38410, huDate: new Date("2027-05-31"), dailyRate: 119, weeklyRate: 640, deposit: 750 } }),
+    db.vehicle.create({ data: { tenantId: t, plate: "H-MB 1188", make: "VW", model: "Golf 8 1.5 TSI", groupId: gKompakt.id, fuel: "BENZIN", year: 2023, mileage: 27905, huDate: new Date("2027-11-30"), dailyRate: 49, weeklyRate: 260, deposit: 300 } }),
+    db.vehicle.create({ data: { tenantId: t, plate: "H-MB 1190", make: "VW", model: "Polo 1.0 TSI", groupId: gKompakt.id, fuel: "BENZIN", year: 2021, mileage: 54120, huDate: new Date("2027-02-28"), dailyRate: 39, weeklyRate: 210, deposit: 300 } }),
+    db.vehicle.create({ data: { tenantId: t, plate: "H-MB 4507", make: "Skoda", model: "Octavia Combi", groupId: gKombi.id, fuel: "DIESEL", year: 2022, mileage: 71640, huDate: new Date("2027-06-30"), dailyRate: 59, weeklyRate: 320, deposit: 300 } }),
+    db.vehicle.create({ data: { tenantId: t, plate: "H-MB 720", make: "Ford", model: "Transit Custom", groupId: gTransporter.id, fuel: "DIESEL", year: 2019, mileage: 168300, huDate: new Date("2027-01-31"), dailyRate: 89, weeklyRate: 490, deposit: 500, status: "WORKSHOP", notes: "Kupplung, Werkstatt Meyer" } }),
+    db.vehicle.create({ data: { tenantId: t, plate: "H-MB 918", make: "VW", model: "Caddy Maxi", groupId: gKombi.id, fuel: "DIESEL", year: 2021, mileage: 88200, huDate: new Date("2027-04-30"), dailyRate: 55, weeklyRate: 300, deposit: 300 } }),
   ]);
   const [t6, sprinter, crafter, golf, polo, octavia, , caddy] = vehicles;
 
@@ -57,7 +63,7 @@ async function main() {
   await b(9, crafter.id, nowak.id, at(7, 8), at(12, 17), "RESERVED", 119, 750);
   await b(10, golf.id, oeztuerk.id, at(-20, 9), at(-18, 9), "RETURNED", 49, 300);
 
-  console.log(`Beispieldaten angelegt für ${tenant.name}: ${vehicles.length} Fahrzeuge, ${customers.length} Kunden, 10 Buchungen.`);
+  console.log(`Beispieldaten angelegt für ${tenant.name}: 3 Gruppen, ${vehicles.length} Fahrzeuge, ${customers.length} Kunden, 10 Buchungen.`);
 }
 
 main()

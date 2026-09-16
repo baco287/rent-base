@@ -7,17 +7,6 @@ export const ROLES = {
 } as const;
 export type Role = keyof typeof ROLES;
 
-export const VEHICLE_CATEGORIES = {
-  TRANSPORTER: "Transporter",
-  KOMPAKT: "Kompakt",
-  KOMBI: "Kombi",
-  LIMOUSINE: "Limousine",
-  SUV: "SUV",
-  KLEINBUS: "Kleinbus",
-  SONSTIGE: "Sonstige",
-} as const;
-export type VehicleCategory = keyof typeof VEHICLE_CATEGORIES;
-
 export const FUELS = {
   DIESEL: "Diesel",
   BENZIN: "Benzin",
