@@ -16,7 +16,7 @@ export default async function SetupPage() {
       <p className="text-ink-2 mb-5">
         Lege deine Vermietung und dein Inhaber-Konto an. Weitere Mitarbeiter kommen später über die Einstellungen dazu.
       </p>
-      <SetupForm />
+      <SetupForm needsKey={Boolean(process.env.SETUP_KEY)} />
     </>
   );
 }

@@ -3,7 +3,7 @@
 import { useActionState } from "react";
 import { setupAction } from "../actions";
 
-export function SetupForm() {
+export function SetupForm({ needsKey }: { needsKey: boolean }) {
   const [state, formAction, pending] = useActionState(setupAction, undefined);
 
   return (
@@ -36,6 +36,13 @@ export function SetupForm() {
         </div>
       </fieldset>
 
+      {needsKey && (
+        <div className="flex flex-col gap-1">
+          <label htmlFor="setupKey" className="label-xs">Einrichtungsschlüssel</label>
+          <input id="setupKey" name="setupKey" type="password" required className="input font-mono" autoComplete="off" />
+          <span className="text-xs text-ink-3">Steht in den Server-Einstellungen (SETUP_KEY). Nur der Betreiber kennt ihn.</span>
+        </div>
+      )}
       {state?.error && (
         <p role="alert" className="text-bad bg-bad-soft rounded-md px-3 py-2 text-sm">{state.error}</p>
       )}

@@ -38,6 +38,7 @@ const setupSchema = z.object({
   name: z.string().trim().min(2, "Bitte deinen Namen eingeben."),
   email: z.string().trim().toLowerCase().email("Bitte eine gültige E-Mail-Adresse eingeben."),
   password: z.string().min(10, "Das Passwort braucht mindestens 10 Zeichen."),
+  setupKey: z.string().optional(),
 });
 
 function slugify(s: string) {
@@ -56,7 +57,11 @@ export async function setupAction(_prev: AuthState, formData: FormData): Promise
 
   const parsed = setupSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
-  const { tenantName, city, name, email, password } = parsed.data;
+  const { tenantName, city, name, email, password, setupKey } = parsed.data;
+
+  // Auf dem Server schützt SETUP_KEY die Ersteinrichtung: ohne den Schlüssel kann niemand Inhaber werden.
+  const requiredKey = process.env.SETUP_KEY;
+  if (requiredKey && setupKey !== requiredKey) return { error: "Der Einrichtungsschlüssel stimmt nicht." };
 
   const passwordHash = await hashPassword(password);
   const user = await db.user.create({
