@@ -1,13 +1,13 @@
 // Rent-Base Datenmodell, Etappe 1
-// Jede fachliche Tabelle trägt tenantId (Mandant). SQLite lokal, PostgreSQL auf dem Server.
-// Enums sind als String abgelegt (SQLite kennt keine Enums); gültige Werte stehen in src/lib/constants.ts.
+// Jede fachliche Tabelle trägt tenantId (Mandant). PostgreSQL lokal (prisma dev) und auf dem Server.
+// Enums sind bewusst als String abgelegt; gültige Werte stehen in src/lib/constants.ts.
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 

@@ -1,0 +1,43 @@
+# Rent-Base Produktions-Image. Wird von Coolify aus dem Git-Repository gebaut.
+# Mehrstufig: Abhängigkeiten -> Build -> schlankes Laufzeit-Image.
+
+FROM node:22-alpine AS deps
+WORKDIR /app
+RUN apk add --no-cache libc6-compat openssl
+COPY package.json package-lock.json ./
+RUN npm ci
+
+FROM node:22-alpine AS build
+WORKDIR /app
+RUN apk add --no-cache libc6-compat openssl
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+ENV NEXT_TELEMETRY_DISABLED=1
+# DATABASE_URL wird beim Build nicht gebraucht, Prisma liest nur das Schema.
+RUN npx prisma generate && npm run build
+
+FROM node:22-alpine AS runner
+WORKDIR /app
+RUN apk add --no-cache openssl && addgroup -S app && adduser -S app -G app
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+
+# Prisma CLI nur für "migrate deploy" beim Start, getrennt vom App-Code
+WORKDIR /opt/prisma-cli
+RUN npm install --no-audit --no-fund prisma@6.19.3 dotenv@16 >/dev/null 2>&1
+
+WORKDIR /app
+# Standalone-Build von Next.js plus statische Dateien
+COPY --from=build --chown=app:app /app/.next/standalone ./
+COPY --from=build --chown=app:app /app/.next/static ./.next/static
+COPY --from=build --chown=app:app /app/public ./public
+COPY --from=build --chown=app:app /app/prisma ./prisma
+COPY --from=build --chown=app:app /app/prisma.config.ts ./prisma.config.ts
+COPY --chown=app:app docker-entrypoint.sh ./
+RUN chmod +x docker-entrypoint.sh
+
+USER app
+EXPOSE 3000
+ENTRYPOINT ["./docker-entrypoint.sh"]

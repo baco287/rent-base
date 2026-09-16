@@ -3,6 +3,8 @@ import { db } from "@/lib/db";
 import { SetupForm } from "./setup-form";
 
 export const metadata = { title: "Einrichtung" };
+// Liest die Datenbank (gibt es schon einen Mandanten?), darf deshalb nicht beim Build vorgerendert werden.
+export const dynamic = "force-dynamic";
 
 export default async function SetupPage() {
   const tenants = await db.tenant.count();

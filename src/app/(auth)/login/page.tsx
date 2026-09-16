@@ -3,6 +3,8 @@ import { db } from "@/lib/db";
 import { LoginForm } from "./login-form";
 
 export const metadata = { title: "Anmelden" };
+// Liest die Datenbank (gibt es schon einen Mandanten?), darf deshalb nicht beim Build vorgerendert werden.
+export const dynamic = "force-dynamic";
 
 export default async function LoginPage({ searchParams }: PageProps<"/login">) {
   const tenants = await db.tenant.count();

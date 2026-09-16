@@ -1,0 +1,12 @@
+node_modules
+.next
+.git
+.claude
+.env
+.env.*
+*.db
+*.db-journal
+npm-debug.log
+README.md
+AGENTS.md
+CLAUDE.md
