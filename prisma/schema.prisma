@@ -1,0 +1,143 @@
+// Rent-Base Datenmodell, Etappe 1
+// Jede fachliche Tabelle trägt tenantId (Mandant). SQLite lokal, PostgreSQL auf dem Server.
+// Enums sind als String abgelegt (SQLite kennt keine Enums); gültige Werte stehen in src/lib/constants.ts.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  street    String?
+  zip       String?
+  city      String?
+  phone     String?
+  email     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users     User[]
+  vehicles  Vehicle[]
+  customers Customer[]
+  bookings  Booking[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  tenantId     String
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         String   @default("OWNER") // OWNER | DISPO | YARD
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sessions Session[]
+
+  @@index([tenantId])
+}
+
+model Session {
+  id        String   @id
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Vehicle {
+  id               String    @id @default(cuid())
+  tenantId         String
+  plate            String
+  make             String
+  model            String
+  category         String    @default("KOMPAKT") // TRANSPORTER | KOMPAKT | KOMBI | LIMOUSINE | SUV | KLEINBUS | SONSTIGE
+  fuel             String    @default("DIESEL") // DIESEL | BENZIN | ELEKTRO | HYBRID
+  year             Int?
+  vin              String?
+  color            String?
+  mileage          Int       @default(0)
+  huDate           DateTime?
+  status           String    @default("AVAILABLE") // AVAILABLE | WORKSHOP | BLOCKED | INACTIVE
+  dailyRate        Decimal   @default(0)
+  weeklyRate       Decimal?
+  monthlyRate      Decimal?
+  kmIncludedPerDay Int       @default(200)
+  extraKmRate      Decimal   @default(0.25)
+  deposit          Decimal   @default(0)
+  notes            String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bookings Booking[]
+
+  @@unique([tenantId, plate])
+  @@index([tenantId, status])
+}
+
+model Customer {
+  id                String    @id @default(cuid())
+  tenantId          String
+  type              String    @default("PRIVATE") // PRIVATE | COMPANY
+  companyName       String?
+  firstName         String
+  lastName          String
+  email             String?
+  phone             String?
+  street            String?
+  zip               String?
+  city              String?
+  birthDate         DateTime?
+  licenseNumber     String?
+  licenseClass      String?
+  licenseIssuedAt   DateTime?
+  licenseValidUntil DateTime?
+  blocked           Boolean   @default(false)
+  blockReason       String?
+  discountPercent   Int       @default(0)
+  notes             String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bookings Booking[]
+
+  @@index([tenantId, lastName])
+}
+
+model Booking {
+  id         String   @id @default(cuid())
+  tenantId   String
+  number     String // z. B. 2026-0001, fortlaufend pro Mandant
+  vehicleId  String
+  customerId String
+  startAt    DateTime
+  endAt      DateTime
+  status     String   @default("RESERVED") // RESERVED | ACTIVE | RETURNED | CANCELLED
+  dailyRate  Decimal  @default(0) // Preis-Snapshot bei Buchung
+  deposit    Decimal  @default(0)
+  notes      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  vehicle  Vehicle  @relation(fields: [vehicleId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@unique([tenantId, number])
+  @@index([tenantId, vehicleId, startAt, endAt])
+  @@index([tenantId, status])
+}

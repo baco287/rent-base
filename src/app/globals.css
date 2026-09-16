@@ -1,0 +1,160 @@
+@import "tailwindcss";
+
+/* Rent-Base Design-Tokens. Gleiche Farbwelt wie die Vorschau: gedecktes Navy, kühle Grautöne,
+   Bernstein nur für "heute fällig", Semantikfarben getrennt vom Akzent. */
+:root {
+  --bg: #f3f5f8;
+  --panel: #ffffff;
+  --panel-2: #ebeff4;
+  --line: #d6dce5;
+  --line-soft: #e6eaf0;
+  --ink: #1a2230;
+  --ink-2: #4a5568;
+  --ink-3: #7b8794;
+  --brand: #1c3d6b;
+  --brand-ink: #ffffff;
+  --brand-soft: #e3eaf5;
+  --amber: #b8650a;
+  --amber-soft: #fbebd3;
+  --good: #2c7a4b;
+  --good-soft: #ddf0e3;
+  --bad: #b23a32;
+  --bad-soft: #f6dedb;
+  --info: #2f5fb3;
+  --info-soft: #dee7f8;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-brand: var(--brand);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-soft: var(--brand-soft);
+  --color-amber: var(--amber);
+  --color-amber-soft: var(--amber-soft);
+  --color-good: var(--good);
+  --color-good-soft: var(--good-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --font-sans: var(--font-plex-sans), system-ui, sans-serif;
+  --font-display: var(--font-barlow), "Arial Narrow", sans-serif;
+  --font-mono: var(--font-plex-mono), Consolas, monospace;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-display);
+  text-wrap: balance;
+  line-height: 1.15;
+}
+
+/* Wiederkehrende Bausteine */
+@utility plate {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  border: 1.5px solid var(--ink);
+  border-left: 6px solid #0a3f9e;
+  border-radius: 3px;
+  padding: 1px 7px 1px 6px;
+  background: var(--panel);
+  color: var(--ink);
+  white-space: nowrap;
+  display: inline-block;
+}
+
+@utility tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+@utility label-xs {
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 600;
+}
+
+@utility input {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--panel);
+  color: var(--ink);
+  width: 100%;
+  min-height: 38px;
+  font: inherit;
+}
+.input:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 1px;
+  border-color: var(--info);
+}
+.input[aria-invalid="true"] {
+  border-color: var(--bad);
+}
+
+@utility btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-weight: 500;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.btn:hover { background: var(--panel-2); }
+.btn:disabled { opacity: 0.6; cursor: default; }
+.btn:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+
+@utility btn-primary {
+  background: var(--brand);
+  color: var(--brand-ink);
+  border-color: var(--brand);
+}
+.btn-primary:hover { background: #16315a; }
+
+@utility btn-danger {
+  background: var(--bad-soft);
+  color: var(--bad);
+  border-color: transparent;
+}
+
+@utility chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+@utility card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
