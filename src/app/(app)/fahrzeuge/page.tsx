@@ -84,7 +84,9 @@ export default async function VehiclesPage({ searchParams }: PageProps<"/fahrzeu
                         <th className="label-xs px-3 py-2 border-b border-line text-right">km-Stand</th>
                         <th className="label-xs px-3 py-2 border-b border-line">HU</th>
                         <th className="label-xs px-3 py-2 border-b border-line">Status</th>
-                        <th className="label-xs px-3 py-2 border-b border-line text-right">Tag / Woche</th>
+                        <th className="label-xs px-3 py-2 border-b border-line text-right">Tag</th>
+                        <th className="label-xs px-3 py-2 border-b border-line text-right">Woche 5 T / KW 7 T</th>
+                        <th className="label-xs px-3 py-2 border-b border-line text-right">Monat</th>
                         <th className="label-xs px-3 py-2 border-b border-line text-right">Kaution</th>
                       </tr>
                     </thead>
@@ -101,7 +103,9 @@ export default async function VehiclesPage({ searchParams }: PageProps<"/fahrzeu
                             {v.huDate ? v.huDate.toLocaleDateString("de-DE", { month: "2-digit", year: "numeric" }) : "–"}
                           </td>
                           <td className="px-3 py-2.5"><VehicleStatusChip status={v.status} /></td>
-                          <td className="px-3 py-2.5 text-right font-mono tnum">{fmtEur(v.dailyRate)}{v.weeklyRate ? ` / ${fmtEur(v.weeklyRate)}` : ""}</td>
+                          <td className="px-3 py-2.5 text-right font-mono tnum">{fmtEur(v.dailyRate)}</td>
+                          <td className="px-3 py-2.5 text-right font-mono tnum">{v.workWeekRate ? fmtEur(v.workWeekRate) : "–"} / {v.weeklyRate ? fmtEur(v.weeklyRate) : "–"}</td>
+                          <td className="px-3 py-2.5 text-right font-mono tnum">{v.monthlyRate ? fmtEur(v.monthlyRate) : "–"}</td>
                           <td className="px-3 py-2.5 text-right font-mono tnum">{fmtEur(v.deposit)}</td>
                         </tr>
                       ))}

@@ -35,6 +35,7 @@ export default async function VehiclePage({ params, searchParams }: PageProps<"/
     mileage: vehicle.mileage.toString(),
     huDate: toDateInput(vehicle.huDate),
     dailyRate: vehicle.dailyRate.toString().replace(".", ","),
+    workWeekRate: vehicle.workWeekRate?.toString().replace(".", ",") ?? "",
     weeklyRate: vehicle.weeklyRate?.toString().replace(".", ",") ?? "",
     monthlyRate: vehicle.monthlyRate?.toString().replace(".", ",") ?? "",
     kmIncludedPerDay: vehicle.kmIncludedPerDay.toString(),

@@ -65,9 +65,10 @@ model VehicleGroup {
   name             String
   description      String?
   sortOrder        Int      @default(0)
-  dailyRate        Decimal  @default(0)
-  weeklyRate       Decimal?
-  monthlyRate      Decimal?
+  dailyRate        Decimal  @default(0) // Tagespreis
+  workWeekRate     Decimal? // Woche, 5 Tage (Mo bis Fr)
+  weeklyRate       Decimal? // Kalenderwoche, 7 Tage
+  monthlyRate      Decimal? // Monat, 30 Tage
   kmIncludedPerDay Int      @default(200)
   extraKmRate      Decimal  @default(0.25)
   deposit          Decimal  @default(0)
@@ -95,9 +96,10 @@ model Vehicle {
   mileage          Int       @default(0)
   huDate           DateTime?
   status           String    @default("AVAILABLE") // AVAILABLE | WORKSHOP | BLOCKED | INACTIVE
-  dailyRate        Decimal   @default(0)
-  weeklyRate       Decimal?
-  monthlyRate      Decimal?
+  dailyRate        Decimal   @default(0) // Tagespreis
+  workWeekRate     Decimal?  // Woche, 5 Tage (Mo bis Fr)
+  weeklyRate       Decimal?  // Kalenderwoche, 7 Tage
+  monthlyRate      Decimal?  // Monat, 30 Tage
   kmIncludedPerDay Int       @default(200)
   extraKmRate      Decimal   @default(0.25)
   deposit          Decimal   @default(0)

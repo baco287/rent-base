@@ -11,6 +11,7 @@ export async function loadGroupOptions(tenantId: string): Promise<GroupOption[]>
     id: g.id,
     name: g.name,
     dailyRate: dec(g.dailyRate),
+    workWeekRate: dec(g.workWeekRate),
     weeklyRate: dec(g.weeklyRate),
     monthlyRate: dec(g.monthlyRate),
     kmIncludedPerDay: g.kmIncludedPerDay.toString(),

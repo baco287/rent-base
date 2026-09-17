@@ -22,9 +22,9 @@ async function main() {
   const t = tenant.id;
 
   const [gTransporter, gKombi, gKompakt] = await Promise.all([
-    db.vehicleGroup.create({ data: { tenantId: t, name: "Transporter", description: "Kastenwagen bis 3,5 t, Führerschein B", sortOrder: 10, dailyRate: 99, weeklyRate: 540, kmIncludedPerDay: 200, extraKmRate: 0.25, deposit: 500 } }),
-    db.vehicleGroup.create({ data: { tenantId: t, name: "Kombi", description: "Kombis und Hochdachkombis", sortOrder: 20, dailyRate: 59, weeklyRate: 320, kmIncludedPerDay: 250, extraKmRate: 0.2, deposit: 300 } }),
-    db.vehicleGroup.create({ data: { tenantId: t, name: "Kompaktklasse", description: "Kleinwagen und Kompakte", sortOrder: 30, dailyRate: 45, weeklyRate: 240, kmIncludedPerDay: 250, extraKmRate: 0.2, deposit: 300 } }),
+    db.vehicleGroup.create({ data: { tenantId: t, name: "Transporter", description: "Kastenwagen bis 3,5 t, Führerschein B", sortOrder: 10, dailyRate: 99, workWeekRate: 420, weeklyRate: 540, monthlyRate: 1790, kmIncludedPerDay: 200, extraKmRate: 0.25, deposit: 500 } }),
+    db.vehicleGroup.create({ data: { tenantId: t, name: "Kombi", description: "Kombis und Hochdachkombis", sortOrder: 20, dailyRate: 59, workWeekRate: 250, weeklyRate: 320, monthlyRate: 990, kmIncludedPerDay: 250, extraKmRate: 0.2, deposit: 300 } }),
+    db.vehicleGroup.create({ data: { tenantId: t, name: "Kompaktklasse", description: "Kleinwagen und Kompakte", sortOrder: 30, dailyRate: 45, workWeekRate: 190, weeklyRate: 240, monthlyRate: 790, kmIncludedPerDay: 250, extraKmRate: 0.2, deposit: 300 } }),
   ]);
 
   const vehicles = await Promise.all([

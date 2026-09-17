@@ -10,6 +10,7 @@ export type GroupOption = {
   id: string;
   name: string;
   dailyRate: string;
+  workWeekRate: string;
   weeklyRate: string;
   monthlyRate: string;
   kmIncludedPerDay: string;
@@ -30,6 +31,7 @@ export type VehicleFormValues = {
   mileage: string;
   huDate: string;
   dailyRate: string;
+  workWeekRate: string;
   weeklyRate: string;
   monthlyRate: string;
   kmIncludedPerDay: string;
@@ -40,7 +42,7 @@ export type VehicleFormValues = {
 
 export const emptyVehicle: VehicleFormValues = {
   plate: "", make: "", model: "", groupId: "", fuel: "DIESEL", status: "AVAILABLE",
-  year: "", vin: "", color: "", mileage: "0", huDate: "", dailyRate: "", weeklyRate: "", monthlyRate: "",
+  year: "", vin: "", color: "", mileage: "0", huDate: "", dailyRate: "", workWeekRate: "", weeklyRate: "", monthlyRate: "",
   kmIncludedPerDay: "200", extraKmRate: "0,25", deposit: "", notes: "",
 };
 
@@ -61,6 +63,7 @@ export function VehicleForm({
   const [groupId, setGroupId] = useState(values.groupId);
   const [prices, setPrices] = useState({
     dailyRate: values.dailyRate,
+    workWeekRate: values.workWeekRate,
     weeklyRate: values.weeklyRate,
     monthlyRate: values.monthlyRate,
     kmIncludedPerDay: values.kmIncludedPerDay,
@@ -73,7 +76,7 @@ export function VehicleForm({
   function pickGroup(id: string) {
     setGroupId(id);
     const g = groups.find((x) => x.id === id);
-    if (g) setPrices({ dailyRate: g.dailyRate, weeklyRate: g.weeklyRate, monthlyRate: g.monthlyRate, kmIncludedPerDay: g.kmIncludedPerDay, extraKmRate: g.extraKmRate, deposit: g.deposit });
+    if (g) setPrices({ dailyRate: g.dailyRate, workWeekRate: g.workWeekRate, weeklyRate: g.weeklyRate, monthlyRate: g.monthlyRate, kmIncludedPerDay: g.kmIncludedPerDay, extraKmRate: g.extraKmRate, deposit: g.deposit });
   }
   const set = (k: keyof typeof prices) => (e: React.ChangeEvent<HTMLInputElement>) => setPrices((p) => ({ ...p, [k]: e.target.value }));
 
@@ -130,7 +133,10 @@ export function VehicleForm({
       <Field label="Kaution €" htmlFor="deposit">
         <input id="deposit" name="deposit" inputMode="decimal" value={prices.deposit} onChange={set("deposit")} required className="input tnum" placeholder="500" />
       </Field>
-      <Field label="Wochenpreis € (optional)" htmlFor="weeklyRate">
+      <Field label="Woche € (5 Tage, optional)" htmlFor="workWeekRate">
+        <input id="workWeekRate" name="workWeekRate" inputMode="decimal" value={prices.workWeekRate} onChange={set("workWeekRate")} className="input tnum" />
+      </Field>
+      <Field label="Kalenderwoche € (7 Tage, optional)" htmlFor="weeklyRate">
         <input id="weeklyRate" name="weeklyRate" inputMode="decimal" value={prices.weeklyRate} onChange={set("weeklyRate")} className="input tnum" />
       </Field>
       <Field label="Monatspreis € (optional)" htmlFor="monthlyRate">

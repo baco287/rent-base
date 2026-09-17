@@ -19,7 +19,8 @@ const groupSchema = z.object({
   description: optStr,
   sortOrder: z.preprocess((v) => (v === "" ? 0 : v), z.coerce.number().int().min(0).max(9999)),
   dailyRate: z.preprocess((v) => (v === "" ? 0 : v), num("Tagespreis muss eine Zahl sein.")),
-  weeklyRate: optNum("Wochenpreis muss eine Zahl sein."),
+  workWeekRate: optNum("Wochenpreis (5 Tage) muss eine Zahl sein."),
+  weeklyRate: optNum("Kalenderwochenpreis muss eine Zahl sein."),
   monthlyRate: optNum("Monatspreis muss eine Zahl sein."),
   kmIncludedPerDay: z.preprocess((v) => (v === "" ? 200 : v), z.coerce.number().int().min(0)),
   extraKmRate: z.preprocess((v) => (v === "" ? 0.25 : v), num("Mehrkilometer-Preis muss eine Zahl sein.")),
@@ -27,7 +28,7 @@ const groupSchema = z.object({
 });
 
 function toData(d: z.infer<typeof groupSchema>) {
-  return { ...d, description: d.description ?? null, weeklyRate: d.weeklyRate ?? null, monthlyRate: d.monthlyRate ?? null };
+  return { ...d, description: d.description ?? null, workWeekRate: d.workWeekRate ?? null, weeklyRate: d.weeklyRate ?? null, monthlyRate: d.monthlyRate ?? null };
 }
 
 function revalidate() {

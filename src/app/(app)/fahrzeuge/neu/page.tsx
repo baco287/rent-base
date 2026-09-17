@@ -13,7 +13,7 @@ export default async function NewVehiclePage({ searchParams }: PageProps<"/fahrz
   const preset = groups.find((g) => g.id === sp.gruppe);
 
   const values = preset
-    ? { ...emptyVehicle, groupId: preset.id, dailyRate: preset.dailyRate, weeklyRate: preset.weeklyRate, monthlyRate: preset.monthlyRate, kmIncludedPerDay: preset.kmIncludedPerDay, extraKmRate: preset.extraKmRate, deposit: preset.deposit }
+    ? { ...emptyVehicle, groupId: preset.id, dailyRate: preset.dailyRate, workWeekRate: preset.workWeekRate, weeklyRate: preset.weeklyRate, monthlyRate: preset.monthlyRate, kmIncludedPerDay: preset.kmIncludedPerDay, extraKmRate: preset.extraKmRate, deposit: preset.deposit }
     : emptyVehicle;
 
   return (
