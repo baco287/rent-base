@@ -9,7 +9,7 @@ if [ -z "$DATABASE_URL" ]; then
 fi
 
 echo "Migrationen anwenden..."
-/opt/prisma-cli/node_modules/.bin/prisma migrate deploy --config ./prisma.config.ts
+(cd /opt/prisma-cli && ./node_modules/.bin/prisma migrate deploy)
 
 echo "Rent-Base startet auf Port ${PORT:-3000}"
 exec node server.js

@@ -24,17 +24,18 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
-# Prisma CLI nur für "migrate deploy" beim Start, getrennt vom App-Code
+# Prisma CLI nur für "migrate deploy" beim Start, getrennt vom App-Code.
+# Schema, Migrationen und Konfiguration liegen daneben, damit alle Importe auflösbar sind.
 WORKDIR /opt/prisma-cli
-RUN npm install --no-audit --no-fund prisma@6.19.3 dotenv@16 >/dev/null 2>&1
+RUN npm install --no-audit --no-fund prisma@6.19.3 >/dev/null 2>&1
+COPY --from=build --chown=app:app /app/prisma ./prisma
+COPY --from=build --chown=app:app /app/prisma.config.ts ./prisma.config.ts
 
 WORKDIR /app
 # Standalone-Build von Next.js plus statische Dateien
 COPY --from=build --chown=app:app /app/.next/standalone ./
 COPY --from=build --chown=app:app /app/.next/static ./.next/static
 COPY --from=build --chown=app:app /app/public ./public
-COPY --from=build --chown=app:app /app/prisma ./prisma
-COPY --from=build --chown=app:app /app/prisma.config.ts ./prisma.config.ts
 COPY --chown=app:app docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
 
