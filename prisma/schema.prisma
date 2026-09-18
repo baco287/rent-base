@@ -12,16 +12,18 @@ datasource db {
 }
 
 model Tenant {
-  id        String   @id @default(cuid())
-  name      String
-  slug      String   @unique
-  street    String?
-  zip       String?
-  city      String?
-  phone     String?
-  email     String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                 String   @id @default(cuid())
+  name               String
+  slug               String   @unique
+  street             String?
+  zip                String?
+  city               String?
+  phone              String?
+  email              String?
+  rentalTermsVersion String? // z. B. "2026-09"
+  rentalTermsText    String? // Mietbedingungen, werden beim Vertrag kopiert
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   users     User[]
   groups    VehicleGroup[]
@@ -145,6 +147,7 @@ model Vehicle {
 model Customer {
   id                String    @id @default(cuid())
   tenantId          String
+  number            String? // Kundennummer, z. B. K-00001, fortlaufend je Mandant
   type              String    @default("PRIVATE") // PRIVATE | COMPANY
   companyName       String?
   firstName         String
@@ -154,6 +157,7 @@ model Customer {
   street            String?
   zip               String?
   city              String?
+  country           String    @default("DE")
   birthDate         DateTime?
   birthPlace        String?
   nationality       String?
@@ -179,6 +183,7 @@ model Customer {
   contracts       RentalContract[]
   contractDrivers ContractDriver[]
 
+  @@unique([tenantId, number])
   @@index([tenantId, lastName])
 }
 
@@ -270,12 +275,21 @@ model RentalContract {
   kmIncludedPerDay  Int      @default(0)
   extraKmRate       Decimal  @default(0)
   deductible        Decimal  @default(0) // Selbstbeteiligung
-  fuelPolicy        String   @default("SAME_LEVEL") // SAME_LEVEL | FULL_TO_FULL
+  fuelPolicy        String   @default("FULL_TO_FULL") // FULL_TO_FULL | SAME_LEVEL | INCLUDED | OTHER
+  fuelPolicyNote    String? // Beschreibung bei OTHER
   fuelPricePerLiter Decimal? // Preis je fehlendem Liter inkl. Service
+  agreedTotal       Decimal? // abweichend vereinbarter Gesamtmietpreis, sonst gilt die Berechnung
+  agreedTotalNote   String?
+  pickupLocation    String?
+  returnLocation    String?
+  internalNote      String? // nur intern, nicht Teil des unterschriebenen Inhalts
+  driverMode        String   @default("RENTER") // RENTER = Mieter fährt selbst | OTHER = abweichender Fahrer
+  wizardStep        Int      @default(1) // zuletzt erreichter Schritt im Assistenten
   conditions        Json? // weitere Konditionen, erweiterbar ohne Migration
 
   termsVersion String? // AGB-Version
   termsHash    String? // sha256 des AGB-Textes
+  termsText    String? // Kopie der Mietbedingungen zum Vertragszeitpunkt
   contentHash  String? // sha256 über den unterschriebenen Vertragsinhalt
 
   createdById String?
@@ -303,7 +317,7 @@ model ContractDriver {
   tenantId   String
   contractId String
   customerId String? // nur Referenz; spätere Änderungen am Kunden wirken hier nicht
-  role       String  @default("ADDITIONAL") // MAIN | ADDITIONAL
+  role       String  @default("ADDITIONAL_DRIVER") // PRIMARY_DRIVER | ADDITIONAL_DRIVER
 
   firstName String
   lastName  String
@@ -518,18 +532,20 @@ model Photo {
 
 // Unterschrift, gebunden an genau den Inhalt (contentHash), der unterschrieben wurde.
 model Signature {
-  id          String   @id @default(cuid())
-  tenantId    String
-  handoverId  String?
-  contractId  String?
-  role        String // RENTER | EMPLOYEE
-  signerName  String
-  storageKey  String   @unique // Bild der Unterschrift im Object Storage
-  contentHash String // Hash des unterschriebenen Inhalts
-  signedAt    DateTime @default(now())
-  ipAddress   String?
-  userAgent   String?
-  createdById String?
+  id            String   @id @default(cuid())
+  tenantId      String
+  handoverId    String?
+  contractId    String?
+  role          String // RENTER | EMPLOYEE
+  signerName    String
+  storageKey    String   @unique // vorgesehener Ort im Object Storage
+  imageData     Bytes? // PNG der Unterschrift; liegt in der Datenbank, bis der Object Storage angebunden ist
+  imageChecksum String? // sha256 des Bildes
+  contentHash   String // Hash des unterschriebenen Inhalts
+  signedAt      DateTime @default(now())
+  ipAddress     String?
+  userAgent     String?
+  createdById   String?
 
   tenant   Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   handover Handover?       @relation(fields: [handoverId], references: [id], onDelete: SetNull)

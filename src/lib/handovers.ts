@@ -47,6 +47,7 @@ export async function startHandover(tenantId: string, bookingId: string, type: H
     if (existing.some((h) => h.status === "FINALIZED")) throw new DomainError(type === "PICKUP" ? "Die Übergabe ist bereits abgeschlossen." : "Die Rückgabe ist bereits abgeschlossen.");
 
     if (type === "PICKUP" && booking.status !== "RESERVED") throw new DomainError("Eine Übergabe ist nur für reservierte Buchungen möglich.");
+    if (type === "PICKUP" && booking.contract?.status !== "SIGNED") throw new DomainError("Die Übergabe kann erst starten, wenn der Mietvertrag abgeschlossen ist.");
     if (type === "RETURN" && booking.status !== "ACTIVE") throw new DomainError("Eine Rückgabe ist nur für laufende Mieten möglich.");
 
     const sketch = await resolveSketch(tx, tenantId, booking.vehicle.group);
@@ -297,8 +298,7 @@ export async function getHandoverContentHash(tenantId: string, handoverId: strin
 }
 
 export type SignatureInput = {
-  handoverId?: string;
-  contractId?: string;
+  handoverId: string;
   role: "RENTER" | "EMPLOYEE";
   signerName: string;
   storageKey: string;
@@ -308,30 +308,22 @@ export type SignatureInput = {
 };
 
 /**
- * Speichert eine Unterschrift zu genau einem Inhalt. Stimmt der übergebene Hash nicht mit dem aktuellen
- * Inhalt überein, wurde das Dokument seit der Anzeige geändert und die Unterschrift wird abgelehnt.
+ * Speichert eine Unterschrift unter ein Protokoll. Stimmt der übergebene Hash nicht mit dem aktuellen
+ * Inhalt überein, wurde das Protokoll seit der Anzeige geändert und die Unterschrift wird abgelehnt.
+ * Unterschriften unter Verträge laufen über saveContractSignature in lib/contracts.ts.
  */
 export async function addSignature(tenantId: string, actor: Actor | null, input: SignatureInput) {
-  if (Boolean(input.handoverId) === Boolean(input.contractId)) throw new DomainError("Eine Unterschrift gehört zu genau einem Protokoll oder Vertrag.");
   assertKeyBelongsToTenant(input.storageKey, tenantId);
   return db.$transaction(async (tx) => {
-    if (input.handoverId) {
-      await loadDraft(tx, tenantId, input.handoverId);
-      const { hash } = await handoverContent(tx, tenantId, input.handoverId);
-      if (hash !== input.contentHash) throw new DomainError("Das Protokoll wurde seit der Anzeige geändert. Bitte neu laden und erneut unterschreiben.");
-    } else {
-      const c = await tx.rentalContract.findFirst({ where: { id: input.contractId!, tenantId } });
-      if (!c) throw new DomainError("Vertrag nicht gefunden.");
-      if (c.status !== "DRAFT") throw new DomainError("Der Vertrag ist bereits unterschrieben.");
-      // Der Hash des Vertrags wird in signContract gegen den dann aktuellen Inhalt geprüft.
-    }
+    await loadDraft(tx, tenantId, input.handoverId);
+    const { hash } = await handoverContent(tx, tenantId, input.handoverId);
+    if (hash !== input.contentHash) throw new DomainError("Das Protokoll wurde seit der Anzeige geändert. Bitte neu laden und erneut unterschreiben.");
     // Eine Rolle unterschreibt nur einmal: vorherige Unterschrift derselben Rolle im Entwurf ersetzen
-    await tx.signature.deleteMany({ where: { tenantId, role: input.role, handoverId: input.handoverId ?? null, contractId: input.contractId ?? null } });
+    await tx.signature.deleteMany({ where: { tenantId, role: input.role, handoverId: input.handoverId } });
     return tx.signature.create({
       data: {
         tenantId,
-        handoverId: input.handoverId ?? null,
-        contractId: input.contractId ?? null,
+        handoverId: input.handoverId,
         role: input.role,
         signerName: input.signerName,
         storageKey: input.storageKey,

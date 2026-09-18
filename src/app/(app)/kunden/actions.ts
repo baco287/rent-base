@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
 import { customerSchema, customerToData } from "@/lib/customer-schema";
+import { nextCustomerNumber, withNumberRetry } from "@/lib/numbering";
 
 export type FormState = { error?: string } | undefined;
 
@@ -13,7 +14,10 @@ export async function createCustomerAction(_prev: FormState, formData: FormData)
   const parsed = customerSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
 
-  const c = await db.customer.create({ data: { tenantId: tenant.id, ...customerToData(parsed.data) } });
+  const data = customerToData(parsed.data);
+  const c = await withNumberRetry(() =>
+    db.$transaction(async (tx) => tx.customer.create({ data: { tenantId: tenant.id, number: await nextCustomerNumber(tx, tenant.id), ...data } })),
+  );
   revalidatePath("/kunden");
   redirect(`/kunden/${c.id}`);
 }

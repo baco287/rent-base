@@ -4,7 +4,8 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { db } from "../src/lib/db";
-import { addContractDriver, createContractDraft, getContractContentHash, signContract } from "../src/lib/contracts";
+import { addAdditionalDriver, ensureContractDraft, finalizeContract, getContractContentHash, saveConditions, saveContractSignature, verifyContract } from "../src/lib/contracts";
+import { fakeSignaturePng, purgeTenants } from "./helpers";
 import { addNewDamage, addSignature, answerChecklistItem, finalizeHandover, getHandoverContentHash, registerPhoto, startHandover, updateHandoverDraft, verifyHandover } from "../src/lib/handovers";
 import { setDamageStatus } from "../src/lib/damages";
 import { publishChecklistVersion, DEFAULT_CHECKLIST } from "../src/lib/checklists";
@@ -55,7 +56,7 @@ before(async () => {
   ids.group = group.id;
   const vehicle = await db.vehicle.create({ data: { tenantId: a.id, plate: `HB-T ${run.slice(-4)}`, make: "VW", model: "Crafter", groupId: group.id, fuel: "DIESEL", mileage: 50_000, dailyRate: 89, workWeekRate: 420, weeklyRate: 540, kmIncludedPerDay: 200, extraKmRate: 0.25, deposit: 500, tankCapacityLiters: 75 } });
   ids.vehicle = vehicle.id;
-  const customer = await db.customer.create({ data: { tenantId: a.id, firstName: "Erika", lastName: "Muster", street: "Weg 1", zip: "28195", city: "Bremen", licenseNumber: "B123", licenseClass: "B", discountPercent: 10 } });
+  const customer = await db.customer.create({ data: { tenantId: a.id, firstName: "Erika", lastName: "Muster", street: "Weg 1", zip: "28195", city: "Bremen", phone: "0421 1", birthDate: new Date("1985-03-12"), idNumber: "L01X00T47", idValidUntil: new Date("2031-01-01"), licenseNumber: "B123", licenseClass: "B", licenseIssuedAt: new Date("2005-06-01"), licenseValidUntil: new Date("2033-06-01"), discountPercent: 10 } });
   ids.customer = customer.id;
   const start = new Date(Date.now() - 3600_000);
   const end = new Date(start.getTime() + 6 * 24 * 3600_000);
@@ -68,74 +69,45 @@ before(async () => {
 });
 
 after(async () => {
-  // Endgültiges Löschen ist nur mit ausdrücklicher Freigabe in der Transaktion möglich
-  await db.$transaction(async (tx) => {
-    await tx.$executeRawUnsafe(`SET LOCAL rentbase.allow_purge = 'on'`);
-    for (const t of [ids.tenantA, ids.tenantB]) {
-      const w = { where: { tenantId: t } };
-      await tx.emailLog.deleteMany(w);
-      await tx.vehicleEvent.deleteMany(w);
-      await tx.extraCharge.deleteMany(w);
-      await tx.document.deleteMany(w);
-      await tx.signature.deleteMany(w);
-      await tx.photo.deleteMany(w);
-      await tx.handoverChecklistItem.deleteMany(w);
-      await tx.handoverDamage.deleteMany(w);
-      await tx.damage.deleteMany(w);
-      await tx.handover.deleteMany(w);
-      await tx.contractDriver.deleteMany(w);
-      await tx.rentalContract.deleteMany(w);
-      await tx.checklistTemplate.deleteMany(w);
-      await tx.booking.deleteMany(w);
-      await tx.customer.deleteMany(w);
-      await tx.vehicle.deleteMany(w);
-      await tx.vehicleGroup.deleteMany(w);
-      await tx.vehicleSketch.deleteMany(w);
-      await tx.user.deleteMany(w);
-      await tx.tenant.deleteMany({ where: { id: t } });
-    }
-  });
+  await purgeTenants([ids.tenantA, ids.tenantB]);
   await db.$disconnect();
 });
 
-test("Vertrag friert Kunde, Fahrzeug und Preise ein", async () => {
-  const c = await createContractDraft(ids.tenantA, ids.booking, ids.user, { deductible: 1000, fuelPricePerLiter: 2.1, termsVersion: "2026-09", termsText: "AGB Text" });
+test("Vertrag: Entwurf, Zusatzfahrer ohne Kundenkarte, Abschluss friert Kunde, Fahrzeug und Preise ein", async () => {
+  const c = await ensureContractDraft(ids.tenantA, ids.booking, actor);
   contractId = c.id;
   assert.match(c.number, /^MV-\d{4}-\d{4}$/);
   // 6 Tage: Woche (420) + Tag (89) = 509, 10 % Rabatt
   assert.equal(Number(c.totalAmount), 458.1);
-  assert.ok(c.termsHash);
 
-  // Stammdaten ändern sich später
+  const booking = await db.booking.findFirstOrThrow({ where: { id: ids.booking } });
+  await saveConditions(ids.tenantA, c.id, { startAt: booking.startAt, endAt: booking.endAt, deposit: 500, kmIncludedPerDay: 200, extraKmRate: 0.25, deductible: 1000, fuelPolicy: "FULL_TO_FULL", fuelPricePerLiter: 2.1 });
+  const driver = await addAdditionalDriver(ids.tenantA, c.id, { firstName: "Max", lastName: "Zusatz", birthDate: new Date("1990-05-01"), street: "Hafen 3", zip: "28217", city: "Bremen", licenseNumber: "Z999", licenseClass: "B", licenseIssuedAt: new Date("2010-06-01"), licenseValidUntil: new Date("2033-06-01"), licenseCountry: "DE" });
+  assert.equal(driver.customerId, null);
+  await assert.rejects(() => addAdditionalDriver(ids.tenantB, c.id, { firstName: "X", lastName: "Y", birthDate: new Date("1990-01-01"), street: "s", zip: "1", city: "c", licenseNumber: "n", licenseClass: "B", licenseIssuedAt: new Date("2010-01-01") }), /nicht gefunden/);
+
+  await assert.rejects(() => finalizeContract(ids.tenantA, c.id), /Unterschrift des Mieters fehlt/);
+  const hash = await getContractContentHash(ids.tenantA, c.id);
+  await saveContractSignature(ids.tenantA, actor, c.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: hash });
+  const signed = await finalizeContract(ids.tenantA, c.id);
+  assert.equal(signed.status, "SIGNED");
+  assert.equal(signed.contentHash, hash);
+
+  // Stammdaten ändern sich später: der abgeschlossene Vertrag bleibt, wie er war
   await db.customer.update({ where: { id: ids.customer }, data: { lastName: "Neuname", street: "Andere Str. 9" } });
   await db.vehicle.update({ where: { id: ids.vehicle }, data: { dailyRate: 199, extraKmRate: 0.99 } });
-
   const again = await db.rentalContract.findFirstOrThrow({ where: { id: c.id, tenantId: ids.tenantA } });
   const cust = again.customerSnapshot as Record<string, unknown>;
   assert.equal(cust.lastName, "Muster");
   assert.equal(cust.street, "Weg 1");
   assert.equal(Number(again.extraKmRate), 0.25);
   assert.equal((again.priceSnapshot as { total: number }).total, 458.1);
-});
+  assert.equal((await verifyContract(ids.tenantA, c.id)).intact, true);
 
-test("Zusatzfahrer hängt am Vertrag, ohne Kundenkarte, und fremde Mandanten bleiben draußen", async () => {
-  const driver = await addContractDriver(ids.tenantA, contractId, { firstName: "Max", lastName: "Zusatz", birthDate: new Date("1990-05-01"), street: "Hafen 3", zip: "28217", city: "Bremen", licenseNumber: "Z999", licenseClass: "B", licenseIssuedAt: new Date("2010-06-01"), licenseValidUntil: new Date("2033-06-01"), licenseCountry: "DE" });
-  assert.equal(driver.customerId, null);
-  await assert.rejects(() => addContractDriver(ids.tenantB, contractId, { firstName: "X", lastName: "Y", birthDate: new Date("1990-01-01"), street: "s", zip: "1", city: "c", licenseNumber: "n", licenseClass: "B", licenseIssuedAt: new Date("2010-01-01") }), /nicht gefunden/);
-});
-
-test("unterschriebener Vertrag ist gesperrt, im Code und in der Datenbank", async () => {
-  await assert.rejects(() => signContract(ids.tenantA, contractId), /Unterschrift des Mieters fehlt/);
-  const hash = await getContractContentHash(ids.tenantA, contractId);
-  await addSignature(ids.tenantA, actor, { contractId, role: "RENTER", signerName: "Erika Muster", storageKey: buildStorageKey({ tenantId: ids.tenantA, area: "signatures", contentType: "image/png" }), contentHash: hash });
-  const signed = await signContract(ids.tenantA, contractId);
-  assert.equal(signed.status, "SIGNED");
-  assert.equal(signed.contentHash, hash);
-
-  await rejectsImmutable(() => addContractDriver(ids.tenantA, contractId, { firstName: "A", lastName: "B", birthDate: new Date("1990-01-01"), street: "s", zip: "1", city: "c", licenseNumber: "n", licenseClass: "B", licenseIssuedAt: new Date("2010-01-01") }), "Fahrer nach Unterschrift");
+  await rejectsImmutable(() => addAdditionalDriver(ids.tenantA, c.id, { firstName: "A", lastName: "B", birthDate: new Date("1990-01-01"), street: "s", zip: "1", city: "c", licenseNumber: "n", licenseClass: "B", licenseIssuedAt: new Date("2010-01-01") }), "Fahrer nach Unterschrift");
   // direkt an der Anwendungslogik vorbei
-  await rejectsImmutable(() => db.rentalContract.update({ where: { id: contractId }, data: { totalAmount: 1 } }), "Vertrag direkt ändern");
-  await rejectsImmutable(() => db.contractDriver.deleteMany({ where: { contractId } }), "Fahrer direkt löschen");
+  await rejectsImmutable(() => db.rentalContract.update({ where: { id: c.id }, data: { totalAmount: 1 } }), "Vertrag direkt ändern");
+  await rejectsImmutable(() => db.contractDriver.deleteMany({ where: { contractId: c.id } }), "Fahrer direkt löschen");
 });
 
 test("Übergabe kopiert Schäden, Checkliste und Skizze; andere Mandanten sehen nichts", async () => {

@@ -3,7 +3,7 @@
 import { useActionState } from "react";
 import { ROLES } from "@/lib/constants";
 import { Field, FormError } from "@/components/ui";
-import { createUserAction, updateTenantAction, type FormState } from "./actions";
+import { createUserAction, updateTenantAction, updateTermsAction, type FormState } from "./actions";
 
 function Ok({ state }: { state: FormState }) {
   if (!state?.ok) return null;
@@ -23,6 +23,22 @@ export function TenantForm({ t }: { t: { name: string; street: string | null; zi
       <FormError error={state?.error} />
       <Ok state={state} />
       <div className="md:col-span-2"><button disabled={pending} className="btn btn-primary">{pending ? "Wird gespeichert…" : "Speichern"}</button></div>
+    </form>
+  );
+}
+
+export function TermsForm({ version, text }: { version: string | null; text: string | null }) {
+  const [state, formAction, pending] = useActionState(updateTermsAction, undefined);
+  return (
+    <form action={formAction} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5 p-5">
+      <Field label="Fassung" htmlFor="rentalTermsVersion" hint="z. B. 2026-09. Steht auf jedem Vertrag."><input id="rentalTermsVersion" name="rentalTermsVersion" defaultValue={version ?? ""} className="input" /></Field>
+      <div className="hidden md:block" />
+      <Field label="Text der Mietbedingungen" htmlFor="rentalTermsText" full hint="Bitte von einem Anwalt prüfen lassen. Abgeschlossene Verträge behalten ihre damalige Fassung.">
+        <textarea id="rentalTermsText" name="rentalTermsText" defaultValue={text ?? ""} rows={12} className="input" />
+      </Field>
+      <FormError error={state?.error} />
+      <Ok state={state} />
+      <div className="md:col-span-2"><button disabled={pending} className="btn btn-primary">{pending ? "Wird gespeichert…" : "Mietbedingungen speichern"}</button></div>
     </form>
   );
 }

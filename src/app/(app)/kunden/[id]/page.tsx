@@ -2,7 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { customerName, fmtDateTime, toDateInput } from "@/lib/format";
+import { customerName, fmtDateTime } from "@/lib/format";
+import { customerToFormValues } from "@/lib/customer-form-values";
 import { BookingStatusChip, Card, Chip, Content, PageHeader, Plate } from "@/components/ui";
 import { deleteCustomerAction, updateCustomerAction } from "../actions";
 import { CustomerForm } from "../customer-form";
@@ -18,41 +19,14 @@ export default async function CustomerPage({ params, searchParams }: PageProps<"
   });
   if (!c) notFound();
 
-  const values = {
-    type: c.type,
-    companyName: c.companyName ?? "",
-    firstName: c.firstName,
-    lastName: c.lastName,
-    email: c.email ?? "",
-    phone: c.phone ?? "",
-    street: c.street ?? "",
-    zip: c.zip ?? "",
-    city: c.city ?? "",
-    birthDate: toDateInput(c.birthDate),
-    birthPlace: c.birthPlace ?? "",
-    nationality: c.nationality ?? "",
-    idType: c.idType ?? "",
-    idNumber: c.idNumber ?? "",
-    idIssuedBy: c.idIssuedBy ?? "",
-    idIssuedAt: toDateInput(c.idIssuedAt),
-    idValidUntil: toDateInput(c.idValidUntil),
-    licenseNumber: c.licenseNumber ?? "",
-    licenseClass: c.licenseClass ?? "",
-    licenseIssuedBy: c.licenseIssuedBy ?? "",
-    licenseIssuedAt: toDateInput(c.licenseIssuedAt),
-    licenseValidUntil: toDateInput(c.licenseValidUntil),
-    blocked: c.blocked,
-    blockReason: c.blockReason ?? "",
-    discountPercent: c.discountPercent.toString(),
-    notes: c.notes ?? "",
-  };
+  const values = customerToFormValues(c);
 
   const update = updateCustomerAction.bind(null, c.id);
   const remove = deleteCustomerAction.bind(null, c.id);
 
   return (
     <>
-      <PageHeader title={customerName(c)} sub={c.type === "COMPANY" ? "Firmenkunde" : "Privatkunde"}>
+      <PageHeader title={customerName(c)} sub={`${c.number ?? "ohne Nummer"} · ${c.type === "COMPANY" ? "Firmenkunde" : "Privatkunde"}`}>
         {c.blocked && <Chip tone="bad">Gesperrt</Chip>}
         {!c.blocked && <Link href={`/buchungen/neu?kunde=${c.id}`} className="btn btn-primary">+ Buchung</Link>}
       </PageHeader>

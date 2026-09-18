@@ -2,10 +2,10 @@ import Link from "next/link";
 import type { Prisma } from "@prisma/client";
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { BOOKING_STATUS } from "@/lib/constants";
 import { customerName, fmtDateTime, fmtEur } from "@/lib/format";
 import { calculateRentalPrice, rateCardFrom } from "@/lib/pricing";
-import { BookingStatusChip, Card, Content, Empty, PageHeader, Plate } from "@/components/ui";
+import { BookingStageChip, Card, Content, Empty, PageHeader, Plate } from "@/components/ui";
+import { bookingStage } from "@/lib/booking-status";
 
 export const metadata = { title: "Buchungen" };
 
@@ -25,7 +25,7 @@ export default async function BookingsPage({ searchParams }: PageProps<"/buchung
 
   const bookings = await db.booking.findMany({
     where: { tenantId: tenant.id, ...filter.where },
-    include: { vehicle: true, customer: true },
+    include: { vehicle: true, customer: true, contract: { select: { status: true } } },
     orderBy: { startAt: filter.key === "abgeschlossen" || filter.key === "alle" ? "desc" : "asc" },
     take: 300,
   });
@@ -76,7 +76,7 @@ export default async function BookingsPage({ searchParams }: PageProps<"/buchung
                         <td className={`px-3 py-2.5 font-mono tnum ${overdue ? "text-bad font-semibold" : ""}`}>{fmtDateTime(b.endAt)}</td>
                         <td className="px-3 py-2.5 text-right tnum">{d}</td>
                         <td className="px-3 py-2.5 text-right font-mono tnum">{fmtEur(total)}</td>
-                        <td className="px-3 py-2.5">{overdue ? <span className="chip bg-bad-soft text-bad">Überfällig</span> : <BookingStatusChip status={b.status} />}</td>
+                        <td className="px-3 py-2.5">{overdue ? <span className="chip bg-bad-soft text-bad">Überfällig</span> : <BookingStageChip stage={bookingStage(b, b.contract)} />}</td>
                       </tr>
                     );
                   })}
@@ -85,7 +85,7 @@ export default async function BookingsPage({ searchParams }: PageProps<"/buchung
             </div>
           )}
         </Card>
-        <p className="text-xs text-ink-3">Status: {Object.values(BOOKING_STATUS).join(" → ")}. Übergabe- und Rücknahmeprotokoll folgen in Etappe 2.</p>
+        <p className="text-xs text-ink-3">Ablauf: Buchung, Mietvertrag, Übergabe, Rückgabe. „Unterwegs“ entsteht nur durch Mietvertrag und Übergabeprotokoll.</p>
       </Content>
     </>
   );

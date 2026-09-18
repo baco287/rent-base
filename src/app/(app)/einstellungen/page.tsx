@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { ROLES, type Role } from "@/lib/constants";
 import { Card, Chip, Content, PageHeader } from "@/components/ui";
 import { toggleUserActiveAction } from "./actions";
-import { NewUserForm, TenantForm } from "./forms";
+import { NewUserForm, TenantForm, TermsForm } from "./forms";
 
 export const metadata = { title: "Einstellungen" };
 
@@ -31,6 +31,12 @@ export default async function SettingsPage({ searchParams }: PageProps<"/einstel
               </dl>
             )}
           </Card>
+
+          {isOwner && (
+            <Card title="Mietbedingungen für Verträge" className="xl:row-start-2">
+              <TermsForm version={tenant.rentalTermsVersion} text={tenant.rentalTermsText} />
+            </Card>
+          )}
 
           <div className="flex flex-col gap-4">
             <Card title="Mitarbeiter" right={<Chip>{users.filter((u) => u.active).length} aktiv</Chip>}>

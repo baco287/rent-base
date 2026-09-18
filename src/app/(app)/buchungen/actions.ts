@@ -8,6 +8,9 @@ import { requireRole } from "@/lib/auth";
 import { findConflicts, nextBookingNumber } from "@/lib/bookings";
 import { customerName, fmtDateTime } from "@/lib/format";
 import { customerFieldsFromForm, customerSchema, customerToData } from "@/lib/customer-schema";
+import { nextCustomerNumber, withNumberRetry } from "@/lib/numbering";
+import { changeBookingStatus } from "@/lib/booking-status";
+import { DomainError } from "@/lib/integrity";
 
 export type FormState = { error?: string } | undefined;
 
@@ -67,14 +70,14 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
   if ("error" in refs) return refs;
 
   let id = "";
-  const result = await db.$transaction(async (tx) => {
+  const result = await withNumberRetry(() => db.$transaction(async (tx) => {
     const conflicts = await findConflicts(tx, tenant.id, d.vehicleId, d.startAt, d.endAt);
     if (conflicts.length > 0) {
       const c = conflicts[0];
       return { error: `Doppelbelegung: ${refs.vehicle.plate} ist von ${fmtDateTime(c.startAt)} bis ${fmtDateTime(c.endAt)} an ${customerName(c.customer)} vergeben (Nr. ${c.number}).` };
     }
     // Erst nach bestandener Konfliktprüfung den Kunden anlegen, damit bei Ablehnung kein Kunde übrig bleibt.
-    const customerId = customerData ? (await tx.customer.create({ data: { tenantId: tenant.id, ...customerData } })).id : d.customerId!;
+    const customerId = customerData ? (await tx.customer.create({ data: { tenantId: tenant.id, number: await nextCustomerNumber(tx, tenant.id), ...customerData } })).id : d.customerId!;
     const number = await nextBookingNumber(tx, tenant.id, d.startAt);
     const b = await tx.booking.create({
       data: {
@@ -85,7 +88,7 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
     });
     id = b.id;
     return undefined;
-  });
+  }));
   if (result?.error) return result;
 
   revalidate(id);
@@ -131,16 +134,18 @@ export async function updateBookingAction(id: string, _prev: FormState, formData
   redirect(`/buchungen/${id}?gespeichert=1`);
 }
 
-/** Statuswechsel: Reserviert -> Unterwegs -> Zurückgegeben, oder Storno. Übergabe-/Rücknahmeprotokoll kommt in Etappe 2. */
+/**
+ * Statuswechsel per Knopf. Die Regeln stehen in lib/booking-status.ts:
+ * "Unterwegs" ist hier nicht mehr möglich, das entsteht nur durch Mietvertrag und Übergabeprotokoll.
+ */
 export async function setBookingStatusAction(id: string, status: "ACTIVE" | "RETURNED" | "CANCELLED") {
   const { tenant } = await requireRole("DISPO", "YARD");
-  const b = await db.booking.findFirst({ where: { id, tenantId: tenant.id } });
-  if (!b) redirect("/buchungen");
-
-  const allowed: Record<string, string[]> = { RESERVED: ["ACTIVE", "CANCELLED"], ACTIVE: ["RETURNED"], RETURNED: [], CANCELLED: [] };
-  if (!allowed[b.status]?.includes(status)) redirect(`/buchungen/${id}?fehler=status`);
-
-  await db.booking.update({ where: { id }, data: { status } });
+  try {
+    await changeBookingStatus(tenant.id, id, status);
+  } catch (e) {
+    if (e instanceof DomainError) redirect(`/buchungen/${id}?hinweis=${encodeURIComponent(e.message)}`);
+    throw e;
+  }
   revalidate(id);
   redirect(`/buchungen/${id}`);
 }

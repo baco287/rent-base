@@ -61,11 +61,27 @@ export type BodyType = keyof typeof BODY_TYPES;
 export const CONTRACT_STATUS = { DRAFT: "Entwurf", SIGNED: "Unterschrieben", CANCELLED: "Storniert" } as const;
 export type ContractStatus = keyof typeof CONTRACT_STATUS;
 
-export const FUEL_POLICIES = { SAME_LEVEL: "Rückgabe mit gleichem Füllstand", FULL_TO_FULL: "Voll übernommen, voll zurück" } as const;
+export const FUEL_POLICIES = { FULL_TO_FULL: "Voll/Voll", SAME_LEVEL: "Gleicher Füllstand", INCLUDED: "Kraftstoff inklusive", OTHER: "Individuelle Regelung" } as const;
 export type FuelPolicy = keyof typeof FUEL_POLICIES;
 
-export const DRIVER_ROLES = { MAIN: "Hauptfahrer", ADDITIONAL: "Zusatzfahrer" } as const;
+export const DRIVER_ROLES = { PRIMARY_DRIVER: "Fahrer", ADDITIONAL_DRIVER: "Zusatzfahrer" } as const;
 export type DriverRole = keyof typeof DRIVER_ROLES;
+
+export const DRIVER_MODES = { RENTER: "Mieter fährt selbst", OTHER: "Abweichender Fahrer" } as const;
+export type DriverMode = keyof typeof DRIVER_MODES;
+
+/** Abgeleiteter Stand einer Buchung im Ablauf. Kein eigener Datenbankstatus, ergibt sich aus Buchung, Vertrag und Protokollen. */
+export const BOOKING_STAGES = {
+  NEEDS_CONTRACT: "Mietvertrag fehlt",
+  CONTRACT_DRAFT: "Vertrag in Arbeit",
+  READY_FOR_PICKUP: "Bereit zur Übergabe",
+  ACTIVE: "Unterwegs",
+  RETURNED: "Zurückgegeben",
+  CANCELLED: "Storniert",
+} as const;
+export type BookingStage = keyof typeof BOOKING_STAGES;
+
+export const COUNTRIES = { DE: "Deutschland", AT: "Österreich", CH: "Schweiz", NL: "Niederlande", PL: "Polen", TR: "Türkei", FR: "Frankreich", IT: "Italien", ES: "Spanien", OTHER: "Anderes Land" } as const;
 
 export const HANDOVER_TYPES = { PICKUP: "Übergabe", RETURN: "Rückgabe" } as const;
 export type HandoverType = keyof typeof HANDOVER_TYPES;

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { BOOKING_STATUS, VEHICLE_STATUS, type BookingStatus, type VehicleStatus } from "@/lib/constants";
+import { BOOKING_STAGES, BOOKING_STATUS, VEHICLE_STATUS, type BookingStage, type BookingStatus, type VehicleStatus } from "@/lib/constants";
 
 export function PageHeader({ title, sub, children }: { title: string; sub?: ReactNode; children?: ReactNode }) {
   return (
@@ -59,6 +59,12 @@ export function BookingStatusChip({ status }: { status: string }) {
   const tone: Record<BookingStatus, Tone> = { RESERVED: "info", ACTIVE: "amber", RETURNED: "good", CANCELLED: "grey" };
   const s = status as BookingStatus;
   return <Chip tone={tone[s] ?? "grey"}>{BOOKING_STATUS[s] ?? status}</Chip>;
+}
+
+/** Stand im Ablauf: Vertrag fehlt, Vertrag in Arbeit, bereit zur Übergabe, unterwegs, zurück, storniert. */
+export function BookingStageChip({ stage }: { stage: BookingStage }) {
+  const tone: Record<BookingStage, Tone> = { NEEDS_CONTRACT: "info", CONTRACT_DRAFT: "amber", READY_FOR_PICKUP: "good", ACTIVE: "amber", RETURNED: "grey", CANCELLED: "grey" };
+  return <Chip tone={tone[stage]}>{BOOKING_STAGES[stage]}</Chip>;
 }
 
 export function Empty({ children, action }: { children: ReactNode; action?: { href: string; label: string } }) {

@@ -4,7 +4,9 @@ import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { customerName, fmtDateTime, fmtEur, toDateTimeInput } from "@/lib/format";
 import { calculateRentalPrice, rateCardFrom } from "@/lib/pricing";
-import { BookingStatusChip, Card, Chip, Content, PageHeader, Plate } from "@/components/ui";
+import { BookingStageChip, Card, Chip, Content, PageHeader, Plate } from "@/components/ui";
+import { bookingStage } from "@/lib/booking-status";
+import { startContractAction } from "./vertrag/actions";
 import { setBookingStatusAction, updateBookingAction } from "../actions";
 import { BookingForm } from "../booking-form";
 import { loadBookingOptions } from "../options";
@@ -14,26 +16,30 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const { id } = await params;
   const sp = await searchParams;
 
-  const b = await db.booking.findFirst({ where: { id, tenantId: tenant.id }, include: { vehicle: true, customer: true } });
+  const b = await db.booking.findFirst({ where: { id, tenantId: tenant.id }, include: { vehicle: true, customer: true, contract: { select: { number: true, status: true } } } });
   if (!b) notFound();
 
-  const editable = b.status === "RESERVED" || b.status === "ACTIVE";
+  // Mit unterschriebenem Vertrag sind Zeitraum, Fahrzeug und Preis festgeschrieben
+  const editable = (b.status === "RESERVED" || b.status === "ACTIVE") && b.contract?.status !== "SIGNED";
   const { vehicles, customers } = editable ? await loadBookingOptions(tenant.id) : { vehicles: [], customers: [] };
   const price = calculateRentalPrice({ start: b.startAt, end: b.endAt, rates: rateCardFrom(b), discountPercent: b.customer.discountPercent });
   const overdue = b.status === "ACTIVE" && b.endAt < new Date();
 
+  const stage = bookingStage(b, b.contract);
+  const contractSigned = b.contract?.status === "SIGNED";
   const update = updateBookingAction.bind(null, b.id);
-  const activate = setBookingStatusAction.bind(null, b.id, "ACTIVE");
+  const startContract = startContractAction.bind(null, b.id);
   const finish = setBookingStatusAction.bind(null, b.id, "RETURNED");
   const cancel = setBookingStatusAction.bind(null, b.id, "CANCELLED");
 
   return (
     <>
       <PageHeader title={`Buchung ${b.number}`} sub={<Plate>{b.vehicle.plate}</Plate>}>
-        {overdue ? <Chip tone="bad">Rückgabe überfällig</Chip> : <BookingStatusChip status={b.status} />}
-        {b.status === "RESERVED" && (
-          <form action={activate}><button className="btn btn-primary">Fahrzeug übergeben</button></form>
-        )}
+        {overdue ? <Chip tone="bad">Rückgabe überfällig</Chip> : <BookingStageChip stage={stage} />}
+        {stage === "NEEDS_CONTRACT" && <form action={startContract}><button className="btn btn-primary">Mietvertrag erstellen</button></form>}
+        {stage === "CONTRACT_DRAFT" && <Link href={`/buchungen/${b.id}/vertrag`} className="btn btn-primary">Mietvertrag fortsetzen</Link>}
+        {b.contract && b.contract.status !== "DRAFT" && <Link href={`/buchungen/${b.id}/vertrag`} className="btn">Mietvertrag anzeigen</Link>}
+        {stage === "READY_FOR_PICKUP" && <Link href={`/buchungen/${b.id}/uebergabe`} className="btn btn-primary">Übergabe starten</Link>}
         {b.status === "ACTIVE" && (
           <form action={finish}><button className="btn btn-primary">Fahrzeug zurücknehmen</button></form>
         )}
@@ -44,6 +50,10 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
       <Content>
         {sp.gespeichert === "1" && <Chip tone="good">Gespeichert</Chip>}
         {sp.fehler === "status" && <Chip tone="bad">Dieser Statuswechsel ist nicht möglich.</Chip>}
+        {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
+        {contractSigned && b.status === "RESERVED" && (
+          <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Mietvertrag {b.contract!.number} ist abgeschlossen. Die Buchung ist bereit zur Übergabe.</p>
+        )}
 
         <div className="grid grid-cols-1 xl:grid-cols-[1fr_360px] gap-4 items-start">
           <Card className="p-5">
@@ -67,6 +77,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
               />
             ) : (
               <dl className="grid grid-cols-[140px_1fr] gap-y-2 text-sm">
+                {contractSigned && <><dt className="label-xs self-center">Vertrag</dt><dd>{b.contract!.number}. Zeitraum, Fahrzeug und Preis sind festgeschrieben.</dd></>}
                 <dt className="label-xs self-center">Kunde</dt><dd><Link href={`/kunden/${b.customerId}`} className="hover:underline font-medium">{customerName(b.customer)}</Link></dd>
                 <dt className="label-xs self-center">Fahrzeug</dt><dd><Link href={`/fahrzeuge/${b.vehicleId}`} className="hover:underline">{b.vehicle.make} {b.vehicle.model}</Link></dd>
                 <dt className="label-xs self-center">Abholung</dt><dd className="font-mono tnum">{fmtDateTime(b.startAt)}</dd>

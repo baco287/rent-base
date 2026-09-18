@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CUSTOMER_TYPES, ID_TYPES } from "@/lib/constants";
+import { COUNTRIES, CUSTOMER_TYPES, ID_TYPES } from "@/lib/constants";
 import { Field } from "@/components/ui";
 
 export type CustomerFormValues = {
@@ -14,6 +14,7 @@ export type CustomerFormValues = {
   street: string;
   zip: string;
   city: string;
+  country: string;
   birthDate: string;
   birthPlace: string;
   nationality: string;
@@ -34,7 +35,7 @@ export type CustomerFormValues = {
 };
 
 export const emptyCustomer: CustomerFormValues = {
-  type: "PRIVATE", companyName: "", firstName: "", lastName: "", email: "", phone: "", street: "", zip: "", city: "",
+  type: "PRIVATE", companyName: "", firstName: "", lastName: "", email: "", phone: "", street: "", zip: "", city: "", country: "DE",
   birthDate: "", birthPlace: "", nationality: "deutsch", idType: "PERSONALAUSWEIS", idNumber: "", idIssuedBy: "", idIssuedAt: "", idValidUntil: "",
   licenseNumber: "", licenseClass: "B", licenseIssuedBy: "", licenseIssuedAt: "", licenseValidUntil: "",
   blocked: false, blockReason: "", discountPercent: "0", notes: "",
@@ -91,6 +92,12 @@ export function CustomerFields({ values, prefix = "", compact = false, disabled 
       <Field label="Ort" htmlFor={n("city")}>
         <input id={n("city")} name={n("city")} defaultValue={v.city} className="input" />
       </Field>
+      <Field label="Land" htmlFor={n("country")}>
+        <select id={n("country")} name={n("country")} defaultValue={v.country || "DE"} className="input">
+          {Object.entries(COUNTRIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+        </select>
+      </Field>
+      <div className="hidden md:block" />
 
       <H>Ausweis</H>
       <Field label="Geburtsdatum" htmlFor={n("birthDate")}>
