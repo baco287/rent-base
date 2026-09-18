@@ -77,7 +77,11 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
     const customerId = customerData ? (await tx.customer.create({ data: { tenantId: tenant.id, ...customerData } })).id : d.customerId!;
     const number = await nextBookingNumber(tx, tenant.id, d.startAt);
     const b = await tx.booking.create({
-      data: { tenantId: tenant.id, number, vehicleId: d.vehicleId, customerId, startAt: d.startAt, endAt: d.endAt, dailyRate: d.dailyRate, deposit: d.deposit, notes: d.notes ?? null },
+      data: {
+        tenantId: tenant.id, number, vehicleId: d.vehicleId, customerId, startAt: d.startAt, endAt: d.endAt, dailyRate: d.dailyRate, deposit: d.deposit, notes: d.notes ?? null,
+        // Preisstufen des Fahrzeugs zum Buchungszeitpunkt festhalten
+        workWeekRate: refs.vehicle.workWeekRate, weeklyRate: refs.vehicle.weeklyRate, monthlyRate: refs.vehicle.monthlyRate,
+      },
     });
     id = b.id;
     return undefined;
@@ -99,6 +103,8 @@ export async function updateBookingAction(id: string, _prev: FormState, formData
   if (!existing) return { error: "Buchung nicht gefunden." };
   if (existing.status === "RETURNED" || existing.status === "CANCELLED") return { error: "Abgeschlossene oder stornierte Buchungen können nicht mehr geändert werden." };
   if (!d.customerId) return { error: "Bitte einen Kunden wählen." };
+  const contract = await db.rentalContract.findFirst({ where: { bookingId: id, tenantId: tenant.id }, select: { number: true, status: true } });
+  if (contract && contract.status === "SIGNED") return { error: `Zu dieser Buchung gibt es den unterschriebenen Vertrag ${contract.number}. Zeitraum, Fahrzeug und Preis sind damit festgeschrieben.` };
 
   const refs = await validateRefs(tenant.id, d.vehicleId, d.customerId);
   if ("error" in refs) return refs;
@@ -111,7 +117,11 @@ export async function updateBookingAction(id: string, _prev: FormState, formData
     }
     await tx.booking.update({
       where: { id },
-      data: { vehicleId: d.vehicleId, customerId: d.customerId!, startAt: d.startAt, endAt: d.endAt, dailyRate: d.dailyRate, deposit: d.deposit, notes: d.notes ?? null },
+      data: {
+        vehicleId: d.vehicleId, customerId: d.customerId!, startAt: d.startAt, endAt: d.endAt, dailyRate: d.dailyRate, deposit: d.deposit, notes: d.notes ?? null,
+        // Nur bei Fahrzeugwechsel die Stufen des neuen Fahrzeugs übernehmen, sonst bleibt der Snapshot der Buchung
+        ...(existing.vehicleId !== d.vehicleId ? { workWeekRate: refs.vehicle.workWeekRate, weeklyRate: refs.vehicle.weeklyRate, monthlyRate: refs.vehicle.monthlyRate } : {}),
+      },
     });
     return undefined;
   });

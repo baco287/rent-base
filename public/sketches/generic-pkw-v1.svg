@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" fill="none" stroke="#1a2230" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+  <!-- Rent-Base Systemskizze: allgemeiner PKW, Version 1. Diese Datei wird nie geändert, neue Fassungen bekommen eine neue Versionsnummer. -->
+  <!-- Ansichten liegen in festen Rahmen, siehe VehicleSketch.views[].box. Schadenpositionen sind 0..1 relativ zum Rahmen der Ansicht. -->
+  <g id="LEFT">
+    <path d="M40 190 L40 150 Q42 128 70 122 L150 100 Q190 62 250 60 L330 60 Q380 62 410 100 L455 120 Q478 128 480 150 L480 190 Z"/>
+    <path d="M160 102 L205 72 L255 70 L255 102 Z M268 70 L330 70 Q360 74 385 102 L268 102 Z"/>
+    <path d="M262 104 L262 186 M150 104 L150 186"/>
+    <circle cx="130" cy="190" r="34"/><circle cx="130" cy="190" r="14"/>
+    <circle cx="395" cy="190" r="34"/><circle cx="395" cy="190" r="14"/>
+  </g>
+  <g id="RIGHT" transform="translate(1000 0) scale(-1 1)">
+    <path d="M40 190 L40 150 Q42 128 70 122 L150 100 Q190 62 250 60 L330 60 Q380 62 410 100 L455 120 Q478 128 480 150 L480 190 Z"/>
+    <path d="M160 102 L205 72 L255 70 L255 102 Z M268 70 L330 70 Q360 74 385 102 L268 102 Z"/>
+    <path d="M262 104 L262 186 M150 104 L150 186"/>
+    <circle cx="130" cy="190" r="34"/><circle cx="130" cy="190" r="14"/>
+    <circle cx="395" cy="190" r="34"/><circle cx="395" cy="190" r="14"/>
+  </g>
+  <g id="FRONT">
+    <path d="M60 490 L60 400 Q62 370 90 360 L110 320 Q120 300 150 300 L250 300 Q280 300 290 320 L310 360 Q338 370 340 400 L340 490 Z"/>
+    <path d="M118 356 L130 318 L270 318 L282 356 Z"/>
+    <rect x="150" y="410" width="100" height="34" rx="6"/>
+    <rect x="78" y="400" width="52" height="26" rx="8"/><rect x="270" y="400" width="52" height="26" rx="8"/>
+    <rect x="66" y="490" width="50" height="34" rx="6"/><rect x="284" y="490" width="50" height="34" rx="6"/>
+  </g>
+  <g id="REAR">
+    <path d="M400 490 L400 400 Q402 370 430 360 L450 322 Q460 300 490 300 L590 300 Q620 300 630 322 L650 360 Q678 370 680 400 L680 490 Z"/>
+    <path d="M458 356 L470 320 L610 320 L622 356 Z"/>
+    <rect x="495" y="430" width="90" height="28" rx="4"/>
+    <rect x="414" y="396" width="56" height="24" rx="6"/><rect x="610" y="396" width="56" height="24" rx="6"/>
+    <rect x="406" y="490" width="50" height="34" rx="6"/><rect x="624" y="490" width="50" height="34" rx="6"/>
+  </g>
+  <g id="TOP">
+    <rect x="740" y="300" width="220" height="240" rx="60"/>
+    <path d="M770 372 Q850 350 930 372 L920 410 L780 410 Z M780 470 L920 470 L930 505 Q850 522 770 505 Z"/>
+    <path d="M780 410 L780 470 M920 410 L920 470"/>
+  </g>
+</svg>

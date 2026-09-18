@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" fill="none" stroke="#1a2230" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+  <!-- Rent-Base Systemskizze: allgemeiner Transporter (Kastenwagen), Version 1. Diese Datei wird nie geändert. -->
+  <!-- Ansichten liegen in festen Rahmen, siehe VehicleSketch.views[].box. Schadenpositionen sind 0..1 relativ zum Rahmen der Ansicht. -->
+  <g id="LEFT">
+    <path d="M30 200 L30 120 Q32 96 58 90 L95 50 Q105 38 125 38 L455 38 Q478 40 480 62 L480 200 Z"/>
+    <path d="M70 92 L102 56 L160 56 L160 92 Z"/>
+    <path d="M172 44 L172 196 M320 44 L320 196"/>
+    <rect x="188" y="110" width="22" height="8" rx="3"/>
+    <circle cx="115" cy="200" r="36"/><circle cx="115" cy="200" r="15"/>
+    <circle cx="395" cy="200" r="36"/><circle cx="395" cy="200" r="15"/>
+  </g>
+  <g id="RIGHT" transform="translate(1000 0) scale(-1 1)">
+    <path d="M30 200 L30 120 Q32 96 58 90 L95 50 Q105 38 125 38 L455 38 Q478 40 480 62 L480 200 Z"/>
+    <path d="M70 92 L102 56 L160 56 L160 92 Z"/>
+    <path d="M172 44 L172 196 M250 44 L250 196 M320 44 L320 196"/>
+    <rect x="262" y="110" width="22" height="8" rx="3"/>
+    <circle cx="115" cy="200" r="36"/><circle cx="115" cy="200" r="15"/>
+    <circle cx="395" cy="200" r="36"/><circle cx="395" cy="200" r="15"/>
+  </g>
+  <g id="FRONT">
+    <path d="M60 500 L60 330 Q62 300 92 296 L308 296 Q338 300 340 330 L340 500 Z"/>
+    <path d="M84 390 L98 316 L302 316 L316 390 Z"/>
+    <rect x="150" y="430" width="100" height="36" rx="6"/>
+    <rect x="76" y="420" width="54" height="28" rx="8"/><rect x="270" y="420" width="54" height="28" rx="8"/>
+    <rect x="66" y="500" width="52" height="34" rx="6"/><rect x="282" y="500" width="52" height="34" rx="6"/>
+  </g>
+  <g id="REAR">
+    <path d="M400 500 L400 320 Q402 298 428 296 L652 296 Q678 298 680 320 L680 500 Z"/>
+    <path d="M540 304 L540 492"/>
+    <rect x="428" y="322" width="96" height="70" rx="6"/><rect x="556" y="322" width="96" height="70" rx="6"/>
+    <rect x="406" y="440" width="22" height="46" rx="4"/><rect x="652" y="440" width="22" height="46" rx="4"/>
+    <rect x="406" y="500" width="52" height="34" rx="6"/><rect x="622" y="500" width="52" height="34" rx="6"/>
+  </g>
+  <g id="TOP">
+    <rect x="740" y="296" width="220" height="250" rx="26"/>
+    <path d="M762 330 Q850 312 938 330 L930 366 L770 366 Z"/>
+    <path d="M756 380 L944 380"/>
+  </g>
+</svg>

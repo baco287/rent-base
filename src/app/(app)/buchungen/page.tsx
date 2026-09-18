@@ -3,7 +3,8 @@ import type { Prisma } from "@prisma/client";
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { BOOKING_STATUS } from "@/lib/constants";
-import { customerName, fmtDateTime, fmtEur, rentalDays } from "@/lib/format";
+import { customerName, fmtDateTime, fmtEur } from "@/lib/format";
+import { calculateRentalPrice, rateCardFrom } from "@/lib/pricing";
 import { BookingStatusChip, Card, Content, Empty, PageHeader, Plate } from "@/components/ui";
 
 export const metadata = { title: "Buchungen" };
@@ -62,8 +63,9 @@ export default async function BookingsPage({ searchParams }: PageProps<"/buchung
                 </thead>
                 <tbody>
                   {bookings.map((b) => {
-                    const d = rentalDays(b.startAt, b.endAt);
-                    const total = d * Number(b.dailyRate) * (1 - b.customer.discountPercent / 100);
+                    const price = calculateRentalPrice({ start: b.startAt, end: b.endAt, rates: rateCardFrom(b), discountPercent: b.customer.discountPercent });
+                    const d = price.days;
+                    const total = price.total;
                     const overdue = b.status === "ACTIVE" && b.endAt < new Date();
                     return (
                       <tr key={b.id} className="border-b border-line-soft last:border-0 hover:bg-panel-2/60">

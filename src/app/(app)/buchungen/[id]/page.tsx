@@ -2,7 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { customerName, fmtDateTime, fmtEur, rentalDays, toDateTimeInput } from "@/lib/format";
+import { customerName, fmtDateTime, fmtEur, toDateTimeInput } from "@/lib/format";
+import { calculateRentalPrice, rateCardFrom } from "@/lib/pricing";
 import { BookingStatusChip, Card, Chip, Content, PageHeader, Plate } from "@/components/ui";
 import { setBookingStatusAction, updateBookingAction } from "../actions";
 import { BookingForm } from "../booking-form";
@@ -18,9 +19,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
 
   const editable = b.status === "RESERVED" || b.status === "ACTIVE";
   const { vehicles, customers } = editable ? await loadBookingOptions(tenant.id) : { vehicles: [], customers: [] };
-  const d = rentalDays(b.startAt, b.endAt);
-  const gross = d * Number(b.dailyRate);
-  const total = gross * (1 - b.customer.discountPercent / 100);
+  const price = calculateRentalPrice({ start: b.startAt, end: b.endAt, rates: rateCardFrom(b), discountPercent: b.customer.discountPercent });
   const overdue = b.status === "ACTIVE" && b.endAt < new Date();
 
   const update = updateBookingAction.bind(null, b.id);
@@ -59,6 +58,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                   dailyRate: b.dailyRate.toString().replace(".", ","),
                   deposit: b.deposit.toString().replace(".", ","),
                   notes: b.notes ?? "",
+                  tiers: { workWeekRate: b.workWeekRate?.toString() ?? null, weeklyRate: b.weeklyRate?.toString() ?? null, monthlyRate: b.monthlyRate?.toString() ?? null },
                 }}
                 vehicles={vehicles}
                 customers={customers}
@@ -79,11 +79,14 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
           <div className="flex flex-col gap-4">
             <Card title="Kosten">
               <div className="p-4 text-sm flex flex-col">
-                <div className="flex justify-between py-1.5 border-b border-line-soft"><span>{d} Tage × {fmtEur(b.dailyRate)}</span><span className="font-mono tnum">{fmtEur(gross)}</span></div>
-                {b.customer.discountPercent > 0 && (
-                  <div className="flex justify-between py-1.5 border-b border-line-soft"><span>Rabatt {b.customer.discountPercent} %</span><span className="font-mono tnum">−{fmtEur(gross - total)}</span></div>
+                <div className="text-xs text-ink-3 pb-1">{price.days} Miettage</div>
+                {price.lines.map((l) => (
+                  <div key={l.tier} className="flex justify-between py-1.5 border-b border-line-soft"><span>{l.quantity} × {l.label} zu {fmtEur(l.unitPrice)}</span><span className="font-mono tnum">{fmtEur(l.amount)}</span></div>
+                ))}
+                {price.discountPercent > 0 && (
+                  <div className="flex justify-between py-1.5 border-b border-line-soft"><span>Rabatt {price.discountPercent} %</span><span className="font-mono tnum">−{fmtEur(price.discountAmount)}</span></div>
                 )}
-                <div className="flex justify-between py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>Voraussichtlich</span><span className="font-mono tnum">{fmtEur(total)}</span></div>
+                <div className="flex justify-between py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>Voraussichtlich</span><span className="font-mono tnum">{fmtEur(price.total)}</span></div>
                 <div className="flex justify-between py-1.5 text-ink-3"><span>zzgl. Kaution</span><span className="font-mono tnum">{fmtEur(b.deposit)}</span></div>
                 <p className="text-xs text-ink-3 mt-2">Mehrkilometer, Tank und Schäden werden bei der Rücknahme berechnet (Etappe 2).</p>
               </div>

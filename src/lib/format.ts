@@ -48,11 +48,8 @@ export function toDateTimeInput(d: Date | null | undefined) {
   return `${toDateInput(x)}T${p(x.getHours())}:${p(x.getMinutes())}`;
 }
 
-/** Anzahl Miettage, angefangene Tage zählen voll (branchenüblich). */
-export function rentalDays(start: Date, end: Date) {
-  const ms = end.getTime() - start.getTime();
-  return Math.max(1, Math.ceil(ms / (24 * 60 * 60 * 1000)));
-}
+// Miettage werden zentral in lib/pricing.ts berechnet.
+export { rentalDays } from "@/lib/pricing";
 
 export function customerName(c: { type: string; companyName: string | null; firstName: string; lastName: string }) {
   if (c.type === "COMPANY" && c.companyName) return c.companyName;

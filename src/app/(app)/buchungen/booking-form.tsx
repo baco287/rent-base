@@ -6,8 +6,10 @@ import { Field, FormError } from "@/components/ui";
 import { submitWithoutReset } from "@/components/submit-without-reset";
 import type { FormState } from "./actions";
 import { CustomerFields, emptyCustomer } from "../kunden/customer-fields";
+import { calculateRentalPrice, describePrice, toNumber } from "@/lib/pricing";
 
-export type VehicleOption = { id: string; plate: string; label: string; group: string; dailyRate: string; deposit: string; status: string };
+export type TierRates = { workWeekRate: string | null; weeklyRate: string | null; monthlyRate: string | null };
+export type VehicleOption = { id: string; plate: string; label: string; group: string; dailyRate: string; deposit: string; status: string } & TierRates;
 export type CustomerOption = { id: string; label: string; blocked: boolean; discountPercent: number };
 
 export type BookingFormValues = {
@@ -18,14 +20,9 @@ export type BookingFormValues = {
   dailyRate: string;
   deposit: string;
   notes: string;
+  /** Bei bestehender Buchung: die dort eingefrorenen Stufen, solange das Fahrzeug gleich bleibt. */
+  tiers?: TierRates;
 };
-
-function days(start: string, end: string) {
-  const s = new Date(start).getTime();
-  const e = new Date(end).getTime();
-  if (!s || !e || e <= s) return 0;
-  return Math.max(1, Math.ceil((e - s) / 86400000));
-}
 
 export function BookingForm({
   action,
@@ -56,11 +53,15 @@ export function BookingForm({
 
   const vehicle = useMemo(() => vehicles.find((v) => v.id === vehicleId), [vehicles, vehicleId]);
   const customer = useMemo(() => customers.find((c) => c.id === customerId), [customers, customerId]);
-  const n = days(startAt, endAt);
-  const rate = parseFloat(dailyRate.replace(",", ".")) || 0;
   const discount = customerMode === "new" ? 0 : customer?.discountPercent ?? 0;
-  const gross = n * rate;
-  const total = gross * (1 - discount / 100);
+  // Stufen: bei unverändertem Fahrzeug die der Buchung, sonst die des gewählten Fahrzeugs
+  const tiers: TierRates | undefined = values.tiers && vehicleId === values.vehicleId ? values.tiers : vehicle;
+  const price = calculateRentalPrice({
+    start: new Date(startAt),
+    end: new Date(endAt),
+    rates: { dailyRate: toNumber(dailyRate) ?? 0, workWeekRate: toNumber(tiers?.workWeekRate), weeklyRate: toNumber(tiers?.weeklyRate), monthlyRate: toNumber(tiers?.monthlyRate) },
+    discountPercent: discount,
+  });
   const eur = (x: number) => x.toLocaleString("de-DE", { style: "currency", currency: "EUR" });
 
   function pickVehicle(id: string) {
@@ -132,10 +133,10 @@ export function BookingForm({
       )}
 
       <div className="md:col-span-2 rounded-lg bg-panel-2 px-4 py-3 text-sm flex flex-wrap gap-x-6 gap-y-1 tnum">
-        <span>Miettage: <b>{n || "–"}</b></span>
-        <span>{n || 0} × {eur(rate)} = <b>{eur(gross)}</b></span>
-        {discount > 0 && <span>Rabatt {discount} %: <b>−{eur(gross - total)}</b></span>}
-        <span>Voraussichtlich: <b>{eur(total)}</b></span>
+        <span>Miettage: <b>{price.days || "–"}</b></span>
+        <span>{describePrice(price)} = <b>{eur(price.subtotal)}</b></span>
+        {discount > 0 && <span>Rabatt {discount} %: <b>−{eur(price.discountAmount)}</b></span>}
+        <span>Voraussichtlich: <b>{eur(price.total)}</b></span>
         <span className="text-ink-3">zzgl. Kaution {eur(parseFloat(deposit.replace(",", ".")) || 0)}</span>
         {vehicle && <span className="text-ink-3">Fahrzeug {vehicle.plate}</span>}
       </div>

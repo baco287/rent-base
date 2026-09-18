@@ -28,6 +28,21 @@ model Tenant {
   vehicles  Vehicle[]
   customers Customer[]
   bookings  Booking[]
+
+  sketches           VehicleSketch[]
+  contracts          RentalContract[]
+  contractDrivers    ContractDriver[]
+  handovers          Handover[]
+  damages            Damage[]
+  handoverDamages    HandoverDamage[]
+  checklistTemplates ChecklistTemplate[]
+  checklistItems     HandoverChecklistItem[]
+  photos             Photo[]
+  signatures         Signature[]
+  documents          Document[]
+  extraCharges       ExtraCharge[]
+  emailLogs          EmailLog[]
+  vehicleEvents      VehicleEvent[]
 }
 
 model User {
@@ -41,8 +56,9 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  sessions Session[]
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sessions  Session[]
+  handovers Handover[]
 
   @@index([tenantId])
 }
@@ -75,41 +91,51 @@ model VehicleGroup {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  vehicles Vehicle[]
+  bodyType String  @default("PKW") // PKW | TRANSPORTER, bestimmt die Fallback-Skizze
+  sketchId String? // eigene Skizze der Gruppe, sonst Fallback nach bodyType
+
+  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sketch             VehicleSketch?      @relation(fields: [sketchId], references: [id], onDelete: SetNull)
+  vehicles           Vehicle[]
+  checklistTemplates ChecklistTemplate[]
 
   @@unique([tenantId, name])
   @@index([tenantId, sortOrder])
 }
 
 model Vehicle {
-  id               String    @id @default(cuid())
-  tenantId         String
-  plate            String
-  make             String
-  model            String
-  groupId          String?
-  fuel             String    @default("DIESEL") // DIESEL | BENZIN | ELEKTRO | HYBRID
-  year             Int?
-  vin              String?
-  color            String?
-  mileage          Int       @default(0)
-  huDate           DateTime?
-  status           String    @default("AVAILABLE") // AVAILABLE | WORKSHOP | BLOCKED | INACTIVE
-  dailyRate        Decimal   @default(0) // Tagespreis
-  workWeekRate     Decimal?  // Woche, 5 Tage (Mo bis Fr)
-  weeklyRate       Decimal?  // Kalenderwoche, 7 Tage
-  monthlyRate      Decimal?  // Monat, 30 Tage
-  kmIncludedPerDay Int       @default(200)
-  extraKmRate      Decimal   @default(0.25)
-  deposit          Decimal   @default(0)
-  notes            String?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  id                 String    @id @default(cuid())
+  tenantId           String
+  plate              String
+  make               String
+  model              String
+  groupId            String?
+  fuel               String    @default("DIESEL") // DIESEL | BENZIN | ELEKTRO | HYBRID
+  year               Int?
+  vin                String?
+  color              String?
+  mileage            Int       @default(0)
+  huDate             DateTime?
+  status             String    @default("AVAILABLE") // AVAILABLE | WORKSHOP | BLOCKED | INACTIVE
+  dailyRate          Decimal   @default(0) // Tagespreis
+  workWeekRate       Decimal? // Woche, 5 Tage (Mo bis Fr)
+  weeklyRate         Decimal? // Kalenderwoche, 7 Tage
+  monthlyRate        Decimal? // Monat, 30 Tage
+  kmIncludedPerDay   Int       @default(200)
+  extraKmRate        Decimal   @default(0.25)
+  deposit            Decimal   @default(0)
+  tankCapacityLiters Int? // für die Berechnung von Tankfehlbeträgen
+  notes              String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
-  tenant   Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  group    VehicleGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
-  bookings Booking[]
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  group     VehicleGroup?    @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  bookings  Booking[]
+  contracts RentalContract[]
+  handovers Handover[]
+  damages   Damage[]
+  events    VehicleEvent[]
 
   @@unique([tenantId, plate])
   @@index([tenantId, groupId])
@@ -148,32 +174,468 @@ model Customer {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  bookings Booking[]
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bookings        Booking[]
+  contracts       RentalContract[]
+  contractDrivers ContractDriver[]
 
   @@index([tenantId, lastName])
 }
 
 model Booking {
-  id         String   @id @default(cuid())
-  tenantId   String
-  number     String // z. B. 2026-0001, fortlaufend pro Mandant
-  vehicleId  String
-  customerId String
-  startAt    DateTime
-  endAt      DateTime
-  status     String   @default("RESERVED") // RESERVED | ACTIVE | RETURNED | CANCELLED
-  dailyRate  Decimal  @default(0) // Preis-Snapshot bei Buchung
-  deposit    Decimal  @default(0)
-  notes      String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id             String    @id @default(cuid())
+  tenantId       String
+  number         String // z. B. 2026-0001, fortlaufend pro Mandant
+  vehicleId      String
+  customerId     String
+  startAt        DateTime
+  endAt          DateTime
+  status         String    @default("RESERVED") // RESERVED | ACTIVE | RETURNED | CANCELLED
+  dailyRate      Decimal   @default(0) // Preis-Snapshot bei Buchung
+  workWeekRate   Decimal? // Snapshot Woche (5 Tage)
+  weeklyRate     Decimal? // Snapshot Kalenderwoche (7 Tage)
+  monthlyRate    Decimal? // Snapshot Monat (30 Tage)
+  deposit        Decimal   @default(0)
+  actualPickupAt DateTime? // gesetzt beim Finalisieren der Übergabe
+  actualReturnAt DateTime? // gesetzt beim Finalisieren der Rückgabe
+  notes          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   vehicle  Vehicle  @relation(fields: [vehicleId], references: [id])
   customer Customer @relation(fields: [customerId], references: [id])
 
+  contract      RentalContract?
+  handovers     Handover[]
+  damages       Damage[]
+  documents     Document[]
+  extraCharges  ExtraCharge[]
+  emailLogs     EmailLog[]
+  vehicleEvents VehicleEvent[]
+
   @@unique([tenantId, number])
   @@index([tenantId, vehicleId, startAt, endAt])
   @@index([tenantId, status])
+}
+
+// ============================================================================
+// Etappe 2: Mietvertrag, Übergabe, Rückgabe, Schäden, Dokumente
+// Grundsatz: Booking bleibt der Anker. Verträge und Protokolle sind versiegelte Kopien (Snapshots),
+// keine Sicht auf Live-Daten. Zusätzlich schützen Datenbank-Trigger finalisierte Datensätze.
+// ============================================================================
+
+// Fahrzeugskizze für die Schadenkarte. Jede Version ist eine eigene, unveränderliche Zeile.
+// tenantId = null: Systemskizze (Fallback "allgemeiner PKW" / "allgemeiner Transporter").
+model VehicleSketch {
+  id        String   @id @default(cuid())
+  tenantId  String?
+  code      String // GENERIC_PKW | GENERIC_TRANSPORTER | frei wählbar je Mandant
+  name      String
+  bodyType  String // PKW | TRANSPORTER
+  version   Int      @default(1)
+  assetPath String // Pfad unter /public oder Storage Key der SVG-Datei
+  assetHash String // sha256 der Datei, damit die verwendete Fassung nachweisbar ist
+  views     Json // [{ key, label }] Reihenfolge der Ansichten
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  tenant    Tenant?        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  groups    VehicleGroup[]
+  handovers Handover[]
+
+  @@unique([tenantId, code, version])
+  @@index([tenantId, bodyType, active])
+}
+
+// Mietvertrag, 1:1 zur Buchung. Alle Konditionen sind beim Anlegen kopiert und ab Unterschrift eingefroren.
+model RentalContract {
+  id         String @id @default(cuid())
+  tenantId   String
+  bookingId  String @unique
+  number     String // z. B. MV-2026-0001
+  status     String @default("DRAFT") // DRAFT | SIGNED | CANCELLED
+  customerId String // Referenz, maßgeblich ist customerSnapshot
+  vehicleId  String // Referenz, maßgeblich ist vehicleSnapshot
+
+  customerSnapshot Json // Name, Adresse, Ausweis, Führerschein zum Vertragszeitpunkt
+  vehicleSnapshot  Json // Kennzeichen, Marke, Modell, Gruppe, FIN, Antrieb zum Vertragszeitpunkt
+  priceSnapshot    Json // verwendete Preisstufen, Berechnungsstrategie und Aufschlüsselung
+
+  startAt           DateTime
+  endAt             DateTime
+  totalAmount       Decimal  @default(0)
+  discountPercent   Int      @default(0)
+  deposit           Decimal  @default(0)
+  kmIncludedPerDay  Int      @default(0)
+  extraKmRate       Decimal  @default(0)
+  deductible        Decimal  @default(0) // Selbstbeteiligung
+  fuelPolicy        String   @default("SAME_LEVEL") // SAME_LEVEL | FULL_TO_FULL
+  fuelPricePerLiter Decimal? // Preis je fehlendem Liter inkl. Service
+  conditions        Json? // weitere Konditionen, erweiterbar ohne Migration
+
+  termsVersion String? // AGB-Version
+  termsHash    String? // sha256 des AGB-Textes
+  contentHash  String? // sha256 über den unterschriebenen Vertragsinhalt
+
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  signedAt    DateTime?
+  cancelledAt DateTime?
+
+  tenant     Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking    Booking          @relation(fields: [bookingId], references: [id])
+  customer   Customer         @relation(fields: [customerId], references: [id])
+  vehicle    Vehicle          @relation(fields: [vehicleId], references: [id])
+  drivers    ContractDriver[]
+  handovers  Handover[]
+  signatures Signature[]
+  documents  Document[]
+
+  @@unique([tenantId, number])
+  @@index([tenantId, status])
+}
+
+// Fahrer und Zusatzfahrer am Vertrag. Eigene Kopie der Daten, optionale Verbindung zu einem Kunden.
+model ContractDriver {
+  id         String  @id @default(cuid())
+  tenantId   String
+  contractId String
+  customerId String? // nur Referenz; spätere Änderungen am Kunden wirken hier nicht
+  role       String  @default("ADDITIONAL") // MAIN | ADDITIONAL
+
+  firstName String
+  lastName  String
+  birthDate DateTime
+  street    String
+  zip       String
+  city      String
+  country   String   @default("DE")
+
+  licenseNumber     String
+  licenseClass      String
+  licenseIssuedAt   DateTime
+  licenseValidUntil DateTime?
+  licenseCountry    String    @default("DE")
+  licenseIssuedBy   String?
+
+  createdAt DateTime @default(now())
+
+  tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contract RentalContract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  customer Customer?      @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, contractId])
+}
+
+// Übergabe (PICKUP) und Rückgabe (RETURN) in einem Modell.
+model Handover {
+  id         String  @id @default(cuid())
+  tenantId   String
+  bookingId  String
+  vehicleId  String
+  contractId String?
+  type       String // PICKUP | RETURN
+  status     String  @default("DRAFT") // DRAFT | FINALIZED
+  number     String // z. B. UP-2026-0001 (Übergabe), RP-2026-0001 (Rückgabe)
+
+  employeeId   String?
+  employeeName String // Kopie, falls der Benutzer später umbenannt oder entfernt wird
+
+  mileage          Int?
+  fuelLevelEighths Int? // 0 bis 8
+  batteryPercent   Int? // 0 bis 100
+  driveType        String // Kopie von Vehicle.fuel beim Start
+  accessories      Json? // mitgegebenes oder zurückgegebenes Zubehör
+  notes            String?
+
+  sketchId        String?
+  sketchVersion   Int?
+  sketchAssetHash String? // genau diese Skizzenfassung wurde verwendet
+
+  correctsId String? // Nachtrag: verweist auf das ursprüngliche Protokoll
+
+  startedAt   DateTime  @default(now())
+  finalizedAt DateTime?
+  contentHash String? // sha256 über den versiegelten Inhalt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  tenant      Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking     Booking         @relation(fields: [bookingId], references: [id])
+  vehicle     Vehicle         @relation(fields: [vehicleId], references: [id])
+  contract    RentalContract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  employee    User?           @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  sketch      VehicleSketch?  @relation(fields: [sketchId], references: [id], onDelete: SetNull)
+  corrects    Handover?       @relation("HandoverCorrection", fields: [correctsId], references: [id], onDelete: SetNull)
+  corrections Handover[]      @relation("HandoverCorrection")
+
+  damages        HandoverDamage[]
+  checklistItems HandoverChecklistItem[]
+  photos         Photo[]
+  signatures     Signature[]
+  documents      Document[]
+  extraCharges   ExtraCharge[]
+  discovered     Damage[]
+  vehicleEvents  VehicleEvent[]
+
+  @@unique([tenantId, number])
+  @@index([tenantId, bookingId, type])
+  @@index([tenantId, vehicleId, finalizedAt])
+}
+
+// Schadenakte des Fahrzeugs. Lebt weiter, wird nie gelöscht. Positionen normalisiert 0..1.
+model Damage {
+  id          String  @id @default(cuid())
+  tenantId    String
+  vehicleId   String
+  view        String // LEFT | RIGHT | FRONT | REAR | TOP | INTERIOR
+  posX        Float // 0..1, relativ zur Ansicht
+  posY        Float // 0..1
+  kind        String // SCRATCH | DENT | CRACK | CHIP | BROKEN | MISSING_PART | STAIN | OTHER
+  description String
+  size        String? // z. B. "ca. 12 cm"
+  severity    String  @default("MINOR") // MINOR | MODERATE | SEVERE
+  status      String  @default("OPEN") // OPEN | DOCUMENTED | REPAIR_PLANNED | IN_REPAIR | REPAIRED
+
+  discoveredAt           DateTime  @default(now())
+  discoveredInHandoverId String?
+  bookingId              String? // Miete, in der der Schaden entstanden ist
+  reportedById           String?
+  repairedAt             DateTime?
+  repairNote             String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  tenant       Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  vehicle      Vehicle          @relation(fields: [vehicleId], references: [id])
+  discoveredIn Handover?        @relation(fields: [discoveredInHandoverId], references: [id], onDelete: SetNull)
+  booking      Booking?         @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  snapshots    HandoverDamage[]
+  photos       Photo[]
+  extraCharges ExtraCharge[]
+  events       VehicleEvent[]
+
+  @@index([tenantId, vehicleId, status])
+}
+
+// Schaden im Protokoll: echte Kopie des damaligen Zustands, keine Sicht auf Damage.
+model HandoverDamage {
+  id         String  @id @default(cuid())
+  tenantId   String
+  handoverId String
+  damageId   String? // nur Referenz zur Schadenakte
+  marker     String // EXISTING | NEW
+
+  view        String
+  posX        Float
+  posY        Float
+  kind        String
+  description String
+  size        String?
+  severity    String
+  photoRefs   Json     @default("[]") // [{ photoId, storageKey, checksum }] zum Zeitpunkt des Protokolls
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  handover Handover @relation(fields: [handoverId], references: [id], onDelete: Cascade)
+  damage   Damage?  @relation(fields: [damageId], references: [id], onDelete: SetNull)
+  photos   Photo[]
+
+  @@index([tenantId, handoverId])
+}
+
+// Checklisten-Vorlage je Mandant, optional je Fahrzeuggruppe. Jede Version ist eine eigene Zeile.
+model ChecklistTemplate {
+  id           String   @id @default(cuid())
+  tenantId     String
+  groupId      String?
+  handoverType String   @default("BOTH") // PICKUP | RETURN | BOTH
+  name         String
+  version      Int      @default(1)
+  active       Boolean  @default(true)
+  items        Json // [{ key, label, answerType, required }]
+  createdAt    DateTime @default(now())
+
+  tenant Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  group  VehicleGroup?           @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  used   HandoverChecklistItem[]
+
+  @@unique([tenantId, name, version])
+  @@index([tenantId, active])
+}
+
+// Tatsächlich verwendete Frage samt Antwort, als Kopie im Protokoll.
+model HandoverChecklistItem {
+  id              String  @id @default(cuid())
+  tenantId        String
+  handoverId      String
+  templateId      String?
+  templateVersion Int?
+  itemKey         String
+  label           String
+  answerType      String  @default("OK_NOT_OK") // OK_NOT_OK | YES_NO | TEXT
+  required        Boolean @default(true)
+  result          String? // OK | NOT_OK | YES | NO | Freitext
+  note            String?
+  sortOrder       Int     @default(0)
+
+  tenant   Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  handover Handover           @relation(fields: [handoverId], references: [id], onDelete: Cascade)
+  template ChecklistTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, handoverId])
+}
+
+// Foto im privaten Object Storage. Es wird nur der Storage Key gespeichert, nie eine öffentliche URL.
+model Photo {
+  id               String    @id @default(cuid())
+  tenantId         String
+  handoverId       String?
+  damageId         String?
+  handoverDamageId String?
+  storageKey       String    @unique
+  category         String // FRONT | REAR | LEFT | RIGHT | INTERIOR | ODOMETER | FUEL | DAMAGE | DOCUMENT | OTHER
+  contentType      String
+  sizeBytes        Int
+  checksum         String // sha256
+  width            Int?
+  height           Int?
+  takenAt          DateTime?
+  uploadedAt       DateTime  @default(now())
+  createdById      String?
+
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  handover       Handover?       @relation(fields: [handoverId], references: [id], onDelete: SetNull)
+  damage         Damage?         @relation(fields: [damageId], references: [id], onDelete: SetNull)
+  handoverDamage HandoverDamage? @relation(fields: [handoverDamageId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, handoverId])
+  @@index([tenantId, damageId])
+}
+
+// Unterschrift, gebunden an genau den Inhalt (contentHash), der unterschrieben wurde.
+model Signature {
+  id          String   @id @default(cuid())
+  tenantId    String
+  handoverId  String?
+  contractId  String?
+  role        String // RENTER | EMPLOYEE
+  signerName  String
+  storageKey  String   @unique // Bild der Unterschrift im Object Storage
+  contentHash String // Hash des unterschriebenen Inhalts
+  signedAt    DateTime @default(now())
+  ipAddress   String?
+  userAgent   String?
+  createdById String?
+
+  tenant   Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  handover Handover?       @relation(fields: [handoverId], references: [id], onDelete: SetNull)
+  contract RentalContract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, handoverId])
+  @@index([tenantId, contractId])
+}
+
+// Erzeugtes Dokument (PDF). Unveränderlich archiviert: einmal erzeugt, nie überschrieben.
+model Document {
+  id          String   @id @default(cuid())
+  tenantId    String
+  bookingId   String
+  contractId  String?
+  handoverId  String?
+  type        String // RENTAL_CONTRACT | PICKUP_PROTOCOL | RETURN_PROTOCOL | INVOICE
+  storageKey  String   @unique
+  fileName    String
+  contentType String   @default("application/pdf")
+  sizeBytes   Int
+  checksum    String // sha256
+  version     Int      @default(1)
+  createdAt   DateTime @default(now())
+  createdById String?
+
+  tenant   Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking  Booking         @relation(fields: [bookingId], references: [id])
+  contract RentalContract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  handover Handover?       @relation(fields: [handoverId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, bookingId, type])
+}
+
+// Zusatzkosten mit vollständiger Rechengrundlage, z. B. 342 km × 0,25 € = 85,50 €.
+model ExtraCharge {
+  id          String   @id @default(cuid())
+  tenantId    String
+  bookingId   String
+  handoverId  String?
+  damageId    String?
+  type        String // EXTRA_MILEAGE | FUEL | CHARGING | CLEANING | LATE_RETURN | MISSING_ACCESSORY | DAMAGE | OTHER
+  description String
+  quantity    Decimal
+  unit        String // km, l, kWh, h, Stk, pauschal
+  unitPrice   Decimal
+  amount      Decimal
+  formula     String // lesbare Rechnung
+  calculation Json // Eingangswerte der Rechnung
+  createdAt   DateTime @default(now())
+  createdById String?
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking  Booking   @relation(fields: [bookingId], references: [id])
+  handover Handover? @relation(fields: [handoverId], references: [id], onDelete: SetNull)
+  damage   Damage?   @relation(fields: [damageId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, bookingId])
+}
+
+// Protokoll jedes Mailversuchs. Ein Fehler hier macht nie eine Übergabe oder Rückgabe rückgängig.
+model EmailLog {
+  id                String    @id @default(cuid())
+  tenantId          String
+  bookingId         String?
+  recipient         String
+  subject           String
+  template          String // z. B. PICKUP_PROTOCOL
+  attachments       Json      @default("[]") // [{ documentId, fileName, checksum }]
+  status            String    @default("PENDING") // PENDING | SENT | FAILED
+  providerMessageId String?
+  error             String?
+  attempts          Int       @default(0)
+  idempotencyKey    String
+  createdAt         DateTime  @default(now())
+  lastAttemptAt     DateTime?
+  sentAt            DateTime?
+
+  tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking Booking? @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, status])
+}
+
+// Fahrzeughistorie, nur anfügen.
+model VehicleEvent {
+  id          String   @id @default(cuid())
+  tenantId    String
+  vehicleId   String
+  type        String // PICKUP | RETURN | MILEAGE | DAMAGE_DISCOVERED | DAMAGE_REPAIRED
+  occurredAt  DateTime @default(now())
+  mileage     Int?
+  bookingId   String?
+  damageId    String?
+  handoverId  String?
+  userId      String?
+  userName    String?
+  description String?
+  createdAt   DateTime @default(now())
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  vehicle  Vehicle   @relation(fields: [vehicleId], references: [id])
+  booking  Booking?  @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  damage   Damage?   @relation(fields: [damageId], references: [id], onDelete: SetNull)
+  handover Handover? @relation(fields: [handoverId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, vehicleId, occurredAt])
 }

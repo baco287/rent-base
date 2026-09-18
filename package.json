@@ -12,7 +12,8 @@
     "db:studio": "prisma studio",
     "typecheck": "tsc --noEmit",
     "db:dev": "prisma dev -n rent-base -p 51214 --db-port 5433 --shadow-db-port 5434 --detach",
-    "db:stop": "prisma dev stop rent-base"
+    "db:stop": "prisma dev stop rent-base",
+    "test": "tsx --test \"tests/**/*.test.ts\""
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
