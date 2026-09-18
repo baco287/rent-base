@@ -7,6 +7,7 @@ import { db } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
 import { findConflicts, nextBookingNumber } from "@/lib/bookings";
 import { customerName, fmtDateTime } from "@/lib/format";
+import { customerFieldsFromForm, customerSchema, customerToData } from "@/lib/customer-schema";
 
 export type FormState = { error?: string } | undefined;
 
@@ -16,7 +17,7 @@ const optStr = z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? u
 const bookingSchema = z
   .object({
     vehicleId: z.string().min(1, "Bitte ein Fahrzeug wählen."),
-    customerId: z.string().min(1, "Bitte einen Kunden wählen."),
+    customerId: z.string().optional(),
     startAt: z.coerce.date({ message: "Bitte Abholung mit Datum und Uhrzeit angeben." }),
     endAt: z.coerce.date({ message: "Bitte Rückgabe mit Datum und Uhrzeit angeben." }),
     dailyRate: num,
@@ -32,13 +33,14 @@ function revalidate(id?: string) {
   if (id) revalidatePath(`/buchungen/${id}`);
 }
 
-async function validateRefs(tenantId: string, vehicleId: string, customerId: string) {
+async function validateRefs(tenantId: string, vehicleId: string, customerId: string | undefined) {
   const [vehicle, customer] = await Promise.all([
     db.vehicle.findFirst({ where: { id: vehicleId, tenantId } }),
-    db.customer.findFirst({ where: { id: customerId, tenantId } }),
+    customerId ? db.customer.findFirst({ where: { id: customerId, tenantId } }) : Promise.resolve(null),
   ]);
   if (!vehicle) return { error: "Fahrzeug nicht gefunden." };
   if (vehicle.status === "INACTIVE") return { error: "Das Fahrzeug ist inaktiv." };
+  if (!customerId) return { vehicle, customer: null }; // neuer Kunde wird mit der Buchung angelegt
   if (!customer) return { error: "Kunde nicht gefunden." };
   if (customer.blocked) return { error: `${customerName(customer)} ist gesperrt${customer.blockReason ? `: ${customer.blockReason}` : "."}` };
   return { vehicle, customer };
@@ -50,7 +52,18 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   const d = parsed.data;
 
-  const refs = await validateRefs(tenant.id, d.vehicleId, d.customerId);
+  // Kunde direkt in der Buchung anlegen: Kundendaten kommen mit Präfix "c_"
+  const newCustomer = formData.get("customerMode") === "new";
+  let customerData: ReturnType<typeof customerToData> | null = null;
+  if (newCustomer) {
+    const c = customerSchema.safeParse(customerFieldsFromForm(formData, "c_"));
+    if (!c.success) return { error: `Neuer Kunde: ${c.error.issues[0].message}` };
+    customerData = customerToData(c.data);
+  } else if (!d.customerId) {
+    return { error: "Bitte einen Kunden wählen oder einen neuen Kunden anlegen." };
+  }
+
+  const refs = await validateRefs(tenant.id, d.vehicleId, newCustomer ? undefined : d.customerId);
   if ("error" in refs) return refs;
 
   let id = "";
@@ -60,9 +73,11 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
       const c = conflicts[0];
       return { error: `Doppelbelegung: ${refs.vehicle.plate} ist von ${fmtDateTime(c.startAt)} bis ${fmtDateTime(c.endAt)} an ${customerName(c.customer)} vergeben (Nr. ${c.number}).` };
     }
+    // Erst nach bestandener Konfliktprüfung den Kunden anlegen, damit bei Ablehnung kein Kunde übrig bleibt.
+    const customerId = customerData ? (await tx.customer.create({ data: { tenantId: tenant.id, ...customerData } })).id : d.customerId!;
     const number = await nextBookingNumber(tx, tenant.id, d.startAt);
     const b = await tx.booking.create({
-      data: { tenantId: tenant.id, number, vehicleId: d.vehicleId, customerId: d.customerId, startAt: d.startAt, endAt: d.endAt, dailyRate: d.dailyRate, deposit: d.deposit, notes: d.notes ?? null },
+      data: { tenantId: tenant.id, number, vehicleId: d.vehicleId, customerId, startAt: d.startAt, endAt: d.endAt, dailyRate: d.dailyRate, deposit: d.deposit, notes: d.notes ?? null },
     });
     id = b.id;
     return undefined;
@@ -70,6 +85,7 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
   if (result?.error) return result;
 
   revalidate(id);
+  if (newCustomer) revalidatePath("/kunden");
   redirect(`/buchungen/${id}`);
 }
 
@@ -82,6 +98,7 @@ export async function updateBookingAction(id: string, _prev: FormState, formData
   const existing = await db.booking.findFirst({ where: { id, tenantId: tenant.id } });
   if (!existing) return { error: "Buchung nicht gefunden." };
   if (existing.status === "RETURNED" || existing.status === "CANCELLED") return { error: "Abgeschlossene oder stornierte Buchungen können nicht mehr geändert werden." };
+  if (!d.customerId) return { error: "Bitte einen Kunden wählen." };
 
   const refs = await validateRefs(tenant.id, d.vehicleId, d.customerId);
   if ("error" in refs) return refs;
@@ -94,7 +111,7 @@ export async function updateBookingAction(id: string, _prev: FormState, formData
     }
     await tx.booking.update({
       where: { id },
-      data: { vehicleId: d.vehicleId, customerId: d.customerId, startAt: d.startAt, endAt: d.endAt, dailyRate: d.dailyRate, deposit: d.deposit, notes: d.notes ?? null },
+      data: { vehicleId: d.vehicleId, customerId: d.customerId!, startAt: d.startAt, endAt: d.endAt, dailyRate: d.dailyRate, deposit: d.deposit, notes: d.notes ?? null },
     });
     return undefined;
   });

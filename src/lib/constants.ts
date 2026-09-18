@@ -29,6 +29,14 @@ export const CUSTOMER_TYPES = {
 } as const;
 export type CustomerType = keyof typeof CUSTOMER_TYPES;
 
+export const ID_TYPES = {
+  PERSONALAUSWEIS: "Personalausweis",
+  REISEPASS: "Reisepass",
+  AUFENTHALTSTITEL: "Aufenthaltstitel",
+  SONSTIGES: "Sonstiges Dokument",
+} as const;
+export type IdType = keyof typeof ID_TYPES;
+
 export const BOOKING_STATUS = {
   RESERVED: "Reserviert",
   ACTIVE: "Unterwegs",

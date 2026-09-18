@@ -4,6 +4,7 @@ import { useActionState, useState } from "react";
 import Link from "next/link";
 import { FUELS, VEHICLE_STATUS } from "@/lib/constants";
 import { Field, FormError } from "@/components/ui";
+import { submitWithoutReset } from "@/components/submit-without-reset";
 import type { FormState } from "./actions";
 
 export type GroupOption = {
@@ -81,7 +82,7 @@ export function VehicleForm({
   const set = (k: keyof typeof prices) => (e: React.ChangeEvent<HTMLInputElement>) => setPrices((p) => ({ ...p, [k]: e.target.value }));
 
   return (
-    <form action={formAction} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5">
+    <form onSubmit={submitWithoutReset(formAction)} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5">
       <h2 className="md:col-span-2 text-base font-semibold mt-1">Fahrzeug</h2>
       <Field label="Fahrzeuggruppe" htmlFor="groupId" hint={groups.length === 0 ? "Noch keine Gruppe vorhanden. Erst unter „Gruppen verwalten“ anlegen." : "Preise werden aus der Gruppe vorgeschlagen"}>
         <select id="groupId" name="groupId" value={groupId} onChange={(e) => pickGroup(e.target.value)} required className="input">

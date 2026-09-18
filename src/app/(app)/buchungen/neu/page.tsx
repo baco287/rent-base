@@ -46,6 +46,7 @@ export default async function NewBookingPage({ searchParams }: PageProps<"/buchu
             }}
             vehicles={vehicles}
             customers={customers}
+            allowNewCustomer
             submitLabel="Buchung anlegen"
             cancelHref="/buchungen"
           />

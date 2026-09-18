@@ -12,6 +12,12 @@ function licenseChip(c: { licenseValidUntil: Date | null; licenseNumber: string 
   return <Chip tone="good">erfasst</Chip>;
 }
 
+function idChip(c: { idNumber: string | null; idValidUntil: Date | null }) {
+  if (!c.idNumber) return <Chip tone="amber">fehlt</Chip>;
+  if (c.idValidUntil && c.idValidUntil < new Date()) return <Chip tone="bad">abgelaufen</Chip>;
+  return <Chip tone="good">erfasst</Chip>;
+}
+
 export default async function CustomersPage({ searchParams }: PageProps<"/kunden">) {
   const { tenant } = await requireSession();
   const params = await searchParams;
@@ -51,6 +57,7 @@ export default async function CustomersPage({ searchParams }: PageProps<"/kunden
                   <tr className="text-left">
                     <th className="label-xs px-3 py-2 border-b border-line">Kunde</th>
                     <th className="label-xs px-3 py-2 border-b border-line">Kontakt</th>
+                    <th className="label-xs px-3 py-2 border-b border-line">Ausweis</th>
                     <th className="label-xs px-3 py-2 border-b border-line">Führerschein</th>
                     <th className="label-xs px-3 py-2 border-b border-line text-right">Mieten</th>
                     <th className="label-xs px-3 py-2 border-b border-line">Letzte Miete</th>
@@ -70,6 +77,7 @@ export default async function CustomersPage({ searchParams }: PageProps<"/kunden
                         {c.phone && <div>{c.phone}</div>}
                         {c.email && <div className="text-xs text-ink-3">{c.email}</div>}
                       </td>
+                      <td className="px-3 py-2.5">{idChip(c)}</td>
                       <td className="px-3 py-2.5">{licenseChip(c)}</td>
                       <td className="px-3 py-2.5 text-right font-mono tnum">{c._count.bookings}</td>
                       <td className="px-3 py-2.5 font-mono tnum">{c.bookings[0] ? fmtDate(c.bookings[0].startAt) : "–"}</td>

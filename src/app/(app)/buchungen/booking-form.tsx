@@ -3,7 +3,9 @@
 import { useActionState, useMemo, useState } from "react";
 import Link from "next/link";
 import { Field, FormError } from "@/components/ui";
+import { submitWithoutReset } from "@/components/submit-without-reset";
 import type { FormState } from "./actions";
+import { CustomerFields, emptyCustomer } from "../kunden/customer-fields";
 
 export type VehicleOption = { id: string; plate: string; label: string; group: string; dailyRate: string; deposit: string; status: string };
 export type CustomerOption = { id: string; label: string; blocked: boolean; discountPercent: number };
@@ -32,6 +34,7 @@ export function BookingForm({
   customers,
   submitLabel,
   cancelHref,
+  allowNewCustomer = false,
 }: {
   action: (prev: FormState, fd: FormData) => Promise<FormState>;
   values: BookingFormValues;
@@ -39,10 +42,13 @@ export function BookingForm({
   customers: CustomerOption[];
   submitLabel: string;
   cancelHref: string;
+  /** Nur bei neuer Buchung: Kunde kann direkt mit angelegt werden. */
+  allowNewCustomer?: boolean;
 }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   const [vehicleId, setVehicleId] = useState(values.vehicleId);
   const [customerId, setCustomerId] = useState(values.customerId);
+  const [customerMode, setCustomerMode] = useState<"existing" | "new">(allowNewCustomer && customers.length === 0 ? "new" : "existing");
   const [startAt, setStartAt] = useState(values.startAt);
   const [endAt, setEndAt] = useState(values.endAt);
   const [dailyRate, setDailyRate] = useState(values.dailyRate);
@@ -52,7 +58,7 @@ export function BookingForm({
   const customer = useMemo(() => customers.find((c) => c.id === customerId), [customers, customerId]);
   const n = days(startAt, endAt);
   const rate = parseFloat(dailyRate.replace(",", ".")) || 0;
-  const discount = customer?.discountPercent ?? 0;
+  const discount = customerMode === "new" ? 0 : customer?.discountPercent ?? 0;
   const gross = n * rate;
   const total = gross * (1 - discount / 100);
   const eur = (x: number) => x.toLocaleString("de-DE", { style: "currency", currency: "EUR" });
@@ -67,7 +73,7 @@ export function BookingForm({
   }
 
   return (
-    <form action={formAction} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5">
+    <form onSubmit={submitWithoutReset(formAction)} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5">
       <Field label="Fahrzeug" htmlFor="vehicleId" hint="Preis und Kaution werden aus dem Fahrzeug übernommen und können angepasst werden">
         <select id="vehicleId" name="vehicleId" value={vehicleId} onChange={(e) => pickVehicle(e.target.value)} required className="input">
           <option value="">Bitte wählen…</option>
@@ -83,6 +89,16 @@ export function BookingForm({
         </select>
       </Field>
       <Field label="Kunde" htmlFor="customerId">
+        {allowNewCustomer && (
+          <div className="flex rounded-md border border-line overflow-hidden mb-1.5 text-[13px] font-medium" role="group" aria-label="Kunde">
+            <button type="button" onClick={() => setCustomerMode("existing")} className={`flex-1 px-3 py-1.5 ${customerMode === "existing" ? "bg-brand text-brand-ink" : "bg-panel text-ink-2"}`}>Bestehender Kunde</button>
+            <button type="button" onClick={() => setCustomerMode("new")} className={`flex-1 px-3 py-1.5 ${customerMode === "new" ? "bg-brand text-brand-ink" : "bg-panel text-ink-2"}`}>Neuer Kunde</button>
+          </div>
+        )}
+        <input type="hidden" name="customerMode" value={customerMode} />
+        {customerMode === "new" ? (
+          <p className="text-xs text-ink-3">Die Kundendaten stehen unten im Formular und werden zusammen mit der Buchung gespeichert.</p>
+        ) : (
         <select id="customerId" name="customerId" value={customerId} onChange={(e) => setCustomerId(e.target.value)} required className="input">
           <option value="">Bitte wählen…</option>
           {customers.map((c) => (
@@ -91,6 +107,7 @@ export function BookingForm({
             </option>
           ))}
         </select>
+        )}
       </Field>
       <Field label="Abholung" htmlFor="startAt">
         <input id="startAt" name="startAt" type="datetime-local" value={startAt} onChange={(e) => setStartAt(e.target.value)} required className="input tnum" />
@@ -107,6 +124,12 @@ export function BookingForm({
       <Field label="Notizen" htmlFor="notes" full>
         <textarea id="notes" name="notes" defaultValue={values.notes} rows={2} className="input" placeholder="z. B. Abholung am Nebeneingang, Zusatzfahrer folgt" />
       </Field>
+
+      {customerMode === "new" && (
+        <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5 rounded-lg border border-line bg-bg/60 p-4 -mx-1">
+          <CustomerFields values={emptyCustomer} prefix="c_" compact />
+        </div>
+      )}
 
       <div className="md:col-span-2 rounded-lg bg-panel-2 px-4 py-3 text-sm flex flex-wrap gap-x-6 gap-y-1 tnum">
         <span>Miettage: <b>{n || "–"}</b></span>

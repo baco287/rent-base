@@ -129,8 +129,16 @@ model Customer {
   zip               String?
   city              String?
   birthDate         DateTime?
+  birthPlace        String?
+  nationality       String?
+  idType            String? // PERSONALAUSWEIS | REISEPASS | AUFENTHALTSTITEL | SONSTIGES
+  idNumber          String?
+  idIssuedBy        String? // ausstellende Behörde
+  idIssuedAt        DateTime?
+  idValidUntil      DateTime?
   licenseNumber     String?
   licenseClass      String?
+  licenseIssuedBy   String? // ausstellende Behörde
   licenseIssuedAt   DateTime?
   licenseValidUntil DateTime?
   blocked           Boolean   @default(false)
