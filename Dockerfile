@@ -18,7 +18,9 @@ RUN npx prisma generate && npm run build
 
 FROM node:22-alpine AS runner
 WORKDIR /app
-RUN apk add --no-cache openssl && addgroup -S app && adduser -S app -G app
+RUN apk add --no-cache openssl tzdata && addgroup -S app && adduser -S app -G app
+# Zeitangaben in Dokumenten und E-Mails in deutscher Zeit
+ENV TZ=Europe/Berlin
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
@@ -36,6 +38,8 @@ WORKDIR /app
 COPY --from=build --chown=app:app /app/.next/standalone ./
 COPY --from=build --chown=app:app /app/.next/static ./.next/static
 COPY --from=build --chown=app:app /app/public ./public
+# Schriften für die PDF-Erzeugung
+COPY --from=build --chown=app:app /app/assets ./assets
 COPY --from=build --chown=app:app /app/scripts ./scripts
 COPY --chown=app:app docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh

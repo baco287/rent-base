@@ -65,7 +65,7 @@ export const getSession = cache(async () => {
 /** Für geschützte Seiten: leitet zum Login um, wenn keine Sitzung besteht. */
 export async function requireSession() {
   const session = await getSession();
-  if (!session) redirect("/login");
+  if (!session) redirect("/login?abgelaufen=1");
   return session;
 }
 

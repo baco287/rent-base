@@ -286,6 +286,7 @@ model RentalContract {
   driverMode        String   @default("RENTER") // RENTER = Mieter fährt selbst | OTHER = abweichender Fahrer
   wizardStep        Int      @default(1) // zuletzt erreichter Schritt im Assistenten
   conditions        Json? // weitere Konditionen, erweiterbar ohne Migration
+  landlordSnapshot  Json? // Vermieterdaten (Name, Anschrift, Kontakt) zum Zeitpunkt des Abschlusses, für Dokumente
 
   termsVersion String? // AGB-Version
   termsHash    String? // sha256 des AGB-Textes
@@ -568,7 +569,8 @@ model Document {
   fileName    String
   contentType String   @default("application/pdf")
   sizeBytes   Int
-  checksum    String // sha256
+  checksum    String // sha256 der gespeicherten Datei
+  sourceHash  String? // Prüfsumme (contentHash) des versiegelten Vertrags oder Protokolls, aus dem das PDF entstand
   version     Int      @default(1)
   createdAt   DateTime @default(now())
   createdById String?
@@ -621,6 +623,10 @@ model EmailLog {
   error             String?
   attempts          Int       @default(0)
   idempotencyKey    String
+  handoverId        String? // Bezug zum Protokoll, nur Referenz
+  trigger           String    @default("AUTO") // AUTO = nach Abschluss | MANUAL = "erneut senden"
+  attemptNo         Int       @default(1) // fortlaufender Versuch je Buchung und Vorlage
+  createdById       String?
   createdAt         DateTime  @default(now())
   lastAttemptAt     DateTime?
   sentAt            DateTime?
@@ -630,6 +636,7 @@ model EmailLog {
 
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, status])
+  @@index([tenantId, bookingId, createdAt])
 }
 
 // Fahrzeughistorie, nur anfügen.

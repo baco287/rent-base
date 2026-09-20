@@ -17,6 +17,13 @@ export function proxy(request: NextRequest) {
     return NextResponse.redirect(url);
   }
   if (hasCookie && isPublic) {
+    // Die Seite hat festgestellt, dass die Sitzung nicht mehr gilt: Cookie entfernen und den Login zeigen.
+    // Ohne diesen Zweig würden sich Login und Startseite mit einem abgelaufenen Cookie endlos gegenseitig aufrufen.
+    if (request.nextUrl.searchParams.has("abgelaufen")) {
+      const res = NextResponse.next();
+      res.cookies.delete(SESSION_COOKIE);
+      return res;
+    }
     return NextResponse.redirect(new URL("/heute", request.url));
   }
   return NextResponse.next();

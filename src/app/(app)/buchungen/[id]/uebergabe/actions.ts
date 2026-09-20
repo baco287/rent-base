@@ -22,6 +22,8 @@ import {
   updateNewDamage,
 } from "@/lib/handovers";
 
+import { runPickupFollowUp } from "@/lib/followup";
+
 export type StepState = { error?: string } | undefined;
 type Result = { error?: string } | undefined;
 
@@ -206,6 +208,9 @@ export async function finalizePickupAction(bookingId: string, _prev: StepState, 
   } catch (e) {
     return asState(e);
   }
+  // Ab hier gilt das Fahrzeug als übergeben. Dokumente und E-Mail sind Nachbearbeitung: Sie werfen nie und
+  // können die Übergabe nicht mehr rückgängig machen. Das Ergebnis steht im Archiv und im EmailLog.
+  await runPickupFollowUp(tenant.id, { id: handover.id, contractId: handover.contractId }, actor.id);
   for (const p of [`/buchungen/${bookingId}`, "/buchungen", "/heute", "/dispo", "/fahrzeuge"]) revalidatePath(p);
   redirect(`${base(bookingId)}?abgeschlossen=1`);
 }

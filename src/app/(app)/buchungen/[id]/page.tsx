@@ -10,9 +10,10 @@ import { startContractAction } from "./vertrag/actions";
 import { setBookingStatusAction, updateBookingAction } from "../actions";
 import { BookingForm } from "../booking-form";
 import { loadBookingOptions } from "../options";
+import { DocumentsPanel } from "./dokumente/documents-panel";
 
 export default async function BookingPage({ params, searchParams }: PageProps<"/buchungen/[id]">) {
-  const { tenant } = await requireSession();
+  const { tenant, user } = await requireSession();
   const { id } = await params;
   const sp = await searchParams;
 
@@ -60,6 +61,8 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
         {contractSigned && b.status === "RESERVED" && (
           <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Mietvertrag {b.contract!.number} ist abgeschlossen. Die Buchung ist bereit zur Übergabe.</p>
         )}
+
+        <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
 
         <div className="grid grid-cols-1 xl:grid-cols-[1fr_360px] gap-4 items-start">
           <Card className="p-5">

@@ -3,12 +3,13 @@
 // aus dieser einen Struktur. Sie liest ausschließlich die im Protokoll gespeicherten Kopien.
 
 import type { Prisma } from "@prisma/client";
+import type { LandlordInfo } from "@/lib/contract-view";
 import { DAMAGE_KINDS, DAMAGE_SEVERITY, DAMAGE_VIEWS, FUELS, PHOTO_CATEGORIES, energyRequirements } from "@/lib/constants";
 
 /** Alle Skizzendateien verwenden ein 1000 Einheiten breites Zeichenfeld; die Rahmen der Ansichten beziehen sich darauf. */
 export const SKETCH_CANVAS_WIDTH = 1000;
 
-export type SketchView ={ key: string; label: string; box: [number, number, number, number] };
+export type SketchView = { key: string; label: string; box: [number, number, number, number] };
 export type SketchInfo = { assetPath: string; version: number; name: string; views: SketchView[] };
 
 export type DocDamage = {
@@ -29,7 +30,20 @@ export type DocDamage = {
   photos: { id: string; url: string }[];
 };
 
+/** Vertrags- und Vermieterbezug des Protokolls. Stammt aus der versiegelten Vertragskopie, nie aus Live-Stammdaten. */
+export type HandoverContext = {
+  landlord: LandlordInfo;
+  contractNumber: string | null;
+  bookingNumber: string;
+  renterName: string;
+  renterNumber: string | null;
+  vehicleTitle: string;
+  plate: string;
+  vehicleGroup: string | null;
+};
+
 export type HandoverDocument = {
+  context: HandoverContext | null;
   title: string;
   number: string;
   type: "PICKUP" | "RETURN";
@@ -45,13 +59,16 @@ export type HandoverDocument = {
   checklist: { label: string; result: string; ok: boolean | null; note: string | null; missing: boolean }[];
   photos: { id: string; url: string; category: string; categoryLabel: string }[];
   missingPhotoCategories: string[];
-  signatures: { role: string; roleLabel: string; signerName: string; signedAt: string; imageUrl: string }[];
+  signatures: { id: string; role: string; roleLabel: string; signerName: string; signedAt: string; imageUrl: string }[];
 };
+
+/** Name laut Auftrag: die Dokumentdaten der Übergabe. HTML-Ansicht und PDF lesen ausschließlich diese Struktur. */
+export type HandoverDocumentData = HandoverDocument;
 
 const dateTime = (v: Date | null | undefined) => (v ? v.toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
 const label = <T extends Record<string, string>>(map: T, key: string) => (key in map ? map[key as keyof T] : key);
 
-const RESULT_LABEL: Record<string, string> = { OK: "In Ordnung", NOT_OK: "Nicht in Ordnung", YES: "Ja", NO: "Nein" };
+const RESULT_LABEL: Record<string, string> = { OK: "In Ordnung", NOT_OK: "Nicht in Ordnung", YES: "Ja", NO: "Nein", NA: "Nicht zutreffend" };
 
 export function parseSketch(sketch: { assetPath: string; version: number; name: string; views: Prisma.JsonValue } | null): SketchInfo | null {
   if (!sketch || !Array.isArray(sketch.views)) return null;
@@ -66,7 +83,7 @@ export function parseSketch(sketch: { assetPath: string; version: number; name: 
 type HandoverFull = Prisma.HandoverGetPayload<{ include: { damages: true; checklistItems: true; photos: true } }>;
 type SignatureLike = { id: string; role: string; signerName: string; signedAt: Date };
 
-export function buildHandoverDocument(h: HandoverFull, sketch: Parameters<typeof parseSketch>[0], signatures: SignatureLike[], requiredPhotoCategories: string[]): HandoverDocument {
+export function buildHandoverDocument(h: HandoverFull, sketch: Parameters<typeof parseSketch>[0], signatures: SignatureLike[], requiredPhotoCategories: string[], context: HandoverContext | null = null): HandoverDocument {
   const energy = energyRequirements(h.driveType);
   const readings = [
     { label: "Kilometerstand", value: h.mileage != null ? `${h.mileage.toLocaleString("de-DE")} km` : "", missing: h.mileage == null },
@@ -103,6 +120,7 @@ export function buildHandoverDocument(h: HandoverFull, sketch: Parameters<typeof
   const have = new Set(general.map((p) => p.category));
 
   return {
+    context,
     title: h.type === "PICKUP" ? "Übergabeprotokoll" : "Rückgabeprotokoll",
     number: h.number,
     type: h.type === "RETURN" ? "RETURN" : "PICKUP",
@@ -126,6 +144,6 @@ export function buildHandoverDocument(h: HandoverFull, sketch: Parameters<typeof
       })),
     photos: general.map((p) => ({ id: p.id, url: `/api/photos/${p.id}`, category: p.category, categoryLabel: label(PHOTO_CATEGORIES, p.category) })),
     missingPhotoCategories: requiredPhotoCategories.filter((c) => !have.has(c)).map((c) => label(PHOTO_CATEGORIES, c)),
-    signatures: signatures.map((s) => ({ role: s.role, roleLabel: s.role === "RENTER" ? "Mieter" : "Vermieter", signerName: s.signerName, signedAt: dateTime(s.signedAt), imageUrl: `/api/signatures/${s.id}` })),
+    signatures: signatures.map((s) => ({ id: s.id, role: s.role, roleLabel: s.role === "RENTER" ? "Mieter" : "Vermieter", signerName: s.signerName, signedAt: dateTime(s.signedAt), imageUrl: `/api/signatures/${s.id}` })),
   };
 }

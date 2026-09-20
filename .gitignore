@@ -45,3 +45,9 @@ next-env.d.ts
 
 # lokaler Dateispeicher (nur Entwicklung und Tests)
 .storage/
+
+# PDF-Vorschau (tests/pdf-preview.mts)
+.pdf-preview/
+
+# Entwicklungs-Postausgang (MAIL_DEV_OUTBOX)
+.outbox/

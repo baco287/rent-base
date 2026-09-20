@@ -13,6 +13,7 @@ import { db } from "@/lib/db";
 import { findConflicts } from "@/lib/bookings";
 import { checkCustomer, checkDriver, errorsOf, type Issue } from "@/lib/contract-checks";
 import { DomainError, assertContractDraft, contentHash, sha256 } from "@/lib/integrity";
+import { landlordFromTenant } from "@/lib/contract-view";
 import { isUniqueViolation, nextContractNumber, withNumberRetry } from "@/lib/numbering";
 import { calculateRentalPrice, rateCardFrom, toNumber, type PriceBreakdown } from "@/lib/pricing";
 import { buildStorageKey } from "@/lib/storage";
@@ -588,7 +589,9 @@ export async function finalizeContract(tenantId: string, contractId: string) {
 
     const contract = await loadContract(tx, tenantId, contractId);
     const hash = contentHash(signedContent(contract));
-    return tx.rentalContract.update({ where: { id: contract.id }, data: { status: "SIGNED", signedAt: new Date(), contentHash: hash, wizardStep: 7 } });
+    // Vermieterdaten einfrieren: Dokumente zeigen später den Briefkopf von heute, auch wenn sich die Stammdaten ändern
+    const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { name: true, street: true, zip: true, city: true, phone: true, email: true } });
+    return tx.rentalContract.update({ where: { id: contract.id }, data: { status: "SIGNED", signedAt: new Date(), contentHash: hash, wizardStep: 7, landlordSnapshot: landlordFromTenant(tenant) } });
   }, TX);
 }
 

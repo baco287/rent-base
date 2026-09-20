@@ -283,7 +283,7 @@ export async function answerChecklistItem(tenantId: string, itemId: string, resu
   }, TX);
 }
 
-const ALLOWED_RESULTS: Record<string, string[]> = { OK_NOT_OK: ["OK", "NOT_OK"], YES_NO: ["YES", "NO"] };
+const ALLOWED_RESULTS: Record<string, string[]> = { OK_NOT_OK: ["OK", "NOT_OK", "NA"], YES_NO: ["YES", "NO", "NA"] };
 
 /** Speichert alle Antworten der Checkliste auf einmal (ein Schritt im Assistenten). */
 export async function answerChecklist(tenantId: string, handoverId: string, answers: { itemId: string; result: string | null; note?: string | null }[]) {

@@ -24,6 +24,9 @@ import {
 } from "./actions";
 import { DamageMap } from "./damage-map";
 import { FuelGauge, HandoverDocumentView, HandoverIssueList, PICKUP_STEPS } from "./handover-parts";
+import { DocumentsPanel } from "../dokumente/documents-panel";
+import { FollowUpNotice } from "../dokumente/follow-up-notice";
+import { loadHandoverContext } from "@/lib/document-data";
 import { PhotoUploader } from "./photo-uploader";
 
 export const metadata = { title: "Übergabe" };
@@ -75,7 +78,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
 
   const state = await getHandoverState(tenant.id, existing.id);
   const { handover, signatures, sketch, issues, hash } = state;
-  const doc = buildHandoverDocument(handover, sketch, signatures, REQUIRED_PHOTO_CATEGORIES);
+  const doc = buildHandoverDocument(handover, sketch, signatures, REQUIRED_PHOTO_CATEGORIES, await loadHandoverContext(tenant.id, handover));
 
   // Finalisiert: nur noch Anzeige
   if (handover.status === "FINALIZED") {
@@ -87,6 +90,8 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
         </PageHeader>
         <Content>
           {sp.abgeschlossen === "1" && <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 font-medium">Die Übergabe ist abgeschlossen und versiegelt. {b.vehicle.plate} ist jetzt unterwegs.</p>}
+          {sp.abgeschlossen === "1" && <FollowUpNotice tenantId={tenant.id} bookingId={b.id} handoverId={handover.id} />}
+          <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
           <HandoverDocumentView doc={doc} handoverId={handover.id} />
         </Content>
       </>
@@ -227,18 +232,18 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
               <StepForm action={saveChecklistAction.bind(null, b.id)} step={5}>
                 <ul className="flex flex-col divide-y divide-line-soft">
                   {items.map((c) => {
-                    const options = c.answerType === "YES_NO" ? [["YES", "Ja"], ["NO", "Nein"]] : [["OK", "In Ordnung"], ["NOT_OK", "Nicht in Ordnung"]];
+                    const options = c.answerType === "YES_NO" ? [["YES", "Ja"], ["NO", "Nein"], ["NA", "Nicht zutreffend"]] : [["OK", "In Ordnung"], ["NOT_OK", "Nicht in Ordnung"], ["NA", "Nicht zutreffend"]];
                     return (
                       <li key={c.id} className="py-3 flex flex-col gap-2">
                         <div className="font-medium">{c.label}{!c.required && <span className="text-ink-3 font-normal"> · optional</span>}</div>
                         {c.answerType === "TEXT" ? (
                           <input name={`r_${c.id}`} defaultValue={c.result ?? ""} required={c.required} className="input" aria-label={c.label} />
                         ) : (
-                          <div className="grid grid-cols-2 gap-2 max-w-md">
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 max-w-xl">
                             {options.map(([value, text]) => (
                               <label key={value} className="cursor-pointer">
                                 <input type="radio" name={`r_${c.id}`} value={value} defaultChecked={c.result === value} required={c.required} className="peer sr-only" />
-                                <span className={`flex h-11 items-center justify-center rounded-md border border-line bg-panel text-sm font-medium peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-info ${value === "OK" || value === "YES" ? "peer-checked:bg-good peer-checked:text-white peer-checked:border-good" : "peer-checked:bg-bad peer-checked:text-white peer-checked:border-bad"}`}>{text}</span>
+                                <span className={`flex h-11 items-center justify-center rounded-md border border-line bg-panel text-sm font-medium peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-info ${value === "OK" || value === "YES" ? "peer-checked:bg-good peer-checked:text-white peer-checked:border-good" : value === "NA" ? "peer-checked:bg-ink-2 peer-checked:text-white peer-checked:border-ink-2" : "peer-checked:bg-bad peer-checked:text-white peer-checked:border-bad"}`}>{text}</span>
                               </label>
                             ))}
                           </div>

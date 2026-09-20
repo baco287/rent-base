@@ -10,6 +10,7 @@ import { buildStorageKey } from "../src/lib/storage";
 import { sha256 } from "../src/lib/integrity";
 import { REQUIRED_PHOTO_CATEGORIES } from "../src/lib/constants";
 import { createWorld, fakeSignaturePng, purgeTenants } from "./helpers";
+import { ensureContractDocument, ensurePickupDocument } from "../src/lib/documents";
 
 const args = process.argv.slice(2);
 const keep = args.includes("--keep");
@@ -138,11 +139,33 @@ report(foreignUp.status === 404, `${foreignUp.status} Upload in fremdes Protokol
 const foreignPage = await fetch(`${base}/buchungen/${w.bookingId}/vertrag`, { headers: { cookie: `rb_session=${foreignSession}` } });
 report(foreignPage.status === 404, `${foreignPage.status} Vertrag für fremden Mandanten nicht auffindbar`);
 
+// Phase 5: archivierte Dokumente. Erzeugt wird über dieselbe Bibliothek wie in der App, ausgeliefert über die geschützte Adresse.
+const contractPdf = await ensureContractDocument(w.tenantId, doneContract.id, w.actor.id);
+const pickupPdf = await ensurePickupDocument(w.tenantId, done.id, w.actor.id);
+for (const [name, d] of [["Mietvertrag", contractPdf.document], ["Übergabeprotokoll", pickupPdf.document]] as const) {
+  const res = await fetch(`${base}/api/documents/${d.id}`, { headers: { cookie } });
+  const body = new Uint8Array(await res.arrayBuffer());
+  report(res.status === 200 && res.headers.get("content-type") === "application/pdf" && sha256(body) === d.checksum && (res.headers.get("cache-control") ?? "").includes("no-store") && (res.headers.get("content-disposition") ?? "").startsWith("inline"), `${res.status} ${name}-PDF mit Sitzung, Prüfsumme stimmt, nicht im Cache`);
+}
+const dl = await fetch(`${base}/api/documents/${pickupPdf.document.id}?download=1`, { headers: { cookie } });
+report(dl.status === 200 && (dl.headers.get("content-disposition") ?? "") === `attachment; filename="${pickupPdf.document.fileName}"`, `${dl.status} Herunterladen mit verständlichem Dateinamen (${pickupPdf.document.fileName})`);
+const anonDoc = await fetch(`${base}/api/documents/${pickupPdf.document.id}`, { redirect: "manual" });
+report(anonDoc.status !== 200, `${anonDoc.status} Dokument ohne Sitzung wird verweigert`);
+const foreignDoc = await fetch(`${base}/api/documents/${pickupPdf.document.id}`, { headers: { cookie: `rb_session=${foreignSession}` } });
+report(foreignDoc.status === 404, `${foreignDoc.status} Dokument für fremden Mandanten nicht auffindbar`);
+const bookingPage = await (await fetch(`${base}/buchungen/${doneBooking.id}`, { headers: { cookie } })).text();
+report(bookingPage.includes("Dokumente") && bookingPage.includes(pickupPdf.document.fileName) && bookingPage.includes("E-Mail an den Mieter"), "200 Buchungsseite zeigt Dokumente und E-Mail-Bereich");
+
 const anon = await fetch(base + "/heute", { redirect: "manual" });
 report(anon.status === 307 && (anon.headers.get("location") ?? "").includes("/login"), `${anon.status} /heute ohne Sitzung leitet zum Login`);
+// Abgelaufene Sitzung: keine Endlosschleife zwischen Startseite und Login, das alte Cookie wird entfernt
+const stale = { cookie: "rb_session=gibt-es-nicht-mehr" };
+const staleHome = await fetch(base + "/heute", { headers: stale, redirect: "manual" });
+const staleLogin = await fetch(base + "/login?abgelaufen=1", { headers: stale, redirect: "manual" });
+report(staleHome.status === 307 && (staleHome.headers.get("location") ?? "").includes("/login?abgelaufen=1") && staleLogin.status === 200 && (staleLogin.headers.get("set-cookie") ?? "").includes("rb_session=;"), `${staleHome.status}/${staleLogin.status} abgelaufene Sitzung landet sauber beim Login`);
 
 if (keep) {
-  console.log(`\nTestdaten bleiben stehen.\nSITZUNG=${sessionId}\nBUCHUNG=${w.bookingId}\nVERTRAG=${draft.number}\nMANDANTEN=${w.tenantId},${foreign.tenantId}`);
+  console.log(`\nTestdaten bleiben stehen.\nSITZUNG=${sessionId}\nBUCHUNG=${w.bookingId} UEBERGEBEN=${doneBooking.id} BEREIT=${signedBooking.id}\nVERTRAG=${draft.number}\nMANDANTEN=${w.tenantId},${foreign.tenantId}`);
 } else {
   await purgeTenants([w.tenantId, foreign.tenantId]);
 }

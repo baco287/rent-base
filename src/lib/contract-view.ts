@@ -11,11 +11,36 @@ export type DocRow = { label: string; value: string; missing?: boolean };
 export type DocSection = { key: string; title: string; rows: DocRow[] };
 export type DocPriceLine = { text: string; amount: string };
 
+export type LandlordInfo = { name: string; address: string; contact: string; email: string | null };
+
+/** Vermieterdaten für Dokumente. Beim Abschluss wird diese Struktur im Vertrag eingefroren (landlordSnapshot). */
+export function landlordFromTenant(t: TenantLike): LandlordInfo {
+  return {
+    name: t.name,
+    address: [t.street, [t.zip, t.city].filter(Boolean).join(" ")].filter(Boolean).join(", "),
+    contact: [t.phone, t.email].filter(Boolean).join(" · "),
+    email: t.email,
+  };
+}
+
+/** Eingefrorene Vermieterdaten des Vertrags; nur bei älteren Verträgen ohne Kopie greifen die aktuellen Stammdaten. */
+export function landlordOf(snapshot: unknown, tenant: TenantLike): LandlordInfo {
+  const s = snapshot as Partial<LandlordInfo> | null;
+  if (s && typeof s === "object" && typeof s.name === "string") return { name: s.name, address: String(s.address ?? ""), contact: String(s.contact ?? ""), email: typeof s.email === "string" ? s.email : null };
+  return landlordFromTenant(tenant);
+}
+
 export type ContractDocument = {
   title: string;
   number: string;
   status: string;
-  landlord: { name: string; address: string; contact: string };
+  landlord: LandlordInfo;
+  /** E-Mail-Adresse des Mieters aus der Vertragskopie; an sie gehen die Unterlagen. */
+  renterEmail: string | null;
+  renterName: string;
+  vehicleTitle: string;
+  plate: string;
+  startAt: string;
   createdAt: string;
   signedAt: string | null;
   contentHash: string | null;
@@ -23,8 +48,11 @@ export type ContractDocument = {
   additionalDrivers: DocSection[];
   price: { days: number; lines: DocPriceLine[]; subtotal: string; discount: DocPriceLine | null; calculated: string; agreed: DocPriceLine | null; total: string; deposit: string };
   terms: { version: string | null; text: string | null };
-  signatures: { role: string; roleLabel: string; signerName: string; signedAt: string; imageUrl: string }[];
+  signatures: { id: string; role: string; roleLabel: string; signerName: string; signedAt: string; imageUrl: string }[];
 };
+
+/** Name laut Auftrag: die Dokumentdaten des Mietvertrags. HTML-Ansicht und PDF lesen ausschließlich diese Struktur. */
+export type ContractDocumentData = ContractDocument;
 
 const eur = (v: unknown) => Number(v ?? 0).toLocaleString("de-DE", { style: "currency", currency: "EUR" });
 const date = (v: unknown) => (v ? new Date(String(v)).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" }) : "");
@@ -36,7 +64,7 @@ const row = (l: string, v: unknown, required = false): DocRow => {
 };
 
 type ContractWithDrivers = Prisma.RentalContractGetPayload<{ include: { drivers: true } }>;
-type TenantLike = { name: string; street: string | null; zip: string | null; city: string | null; phone: string | null; email: string | null };
+export type TenantLike = { name: string; street: string | null; zip: string | null; city: string | null; phone: string | null; email: string | null };
 type SignatureLike = { id: string; role: string; signerName: string; signedAt: Date };
 
 function driverSection(key: string, title: string, d: ContractWithDrivers["drivers"][number]): DocSection {
@@ -127,11 +155,12 @@ export function buildContractDocument(contract: ContractWithDrivers, tenant: Ten
     title: "Mietvertrag",
     number: contract.number,
     status: contract.status,
-    landlord: {
-      name: tenant.name,
-      address: [tenant.street, [tenant.zip, tenant.city].filter(Boolean).join(" ")].filter(Boolean).join(", "),
-      contact: [tenant.phone, tenant.email].filter(Boolean).join(" · "),
-    },
+    landlord: landlordOf(contract.landlordSnapshot, tenant),
+    renterEmail: typeof c.email === "string" && c.email.trim() ? c.email.trim() : null,
+    renterName: `${c.firstName ?? ""} ${c.lastName ?? ""}`.trim(),
+    vehicleTitle: `${v.make} ${v.model}`.trim(),
+    plate: String(v.plate ?? ""),
+    startAt: dateTime(contract.startAt),
     createdAt: dateTime(contract.createdAt),
     signedAt: contract.signedAt ? dateTime(contract.signedAt) : null,
     contentHash: contract.contentHash,
@@ -148,6 +177,6 @@ export function buildContractDocument(contract: ContractWithDrivers, tenant: Ten
       deposit: eur(contract.deposit),
     },
     terms: { version: contract.termsVersion, text: contract.termsText },
-    signatures: signatures.map((s) => ({ role: s.role, roleLabel: s.role === "RENTER" ? "Mieter" : "Vermieter", signerName: s.signerName, signedAt: dateTime(s.signedAt), imageUrl: `/api/signatures/${s.id}` })),
+    signatures: signatures.map((s) => ({ id: s.id, role: s.role, roleLabel: s.role === "RENTER" ? "Mieter" : "Vermieter", signerName: s.signerName, signedAt: dateTime(s.signedAt), imageUrl: `/api/signatures/${s.id}` })),
   };
 }

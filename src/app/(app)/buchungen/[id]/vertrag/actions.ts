@@ -22,6 +22,8 @@ import {
   type DriverInput,
 } from "@/lib/contracts";
 
+import { runContractFollowUp } from "@/lib/followup";
+
 export type StepState = { error?: string } | undefined;
 
 const base = (bookingId: string) => `/buchungen/${bookingId}/vertrag`;
@@ -242,12 +244,15 @@ export async function removeSignatureAction(bookingId: string, role: "RENTER" | 
 
 export async function finalizeContractAction(bookingId: string, _prev: StepState, _formData: FormData): Promise<StepState> {
   void _formData;
-  const { tenant, contract } = await context(bookingId);
+  const { tenant, user, contract } = await context(bookingId);
   try {
     await finalizeContract(tenant.id, contract.id);
   } catch (e) {
     return asState(e);
   }
+  // Der Vertrag ist abgeschlossen. Das PDF entsteht danach; scheitert es, bleibt der Abschluss gültig und
+  // das Dokument lässt sich auf der Buchungsseite nachträglich erzeugen.
+  await runContractFollowUp(tenant.id, contract.id, user.id);
   revalidatePath(`/buchungen/${bookingId}`);
   revalidatePath("/buchungen");
   revalidatePath("/heute");

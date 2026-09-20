@@ -179,7 +179,7 @@ export function getStorage(env: NodeJS.ProcessEnv = process.env): StorageDriver 
   const cfg = readS3Config(env);
   let driver: StorageDriver;
   if (cfg) driver = new S3StorageDriver(cfg);
-  else if (env.NODE_ENV !== "production") driver = new LocalStorageDriver(path.resolve(env.LOCAL_STORAGE_DIR || ".storage"));
+  else if (env.NODE_ENV !== "production") driver = new LocalStorageDriver(path.resolve(/* turbopackIgnore: true */ env.LOCAL_STORAGE_DIR || ".storage"));
   else throw new DomainError("Der Dateispeicher ist noch nicht eingerichtet. Fotos können erst hochgeladen werden, wenn der Object Storage in den Servereinstellungen hinterlegt ist.");
   if (env === process.env) cached = driver;
   return driver;
