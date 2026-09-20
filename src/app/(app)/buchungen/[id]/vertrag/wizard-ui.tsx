@@ -12,11 +12,12 @@ type StepAction = (prev: StepState, fd: FormData) => Promise<StepState>;
 
 
 /** Fortschrittsanzeige. Erledigte Schritte sind anklickbar, so kann man jederzeit zurückspringen. */
-export function WizardProgress({ bookingId, current, reached }: { bookingId: string; current: number; reached: number }) {
+export function WizardProgress({ bookingId, current, reached, steps = WIZARD_STEPS, basePath }: { bookingId: string; current: number; reached: number; steps?: readonly string[]; basePath?: string }) {
+  const base = basePath ?? `/buchungen/${bookingId}/vertrag`;
   return (
     <nav aria-label="Fortschritt" className="card p-2.5 md:p-3">
       <ol className="flex gap-1.5 overflow-x-auto">
-        {WIZARD_STEPS.map((label, i) => {
+        {steps.map((label, i) => {
           const n = i + 1;
           const state = n === current ? "current" : n <= reached ? "done" : "todo";
           const cls =
@@ -32,7 +33,7 @@ export function WizardProgress({ bookingId, current, reached }: { bookingId: str
               {state === "todo" ? (
                 <span className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[12.5px] font-medium ${cls}`}>{inner}</span>
               ) : (
-                <Link href={`/buchungen/${bookingId}/vertrag?schritt=${n}`} aria-current={state === "current" ? "step" : undefined} className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[12.5px] font-medium ${cls}`}>
+                <Link href={`${base}?schritt=${n}`} aria-current={state === "current" ? "step" : undefined} className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[12.5px] font-medium ${cls}`}>
                   {inner}
                 </Link>
               )}
@@ -133,7 +134,7 @@ export function SignatureForm({ action, role, defaultName, seenHash }: { action:
 }
 
 /** Verbindlicher Abschluss: ein Klick, danach gesperrt, mit Ladeanzeige. */
-export function FinalizeForm({ action, disabled, reason }: { action: StepAction; disabled: boolean; reason?: string }) {
+export function FinalizeForm({ action, disabled, reason, label = "Mietvertrag verbindlich abschließen", pendingLabel = "Vertrag wird abgeschlossen…" }: { action: StepAction; disabled: boolean; reason?: string; label?: string; pendingLabel?: string }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   const [clicked, setClicked] = useState(false);
   const locked = disabled || pending || (clicked && !state?.error);
@@ -147,7 +148,7 @@ export function FinalizeForm({ action, disabled, reason }: { action: StepAction;
     >
       <FormError error={state?.error} />
       <button type="submit" disabled={locked} className="btn btn-primary justify-center !py-3 !text-[15px]">
-        {pending || (clicked && !state?.error) ? "Vertrag wird abgeschlossen…" : "Mietvertrag verbindlich abschließen"}
+        {pending || (clicked && !state?.error) ? pendingLabel : label}
       </button>
       {disabled && reason && <p className="text-xs text-ink-3">{reason}</p>}
     </form>

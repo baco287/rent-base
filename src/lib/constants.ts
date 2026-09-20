@@ -12,6 +12,7 @@ export const FUELS = {
   BENZIN: "Benzin",
   ELEKTRO: "Elektro",
   HYBRID: "Hybrid",
+  PLUGIN_HYBRID: "Plug-in-Hybrid",
 } as const;
 export type Fuel = keyof typeof FUELS;
 
@@ -89,7 +90,7 @@ export type HandoverType = keyof typeof HANDOVER_TYPES;
 export const HANDOVER_STATUS = { DRAFT: "In Arbeit", FINALIZED: "Finalisiert" } as const;
 export type HandoverStatus = keyof typeof HANDOVER_STATUS;
 
-export const DAMAGE_VIEWS = { LEFT: "Fahrerseite", RIGHT: "Beifahrerseite", FRONT: "Front", REAR: "Heck", TOP: "Dach", INTERIOR: "Innenraum" } as const;
+export const DAMAGE_VIEWS = { FRONT: "Vorne", REAR: "Hinten", LEFT: "Links (Fahrerseite)", RIGHT: "Rechts (Beifahrerseite)", TOP: "Dach", INTERIOR: "Innenraum" } as const;
 export type DamageView = keyof typeof DAMAGE_VIEWS;
 
 export const DAMAGE_KINDS = {
@@ -123,13 +124,13 @@ export const DAMAGE_MARKERS = { EXISTING: "Vorhanden", NEW: "Neu" } as const;
 export type DamageMarker = keyof typeof DAMAGE_MARKERS;
 
 export const PHOTO_CATEGORIES = {
-  FRONT: "Front",
-  REAR: "Heck",
-  LEFT: "Fahrerseite",
-  RIGHT: "Beifahrerseite",
+  FRONT: "Vorne",
+  REAR: "Hinten",
+  LEFT: "Links",
+  RIGHT: "Rechts",
   INTERIOR: "Innenraum",
-  ODOMETER: "Tacho",
-  FUEL: "Tank- / Ladeanzeige",
+  ODOMETER: "Kilometerstand",
+  FUEL: "Tank / Batterie",
   DAMAGE: "Schaden",
   DOCUMENT: "Dokument",
   OTHER: "Sonstiges",
@@ -137,7 +138,7 @@ export const PHOTO_CATEGORIES = {
 export type PhotoCategory = keyof typeof PHOTO_CATEGORIES;
 
 /** Pflichtansichten bei Übergabe und Rückgabe. */
-export const REQUIRED_PHOTO_CATEGORIES: PhotoCategory[] = ["FRONT", "LEFT", "REAR", "RIGHT", "INTERIOR", "ODOMETER"];
+export const REQUIRED_PHOTO_CATEGORIES: PhotoCategory[] = ["FRONT", "REAR", "LEFT", "RIGHT", "INTERIOR", "ODOMETER", "FUEL"];
 
 export const SIGNATURE_ROLES = { RENTER: "Mieter", EMPLOYEE: "Mitarbeiter" } as const;
 export type SignatureRole = keyof typeof SIGNATURE_ROLES;
@@ -177,5 +178,12 @@ export type VehicleEventType = keyof typeof VEHICLE_EVENT_TYPES;
 export const CHECKLIST_ANSWER_TYPES = { OK_NOT_OK: "In Ordnung / Nicht in Ordnung", YES_NO: "Ja / Nein", TEXT: "Freitext" } as const;
 export type ChecklistAnswerType = keyof typeof CHECKLIST_ANSWER_TYPES;
 
-/** Antriebe, bei denen ein Batteriestand statt eines Tankstands erfasst wird. */
-export const BATTERY_DRIVE_TYPES: string[] = ["ELEKTRO"];
+/**
+ * Was bei Übergabe und Rückgabe je Antrieb erfasst wird:
+ * Verbrenner und Hybrid ohne Stecker: Tank in Achteln. Elektro: Batterie in Prozent. Plug-in-Hybrid: beides.
+ */
+export function energyRequirements(driveType: string): { fuel: boolean; battery: boolean } {
+  if (driveType === "ELEKTRO") return { fuel: false, battery: true };
+  if (driveType === "PLUGIN_HYBRID") return { fuel: true, battery: true };
+  return { fuel: true, battery: false };
+}

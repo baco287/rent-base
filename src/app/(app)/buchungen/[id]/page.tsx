@@ -16,7 +16,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const { id } = await params;
   const sp = await searchParams;
 
-  const b = await db.booking.findFirst({ where: { id, tenantId: tenant.id }, include: { vehicle: true, customer: true, contract: { select: { number: true, status: true } } } });
+  const b = await db.booking.findFirst({ where: { id, tenantId: tenant.id }, include: { vehicle: true, customer: true, contract: { select: { number: true, status: true } }, handovers: { where: { type: "PICKUP", correctsId: null }, select: { number: true, status: true } } } });
   if (!b) notFound();
 
   // Mit unterschriebenem Vertrag sind Zeitraum, Fahrzeug und Preis festgeschrieben
@@ -27,6 +27,8 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
 
   const stage = bookingStage(b, b.contract);
   const contractSigned = b.contract?.status === "SIGNED";
+  const pickupDraft = b.handovers.find((h) => h.status === "DRAFT");
+  const pickupDone = b.handovers.find((h) => h.status === "FINALIZED");
   const update = updateBookingAction.bind(null, b.id);
   const startContract = startContractAction.bind(null, b.id);
   const finish = setBookingStatusAction.bind(null, b.id, "RETURNED");
@@ -39,8 +41,9 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
         {stage === "NEEDS_CONTRACT" && <form action={startContract}><button className="btn btn-primary">Mietvertrag erstellen</button></form>}
         {stage === "CONTRACT_DRAFT" && <Link href={`/buchungen/${b.id}/vertrag`} className="btn btn-primary">Mietvertrag fortsetzen</Link>}
         {b.contract && b.contract.status !== "DRAFT" && <Link href={`/buchungen/${b.id}/vertrag`} className="btn">Mietvertrag anzeigen</Link>}
-        {stage === "READY_FOR_PICKUP" && <Link href={`/buchungen/${b.id}/uebergabe`} className="btn btn-primary">Übergabe starten</Link>}
-        {b.status === "ACTIVE" && (
+        {stage === "READY_FOR_PICKUP" && <Link href={`/buchungen/${b.id}/uebergabe`} className="btn btn-primary">{pickupDraft ? "Übergabe fortsetzen" : "Übergabe starten"}</Link>}
+        {pickupDone && <Link href={`/buchungen/${b.id}/uebergabe`} className="btn">Übergabeprotokoll anzeigen</Link>}
+        {b.status === "ACTIVE" && !pickupDone && (
           <form action={finish}><button className="btn btn-primary">Fahrzeug zurücknehmen</button></form>
         )}
         {b.status === "RESERVED" && (
@@ -51,6 +54,9 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
         {sp.gespeichert === "1" && <Chip tone="good">Gespeichert</Chip>}
         {sp.fehler === "status" && <Chip tone="bad">Dieser Statuswechsel ist nicht möglich.</Chip>}
         {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
+        {b.status === "ACTIVE" && pickupDone && (
+          <p className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm">Übergeben mit Protokoll {pickupDone.number}. Die Rückgabe läuft ebenfalls über ein Protokoll und wird in der nächsten Ausbaustufe freigeschaltet.</p>
+        )}
         {contractSigned && b.status === "RESERVED" && (
           <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Mietvertrag {b.contract!.number} ist abgeschlossen. Die Buchung ist bereit zur Übergabe.</p>
         )}

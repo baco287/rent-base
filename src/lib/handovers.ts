@@ -4,6 +4,9 @@
 // Checkliste in das Protokoll KOPIERT. Das Protokoll liest danach nie wieder aus der Schadenakte oder
 // aus der Vorlage. Beim Finalisieren wird der Inhalt gehasht und das Protokoll gesperrt.
 //
+// Unterschrift: gehört zu genau einem Inhalts-Hash. Jede inhaltliche Änderung im Entwurf verwirft
+// vorhandene Unterschriften (touch), der Mieter unterschreibt dann erneut.
+//
 // Reihenfolge beim Finalisieren: erst alle Bestandteile schreiben, ganz zum Schluss den Status setzen.
 // Danach blockieren Code (assertHandoverDraft) und Datenbank-Trigger jede weitere Änderung.
 //
@@ -11,16 +14,19 @@
 
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { BATTERY_DRIVE_TYPES, REQUIRED_PHOTO_CATEGORIES, VISIBLE_DAMAGE_STATUS, type HandoverType } from "@/lib/constants";
-import { DomainError, assertHandoverDraft, contentHash } from "@/lib/integrity";
+import { DAMAGE_KINDS, DAMAGE_SEVERITY, DAMAGE_VIEWS, PHOTO_CATEGORIES, REQUIRED_PHOTO_CATEGORIES, VISIBLE_DAMAGE_STATUS, energyRequirements, type HandoverType } from "@/lib/constants";
+import { DomainError, assertHandoverDraft, contentHash, sha256 } from "@/lib/integrity";
 import { nextHandoverNumber } from "@/lib/numbering";
-import { ALLOWED_PHOTO_TYPES, MAX_PHOTO_BYTES, assertKeyBelongsToTenant } from "@/lib/storage";
+import { ALLOWED_PHOTO_TYPES, MAX_PHOTO_BYTES, assertKeyBelongsToTenant, buildStorageKey } from "@/lib/storage";
 import { resolveChecklist } from "@/lib/checklists";
 import { resolveSketch } from "@/lib/sketches";
 import { recordVehicleEvent } from "@/lib/vehicle-events";
 
 type Tx = Prisma.TransactionClient;
+const TX = { timeout: 20_000, maxWait: 10_000 };
 export type Actor = { id: string; name: string };
+
+export const HANDOVER_STEPS = 7;
 
 async function loadDraft(tx: Tx, tenantId: string, handoverId: string) {
   const h = await tx.handover.findFirst({ where: { id: handoverId, tenantId } });
@@ -29,12 +35,19 @@ async function loadDraft(tx: Tx, tenantId: string, handoverId: string) {
   return h;
 }
 
+// ---------------------------------------------------------------------------
+// Start
+// ---------------------------------------------------------------------------
+
 /**
- * Startet ein Protokoll oder setzt einen vorhandenen Entwurf fort.
+ * Startet ein Protokoll oder setzt den vorhandenen Entwurf fort. Je Buchung und Art gibt es höchstens
+ * einen Entwurf: die Buchungszeile wird gesperrt, gleichzeitige Starts laufen nacheinander.
  * Kopiert sichtbare Schäden (EXISTING) samt Fotoverweisen und die Checkliste in das Protokoll.
  */
 export async function startHandover(tenantId: string, bookingId: string, type: HandoverType, actor: Actor) {
   return db.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Booking" WHERE "id" = ${bookingId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+    if (locked.length === 0) throw new DomainError("Buchung nicht gefunden.");
     const booking = await tx.booking.findFirst({
       where: { id: bookingId, tenantId },
       include: { vehicle: { include: { group: true } }, contract: true },
@@ -95,7 +108,7 @@ export async function startHandover(tenantId: string, bookingId: string, type: H
       });
     }
 
-    // Checkliste kopieren: Fragetext und Reihenfolge von jetzt
+    // Checkliste kopieren: Fragetext und Reihenfolge von jetzt. Ohne eigene Vorlage greift der Standard.
     const checklist = await resolveChecklist(tx, tenantId, booking.vehicle.groupId, type);
     if (checklist.items.length > 0) {
       await tx.handoverChecklistItem.createMany({
@@ -113,149 +126,12 @@ export async function startHandover(tenantId: string, bookingId: string, type: H
       });
     }
     return handover;
-  });
+  }, TX);
 }
 
-export type HandoverDraftInput = {
-  mileage?: number | null;
-  fuelLevelEighths?: number | null;
-  batteryPercent?: number | null;
-  accessories?: Prisma.InputJsonValue | null;
-  notes?: string | null;
-};
-
-/** Ändert Messwerte eines Entwurfs. Finalisierte Protokolle werden abgelehnt. */
-export async function updateHandoverDraft(tenantId: string, handoverId: string, input: HandoverDraftInput) {
-  return db.$transaction(async (tx) => {
-    const h = await loadDraft(tx, tenantId, handoverId);
-    if (input.mileage != null && (!Number.isInteger(input.mileage) || input.mileage < 0)) throw new DomainError("Der Kilometerstand muss eine ganze Zahl ab 0 sein.");
-    if (input.fuelLevelEighths != null && (input.fuelLevelEighths < 0 || input.fuelLevelEighths > 8)) throw new DomainError("Der Tankstand liegt zwischen 0 und 8 Achteln.");
-    if (input.batteryPercent != null && (input.batteryPercent < 0 || input.batteryPercent > 100)) throw new DomainError("Der Batteriestand liegt zwischen 0 und 100 Prozent.");
-    return tx.handover.update({
-      where: { id: h.id },
-      data: {
-        ...(input.mileage !== undefined ? { mileage: input.mileage } : {}),
-        ...(input.fuelLevelEighths !== undefined ? { fuelLevelEighths: input.fuelLevelEighths } : {}),
-        ...(input.batteryPercent !== undefined ? { batteryPercent: input.batteryPercent } : {}),
-        ...(input.accessories !== undefined ? { accessories: input.accessories ?? undefined } : {}),
-        ...(input.notes !== undefined ? { notes: input.notes } : {}),
-      },
-    });
-  });
-}
-
-export async function answerChecklistItem(tenantId: string, itemId: string, result: string | null, note?: string | null) {
-  return db.$transaction(async (tx) => {
-    const item = await tx.handoverChecklistItem.findFirst({ where: { id: itemId, tenantId } });
-    if (!item) throw new DomainError("Checklistenpunkt nicht gefunden.");
-    await loadDraft(tx, tenantId, item.handoverId);
-    return tx.handoverChecklistItem.update({ where: { id: item.id }, data: { result, note: note ?? null } });
-  });
-}
-
-export type NewDamageInput = {
-  view: string;
-  posX: number;
-  posY: number;
-  kind: string;
-  description: string;
-  size?: string | null;
-  severity?: string;
-};
-
-function assertPosition(x: number, y: number) {
-  if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) throw new DomainError("Schadenpositionen werden normalisiert gespeichert (0 bis 1), keine Pixelwerte.");
-}
-
-/** Neuer Schaden im Entwurf. Die Schadenakte (Damage) entsteht erst beim Finalisieren. */
-export async function addNewDamage(tenantId: string, handoverId: string, input: NewDamageInput) {
-  return db.$transaction(async (tx) => {
-    const h = await loadDraft(tx, tenantId, handoverId);
-    assertPosition(input.posX, input.posY);
-    const count = await tx.handoverDamage.count({ where: { tenantId, handoverId: h.id } });
-    return tx.handoverDamage.create({
-      data: {
-        tenantId,
-        handoverId: h.id,
-        marker: "NEW",
-        view: input.view,
-        posX: input.posX,
-        posY: input.posY,
-        kind: input.kind,
-        description: input.description,
-        size: input.size ?? null,
-        severity: input.severity ?? "MINOR",
-        sortOrder: count,
-      },
-    });
-  });
-}
-
-/** Entfernt einen im Entwurf erfassten neuen Schaden wieder. Kopierte Altschäden lassen sich nicht entfernen. */
-export async function removeNewDamage(tenantId: string, handoverDamageId: string) {
-  return db.$transaction(async (tx) => {
-    const d = await tx.handoverDamage.findFirst({ where: { id: handoverDamageId, tenantId } });
-    if (!d) throw new DomainError("Schaden nicht gefunden.");
-    await loadDraft(tx, tenantId, d.handoverId);
-    if (d.marker !== "NEW") throw new DomainError("Vorhandene Schäden gehören zum Fahrzeugzustand und können im Protokoll nicht entfernt werden.");
-    await tx.handoverDamage.delete({ where: { id: d.id } });
-  });
-}
-
-export type PhotoInput = {
-  handoverId: string;
-  handoverDamageId?: string | null;
-  storageKey: string;
-  category: string;
-  contentType: string;
-  sizeBytes: number;
-  checksum: string;
-  width?: number | null;
-  height?: number | null;
-  takenAt?: Date | null;
-};
-
-/** Trägt ein bereits hochgeladenes Foto ein. Gespeichert wird nur der Storage Key, keine URL. */
-export async function registerPhoto(tenantId: string, actor: Actor, input: PhotoInput) {
-  return db.$transaction(async (tx) => {
-    const h = await loadDraft(tx, tenantId, input.handoverId);
-    assertKeyBelongsToTenant(input.storageKey, tenantId);
-    if (!(ALLOWED_PHOTO_TYPES as readonly string[]).includes(input.contentType)) throw new DomainError("Dieser Dateityp ist für Fotos nicht erlaubt.");
-    if (input.sizeBytes <= 0 || input.sizeBytes > MAX_PHOTO_BYTES) throw new DomainError("Das Foto ist zu groß.");
-    if (!/^[a-f0-9]{64}$/.test(input.checksum)) throw new DomainError("Die Prüfsumme des Fotos fehlt oder ist ungültig.");
-
-    let snapshotRow = null;
-    if (input.handoverDamageId) {
-      snapshotRow = await tx.handoverDamage.findFirst({ where: { id: input.handoverDamageId, tenantId, handoverId: h.id } });
-      if (!snapshotRow) throw new DomainError("Der Schaden gehört nicht zu diesem Protokoll.");
-    }
-    const photo = await tx.photo.create({
-      data: {
-        tenantId,
-        handoverId: h.id,
-        handoverDamageId: snapshotRow?.id ?? null,
-        damageId: snapshotRow?.damageId ?? null,
-        storageKey: input.storageKey,
-        category: input.category,
-        contentType: input.contentType,
-        sizeBytes: input.sizeBytes,
-        checksum: input.checksum,
-        width: input.width ?? null,
-        height: input.height ?? null,
-        takenAt: input.takenAt ?? null,
-        createdById: actor.id,
-      },
-    });
-    if (snapshotRow) {
-      const refs = Array.isArray(snapshotRow.photoRefs) ? (snapshotRow.photoRefs as Prisma.JsonArray) : [];
-      await tx.handoverDamage.update({
-        where: { id: snapshotRow.id },
-        data: { photoRefs: [...refs, { photoId: photo.id, storageKey: photo.storageKey, checksum: photo.checksum }] },
-      });
-    }
-    return photo;
-  });
-}
+// ---------------------------------------------------------------------------
+// Inhalt, Hash, Unterschriften
+// ---------------------------------------------------------------------------
 
 /** Alles, was das Protokoll inhaltlich ausmacht. Unterschriften sind nicht Teil des Inhalts, sie verweisen auf den Hash. */
 async function handoverContent(tx: Tx, tenantId: string, handoverId: string) {
@@ -292,100 +168,423 @@ async function handoverContent(tx: Tx, tenantId: string, handoverId: string) {
   return { handover: h, hash: contentHash(content) };
 }
 
-/** Hash des aktuellen Entwurfs. Diesen Wert bekommt die Unterschrift mit. */
-export async function getHandoverContentHash(tenantId: string, handoverId: string) {
-  return db.$transaction(async (tx) => (await handoverContent(tx, tenantId, handoverId)).hash);
+/** Nach jeder inhaltlichen Änderung: Unterschriften, die nicht mehr zum Inhalt passen, werden verworfen. */
+async function touch(tx: Tx, tenantId: string, handoverId: string) {
+  const { hash } = await handoverContent(tx, tenantId, handoverId);
+  const stale = await tx.signature.findMany({ where: { tenantId, handoverId, contentHash: { not: hash } }, select: { id: true } });
+  if (stale.length > 0) await tx.signature.deleteMany({ where: { tenantId, id: { in: stale.map((s) => s.id) } } });
+  return { hash, dropped: stale.length };
 }
 
-export type SignatureInput = {
-  handoverId: string;
+/** Hash des aktuellen Entwurfs. Diesen Wert zeigt die Unterschriftsseite und gibt ihn beim Unterschreiben zurück. */
+export async function getHandoverContentHash(tenantId: string, handoverId: string) {
+  return db.$transaction(async (tx) => (await handoverContent(tx, tenantId, handoverId)).hash, TX);
+}
+
+const PNG_PREFIX = "data:image/png;base64,";
+const MAX_SIGNATURE_BYTES = 400_000;
+
+export type HandoverSignatureInput = {
   role: "RENTER" | "EMPLOYEE";
   signerName: string;
-  storageKey: string;
-  contentHash: string;
+  imageDataUrl: string;
+  /** Hash, den die Seite beim Anzeigen hatte. Weicht er ab, hat sich das Protokoll inzwischen geändert. */
+  seenHash: string;
   ipAddress?: string | null;
   userAgent?: string | null;
 };
 
-/**
- * Speichert eine Unterschrift unter ein Protokoll. Stimmt der übergebene Hash nicht mit dem aktuellen
- * Inhalt überein, wurde das Protokoll seit der Anzeige geändert und die Unterschrift wird abgelehnt.
- * Unterschriften unter Verträge laufen über saveContractSignature in lib/contracts.ts.
- */
-export async function addSignature(tenantId: string, actor: Actor | null, input: SignatureInput) {
-  assertKeyBelongsToTenant(input.storageKey, tenantId);
+/** Speichert eine Unterschrift zu genau dem Protokollstand, den der Unterzeichner gesehen hat. */
+export async function saveHandoverSignature(tenantId: string, actor: Actor | null, handoverId: string, input: HandoverSignatureInput) {
+  if (!input.signerName.trim()) throw new DomainError("Bitte den Namen des Unterzeichners angeben.");
+  if (!input.imageDataUrl.startsWith(PNG_PREFIX)) throw new DomainError("Die Unterschrift konnte nicht gelesen werden. Bitte erneut unterschreiben.");
+  const image = Buffer.from(input.imageDataUrl.slice(PNG_PREFIX.length), "base64");
+  const isPng = image.length > 8 && image[0] === 0x89 && image[1] === 0x50 && image[2] === 0x4e && image[3] === 0x47;
+  if (!isPng || image.length > MAX_SIGNATURE_BYTES) throw new DomainError("Die Unterschrift ist ungültig oder zu groß. Bitte erneut unterschreiben.");
+  if (image.length < 800) throw new DomainError("Die Unterschrift ist leer. Bitte im Feld unterschreiben.");
+
   return db.$transaction(async (tx) => {
-    await loadDraft(tx, tenantId, input.handoverId);
-    const { hash } = await handoverContent(tx, tenantId, input.handoverId);
-    if (hash !== input.contentHash) throw new DomainError("Das Protokoll wurde seit der Anzeige geändert. Bitte neu laden und erneut unterschreiben.");
-    // Eine Rolle unterschreibt nur einmal: vorherige Unterschrift derselben Rolle im Entwurf ersetzen
-    await tx.signature.deleteMany({ where: { tenantId, role: input.role, handoverId: input.handoverId } });
+    const h = await loadDraft(tx, tenantId, handoverId);
+    const { hash } = await handoverContent(tx, tenantId, handoverId);
+    if (hash !== input.seenHash) throw new DomainError("Das Protokoll wurde seit der Anzeige geändert. Bitte die Angaben erneut prüfen und dann unterschreiben.");
+    await tx.signature.deleteMany({ where: { tenantId, handoverId, role: input.role } });
     return tx.signature.create({
       data: {
         tenantId,
-        handoverId: input.handoverId,
+        handoverId,
         role: input.role,
-        signerName: input.signerName,
-        storageKey: input.storageKey,
-        contentHash: input.contentHash,
+        signerName: input.signerName.trim(),
+        storageKey: buildStorageKey({ tenantId, area: "signatures", bookingId: h.bookingId, contentType: "image/png" }),
+        imageData: image,
+        imageChecksum: sha256(image),
+        contentHash: hash,
         ipAddress: input.ipAddress ?? null,
-        userAgent: input.userAgent ?? null,
+        userAgent: input.userAgent?.slice(0, 300) ?? null,
         createdById: actor?.id ?? null,
       },
+      select: { id: true, role: true, signerName: true, signedAt: true, contentHash: true },
     });
-  });
+  }, TX);
 }
+
+export async function removeHandoverSignature(tenantId: string, handoverId: string, role: "RENTER" | "EMPLOYEE") {
+  return db.$transaction(async (tx) => {
+    await loadDraft(tx, tenantId, handoverId);
+    await tx.signature.deleteMany({ where: { tenantId, handoverId, role } });
+  }, TX);
+}
+
+// ---------------------------------------------------------------------------
+// Entwurf bearbeiten
+// ---------------------------------------------------------------------------
+
+export type HandoverDraftInput = {
+  mileage?: number | null;
+  fuelLevelEighths?: number | null;
+  batteryPercent?: number | null;
+  accessories?: Prisma.InputJsonValue | null;
+  notes?: string | null;
+};
+
+/** Ändert Messwerte eines Entwurfs. Der Kilometerstand des Fahrzeugs bleibt unberührt, bis das Protokoll finalisiert ist. */
+export async function updateHandoverDraft(tenantId: string, handoverId: string, input: HandoverDraftInput) {
+  return db.$transaction(async (tx) => {
+    const h = await loadDraft(tx, tenantId, handoverId);
+    if (input.mileage != null && (!Number.isInteger(input.mileage) || input.mileage < 0)) throw new DomainError("Der Kilometerstand muss eine ganze Zahl ab 0 sein.");
+    if (input.fuelLevelEighths != null && (!Number.isInteger(input.fuelLevelEighths) || input.fuelLevelEighths < 0 || input.fuelLevelEighths > 8)) throw new DomainError("Der Tankstand liegt zwischen 0 und 8 Achteln.");
+    if (input.batteryPercent != null && (!Number.isInteger(input.batteryPercent) || input.batteryPercent < 0 || input.batteryPercent > 100)) throw new DomainError("Der Batteriestand liegt zwischen 0 und 100 Prozent.");
+    const updated = await tx.handover.update({
+      where: { id: h.id },
+      data: {
+        ...(input.mileage !== undefined ? { mileage: input.mileage } : {}),
+        ...(input.fuelLevelEighths !== undefined ? { fuelLevelEighths: input.fuelLevelEighths } : {}),
+        ...(input.batteryPercent !== undefined ? { batteryPercent: input.batteryPercent } : {}),
+        ...(input.accessories !== undefined ? { accessories: input.accessories ?? undefined } : {}),
+        ...(input.notes !== undefined ? { notes: input.notes } : {}),
+      },
+    });
+    await touch(tx, tenantId, h.id);
+    return updated;
+  }, TX);
+}
+
+export async function setHandoverStep(tenantId: string, handoverId: string, step: number) {
+  await db.handover.updateMany({ where: { id: handoverId, tenantId, status: "DRAFT" }, data: { wizardStep: Math.min(HANDOVER_STEPS, Math.max(1, Math.round(step))) } });
+}
+
+export async function answerChecklistItem(tenantId: string, itemId: string, result: string | null, note?: string | null) {
+  return db.$transaction(async (tx) => {
+    const item = await tx.handoverChecklistItem.findFirst({ where: { id: itemId, tenantId } });
+    if (!item) throw new DomainError("Checklistenpunkt nicht gefunden.");
+    await loadDraft(tx, tenantId, item.handoverId);
+    const updated = await tx.handoverChecklistItem.update({ where: { id: item.id }, data: { result, note: note ?? null } });
+    await touch(tx, tenantId, item.handoverId);
+    return updated;
+  }, TX);
+}
+
+const ALLOWED_RESULTS: Record<string, string[]> = { OK_NOT_OK: ["OK", "NOT_OK"], YES_NO: ["YES", "NO"] };
+
+/** Speichert alle Antworten der Checkliste auf einmal (ein Schritt im Assistenten). */
+export async function answerChecklist(tenantId: string, handoverId: string, answers: { itemId: string; result: string | null; note?: string | null }[]) {
+  return db.$transaction(async (tx) => {
+    await loadDraft(tx, tenantId, handoverId);
+    const items = await tx.handoverChecklistItem.findMany({ where: { tenantId, handoverId } });
+    const byId = new Map(items.map((i) => [i.id, i]));
+    for (const a of answers) {
+      const item = byId.get(a.itemId);
+      if (!item) throw new DomainError("Ein Checklistenpunkt gehört nicht zu diesem Protokoll.");
+      const result = a.result?.trim() || null;
+      if (result && ALLOWED_RESULTS[item.answerType] && !ALLOWED_RESULTS[item.answerType].includes(result)) throw new DomainError(`Ungültige Antwort bei „${item.label}“.`);
+      await tx.handoverChecklistItem.update({ where: { id: item.id }, data: { result, note: a.note?.trim() || null } });
+    }
+    await touch(tx, tenantId, handoverId);
+  }, TX);
+}
+
+export type NewDamageInput = {
+  view: string;
+  posX: number;
+  posY: number;
+  kind: string;
+  description: string;
+  size?: string | null;
+  severity?: string;
+};
+
+function assertDamageInput(input: Partial<NewDamageInput>) {
+  if (input.posX !== undefined || input.posY !== undefined) {
+    const { posX: x, posY: y } = input;
+    if (!(typeof x === "number" && typeof y === "number" && x >= 0 && x <= 1 && y >= 0 && y <= 1)) throw new DomainError("Schadenpositionen werden normalisiert gespeichert (0 bis 1), keine Pixelwerte.");
+  }
+  if (input.view !== undefined && !(input.view in DAMAGE_VIEWS)) throw new DomainError("Unbekannte Fahrzeugansicht.");
+  if (input.kind !== undefined && !(input.kind in DAMAGE_KINDS)) throw new DomainError("Bitte die Art des Schadens wählen.");
+  if (input.severity !== undefined && !(input.severity in DAMAGE_SEVERITY)) throw new DomainError("Bitte den Schweregrad wählen.");
+  if (input.description !== undefined && input.description.trim().length < 3) throw new DomainError("Bitte den Schaden kurz beschreiben.");
+}
+
+/** Neuer Schaden im Entwurf. Die Schadenakte (Damage) entsteht erst beim Finalisieren. */
+export async function addNewDamage(tenantId: string, handoverId: string, input: NewDamageInput) {
+  assertDamageInput({ ...input, severity: input.severity ?? "MINOR" });
+  return db.$transaction(async (tx) => {
+    const h = await loadDraft(tx, tenantId, handoverId);
+    if (h.sketchId) {
+      const sketch = await tx.vehicleSketch.findFirst({ where: { id: h.sketchId } });
+      const views = Array.isArray(sketch?.views) ? (sketch!.views as { key?: string }[]).map((v) => v.key) : [];
+      if (views.length > 0 && !views.includes(input.view)) throw new DomainError("Diese Ansicht gibt es in der Fahrzeugskizze nicht.");
+    }
+    const last = await tx.handoverDamage.findFirst({ where: { tenantId, handoverId: h.id }, orderBy: { sortOrder: "desc" }, select: { sortOrder: true } });
+    const created = await tx.handoverDamage.create({
+      data: {
+        tenantId,
+        handoverId: h.id,
+        marker: "NEW",
+        view: input.view,
+        posX: input.posX,
+        posY: input.posY,
+        kind: input.kind,
+        description: input.description.trim(),
+        size: input.size?.trim() || null,
+        severity: input.severity ?? "MINOR",
+        sortOrder: (last?.sortOrder ?? -1) + 1,
+      },
+    });
+    await touch(tx, tenantId, h.id);
+    return created;
+  }, TX);
+}
+
+async function loadNewDamage(tx: Tx, tenantId: string, handoverDamageId: string) {
+  const d = await tx.handoverDamage.findFirst({ where: { id: handoverDamageId, tenantId } });
+  if (!d) throw new DomainError("Schaden nicht gefunden.");
+  await loadDraft(tx, tenantId, d.handoverId);
+  if (d.marker !== "NEW") throw new DomainError("Vorhandene Schäden gehören zum dokumentierten Fahrzeugzustand und können im Protokoll nicht verändert werden.");
+  return d;
+}
+
+/** Im Entwurf erfassten Schaden bearbeiten oder auf der Skizze verschieben. */
+export async function updateNewDamage(tenantId: string, handoverDamageId: string, input: Partial<NewDamageInput>) {
+  assertDamageInput(input);
+  return db.$transaction(async (tx) => {
+    const d = await loadNewDamage(tx, tenantId, handoverDamageId);
+    const updated = await tx.handoverDamage.update({
+      where: { id: d.id },
+      data: {
+        ...(input.view !== undefined ? { view: input.view } : {}),
+        ...(input.posX !== undefined ? { posX: input.posX } : {}),
+        ...(input.posY !== undefined ? { posY: input.posY } : {}),
+        ...(input.kind !== undefined ? { kind: input.kind } : {}),
+        ...(input.description !== undefined ? { description: input.description.trim() } : {}),
+        ...(input.size !== undefined ? { size: input.size?.trim() || null } : {}),
+        ...(input.severity !== undefined ? { severity: input.severity } : {}),
+      },
+    });
+    await touch(tx, tenantId, d.handoverId);
+    return updated;
+  }, TX);
+}
+
+/** Entfernt einen im Entwurf erfassten Schaden samt seinen Fotos. Gibt die Speicherschlüssel zum Aufräumen zurück. */
+export async function removeNewDamage(tenantId: string, handoverDamageId: string): Promise<string[]> {
+  return db.$transaction(async (tx) => {
+    const d = await loadNewDamage(tx, tenantId, handoverDamageId);
+    const photos = await tx.photo.findMany({ where: { tenantId, handoverDamageId: d.id }, select: { id: true, storageKey: true } });
+    await tx.photo.deleteMany({ where: { tenantId, id: { in: photos.map((p) => p.id) } } });
+    await tx.handoverDamage.delete({ where: { id: d.id } });
+    await touch(tx, tenantId, d.handoverId);
+    return photos.map((p) => p.storageKey);
+  }, TX);
+}
+
+export type PhotoInput = {
+  handoverId: string;
+  handoverDamageId?: string | null;
+  storageKey: string;
+  category: string;
+  contentType: string;
+  sizeBytes: number;
+  checksum: string;
+  width?: number | null;
+  height?: number | null;
+  takenAt?: Date | null;
+};
+
+/** Trägt ein bereits hochgeladenes Foto ein. Gespeichert wird nur der Storage Key, keine URL. */
+export async function registerPhoto(tenantId: string, actor: Actor, input: PhotoInput) {
+  return db.$transaction(async (tx) => {
+    const h = await loadDraft(tx, tenantId, input.handoverId);
+    assertKeyBelongsToTenant(input.storageKey, tenantId);
+    if (!(input.category in PHOTO_CATEGORIES)) throw new DomainError("Unbekannte Fotokategorie.");
+    if (!(ALLOWED_PHOTO_TYPES as readonly string[]).includes(input.contentType)) throw new DomainError("Dieser Dateityp ist für Fotos nicht erlaubt.");
+    if (input.sizeBytes <= 0 || input.sizeBytes > MAX_PHOTO_BYTES) throw new DomainError("Das Foto ist zu groß.");
+    if (!/^[a-f0-9]{64}$/.test(input.checksum)) throw new DomainError("Die Prüfsumme des Fotos fehlt oder ist ungültig.");
+
+    let snapshotRow = null;
+    if (input.handoverDamageId) {
+      snapshotRow = await tx.handoverDamage.findFirst({ where: { id: input.handoverDamageId, tenantId, handoverId: h.id } });
+      if (!snapshotRow) throw new DomainError("Der Schaden gehört nicht zu diesem Protokoll.");
+    }
+    const photo = await tx.photo.create({
+      data: {
+        tenantId,
+        handoverId: h.id,
+        handoverDamageId: snapshotRow?.id ?? null,
+        damageId: snapshotRow?.damageId ?? null,
+        storageKey: input.storageKey,
+        category: snapshotRow ? "DAMAGE" : input.category,
+        contentType: input.contentType,
+        sizeBytes: input.sizeBytes,
+        checksum: input.checksum,
+        width: input.width ?? null,
+        height: input.height ?? null,
+        takenAt: input.takenAt ?? null,
+        createdById: actor.id,
+      },
+    });
+    if (snapshotRow) {
+      const refs = Array.isArray(snapshotRow.photoRefs) ? (snapshotRow.photoRefs as Prisma.JsonArray) : [];
+      await tx.handoverDamage.update({
+        where: { id: snapshotRow.id },
+        data: { photoRefs: [...refs, { photoId: photo.id, storageKey: photo.storageKey, checksum: photo.checksum }] },
+      });
+    }
+    await touch(tx, tenantId, h.id);
+    return photo;
+  }, TX);
+}
+
+/** Löscht ein im Entwurf aufgenommenes Foto. Gibt den Speicherschlüssel zum Aufräumen zurück. */
+export async function removePhoto(tenantId: string, photoId: string): Promise<string> {
+  return db.$transaction(async (tx) => {
+    const photo = await tx.photo.findFirst({ where: { id: photoId, tenantId } });
+    if (!photo || !photo.handoverId) throw new DomainError("Foto nicht gefunden.");
+    await loadDraft(tx, tenantId, photo.handoverId);
+    if (photo.handoverDamageId) {
+      const row = await tx.handoverDamage.findFirst({ where: { id: photo.handoverDamageId, tenantId } });
+      if (row) {
+        const refs = (Array.isArray(row.photoRefs) ? (row.photoRefs as { photoId?: string }[]) : []).filter((r) => r.photoId !== photo.id);
+        await tx.handoverDamage.update({ where: { id: row.id }, data: { photoRefs: refs as Prisma.InputJsonValue } });
+      }
+    }
+    await tx.photo.delete({ where: { id: photo.id } });
+    await touch(tx, tenantId, photo.handoverId);
+    return photo.storageKey;
+  }, TX);
+}
+
+// ---------------------------------------------------------------------------
+// Prüfung, Stand, Abschluss
+// ---------------------------------------------------------------------------
+
+export type HandoverIssue = {
+  code: string;
+  area: "BOOKING" | "READINGS" | "DAMAGES" | "PHOTOS" | "CHECKLIST" | "SIGNATURE";
+  severity: "error" | "warning";
+  message: string;
+};
 
 export type FinalizeOptions = {
   /** Pflichtfotos prüfen. Nur für Nachträge oder Sonderfälle abschaltbar. */
   enforcePhotos?: boolean;
 };
 
+/** Alle Prüfungen auf einen Blick. Dieselbe Funktion speist den Assistenten und entscheidet beim Abschluss. */
+async function collectIssues(tx: Tx, tenantId: string, handoverId: string, opts: { requireSignature: boolean; enforcePhotos: boolean }): Promise<HandoverIssue[]> {
+  const { handover: h, hash } = await handoverContent(tx, tenantId, handoverId);
+  const issues: HandoverIssue[] = [];
+  const err = (area: HandoverIssue["area"], code: string, message: string) => issues.push({ area, code, severity: "error", message });
+  const warn = (area: HandoverIssue["area"], code: string, message: string) => issues.push({ area, code, severity: "warning", message });
+
+  const booking = await tx.booking.findFirst({ where: { id: h.bookingId, tenantId }, include: { contract: { select: { status: true } } } });
+  const vehicle = await tx.vehicle.findFirst({ where: { id: h.vehicleId, tenantId } });
+  if (!booking || !vehicle) {
+    err("BOOKING", "BOOKING_MISSING", "Buchung oder Fahrzeug gehören nicht zu diesem Mandanten.");
+    return issues;
+  }
+  if (h.type === "PICKUP") {
+    if (booking.status !== "RESERVED") err("BOOKING", "BOOKING_STATUS", "Die Buchung ist nicht mehr reserviert.");
+    if (booking.contract?.status !== "SIGNED") err("BOOKING", "CONTRACT_NOT_SIGNED", "Der Mietvertrag ist nicht abgeschlossen.");
+    if (booking.vehicleId !== h.vehicleId) err("BOOKING", "VEHICLE_CHANGED", "Das Fahrzeug der Buchung wurde geändert. Bitte die Übergabe neu starten.");
+  } else if (booking.status !== "ACTIVE") err("BOOKING", "BOOKING_STATUS", "Die Miete ist nicht aktiv.");
+
+  // Messwerte
+  if (h.mileage == null) err("READINGS", "MILEAGE_MISSING", "Der Kilometerstand fehlt.");
+  else {
+    if (h.type === "PICKUP" && h.mileage < vehicle.mileage) err("READINGS", "MILEAGE_BELOW_VEHICLE", `Der Kilometerstand (${h.mileage.toLocaleString("de-DE")}) liegt unter dem letzten bekannten Stand des Fahrzeugs (${vehicle.mileage.toLocaleString("de-DE")} km).`);
+    if (h.type === "PICKUP" && h.mileage - vehicle.mileage > 2000) warn("READINGS", "MILEAGE_JUMP", `Der Kilometerstand liegt ${(h.mileage - vehicle.mileage).toLocaleString("de-DE")} km über dem letzten bekannten Stand. Bitte prüfen.`);
+    if (h.type === "RETURN") {
+      const pickup = await tx.handover.findFirst({ where: { tenantId, bookingId: h.bookingId, type: "PICKUP", status: "FINALIZED" }, orderBy: { finalizedAt: "desc" } });
+      if (pickup?.mileage != null && h.mileage < pickup.mileage) err("READINGS", "MILEAGE_BELOW_PICKUP", `Der Kilometerstand (${h.mileage}) liegt unter dem der Übergabe (${pickup.mileage}).`);
+    }
+  }
+  const energy = energyRequirements(h.driveType);
+  if (energy.fuel && h.fuelLevelEighths == null) err("READINGS", "FUEL_MISSING", "Der Tankstand fehlt.");
+  if (energy.battery && h.batteryPercent == null) err("READINGS", "BATTERY_MISSING", "Der Batteriestand fehlt.");
+
+  // Schäden
+  const newDamages = h.damages.filter((d) => d.marker === "NEW");
+  newDamages.forEach((d, i) => {
+    const refs = Array.isArray(d.photoRefs) ? d.photoRefs.length : 0;
+    if (refs === 0) err("DAMAGES", "DAMAGE_PHOTO_MISSING", `Neuer Schaden ${i + 1} (${d.description}): es fehlt mindestens ein Foto.`);
+  });
+
+  // Fotos
+  if (opts.enforcePhotos) {
+    const have = new Set(h.photos.map((p) => p.category));
+    const missing = REQUIRED_PHOTO_CATEGORIES.filter((c) => !have.has(c));
+    if (missing.length > 0) err("PHOTOS", "PHOTOS_MISSING", `Es fehlen Pflichtfotos: ${missing.map((c) => PHOTO_CATEGORIES[c]).join(", ")}.`);
+  }
+
+  // Checkliste
+  const open = h.checklistItems.filter((c) => c.required && !c.result);
+  if (open.length > 0) err("CHECKLIST", "CHECKLIST_OPEN", `Es fehlen noch ${open.length} Pflichtpunkte der Checkliste, zuerst: ${open[0].label}`);
+  for (const c of h.checklistItems.filter((x) => (x.result === "NOT_OK" || x.result === "NO") && !x.note)) err("CHECKLIST", "CHECKLIST_NOTE", `Checkliste „${c.label}“: bitte kurz notieren, was nicht in Ordnung ist.`);
+
+  if (opts.requireSignature) {
+    const signatures = await tx.signature.findMany({ where: { tenantId, handoverId }, select: { role: true, contentHash: true } });
+    const renter = signatures.find((s) => s.role === "RENTER");
+    if (!renter) err("SIGNATURE", "SIGNATURE_MISSING", "Die Unterschrift des Mieters fehlt.");
+    else if (renter.contentHash !== hash) err("SIGNATURE", "SIGNATURE_STALE", "Das Protokoll wurde nach der Unterschrift geändert. Der Mieter muss erneut unterschreiben.");
+    if (signatures.some((s) => s.role === "EMPLOYEE" && s.contentHash !== hash)) err("SIGNATURE", "SIGNATURE_STALE_EMPLOYEE", "Die Unterschrift des Mitarbeiters passt nicht mehr zum Protokoll.");
+  }
+  return issues;
+}
+
+/** Stand des Protokolls für den Assistenten und die Anzeige: Inhalt, Unterschriften (ohne Bilddaten), Prüfergebnis, Hash, Skizze. */
+export async function getHandoverState(tenantId: string, handoverId: string) {
+  return db.$transaction(async (tx) => {
+    const { handover, hash } = await handoverContent(tx, tenantId, handoverId);
+    if (handover.status === "DRAFT") await touch(tx, tenantId, handoverId);
+    const signatures = await tx.signature.findMany({ where: { tenantId, handoverId }, select: { id: true, role: true, signerName: true, signedAt: true, contentHash: true }, orderBy: { signedAt: "asc" } });
+    const sketch = handover.sketchId ? await tx.vehicleSketch.findFirst({ where: { id: handover.sketchId } }) : null;
+    const issues = handover.status === "DRAFT" ? await collectIssues(tx, tenantId, handoverId, { requireSignature: false, enforcePhotos: true }) : [];
+    return { handover, signatures, sketch, issues, hash: handover.status === "DRAFT" ? hash : handover.contentHash ?? hash };
+  }, TX);
+}
+
 /**
- * Versiegelt das Protokoll: prüft Pflichtangaben und Unterschrift, legt neue Schäden in der Schadenakte an,
+ * Versiegelt das Protokoll: sperrt die Zeile, prüft alles erneut, legt neue Schäden in der Schadenakte an,
  * schreibt Kilometerstand und Buchungsstatus fort, erzeugt die Fahrzeughistorie und sperrt zum Schluss das Protokoll.
+ * Ein zweiter Aufruf, auch gleichzeitig, scheitert: das Protokoll ist dann kein Entwurf mehr.
  */
 export async function finalizeHandover(tenantId: string, handoverId: string, actor: Actor, options: FinalizeOptions = {}) {
   return db.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<{ id: string; status: string }[]>`SELECT "id", "status" FROM "Handover" WHERE "id" = ${handoverId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+    if (locked.length === 0) throw new DomainError("Protokoll nicht gefunden.");
     const { handover: h, hash } = await handoverContent(tx, tenantId, handoverId);
     assertHandoverDraft(h);
 
-    // Pflichtangaben
-    if (h.mileage == null) throw new DomainError("Der Kilometerstand fehlt.");
-    const usesBattery = BATTERY_DRIVE_TYPES.includes(h.driveType);
-    if (usesBattery && h.batteryPercent == null) throw new DomainError("Der Batteriestand fehlt.");
-    if (!usesBattery && h.fuelLevelEighths == null) throw new DomainError("Der Tankstand fehlt.");
-    const open = h.checklistItems.filter((c) => c.required && !c.result);
-    if (open.length > 0) throw new DomainError(`Es fehlen noch ${open.length} Pflichtpunkte der Checkliste, zuerst: ${open[0].label}`);
-    if (options.enforcePhotos !== false) {
-      const have = new Set(h.photos.map((p) => p.category));
-      const missing = REQUIRED_PHOTO_CATEGORIES.filter((c) => !have.has(c));
-      if (missing.length > 0) throw new DomainError(`Es fehlen Pflichtfotos: ${missing.join(", ")}`);
-    }
+    const problems = (await collectIssues(tx, tenantId, handoverId, { requireSignature: true, enforcePhotos: options.enforcePhotos !== false })).filter((i) => i.severity === "error");
+    if (problems.length > 0) throw new DomainError(problems.length === 1 ? problems[0].message : `${problems[0].message} (und ${problems.length - 1} weitere Punkte)`);
 
-    const vehicle = await tx.vehicle.findFirst({ where: { id: h.vehicleId, tenantId } });
-    const booking = await tx.booking.findFirst({ where: { id: h.bookingId, tenantId } });
-    if (!vehicle || !booking) throw new DomainError("Buchung oder Fahrzeug nicht gefunden.");
+    const vehicle = await tx.vehicle.findFirstOrThrow({ where: { id: h.vehicleId, tenantId } });
+    const booking = await tx.booking.findFirstOrThrow({ where: { id: h.bookingId, tenantId } });
+    const mileage = h.mileage!;
 
-    if (h.type === "RETURN") {
-      const pickup = await tx.handover.findFirst({ where: { tenantId, bookingId: h.bookingId, type: "PICKUP", status: "FINALIZED" }, orderBy: { finalizedAt: "desc" } });
-      if (pickup?.mileage != null && h.mileage < pickup.mileage) throw new DomainError(`Der Kilometerstand (${h.mileage}) liegt unter dem der Übergabe (${pickup.mileage}).`);
-    }
-
-    // Unterschrift des Mieters über genau diesen Inhalt
-    const signatures = await tx.signature.findMany({ where: { tenantId, handoverId: h.id } });
-    if (!signatures.some((s) => s.role === "RENTER")) throw new DomainError("Die Unterschrift des Mieters fehlt.");
-    if (signatures.some((s) => s.contentHash !== hash)) throw new DomainError("Das Protokoll wurde nach der Unterschrift geändert. Bitte erneut unterschreiben lassen.");
-
-    // Statuswechsel der Buchung: bestehende Statuswerte, keine zweite Logik
+    // Statuswechsel der Buchung: bestehende Statuswerte, keine zweite Logik. Nur hier entsteht "Unterwegs".
     const now = new Date();
-    if (h.type === "PICKUP") {
-      if (booking.status !== "RESERVED") throw new DomainError("Die Buchung ist nicht mehr reserviert.");
-      await tx.booking.update({ where: { id: booking.id }, data: { status: "ACTIVE", actualPickupAt: now } });
-    } else {
-      if (booking.status !== "ACTIVE") throw new DomainError("Die Miete ist nicht aktiv.");
-      await tx.booking.update({ where: { id: booking.id }, data: { status: "RETURNED", actualReturnAt: now } });
-    }
+    if (h.type === "PICKUP") await tx.booking.update({ where: { id: booking.id }, data: { status: "ACTIVE", actualPickupAt: now } });
+    else await tx.booking.update({ where: { id: booking.id }, data: { status: "RETURNED", actualReturnAt: now } });
 
     // Neue Schäden in die Schadenakte übernehmen. Die Kopie im Protokoll bleibt davon unabhängig.
     for (const d of h.damages.filter((x) => x.marker === "NEW" && !x.damageId)) {
@@ -403,23 +602,24 @@ export async function finalizeHandover(tenantId: string, handoverId: string, act
           status: "OPEN",
           discoveredAt: now,
           discoveredInHandoverId: h.id,
-          bookingId: h.type === "RETURN" ? h.bookingId : null, // bei der Übergabe gefunden: nicht dem Mieter zugeordnet
+          // Bei der Übergabe entdeckt = Vorschaden: keinem Mieter zugeordnet. Nur bei der Rückgabe zählt die Buchung.
+          bookingId: h.type === "RETURN" ? h.bookingId : null,
           reportedById: actor.id,
         },
       });
       await tx.handoverDamage.update({ where: { id: d.id }, data: { damageId: damage.id } });
       await tx.photo.updateMany({ where: { tenantId, handoverDamageId: d.id }, data: { damageId: damage.id } });
-      await recordVehicleEvent(tx, { tenantId, vehicleId: h.vehicleId, type: "DAMAGE_DISCOVERED", occurredAt: now, mileage: h.mileage, bookingId: h.bookingId, damageId: damage.id, handoverId: h.id, actor, description: d.description });
+      await recordVehicleEvent(tx, { tenantId, vehicleId: h.vehicleId, type: "DAMAGE_DISCOVERED", occurredAt: now, mileage, bookingId: h.bookingId, damageId: damage.id, handoverId: h.id, actor, description: h.type === "PICKUP" ? `Vorschaden bei Übergabe: ${d.description}` : d.description });
     }
 
-    // Kilometerstand fortschreiben, nie zurückdrehen
-    if (h.mileage > vehicle.mileage) await tx.vehicle.update({ where: { id: vehicle.id }, data: { mileage: h.mileage } });
-    await recordVehicleEvent(tx, { tenantId, vehicleId: h.vehicleId, type: h.type as "PICKUP" | "RETURN", occurredAt: now, mileage: h.mileage, bookingId: h.bookingId, handoverId: h.id, actor, description: `${h.type === "PICKUP" ? "Übergabe" : "Rückgabe"} ${h.number}` });
-    await recordVehicleEvent(tx, { tenantId, vehicleId: h.vehicleId, type: "MILEAGE", occurredAt: now, mileage: h.mileage, bookingId: h.bookingId, handoverId: h.id, actor });
+    // Kilometerstand erst jetzt fortschreiben, nie zurückdrehen
+    if (mileage > vehicle.mileage) await tx.vehicle.update({ where: { id: vehicle.id }, data: { mileage } });
+    await recordVehicleEvent(tx, { tenantId, vehicleId: h.vehicleId, type: h.type as "PICKUP" | "RETURN", occurredAt: now, mileage, bookingId: h.bookingId, handoverId: h.id, actor, description: `${h.type === "PICKUP" ? "Übergabe" : "Rückgabe"} ${h.number}` });
+    await recordVehicleEvent(tx, { tenantId, vehicleId: h.vehicleId, type: "MILEAGE", occurredAt: now, mileage, bookingId: h.bookingId, handoverId: h.id, actor });
 
     // Ganz zum Schluss versiegeln. Ab hier greifen die Sperren.
-    return tx.handover.update({ where: { id: h.id }, data: { status: "FINALIZED", finalizedAt: now, contentHash: hash } });
-  });
+    return tx.handover.update({ where: { id: h.id }, data: { status: "FINALIZED", finalizedAt: now, contentHash: hash, wizardStep: HANDOVER_STEPS } });
+  }, TX);
 }
 
 /** Prüft, ob ein finalisiertes Protokoll noch dem gespeicherten Hash entspricht (Nachweis der Unverändertheit). */
@@ -427,5 +627,5 @@ export async function verifyHandover(tenantId: string, handoverId: string) {
   return db.$transaction(async (tx) => {
     const { handover, hash } = await handoverContent(tx, tenantId, handoverId);
     return { finalized: handover.status === "FINALIZED", storedHash: handover.contentHash, currentHash: hash, intact: handover.status === "FINALIZED" && handover.contentHash === hash };
-  });
+  }, TX);
 }

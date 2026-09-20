@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { db } from "../src/lib/db";
 import { addAdditionalDriver, ensureContractDraft, finalizeContract, getContractContentHash, saveConditions, saveContractSignature, verifyContract } from "../src/lib/contracts";
 import { fakeSignaturePng, purgeTenants } from "./helpers";
-import { addNewDamage, addSignature, answerChecklistItem, finalizeHandover, getHandoverContentHash, registerPhoto, startHandover, updateHandoverDraft, verifyHandover } from "../src/lib/handovers";
+import { addNewDamage, answerChecklistItem, saveHandoverSignature, finalizeHandover, getHandoverContentHash, registerPhoto, startHandover, updateHandoverDraft, verifyHandover } from "../src/lib/handovers";
 import { setDamageStatus } from "../src/lib/damages";
 import { publishChecklistVersion, DEFAULT_CHECKLIST } from "../src/lib/checklists";
 import { publishSketchVersion } from "../src/lib/sketches";
@@ -40,7 +40,7 @@ async function photo(handoverId: string, category: string, handoverDamageId?: st
 async function signAndFinalize(handoverId: string) {
   const hash = await getHandoverContentHash(ids.tenantA, handoverId);
   for (const role of ["RENTER", "EMPLOYEE"] as const) {
-    await addSignature(ids.tenantA, actor, { handoverId, role, signerName: role === "RENTER" ? "Erika Muster" : actor.name, storageKey: buildStorageKey({ tenantId: ids.tenantA, area: "signatures", contentType: "image/png" }), contentHash: hash });
+    await saveHandoverSignature(ids.tenantA, actor, handoverId, { role, signerName: role === "RENTER" ? "Erika Muster" : actor.name, imageDataUrl: fakeSignaturePng(), seenHash: hash });
   }
   return finalizeHandover(ids.tenantA, handoverId, actor);
 }
@@ -118,7 +118,7 @@ test("Übergabe kopiert Schäden, Checkliste und Skizze; andere Mandanten sehen 
   pickupId = h.id;
   assert.match(h.number, /^UP-\d{4}-\d{4}$/);
   assert.equal(h.driveType, "DIESEL");
-  assert.equal(h.sketchId, "sys_sketch_transporter_v1"); // Fallback nach Karosserieart der Gruppe
+  assert.equal(h.sketchId, "sys_sketch_transporter_v2"); // Fallback nach Karosserieart der Gruppe
   assert.equal(h.contractId, contractId);
 
   const again = await startHandover(ids.tenantA, ids.booking, "PICKUP", actor);
@@ -137,7 +137,7 @@ test("Übergabe kopiert Schäden, Checkliste und Skizze; andere Mandanten sehen 
 test("Finalisieren verlangt Pflichtangaben und die Unterschrift über genau diesen Inhalt", async () => {
   await assert.rejects(() => finalizeHandover(ids.tenantA, pickupId, actor), /Kilometerstand fehlt/);
   await updateHandoverDraft(ids.tenantA, pickupId, { mileage: 50_010, fuelLevelEighths: 8 });
-  await assert.rejects(() => finalizeHandover(ids.tenantA, pickupId, actor), /Pflichtpunkte/);
+  await assert.rejects(() => finalizeHandover(ids.tenantA, pickupId, actor), /Pflichtfotos/);
   for (const item of await db.handoverChecklistItem.findMany({ where: { tenantId: ids.tenantA, handoverId: pickupId, required: true } })) {
     await answerChecklistItem(ids.tenantA, item.id, item.answerType === "TEXT" ? "2" : item.answerType === "YES_NO" ? "YES" : "OK");
   }
@@ -150,9 +150,10 @@ test("Finalisieren verlangt Pflichtangaben und die Unterschrift über genau dies
 
   // Unterschrift, danach Änderung: die Unterschrift passt nicht mehr
   const hash = await getHandoverContentHash(ids.tenantA, pickupId);
-  await addSignature(ids.tenantA, actor, { handoverId: pickupId, role: "RENTER", signerName: "Erika Muster", storageKey: buildStorageKey({ tenantId: ids.tenantA, area: "signatures", contentType: "image/png" }), contentHash: hash });
+  await saveHandoverSignature(ids.tenantA, actor, pickupId, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: hash });
   await updateHandoverDraft(ids.tenantA, pickupId, { notes: "nachträglich geändert" });
-  await assert.rejects(() => finalizeHandover(ids.tenantA, pickupId, actor), /nach der Unterschrift geändert/);
+  // die Änderung hat die Unterschrift verworfen
+  await assert.rejects(() => finalizeHandover(ids.tenantA, pickupId, actor), /Unterschrift des Mieters fehlt/);
 
   const done = await signAndFinalize(pickupId);
   assert.equal(done.status, "FINALIZED");
@@ -203,8 +204,8 @@ test("spätere Änderungen an Schadenakte, Skizze und Checkliste verändern das 
   assert.equal(afterChange[0].description, "Kratzer Schiebetür");
 
   const pickup = await db.handover.findFirstOrThrow({ where: { id: pickupId, tenantId: ids.tenantA } });
-  assert.equal(pickup.sketchId, "sys_sketch_transporter_v1");
-  assert.equal(pickup.sketchVersion, 1);
+  assert.equal(pickup.sketchId, "sys_sketch_transporter_v2");
+  assert.equal(pickup.sketchVersion, 2);
   assert.equal(await db.handoverChecklistItem.count({ where: { handoverId: pickupId } }), DEFAULT_CHECKLIST.length);
 
   const check = await verifyHandover(ids.tenantA, pickupId);
@@ -218,7 +219,7 @@ test("Rückgabe nutzt den Zustand von jetzt: neue Skizze, neue Checkliste, nur s
   const h = await startHandover(ids.tenantA, ids.booking, "RETURN", actor);
   returnId = h.id;
   assert.match(h.number, /^RP-/);
-  assert.notEqual(h.sketchId, "sys_sketch_transporter_v1");
+  assert.notEqual(h.sketchId, "sys_sketch_transporter_v2");
   assert.equal(h.sketchVersion, 1);
 
   const damages = await db.handoverDamage.findMany({ where: { tenantId: ids.tenantA, handoverId: h.id } });
@@ -235,7 +236,7 @@ test("Zusatzkosten speichern die Rechengrundlage mit den Preisen aus dem Vertrag
   for (const item of await db.handoverChecklistItem.findMany({ where: { tenantId: ids.tenantA, handoverId: returnId } })) await answerChecklistItem(ids.tenantA, item.id, "YES");
   for (const c of REQUIRED_PHOTO_CATEGORIES) await photo(returnId, c);
   const hash = await getHandoverContentHash(ids.tenantA, returnId);
-  await addSignature(ids.tenantA, actor, { handoverId: returnId, role: "RENTER", signerName: "Erika Muster", storageKey: buildStorageKey({ tenantId: ids.tenantA, area: "signatures", contentType: "image/png" }), contentHash: hash });
+  await saveHandoverSignature(ids.tenantA, actor, returnId, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: hash });
   await assert.rejects(() => finalizeHandover(ids.tenantA, returnId, actor), /liegt unter dem der Übergabe/);
 
   await updateHandoverDraft(ids.tenantA, returnId, { mileage: 51_552 });

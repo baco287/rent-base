@@ -241,7 +241,7 @@ model VehicleSketch {
   version   Int      @default(1)
   assetPath String // Pfad unter /public oder Storage Key der SVG-Datei
   assetHash String // sha256 der Datei, damit die verwendete Fassung nachweisbar ist
-  views     Json // [{ key, label }] Reihenfolge der Ansichten
+  views     Json // [{ key, label, box }] Reihenfolge der Ansichten, box = Rahmen im Zeichenfeld
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
 
@@ -369,6 +369,7 @@ model Handover {
   sketchAssetHash String? // genau diese Skizzenfassung wurde verwendet
 
   correctsId String? // Nachtrag: verweist auf das ursprüngliche Protokoll
+  wizardStep Int     @default(1) // zuletzt erreichter Schritt im Assistenten
 
   startedAt   DateTime  @default(now())
   finalizedAt DateTime?

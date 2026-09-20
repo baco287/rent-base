@@ -21,7 +21,7 @@ export function Card({ title, right, children, className = "" }: { title?: React
   return (
     <section className={`card ${className}`}>
       {title && (
-        <header className="flex items-center gap-2.5 px-3.5 py-3 border-b border-line-soft">
+        <header className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 px-3.5 py-3 border-b border-line-soft">
           <h2 className="text-base font-semibold">{title}</h2>
           <span className="flex-1" />
           {right}

@@ -16,6 +16,7 @@
     "test": "tsx --test --test-concurrency=1 \"tests/**/*.test.ts\""
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1136.0",
     "@prisma/client": "^6.19.3",
     "bcryptjs": "^3.0.3",
     "date-fns": "^4.4.0",
