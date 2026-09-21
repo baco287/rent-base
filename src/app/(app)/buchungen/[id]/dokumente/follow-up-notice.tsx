@@ -18,7 +18,7 @@ export async function FollowUpNotice({ tenantId, bookingId, handoverId }: { tena
   }
   return (
     <p role="alert" className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 font-medium">
-      Übergabe abgeschlossen. E-Mail konnte nicht versendet werden{mail?.error ? `: ${mail.error}` : ""}. Die Dokumente sind archiviert und können unten erneut gesendet oder heruntergeladen werden.
+      Übergabe abgeschlossen. E-Mail konnte nicht versendet werden{mail?.error ? `: ${mail.error.replace(/\.+$/, "")}` : ""}. Die Dokumente sind archiviert und können unten erneut gesendet oder heruntergeladen werden.
     </p>
   );
 }

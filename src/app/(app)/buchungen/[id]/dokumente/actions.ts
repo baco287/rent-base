@@ -64,7 +64,7 @@ export async function resendDocumentsAction(bookingId: string, _prev: DocState, 
     refresh(bookingId);
     if (res.status === "SENT") return { ok: `Unterlagen wurden an ${res.log.recipient} versendet.` };
     if (res.status === "DUPLICATE") return { ok: res.log.status === "SENT" ? "Diese Anfrage wurde bereits versendet. Es wurde nichts doppelt verschickt." : undefined, error: res.log.status === "SENT" ? undefined : "Diese Anfrage wurde bereits verarbeitet. Bitte den Stand unten prüfen." };
-    return { error: `E-Mail konnte nicht versendet werden: ${res.log.error ?? "unbekannter Fehler"}.` };
+    return { error: `E-Mail konnte nicht versendet werden: ${(res.log.error ?? "unbekannter Fehler").replace(/\.+$/, "")}.` };
   } catch (e) {
     return failure("Versand", e);
   }
