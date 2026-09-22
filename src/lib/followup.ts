@@ -64,14 +64,14 @@ export async function runReturnFollowUp(tenantId: string, handover: { id: string
 
 export type InvoiceFollowUp = { invoiceDocument: StepResult; email: { status: "SENT" | "FAILED" | "DUPLICATE" | "SKIPPED"; error?: string } };
 
-/** Nach dem Rechnungsabschluss: PDF sicherstellen, dann genau einmal automatisch senden. Wirft nie. */
-export async function runInvoiceFollowUp(tenantId: string, invoiceId: string, actorId: string | null, deps: Deps = {}): Promise<InvoiceFollowUp> {
-  const invoiceDocument = await step("Rechnungs-PDF", invoiceId, () => ensureInvoiceDocument(tenantId, invoiceId, actorId, { storage: deps.storage }));
+/** Nach dem Abschluss einer Rechnungsfassung: PDF dieser Fassung sicherstellen, dann genau einmal automatisch senden. Wirft nie. */
+export async function runInvoiceFollowUp(tenantId: string, versionId: string, actorId: string | null, deps: Deps = {}): Promise<InvoiceFollowUp> {
+  const invoiceDocument = await step("Rechnungs-PDF", versionId, () => ensureInvoiceDocument(tenantId, versionId, actorId, { storage: deps.storage }));
   if (!invoiceDocument.ok) return { invoiceDocument, email: { status: "SKIPPED", error: "Ohne Dokument wird nichts versendet." } };
   try {
-    const sent = await sendInvoiceDocument(tenantId, invoiceId, { trigger: "AUTO", actorId, transport: deps.transport, storage: deps.storage });
+    const sent = await sendInvoiceDocument(tenantId, versionId, { trigger: "AUTO", actorId, transport: deps.transport, storage: deps.storage });
     return { invoiceDocument, email: { status: sent.status, error: sent.log.error ?? undefined } };
   } catch (e) {
-    return { invoiceDocument, email: { status: "FAILED", error: describe("E-Mail-Versand", invoiceId, e) } };
+    return { invoiceDocument, email: { status: "FAILED", error: describe("E-Mail-Versand", versionId, e) } };
   }
 }

@@ -38,11 +38,16 @@ export async function PaymentsPanel({ tenantId, bookingId, role, compact = false
         <div className="grid grid-cols-3 gap-2 text-sm">
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Rechnungsbetrag</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(summary.grossCents)}</div></div>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Bezahlt</div><div className="font-mono tnum text-lg font-semibold text-good">{fmtCents(summary.paidCents)}</div></div>
-          <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Offen</div><div className={`font-mono tnum text-lg font-semibold ${summary.openCents > 0 ? "text-bad" : ""}`}>{fmtCents(summary.openCents)}</div></div>
+          {summary.status === "OVERPAID" ? (
+            <div className="rounded-md bg-bad-soft p-3"><div className="label-xs">Überzahlt</div><div className="font-mono tnum text-lg font-semibold text-bad">{fmtCents(summary.overpaidCents)}</div></div>
+          ) : (
+            <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Offen</div><div className={`font-mono tnum text-lg font-semibold ${summary.openCents > 0 ? "text-bad" : ""}`}>{fmtCents(summary.openCents)}</div></div>
+          )}
         </div>
+        {summary.status === "OVERPAID" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3 py-2 text-sm">Überzahlt – Erstattung zu klären: Der Rechnungsbetrag der aktuellen Fassung liegt unter den dokumentierten Zahlungen. Rent-Base führt keine automatische Erstattung durch; Zahlungen bleiben unverändert.</p>}
         {compact && <div className="text-xs text-ink-3">Rechnung <Link href={`/buchungen/${bookingId}/rechnung`} className="underline">{invoice.number}</Link></div>}
         {canManage && summary.openCents > 0 && <PaymentForm action={recordPaymentAction.bind(null, bookingId)} preview={previewPaymentAction} invoiceId={invoice.id} nonce={randomUUID()} defaultWhen={toDateTimeInputValue(new Date())} />}
-        {canManage && summary.openCents === 0 && <p className="text-sm text-good">Die Rechnung ist vollständig bezahlt.</p>}
+        {canManage && summary.openCents === 0 && summary.status === "PAID" && <p className="text-sm text-good">Die Rechnung ist vollständig bezahlt.</p>}
         {!canManage && <p className="text-xs text-ink-3">Zahlungen erfasst und korrigiert die Disposition.</p>}
         <div>
           <div className="label-xs mb-1">Zahlungshistorie</div>

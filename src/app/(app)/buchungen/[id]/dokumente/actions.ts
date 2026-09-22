@@ -55,8 +55,10 @@ export async function generateHandoverPdfAction(bookingId: string, kind: Handove
   }
 }
 
+/** Aktuelle abgeschlossene Fassung der Rechnung dieser Buchung (PDF und Versand hängen an der Fassung). */
 async function finalizedInvoice(tenantId: string, bookingId: string) {
-  return db.invoice.findFirst({ where: { bookingId, tenantId, status: "FINALIZED" }, select: { id: true } });
+  const inv = await db.invoice.findFirst({ where: { bookingId, tenantId, status: "FINALIZED" }, select: { id: true, currentVersionId: true } });
+  return inv?.currentVersionId ? { id: inv.currentVersionId, invoiceId: inv.id } : null;
 }
 
 /** Rechnungs-PDF nachträglich erzeugen (nur abgeschlossene Rechnung). Hofmitarbeiter dürfen das PDF erzeugen und laden. */

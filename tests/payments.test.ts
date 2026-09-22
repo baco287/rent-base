@@ -21,8 +21,9 @@ async function invoicedWorld(label: string) {
   const w = await returnedWorld(label);
   tenants.push(w.tenantId);
   const draft = await ensureInvoiceDraft(w.tenantId, w.bookingId, w.actor);
-  const inv = await finalizeInvoice(w.tenantId, draft.id, w.actor);
-  return { w, inv, gross: toCents(inv.grossTotal), hashBefore: inv.contentHash! };
+  const version = await finalizeInvoice(w.tenantId, draft.id, w.actor);
+  const inv = { id: draft.id, grossTotal: version.grossTotal, versionId: version.id };
+  return { w, inv, gross: toCents(version.grossTotal), hashBefore: version.contentHash! };
 }
 const at = new Date(Date.now() - 60_000);
 
@@ -31,11 +32,13 @@ test("Zahlungsstatus wird abgeleitet: offen, teilbezahlt, bezahlt; Cent-genau", 
   assert.equal(paymentStatusOf(100_000, 30_000), "PARTIAL");
   assert.equal(paymentStatusOf(100_000, 99_999), "PARTIAL");
   assert.equal(paymentStatusOf(100_000, 100_000), "PAID");
+  assert.equal(paymentStatusOf(100_000, 120_000), "OVERPAID");
+  assert.equal(paymentStatusOf(40_000, 50_000), "OVERPAID");
 });
 
 test("Vollständige Zahlung, Teilzahlungen, Überzahlung/0 €/negativ blockiert, Rechnung bleibt unverändert, Vorschau serverseitig", async () => {
   const { w, inv, gross, hashBefore } = await invoicedWorld("pay-basic");
-  assert.deepEqual(await invoicePaymentSummary(w.tenantId, inv.id), { grossCents: gross, paidCents: 0, openCents: gross, status: "OPEN" });
+  assert.deepEqual(await invoicePaymentSummary(w.tenantId, inv.id), { grossCents: gross, paidCents: 0, openCents: gross, overpaidCents: 0, status: "OPEN" });
 
   // ungültige Beträge
   await assert.rejects(() => recordInvoicePayment(w.tenantId, w.actor, { invoiceId: inv.id, amount: "0", method: "CASH", paidAt: at }), /größer als 0,00/);
@@ -68,11 +71,11 @@ test("Vollständige Zahlung, Teilzahlungen, Überzahlung/0 €/negativ blockiert
   assert.equal(r3.payment.amountCents, rest);
   s = await invoicePaymentSummary(w.tenantId, inv.id);
   assert.deepEqual([s.paidCents, s.openCents, s.status], [gross, 0, "PAID"]);
-  await assert.rejects(() => recordInvoicePayment(w.tenantId, w.actor, { invoiceId: inv.id, amount: "0,01", method: "CASH", paidAt: at }), /Überzahlung/);
+  await assert.rejects(() => recordInvoicePayment(w.tenantId, w.actor, { invoiceId: inv.id, amount: "0,01", method: "CASH", paidAt: at }), /vollständig bezahlt/);
 
-  // Rechnung selbst unverändert (Dokumentzustand ≠ Zahlungsstatus)
-  const after = await db.invoice.findUniqueOrThrow({ where: { id: inv.id } });
-  assert.deepEqual([after.status, after.contentHash, String(after.grossTotal)], ["FINALIZED", hashBefore, String(inv.grossTotal)]);
+  // Rechnungsfassung selbst unverändert (Dokumentzustand ≠ Zahlungsstatus)
+  const after = await db.invoiceVersion.findUniqueOrThrow({ where: { id: inv.versionId } });
+  assert.deepEqual([after.status, after.contentHash, String(after.grossTotal), (await db.invoice.findUniqueOrThrow({ where: { id: inv.id } })).status], ["FINALIZED", hashBefore, String(inv.grossTotal), "FINALIZED"]);
   assert.equal((await verifyInvoice(w.tenantId, inv.id)).intact, true);
 
   // Protokoll
@@ -121,7 +124,7 @@ test("Parallele Zahlungen werden serialisiert (kein doppelter Ausgleich), Doppel
     recordInvoicePayment(w.tenantId, { id: w.userId, name: "Kollege" }, { invoiceId: inv.id, amount: gross / 100, method: "CARD", paidAt: at }),
   ]);
   assert.deepEqual(results.map((r) => r.status).sort(), ["fulfilled", "rejected"]);
-  assert.match(String((results.find((r) => r.status === "rejected") as PromiseRejectedResult).reason.message), /Überzahlung/);
+  assert.match(String((results.find((r) => r.status === "rejected") as PromiseRejectedResult).reason.message), /vollständig bezahlt|Überzahlung/);
   assert.equal((await invoicePaymentSummary(w.tenantId, inv.id)).paidCents, gross, "nicht 200 %");
 
   // Doppelklick: gleicher Schlüssel bucht nur einmal (auch parallel)

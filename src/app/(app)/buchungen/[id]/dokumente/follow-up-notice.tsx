@@ -2,13 +2,13 @@
 // Gelesen wird der tatsächliche Stand aus Archiv und Versandprotokoll, nichts wird angenommen.
 import { db } from "@/lib/db";
 
-type Props = { tenantId: string; bookingId: string; handoverId?: string; invoiceId?: string; kind?: "PICKUP" | "RETURN" | "INVOICE" };
+type Props = { tenantId: string; bookingId: string; handoverId?: string; invoiceId?: string; invoiceVersionId?: string; kind?: "PICKUP" | "RETURN" | "INVOICE" };
 
-export async function FollowUpNotice({ tenantId, bookingId, handoverId, invoiceId, kind = "PICKUP" }: Props) {
+export async function FollowUpNotice({ tenantId, bookingId, handoverId, invoiceId, invoiceVersionId, kind = "PICKUP" }: Props) {
   const wanted = kind === "PICKUP" ? ["RENTAL_CONTRACT", "PICKUP_PROTOCOL"] : kind === "RETURN" ? ["RETURN_PROTOCOL"] : ["INVOICE"];
   const [docs, mail] = await Promise.all([
-    db.document.findMany({ where: { tenantId, bookingId, type: { in: wanted }, ...(kind === "INVOICE" ? { invoiceId } : {}) }, select: { type: true } }),
-    db.emailLog.findFirst({ where: { tenantId, bookingId, ...(kind === "INVOICE" ? { invoiceId } : { handoverId }) }, orderBy: { createdAt: "desc" }, select: { status: true, recipient: true, error: true } }),
+    db.document.findMany({ where: { tenantId, bookingId, type: { in: wanted }, ...(kind === "INVOICE" ? (invoiceVersionId ? { invoiceVersionId } : { invoiceId }) : {}) }, select: { type: true } }),
+    db.emailLog.findFirst({ where: { tenantId, bookingId, ...(kind === "INVOICE" ? (invoiceVersionId ? { invoiceVersionId } : { invoiceId }) : { handoverId }) }, orderBy: { createdAt: "desc" }, select: { status: true, recipient: true, error: true } }),
   ]);
   const types = new Set(docs.map((d) => d.type));
   const docsOk = wanted.every((t) => types.has(t));

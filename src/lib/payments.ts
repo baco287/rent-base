@@ -19,11 +19,24 @@ type Tx = Prisma.TransactionClient;
 const TX = { timeout: 20_000, maxWait: 10_000 };
 export type PaymentRow = Prisma.PaymentGetPayload<object>;
 
-export type PaymentSummary = { grossCents: Cents; paidCents: Cents; openCents: Cents; status: InvoicePaymentStatus };
+export type PaymentSummary = { grossCents: Cents; paidCents: Cents; openCents: Cents; overpaidCents: Cents; status: InvoicePaymentStatus };
 
+/** Offen / teilbezahlt / bezahlt / überzahlt – immer aus Bruttobetrag der aktuellen Fassung und bestätigten Zahlungen. */
 export function paymentStatusOf(grossCents: Cents, paidCents: Cents): InvoicePaymentStatus {
-  if (paidCents <= 0) return "OPEN";
+  if (paidCents <= 0) return grossCents === 0 ? "PAID" : "OPEN";
+  if (paidCents > grossCents) return "OVERPAID";
   return paidCents >= grossCents ? "PAID" : "PARTIAL";
+}
+
+export function summarizePayment(grossCents: Cents, paidCents: Cents): PaymentSummary {
+  return { grossCents, paidCents, openCents: Math.max(0, grossCents - paidCents), overpaidCents: Math.max(0, paidCents - grossCents), status: paymentStatusOf(grossCents, paidCents) };
+}
+
+/** Bruttobetrag der aktuellen Fassung (Altbestand ohne Fassung: der Rechnungswert selbst). */
+async function currentGrossCents(tx: Tx | typeof db, tenantId: string, invoiceId: string): Promise<Cents> {
+  const inv = await tx.invoice.findFirst({ where: { id: invoiceId, tenantId }, select: { grossTotal: true, currentVersion: { select: { grossTotal: true } } } });
+  if (!inv) throw new DomainError("Rechnung nicht gefunden.");
+  return toCents(inv.currentVersion?.grossTotal ?? inv.grossTotal);
 }
 
 async function paidCentsOf(tx: Tx | typeof db, tenantId: string, invoiceId: string): Promise<Cents> {
@@ -33,25 +46,18 @@ async function paidCentsOf(tx: Tx | typeof db, tenantId: string, invoiceId: stri
 
 /** Rechnungsbetrag, bezahlt, offen und Status, ausschließlich aus bestätigten Zahlungen. */
 export async function invoicePaymentSummary(tenantId: string, invoiceId: string, tx: Tx | typeof db = db): Promise<PaymentSummary> {
-  const inv = await tx.invoice.findFirst({ where: { id: invoiceId, tenantId }, select: { grossTotal: true } });
-  if (!inv) throw new DomainError("Rechnung nicht gefunden.");
-  const grossCents = toCents(inv.grossTotal);
+  const grossCents = await currentGrossCents(tx, tenantId, invoiceId);
   const paidCents = await paidCentsOf(tx, tenantId, invoiceId);
-  return { grossCents, paidCents, openCents: Math.max(0, grossCents - paidCents), status: paymentStatusOf(grossCents, paidCents) };
+  return summarizePayment(grossCents, paidCents);
 }
 
 /** Summen für mehrere Rechnungen auf einmal (Listen, Kennzahlen). */
+/** Erwartet je Rechnung den Bruttobetrag der aktuellen Fassung (grossTotal = currentVersion.grossTotal). */
 export async function paymentSummaries(tenantId: string, invoices: { id: string; grossTotal: unknown }[]): Promise<Map<string, PaymentSummary>> {
   const ids = invoices.map((i) => i.id);
   const groups = ids.length > 0 ? await db.payment.groupBy({ by: ["invoiceId"], where: { tenantId, invoiceId: { in: ids }, status: "CONFIRMED" }, _sum: { amountCents: true } }) : [];
   const paid = new Map(groups.map((g) => [g.invoiceId, g._sum.amountCents ?? 0]));
-  return new Map(
-    invoices.map((i) => {
-      const grossCents = toCents(i.grossTotal);
-      const paidCents = paid.get(i.id) ?? 0;
-      return [i.id, { grossCents, paidCents, openCents: Math.max(0, grossCents - paidCents), status: paymentStatusOf(grossCents, paidCents) }];
-    }),
-  );
+  return new Map(invoices.map((i) => [i.id, summarizePayment(toCents(i.grossTotal), paid.get(i.id) ?? 0)]));
 }
 
 export function listInvoicePayments(tenantId: string, invoiceId: string) {
@@ -105,7 +111,8 @@ export async function previewInvoicePayment(tenantId: string, invoiceId: string,
   try {
     newCents = parseAmount(amount);
     checkMethod(method);
-    if (newCents > s.openCents) error = `Überzahlung: Offen sind ${fmtCents(s.openCents)}, eingegeben wurden ${fmtCents(newCents)}. Eine Zahlung über den offenen Betrag hinaus wird nicht erfasst.`;
+    if (s.openCents === 0) error = s.status === "OVERPAID" ? `Diese Rechnung ist überzahlt (${fmtCents(s.overpaidCents)} zu viel). Weitere Zahlungen werden nicht erfasst; die Erstattung ist zu klären.` : "Diese Rechnung ist vollständig bezahlt. Weitere Zahlungen werden nicht erfasst.";
+    else if (newCents > s.openCents) error = `Überzahlung: Offen sind ${fmtCents(s.openCents)}, eingegeben wurden ${fmtCents(newCents)}. Eine Zahlung über den offenen Betrag hinaus wird nicht erfasst.`;
   } catch (e) {
     error = e instanceof DomainError ? e.message : "Ungültige Eingabe.";
   }
@@ -129,7 +136,7 @@ export async function recordInvoicePayment(tenantId: string, actor: Actor, input
   }
   try {
     const outcome = await db.$transaction(async (tx) => {
-      const locked = await tx.$queryRaw<{ id: string; status: string; bookingId: string; grossTotal: unknown; number: string | null }[]>`SELECT "id", "status", "bookingId", "grossTotal", "number" FROM "Invoice" WHERE "id" = ${input.invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+      const locked = await tx.$queryRaw<{ id: string; status: string; bookingId: string; number: string | null }[]>`SELECT "id", "status", "bookingId", "number" FROM "Invoice" WHERE "id" = ${input.invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
       if (locked.length === 0) throw new DomainError("Rechnung nicht gefunden.");
       const inv = locked[0];
       if (key) {
@@ -138,9 +145,10 @@ export async function recordInvoicePayment(tenantId: string, actor: Actor, input
         if (dup) return { payment: dup, created: false };
       }
       if (inv.status !== "FINALIZED") throw new DomainError("Zahlungen können nur auf abgeschlossene Rechnungen erfasst werden.");
-      const grossCents = toCents(inv.grossTotal);
+      const grossCents = await currentGrossCents(tx, tenantId, inv.id);
       const paidCents = await paidCentsOf(tx, tenantId, inv.id);
       const openCents = Math.max(0, grossCents - paidCents);
+      if (openCents === 0) throw new DomainError(paidCents > grossCents ? `Diese Rechnung ist überzahlt (${fmtCents(paidCents - grossCents)} zu viel). Weitere Zahlungen werden nicht erfasst; die Erstattung ist zu klären.` : "Diese Rechnung ist vollständig bezahlt. Weitere Zahlungen werden nicht erfasst.");
       if (amountCents > openCents) throw new DomainError(`Überzahlung: Offen sind ${fmtCents(openCents)}, eingegeben wurden ${fmtCents(amountCents)}. Eine Zahlung über den offenen Betrag hinaus wird nicht erfasst.`);
       const payment = await tx.payment.create({
         data: {

@@ -19,7 +19,7 @@ export async function DocumentsPanel({ tenantId, bookingId, role }: { tenantId: 
   const [contract, handovers, invoice, documents, emails] = await Promise.all([
     db.rentalContract.findFirst({ where: { bookingId, tenantId }, select: { id: true, number: true, status: true, customerSnapshot: true } }),
     db.handover.findMany({ where: { bookingId, tenantId, status: "FINALIZED", correctsId: null }, orderBy: { finalizedAt: "desc" }, select: { id: true, number: true, type: true } }),
-    db.invoice.findFirst({ where: { bookingId, tenantId, status: "FINALIZED" }, select: { id: true, number: true, customerSnapshot: true } }),
+    db.invoice.findFirst({ where: { bookingId, tenantId, status: "FINALIZED" }, select: { id: true, number: true, currentVersionId: true, currentVersion: { select: { id: true, versionNo: true, customerSnapshot: true } } } }),
     listBookingDocuments(tenantId, bookingId),
     listBookingEmails(tenantId, bookingId, 16),
   ]);
@@ -29,24 +29,26 @@ export async function DocumentsPanel({ tenantId, bookingId, role }: { tenantId: 
   const mail = mailStatus();
   const isOwner = role === "OWNER";
   const recipient = (contract.customerSnapshot as { email?: string | null } | null)?.email?.trim() || null;
-  const invoiceRecipient = (invoice?.customerSnapshot as { email?: string | null } | null)?.email?.trim() || null;
+  const invoiceRecipient = (invoice?.currentVersion?.customerSnapshot as { email?: string | null } | null)?.email?.trim() || null;
+  const currentVersionId = invoice?.currentVersion?.id ?? null;
   const canSendInvoice = role !== "YARD";
   const pickup = handovers.find((h) => h.type === "PICKUP");
   const ret = handovers.find((h) => h.type === "RETURN");
-  const latest = (type: DocumentType) => documents.find((d) => d.type === type);
+  // Rechnung: nur das PDF der aktuellen Fassung zählt hier; ältere Fassungen sind auf der Rechnungsseite im Fassungsverlauf
+  const latest = (type: DocumentType) => documents.find((d) => d.type === type && (type !== "INVOICE" || d.invoiceVersionId === currentVersionId));
 
   const rows: { type: DocumentType; available: boolean; action: (prev: import("./actions").DocState, fd: FormData) => Promise<import("./actions").DocState>; generateLabel: string; waitText: string }[] = [
     { type: "RENTAL_CONTRACT", available: true, action: generateContractPdfAction.bind(null, bookingId), generateLabel: "Mietvertrag-PDF erzeugen", waitText: "" },
     { type: "PICKUP_PROTOCOL", available: !!pickup, action: generateHandoverPdfAction.bind(null, bookingId, "PICKUP"), generateLabel: "Übergabeprotokoll-PDF erzeugen", waitText: "nach der Übergabe" },
     { type: "RETURN_PROTOCOL", available: !!ret, action: generateHandoverPdfAction.bind(null, bookingId, "RETURN"), generateLabel: "Rückgabeprotokoll-PDF erzeugen", waitText: "nach der Rückgabe" },
-    { type: "INVOICE", available: !!invoice, action: generateInvoicePdfAction.bind(null, bookingId), generateLabel: "Rechnungs-PDF erzeugen", waitText: "nach Abschluss der Rechnung" },
+    { type: "INVOICE", available: !!currentVersionId, action: generateInvoicePdfAction.bind(null, bookingId), generateLabel: "Rechnungs-PDF erzeugen", waitText: "nach Abschluss der Rechnung" },
   ];
 
   const mailBlocks = [
     pickup ? { kind: "PICKUP" as const, title: "E-Mail nach der Übergabe", handover: pickup, ready: !!latest("RENTAL_CONTRACT") && !!latest("PICKUP_PROTOCOL"), readyText: "Versendet werden kann, sobald Mietvertrag und Übergabeprotokoll als PDF vorliegen." } : null,
     ret ? { kind: "RETURN" as const, title: "E-Mail nach der Rückgabe", handover: ret, ready: !!latest("RETURN_PROTOCOL"), readyText: "Versendet werden kann, sobald das Rückgabeprotokoll als PDF vorliegt." } : null,
   ].filter((x): x is NonNullable<typeof x> => x !== null);
-  const invoiceBlock = invoice ? { title: `E-Mail mit Rechnung ${invoice.number}`, ready: !!latest("INVOICE"), readyText: "Versendet werden kann, sobald die Rechnung als PDF vorliegt.", emails: emails.filter((e) => e.invoiceId === invoice.id) } : null;
+  const invoiceBlock = invoice && currentVersionId ? { title: `E-Mail mit Rechnung ${invoice.number}${(invoice.currentVersion?.versionNo ?? 1) > 1 ? ` (Fassung ${invoice.currentVersion!.versionNo})` : ""}`, ready: !!latest("INVOICE"), readyText: "Versendet werden kann, sobald die aktuelle Fassung als PDF vorliegt.", emails: emails.filter((e) => e.invoiceVersionId === currentVersionId) } : null;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
@@ -60,7 +62,7 @@ export async function DocumentsPanel({ tenantId, bookingId, role }: { tenantId: 
         <ul className="divide-y divide-line-soft">
           {rows.map((r) => {
             const doc = latest(r.type);
-            const older = documents.filter((d) => d.type === r.type && d.id !== doc?.id);
+            const older = documents.filter((d) => d.type === r.type && d.id !== doc?.id && (r.type !== "INVOICE" || d.invoiceVersionId === currentVersionId));
             return (
               <li key={r.type} className="px-4 py-3 flex flex-col gap-2">
                 <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">

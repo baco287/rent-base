@@ -42,6 +42,7 @@ test("Jede Server-Action-Datei und jede Prozessseite prüft die Rolle serverseit
   // Rechnungen: anlegen, bearbeiten, abschließen und versenden nur DISPO (und OWNER); PDF erzeugen und laden auch YARD
   const invoiceActions = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/rechnung/actions.ts"), "utf8");
   assert.ok(!/"YARD"/.test(invoiceActions), "Rechnungsaktionen dürfen YARD nicht zulassen");
+  for (const fn of ["startInvoiceEditAction", "finalizeInvoiceAction", "markDeliveredAction", "saveInvoiceDraftAction", "discardInvoiceDraftAction"]) assert.ok(new RegExp(`export async function ${fn}`).test(invoiceActions), `${fn} vorhanden`);
   const docActions = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/dokumente/actions.ts"), "utf8");
   assert.match(docActions, /export async function resendInvoiceAction[\s\S]*?requireRole\("DISPO"\)/, "Rechnungsversand nur DISPO");
   // Zahlungen und Kaution: Zahlung erfassen/stornieren, Kaution freigeben/einbehalten/korrigieren nur DISPO (und OWNER);

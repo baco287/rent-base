@@ -4,9 +4,11 @@ import type { InvoiceDocumentData } from "@/lib/invoice-view";
 import { COLORS, Pdf, type Cell, type PdfTrace } from "@/lib/pdf/layout";
 
 export async function renderInvoicePdf(data: InvoiceDocumentData): Promise<{ bytes: Buffer; trace: PdfTrace }> {
+  const v = data.version;
+  const correction = v.kind === "CORRECTION";
   const pdf = new Pdf({
-    title: "Rechnung",
-    number: data.number,
+    title: correction ? "Berichtigte Rechnung" : "Rechnung",
+    number: v.versionNo > 1 ? `${data.number} · Fassung ${v.versionNo}` : data.number,
     landlord: { name: data.company.fullName, address: data.company.addressLines.join(", "), contact: [data.company.phone, data.company.email].filter(Boolean).join(" · ") },
     footerNote: data.contentHash ? { label: "Prüfsumme der Rechnung (SHA-256)", value: data.contentHash } : undefined,
   });
@@ -37,14 +39,26 @@ export async function renderInvoicePdf(data: InvoiceDocumentData): Promise<{ byt
   }
   pdf.y = Math.max(y, ry) + 14;
 
-  pdf.textAt(`Rechnung ${data.number}`, pdf.left, pdf.y, pdf.width, { size: 16, bold: true, color: COLORS.brand });
+  pdf.textAt(`${correction ? "Berichtigte Rechnung" : "Rechnung"} ${data.number}`, pdf.left, pdf.y, pdf.width, { size: 16, bold: true, color: COLORS.brand });
   pdf.y += 4;
   pdf.textAt(`Fahrzeugmiete${data.reference.contractNumber ? ` gemäß Mietvertrag ${data.reference.contractNumber}` : ""}, Leistungszeitraum ${data.servicePeriod}`, pdf.left, pdf.y, pdf.width, { size: 9, color: COLORS.ink2 });
   pdf.y += 10;
+  // Fassungsinformation: Neufassung unaufdringlich, Berichtigung deutlich (Bezug auf die ersetzte Fassung, § 31 Abs. 5 UStDV)
+  if (v.versionNo > 1) {
+    const supersedes = v.supersedes ? `Diese Fassung ersetzt Fassung ${v.supersedes.versionNo}${v.supersedes.finalizedAt ? ` vom ${v.supersedes.finalizedAt}` : ""} der Rechnung ${data.number}.` : "";
+    if (correction) {
+      pdf.paragraph(`Berichtigte Rechnung · Fassung ${v.versionNo}${v.correctionDate ? ` · Berichtigt am ${v.correctionDate}` : ""}`, { size: 10, bold: true, gapAfter: 2 });
+      if (supersedes) pdf.paragraph(supersedes, { size: 9, gapAfter: 2 });
+      if (v.reason) pdf.paragraph(`Grund der Berichtigung: ${v.reason}`, { size: 9, gapAfter: 8 });
+      else pdf.gap(6);
+    } else {
+      pdf.paragraph(`Fassung ${v.versionNo}${v.correctionDate ? ` vom ${v.correctionDate}` : ""}${supersedes ? ` – ${supersedes}` : ""}`, { size: 8, color: COLORS.ink3, gapAfter: 8 });
+    }
+  }
 
   const priceHeader = data.pricesIncludeTax ? "Einzelpreis (brutto)" : "Einzelpreis (netto)";
   pdf.table(
-    [{ header: "Pos.", width: 4 }, { header: "Beschreibung", width: 37 }, { header: "Menge", width: 12, align: "right" }, { header: priceHeader, width: 13, align: "right" }, { header: "USt.", width: 10, align: "right" }, { header: "Netto", width: 12, align: "right" }, { header: "Brutto", width: 12, align: "right" }],
+    [{ header: "Pos.", width: 5 }, { header: "Beschreibung", width: 36 }, { header: "Menge", width: 12, align: "right" }, { header: priceHeader, width: 13, align: "right" }, { header: "USt.", width: 10, align: "right" }, { header: "Netto", width: 12, align: "right" }, { header: "Brutto", width: 12, align: "right" }],
     data.items.map((i): Cell[] => [String(i.index), i.description, `${i.quantity} ${i.unit}`, i.unitPrice, i.taxRate, i.net, { text: i.gross, bold: true }]),
     { zebra: true },
   );

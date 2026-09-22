@@ -64,8 +64,17 @@ export function InvoiceHeadCards({ doc }: { doc: InvoiceDocumentData }) {
 
 /** Abgeschlossene Rechnung: Positionen, Steuer, Summen und Texte, nur lesend. */
 export function InvoiceDocumentView({ doc }: { doc: InvoiceDocumentData }) {
+  const v = doc.version;
   return (
     <div className="flex flex-col gap-4">
+      {v.versionNo > 1 && (
+        <div className={`rounded-md px-3.5 py-2.5 text-sm ${v.kind === "CORRECTION" ? "bg-amber-soft text-amber" : "bg-panel-2 text-ink-2"}`}>
+          <span className="font-semibold">{v.kind === "CORRECTION" ? "Berichtigte Rechnung" : "Neufassung"} · Fassung {v.versionNo}</span>
+          {v.correctionDate && <> · {v.kind === "CORRECTION" ? "Berichtigt am" : "vom"} {v.correctionDate}</>}
+          {v.supersedes && <> · Diese Fassung ersetzt Fassung {v.supersedes.versionNo}{v.supersedes.finalizedAt ? ` vom ${v.supersedes.finalizedAt}` : ""}.</>}
+          {v.reason && <div className="mt-1">Grund der Berichtigung: {v.reason}</div>}
+        </div>
+      )}
       <InvoiceHeadCards doc={doc} />
       <Card title="Positionen" right={<Chip>{doc.pricesIncludeTax ? "Einzelpreise brutto" : "Einzelpreise netto"}</Chip>}>
         <div className="overflow-x-auto">

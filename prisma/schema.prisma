@@ -45,26 +45,28 @@ model Tenant {
   customers Customer[]
   bookings  Booking[]
 
-  sketches           VehicleSketch[]
-  contracts          RentalContract[]
-  contractDrivers    ContractDriver[]
-  handovers          Handover[]
-  damages            Damage[]
-  handoverDamages    HandoverDamage[]
-  checklistTemplates ChecklistTemplate[]
-  checklistItems     HandoverChecklistItem[]
-  photos             Photo[]
-  signatures         Signature[]
-  documents          Document[]
-  extraCharges       ExtraCharge[]
-  emailLogs          EmailLog[]
-  vehicleEvents      VehicleEvent[]
-  invoices           Invoice[]
-  invoiceItems       InvoiceItem[]
-  payments           Payment[]
-  deposits           SecurityDeposit[]
-  depositEvents      SecurityDepositEvent[]
-  auditLogs          AuditLog[]
+  sketches            VehicleSketch[]
+  contracts           RentalContract[]
+  contractDrivers     ContractDriver[]
+  handovers           Handover[]
+  damages             Damage[]
+  handoverDamages     HandoverDamage[]
+  checklistTemplates  ChecklistTemplate[]
+  checklistItems      HandoverChecklistItem[]
+  photos              Photo[]
+  signatures          Signature[]
+  documents           Document[]
+  extraCharges        ExtraCharge[]
+  emailLogs           EmailLog[]
+  vehicleEvents       VehicleEvent[]
+  invoices            Invoice[]
+  invoiceItems        InvoiceItem[]
+  payments            Payment[]
+  deposits            SecurityDeposit[]
+  depositEvents       SecurityDepositEvent[]
+  auditLogs           AuditLog[]
+  invoiceVersions     InvoiceVersion[]
+  invoiceVersionItems InvoiceVersionItem[]
 }
 
 model User {
@@ -588,28 +590,30 @@ model Signature {
 
 // Erzeugtes Dokument (PDF). Unveränderlich archiviert: einmal erzeugt, nie überschrieben.
 model Document {
-  id          String   @id @default(cuid())
-  tenantId    String
-  bookingId   String
-  contractId  String?
-  handoverId  String?
-  invoiceId   String?
-  type        String // RENTAL_CONTRACT | PICKUP_PROTOCOL | RETURN_PROTOCOL | INVOICE
-  storageKey  String   @unique
-  fileName    String
-  contentType String   @default("application/pdf")
-  sizeBytes   Int
-  checksum    String // sha256 der gespeicherten Datei
-  sourceHash  String? // Prüfsumme (contentHash) des versiegelten Vertrags oder Protokolls, aus dem das PDF entstand
-  version     Int      @default(1)
-  createdAt   DateTime @default(now())
-  createdById String?
+  id               String   @id @default(cuid())
+  tenantId         String
+  bookingId        String
+  contractId       String?
+  handoverId       String?
+  invoiceId        String?
+  invoiceVersionId String? // Rechnungsfassung, aus der das PDF entstand
+  type             String // RENTAL_CONTRACT | PICKUP_PROTOCOL | RETURN_PROTOCOL | INVOICE
+  storageKey       String   @unique
+  fileName         String
+  contentType      String   @default("application/pdf")
+  sizeBytes        Int
+  checksum         String // sha256 der gespeicherten Datei
+  sourceHash       String? // Prüfsumme (contentHash) des versiegelten Vertrags oder Protokolls, aus dem das PDF entstand
+  version          Int      @default(1)
+  createdAt        DateTime @default(now())
+  createdById      String?
 
-  tenant   Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  booking  Booking         @relation(fields: [bookingId], references: [id])
-  contract RentalContract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
-  handover Handover?       @relation(fields: [handoverId], references: [id], onDelete: SetNull)
-  invoice  Invoice?        @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking        Booking         @relation(fields: [bookingId], references: [id])
+  contract       RentalContract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  handover       Handover?       @relation(fields: [handoverId], references: [id], onDelete: SetNull)
+  invoice        Invoice?        @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  invoiceVersion InvoiceVersion? @relation(fields: [invoiceVersionId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, bookingId, type])
 }
@@ -660,6 +664,7 @@ model EmailLog {
   idempotencyKey    String
   handoverId        String? // Bezug zum Protokoll, nur Referenz
   invoiceId         String? // Bezug zur Rechnung, nur Referenz
+  invoiceVersionId  String? // welche Rechnungsfassung versendet wurde (Anhang = deren PDF)
   trigger           String    @default("AUTO") // AUTO = nach Abschluss | MANUAL = "erneut senden"
   attemptNo         Int       @default(1) // fortlaufender Versuch je Buchung und Vorlage
   createdById       String?
@@ -667,12 +672,14 @@ model EmailLog {
   lastAttemptAt     DateTime?
   sentAt            DateTime?
 
-  tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  booking Booking? @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking        Booking?        @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  invoiceVersion InvoiceVersion? @relation(fields: [invoiceVersionId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, status])
   @@index([tenantId, bookingId, createdAt])
+  @@index([tenantId, invoiceVersionId])
 }
 
 // Fahrzeughistorie, nur anfügen.
@@ -712,43 +719,49 @@ model Invoice {
   number           String? // z. B. RE-2026-000001, erst beim Abschluss vergeben
   status           String  @default("DRAFT") // DRAFT | FINALIZED | (vorbereitet: CANCELLED, CREDITED)
 
-  issueDate          DateTime? // Rechnungsdatum, beim Abschluss gesetzt
-  servicePeriodStart DateTime // Leistungszeitraum: tatsächliche Übergabe
-  servicePeriodEnd   DateTime // tatsächliche Rückgabe
+  // Phase 10: Die Rechnungsdaten liegen in unveränderlichen Fassungen (InvoiceVersion). Invoice ist nur noch die
+  // logische Rechnung: Nummer, Bezug, Zeiger auf die aktuelle Fassung, interne Notiz, Änderungsprotokoll, Exportmarke.
+  // Die folgenden Spalten sind Altbestand aus Phase 8/9 (Fassung 1 wurde daraus kopiert) und werden nicht mehr beschrieben.
+  issueDate          DateTime? // Rechnungsdatum der Fassung 1 (Altbestand)
+  servicePeriodStart DateTime? // Altbestand
+  servicePeriodEnd   DateTime? // Altbestand
   currency           String    @default("EUR")
-  pricesIncludeTax   Boolean // Kopie der Einstellung zum Zeitpunkt der Erstellung
+  pricesIncludeTax   Boolean? // Altbestand
+  customerSnapshot   Json? // Altbestand
+  companySnapshot    Json? // Altbestand
+  netTotal           Decimal   @default(0) // Altbestand
+  taxTotal           Decimal   @default(0) // Altbestand
+  grossTotal         Decimal   @default(0) // Altbestand
+  paymentTermDays    Int? // Altbestand
+  paymentDueDate     DateTime? // Altbestand
+  customerNote       String? // Altbestand
+  taxNote            String? // Altbestand
+  contentHash        String? // Altbestand (Prüfsumme der Fassung 1)
+  version            Int       @default(1) // Altbestand
 
-  customerSnapshot Json // Rechnungsempfänger
-  companySnapshot  Json // Vermieter mit Steuer- und Bankdaten (beim Abschluss eingefroren)
+  notes     String? // nur intern, nie auf Dokumenten
+  changeLog Json    @default("[]") // [{ at, by, summary, versionNo? }] Änderungen an Entwürfen und Fassungen
 
-  netTotal   Decimal @default(0)
-  taxTotal   Decimal @default(0)
-  grossTotal Decimal @default(0)
-
-  paymentTermDays Int?
-  paymentDueDate  DateTime?
-  customerNote    String? // erscheint auf der Rechnung
-  taxNote         String? // Steuerhinweis (z. B. bei 0 %), erscheint auf der Rechnung
-  notes           String? // nur intern, nie auf Dokumenten
-  changeLog       Json      @default("[]") // [{ at, by, summary }] Änderungen am Entwurf
-
-  contentHash String? // sha256 über den versiegelten Inhalt
-  sourceHash  String? // Prüfsummen der Quellen (Vertrag, Rückgabe) beim Erstellen
-  version     Int     @default(1)
+  sourceHash       String? // Prüfsummen der Quellen (Vertrag, Rückgabe) beim Erstellen
+  currentVersionId String?   @unique // aktuell gültige abgeschlossene Fassung
+  exportedAt       DateTime? // buchhalterisch exportiert: danach keine Fassung mehr unter dieser Nummer
+  exportBatchId    String?
 
   createdById String?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
-  finalizedAt DateTime?
+  finalizedAt DateTime? // Abschluss der Fassung 1
 
-  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  booking        Booking         @relation(fields: [bookingId], references: [id])
-  customer       Customer?       @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  contract       RentalContract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
-  returnHandover Handover?       @relation(fields: [returnHandoverId], references: [id], onDelete: SetNull)
-  items          InvoiceItem[]
+  tenant         Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking        Booking          @relation(fields: [bookingId], references: [id])
+  customer       Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  contract       RentalContract?  @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  returnHandover Handover?        @relation(fields: [returnHandoverId], references: [id], onDelete: SetNull)
+  items          InvoiceItem[] // Altbestand (Positionen der Fassung 1 vor Phase 10)
   documents      Document[]
   payments       Payment[]
+  versions       InvoiceVersion[] @relation("InvoiceVersions")
+  currentVersion InvoiceVersion?  @relation("InvoiceCurrentVersion", fields: [currentVersionId], references: [id])
 
   @@unique([tenantId, number])
   @@index([tenantId, bookingId])
@@ -895,4 +908,94 @@ model AuditLog {
 
   @@index([tenantId, createdAt])
   @@index([tenantId, bookingId])
+}
+
+// ============================================================================
+// Phase 10: Rechnungsfassungen. Invoice = logische Rechnung (Nummer bleibt), InvoiceVersion = unveränderliche Fassung.
+// Jede erneute Finalisierung erzeugt eine neue Fassung aus dem Snapshot der vorherigen; nichts wird überschrieben.
+// "Ersetzt" ist kein gespeicherter Status, sondern folgt aus Invoice.currentVersionId (versiegelter Inhalt bleibt unberührt).
+// ============================================================================
+
+model InvoiceVersion {
+  id                  String  @id @default(cuid())
+  tenantId            String
+  invoiceId           String
+  versionNo           Int
+  kind                String // ORIGINAL | REVISION (Vorfassung nie übermittelt) | CORRECTION (Vorfassung bereits übermittelt)
+  status              String  @default("DRAFT") // DRAFT | FINALIZED
+  supersedesVersionId String? // Vorfassung, aus deren Snapshot dieser Entwurf entstand
+  reason              String? // Grund (Pflicht bei CORRECTION); erscheint auf der berichtigten Rechnung
+
+  issueDate          DateTime? // Rechnungsdatum (bei Fassung 1 vergeben, danach übernommen)
+  correctionDate     DateTime? // Datum der Berichtigung/Neufassung (Fassung >= 2)
+  servicePeriodStart DateTime
+  servicePeriodEnd   DateTime
+  currency           String    @default("EUR")
+  pricesIncludeTax   Boolean
+
+  customerSnapshot Json
+  companySnapshot  Json
+
+  netTotal   Decimal @default(0)
+  taxTotal   Decimal @default(0)
+  grossTotal Decimal @default(0)
+
+  paymentTermDays Int?
+  paymentDueDate  DateTime?
+  customerNote    String?
+  taxNote         String?
+
+  contentHash      String? // sha256 über den versiegelten Inhalt dieser Fassung
+  diffFromPrevious Json? // strukturierte Differenz zur Vorfassung (beim Abschluss erzeugt)
+
+  // Übermittlung außerhalb des Rent-Base-E-Mail-Versands (manuell bestätigt), hängt an der konkreten Fassung
+  deliveredAt     DateTime?
+  deliveredById   String?
+  deliveredByName String?
+  deliveredNote   String?
+
+  exportedAt    DateTime? // buchhalterisch exportiert (Vorbereitung, kein Export in dieser Phase)
+  exportBatchId String?
+
+  createdById     String?
+  createdByName   String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  finalizedAt     DateTime?
+  finalizedById   String?
+  finalizedByName String?
+
+  tenant    Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoice   Invoice              @relation("InvoiceVersions", fields: [invoiceId], references: [id])
+  currentOf Invoice?             @relation("InvoiceCurrentVersion")
+  items     InvoiceVersionItem[]
+  documents Document[]
+  emailLogs EmailLog[]
+
+  @@unique([invoiceId, versionNo])
+  @@index([tenantId, invoiceId, status])
+}
+
+model InvoiceVersionItem {
+  id            String   @id @default(cuid())
+  tenantId      String
+  versionId     String
+  sortOrder     Int      @default(0)
+  description   String
+  quantity      Decimal
+  unit          String
+  unitPrice     Decimal
+  netAmount     Decimal
+  taxRate       Decimal
+  taxAmount     Decimal
+  grossAmount   Decimal
+  source        String // RENTAL | EXTRA_CHARGE | MANUAL
+  extraChargeId String? // nur Referenz auf die Quelle der Fassung 1
+  reference     String?
+  createdAt     DateTime @default(now())
+
+  tenant  Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  version InvoiceVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, versionId])
 }

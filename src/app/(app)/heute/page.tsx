@@ -41,13 +41,15 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
 
   // Operative Geldübersicht (keine Buchhaltung): offene Rechnungen, heute erfasste Zahlungen, offene Kautionen
   const [finalInvoices, todayPayments, deposits] = await Promise.all([
-    db.invoice.findMany({ where: { tenantId: tenant.id, status: "FINALIZED" }, select: { id: true, grossTotal: true } }),
+    db.invoice.findMany({ where: { tenantId: tenant.id, status: "FINALIZED", currentVersionId: { not: null } }, select: { id: true, currentVersion: { select: { grossTotal: true } } } }).then((rows) => rows.map((r) => ({ id: r.id, grossTotal: r.currentVersion!.grossTotal }))),
     db.payment.aggregate({ where: { tenantId: tenant.id, status: "CONFIRMED", createdAt: { gte: start, lt: end } }, _sum: { amountCents: true }, _count: true }),
     openDepositCounts(tenant.id),
   ]);
   const sums = await paymentSummaries(tenant.id, finalInvoices);
-  const openInvoices = [...sums.values()].filter((x) => x.status !== "PAID");
+  const openInvoices = [...sums.values()].filter((x) => x.status === "OPEN" || x.status === "PARTIAL");
   const openInvoiceCents = openInvoices.reduce((a, x) => a + x.openCents, 0);
+  const overpaid = [...sums.values()].filter((x) => x.status === "OVERPAID");
+  const overpaidCents = overpaid.reduce((a, x) => a + x.overpaidCents, 0);
 
   const events = [
     ...pickups.map((b) => ({ at: b.startAt, kind: "Abholung", b })),
@@ -82,6 +84,11 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
           <KPI label="Zahlungen heute" value={todayPayments._count} detail={fmtCents(todayPayments._sum.amountCents ?? 0)} />
           <KPI label="Offene Kautionen" value={deposits.held} detail={`nach Rückgabe noch nicht entschieden · ${deposits.expectedActive} unterwegs ohne Eingang`} />
         </div>
+        {overpaid.length > 0 && (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <KPI label="Erstattungen zu klären" value={overpaid.length} detail={<Link href="/rechnungen?filter=ueberzahlt" className="underline">{fmtCents(overpaidCents)} überzahlt – keine automatische Erstattung</Link>} hot />
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
           <Card title="Heute auf dem Hof" right={<Chip>{events.length} Termine</Chip>}>

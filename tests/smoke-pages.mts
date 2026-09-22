@@ -13,7 +13,7 @@ import { createWorld, fakeSignaturePng, purgeTenants } from "./helpers";
 import { ensureContractDocument, ensurePickupDocument, ensureReturnDocument } from "../src/lib/documents";
 import { addManualCharge, confirmProposal } from "../src/lib/returns";
 import { ensureInvoiceDocument } from "../src/lib/documents";
-import { ensureInvoiceDraft, finalizeInvoice } from "../src/lib/invoices";
+import { ensureInvoiceDraft, finalizeInvoice, startInvoiceEdit, updateInvoiceDraft } from "../src/lib/invoices";
 import { recordInvoicePayment } from "../src/lib/payments";
 import { recordDepositReceived, settleDeposit } from "../src/lib/deposits";
 
@@ -261,12 +261,13 @@ const invDraft = await (await fetch(`${base}/buchungen/${retBooking.id}/rechnung
 report(["Rechnung (Entwurf)", "Alle Prüfungen bestanden", "Rechnungsempfänger", "Quellen des Entwurfs", "Mehrkilometer", "Kraftstoff", "Entwurf speichern", "Rechnung finalisieren", "Position hinzufügen", "Steuerzusammenfassung", "Änderungsprotokoll", "Entwurf verwerfen"].every((t) => invDraft.includes(t)), "Rechnung: Entwurfsseite mit allen Bereichen");
 const retBookingHtml1 = await (await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } })).text();
 report(retBookingHtml1.includes("Rechnung fortsetzen"), "Buchung: Rechnung fortsetzen");
-const finalInvoice = await finalizeInvoice(w.tenantId, invoice.id, w.actor);
-const invoicePdf = await ensureInvoiceDocument(w.tenantId, invoice.id, w.actor.id);
+const finalVersion = await finalizeInvoice(w.tenantId, invoice.id, w.actor);
+const finalInvoice = { number: (await db.invoice.findUniqueOrThrow({ where: { id: invoice.id } })).number!, versionId: finalVersion.id };
+const invoicePdf = await ensureInvoiceDocument(w.tenantId, finalVersion.id, w.actor.id);
 const invFinal = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung?abgeschlossen=1`, { headers: { cookie } }));
-report([`Rechnung ${finalInvoice.number}`, "Abgeschlossen", "Prüfsumme (SHA-256)", "Rechnungsbetrag", `Rechnung_${finalInvoice.number}.pdf`, "Herunterladen", "E-Mail mit Rechnung", "Rechnung jetzt senden", "Interne Notiz"].every((t) => invFinal.includes(t)) && !invFinal.includes("Entwurf speichern"), "Rechnung: abgeschlossene Ansicht mit Dokument und E-Mail-Bereich");
+report([`Rechnung ${finalInvoice.number}`, "Finalisiert", "Aktuelle Fassung 1", "Noch nicht übermittelt", "Fassungsverlauf", "Rechnung bearbeiten", "Als an Kunden übergeben markieren", "Prüfsumme (SHA-256)", "Rechnungsbetrag", `Rechnung_${finalInvoice.number}_Fassung1.pdf`, "Herunterladen", "E-Mail mit Rechnung", "Rechnung jetzt senden", "Interne Notiz"].every((t) => invFinal.includes(t)) && !invFinal.includes("Entwurf speichern"), "Rechnung: abgeschlossene Ansicht mit Fassungsverlauf, Dokument und E-Mail-Bereich");
 const invDoc = await fetch(`${base}/api/documents/${invoicePdf.document.id}?download=1`, { headers: { cookie } });
-report(invDoc.status === 200 && (invDoc.headers.get("content-disposition") ?? "").includes(`Rechnung_${finalInvoice.number}.pdf`) && (await invDoc.arrayBuffer()).byteLength === invoicePdf.document.sizeBytes, `${invDoc.status} Rechnungs-PDF herunterladen`);
+report(invDoc.status === 200 && (invDoc.headers.get("content-disposition") ?? "").includes(`Rechnung_${finalInvoice.number}_Fassung1.pdf`) && (await invDoc.arrayBuffer()).byteLength === invoicePdf.document.sizeBytes, `${invDoc.status} Rechnungs-PDF herunterladen`);
 const retBookingHtml2 = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
 report(retBookingHtml2.includes(`Rechnung ${finalInvoice.number} anzeigen`) && retBookingHtml2.includes("abgeschlossen"), "Buchung: Rechnung anzeigen und Status");
 
@@ -283,9 +284,25 @@ await settleDeposit(w.tenantId, w.actor, { bookingId: retBooking.id, releaseAmou
 const bookingFin1 = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
 report(["Teilweise freigegeben", "350,00", "150,00", "Prüfung eines bei Rückgabe festgestellten Schadens", "keine Verrechnung", "Bewegung korrigieren"].every((t) => bookingFin1.includes(t)) && !bookingFin1.includes("Kaution als erhalten erfassen"), "Buchung: Kaution teilweise freigegeben, Historie, Hinweis keine Verrechnung");
 const invList = await plain(await fetch(base + "/rechnungen?filter=teilbezahlt", { headers: { cookie } }));
-report(invList.includes(finalInvoice.number!) && invList.includes("Teilbezahlt") && invList.includes("100,00"), "Rechnungsliste: Filter Teilbezahlt mit Beträgen");
+report(invList.includes(finalInvoice.number) && invList.includes("Teilbezahlt") && invList.includes("100,00") && invList.includes("nicht übermittelt"), "Rechnungsliste: Filter Teilbezahlt mit Beträgen und Übermittlungsstatus");
 const invListPaid = await plain(await fetch(base + "/rechnungen?filter=bezahlt", { headers: { cookie } }));
-report(!invListPaid.includes(finalInvoice.number!) && invListPaid.includes("Keine Rechnungen"), "Rechnungsliste: Filter Bezahlt leer");
+report(!invListPaid.includes(finalInvoice.number) && invListPaid.includes("Keine Rechnungen"), "Rechnungsliste: Filter Bezahlt leer");
+// Rechnungsfassungen: Bearbeiten (Modus A, nicht übermittelt), Fassung 2 finalisieren, Verlauf, PDF je Fassung, Hof sieht nur
+const fassung2Draft = await startInvoiceEdit(w.tenantId, invoice.id, w.actor);
+const editPage = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } }));
+report(editPage.includes("Fassung 2 (Entwurf)") && editPage.includes("noch nicht übermittelt") && editPage.includes("Änderungsgrund (optional)") && editPage.includes("Rechnungsempfänger") && editPage.includes("Fassung 2 finalisieren") && editPage.includes("Zahlungen zu dieser Rechnung"), "Rechnung bearbeiten: Entwurf Fassung 2 aus Fassung 1, Modus A mit Zahlungsvorschau");
+await updateInvoiceDraft(w.tenantId, invoice.id, w.actor, { items: fassung2Draft.items.map((i) => ({ id: i.id, description: i.description, quantity: String(i.quantity), unit: i.unit, unitPrice: String(i.unitPrice), taxRate: String(i.taxRate) })), customer: { street: "Neue Straße 5" }, reason: "Anschrift korrigiert" });
+const fassung2 = await finalizeInvoice(w.tenantId, invoice.id, w.actor);
+const v2pdf = await ensureInvoiceDocument(w.tenantId, fassung2.id, w.actor.id);
+const afterV2 = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } }));
+report(afterV2.includes("Aktuelle Fassung 2") && afterV2.includes("2 Fassungen") && afterV2.includes("Ersetzt") && afterV2.includes("Neufassung") && afterV2.includes("Neue Straße 5") && afterV2.includes("Änderungen gegenüber Fassung 1") && afterV2.includes(`Rechnung_${finalInvoice.number}_Fassung2.pdf`), "Rechnung: Fassung 2 aktuell, Fassung 1 ersetzt, Differenz sichtbar");
+const oldView = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung?fassung=1`, { headers: { cookie } }));
+report(oldView.includes("Sie sehen die ersetzte Fassung 1") && oldView.includes("Weg 1"), "Rechnung: historische Fassung 1 weiterhin lesbar mit alten Daten");
+const oldPdf = await fetch(`${base}/api/documents/${invoicePdf.document.id}?download=1`, { headers: { cookie } });
+report(oldPdf.status === 200 && (await oldPdf.arrayBuffer()).byteLength === invoicePdf.document.sizeBytes, `${oldPdf.status} altes PDF der Fassung 1 unverändert abrufbar`);
+void v2pdf;
+const retBookingV = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
+report(retBookingV.includes("2 Fassungen") && retBookingV.includes("aktuell 2"), "Buchung: Fassungshinweis");
 const today = await plain(await fetch(base + "/heute", { headers: { cookie } }));
 report(today.includes("Offene Rechnungen") && today.includes("Zahlungen heute") && today.includes("Offene Kautionen") && today.includes("Offener Rechnungsbetrag"), "Dashboard: Kennzahlen Zahlungen und Kaution");
 void pay1;
@@ -315,7 +332,7 @@ const yardDoc = await fetch(`${base}/api/documents/${returnPdf.document.id}?down
 report(yardDoc.status === 200, `${yardDoc.status} Hofmitarbeiter: Dokument herunterladen`);
 const yardInvoice = await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie: `rb_session=${yardSession}` } });
 const yardInvoiceHtml = await yardInvoice.text();
-report(yardInvoice.status === 200 && yardInvoiceHtml.includes("Herunterladen") && yardInvoiceHtml.includes("Der Versand der Rechnung erfolgt durch die Disposition") && !yardInvoiceHtml.includes("Interne Notiz"), `${yardInvoice.status} Hofmitarbeiter: abgeschlossene Rechnung ansehen, kein Versand, keine interne Notiz`);
+report(yardInvoice.status === 200 && yardInvoiceHtml.includes("Herunterladen") && yardInvoiceHtml.includes("Fassungsverlauf") && !yardInvoiceHtml.includes("Rechnung bearbeiten") && !yardInvoiceHtml.includes("Als an Kunden übergeben markieren") && yardInvoiceHtml.includes("Der Versand der Rechnung erfolgt durch die Disposition") && !yardInvoiceHtml.includes("Interne Notiz"), `${yardInvoice.status} Hofmitarbeiter: Fassungen ansehen, kein Bearbeiten, keine Übergabemarkierung, kein Versand, keine interne Notiz`);
 const yardInvoiceDoc = await fetch(`${base}/api/documents/${invoicePdf.document.id}?download=1`, { headers: { cookie: `rb_session=${yardSession}` } });
 report(yardInvoiceDoc.status === 200, `${yardInvoiceDoc.status} Hofmitarbeiter: Rechnungs-PDF herunterladen`);
 const yardNoInvoice = await fetch(`${base}/buchungen/${doneBooking.id}/rechnung`, { headers: { cookie: `rb_session=${yardSession}` }, redirect: "manual" });

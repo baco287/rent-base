@@ -106,24 +106,28 @@ export async function loadHandoverDocumentData(tenantId: string, handoverId: str
   };
 }
 
-export type InvoiceData = { doc: InvoiceDocumentData; bookingId: string; invoiceId: string; sourceHash: string; renterEmail: string | null };
+export type InvoiceData = { doc: InvoiceDocumentData; bookingId: string; invoiceId: string; versionId: string; versionNo: number; sourceHash: string; renterEmail: string | null };
 
-/** Rechnung für Ansicht und PDF. Nur die versiegelte Rechnung selbst; Vertrags- und Buchungsnummer sind reine Verweise. */
-export async function loadInvoiceDocumentData(tenantId: string, invoiceId: string, opts: { allowDraft?: boolean } = {}): Promise<InvoiceData> {
-  const inv = await db.invoice.findFirst({ where: { id: invoiceId, tenantId }, include: { items: { orderBy: { sortOrder: "asc" } } } });
-  if (!inv) throw new DomainError("Rechnung nicht gefunden.");
-  if (!opts.allowDraft && (inv.status !== "FINALIZED" || !inv.contentHash)) throw new DomainError("Ein Rechnungs-PDF gibt es erst, wenn die Rechnung abgeschlossen ist.");
-  const [booking, contract, ret] = await Promise.all([
+/** Rechnungsfassung für Ansicht und PDF. Nur die versiegelte Fassung selbst; Nummer, Vertrags- und Buchungsnummer sind reine Verweise. */
+export async function loadInvoiceDocumentData(tenantId: string, versionId: string, opts: { allowDraft?: boolean } = {}): Promise<InvoiceData> {
+  const v = await db.invoiceVersion.findFirst({ where: { id: versionId, tenantId }, include: { items: { orderBy: { sortOrder: "asc" } } } });
+  if (!v) throw new DomainError("Rechnungsfassung nicht gefunden.");
+  if (!opts.allowDraft && (v.status !== "FINALIZED" || !v.contentHash)) throw new DomainError("Ein Rechnungs-PDF gibt es erst, wenn die Rechnungsfassung abgeschlossen ist.");
+  const inv = await db.invoice.findFirstOrThrow({ where: { id: v.invoiceId, tenantId } });
+  const [booking, contract, ret, prev] = await Promise.all([
     db.booking.findFirst({ where: { id: inv.bookingId, tenantId }, select: { number: true } }),
     inv.contractId ? db.rentalContract.findFirst({ where: { id: inv.contractId, tenantId }, select: { number: true } }) : null,
     inv.returnHandoverId ? db.handover.findFirst({ where: { id: inv.returnHandoverId, tenantId }, select: { number: true } }) : null,
+    v.supersedesVersionId ? db.invoiceVersion.findFirst({ where: { id: v.supersedesVersionId, tenantId }, select: { versionNo: true, finalizedAt: true } }) : null,
   ]);
-  const c = inv.customerSnapshot as { email?: string | null };
+  const c = v.customerSnapshot as { email?: string | null };
   return {
-    doc: buildInvoiceDocument(inv, { contractNumber: contract?.number ?? null, bookingNumber: booking?.number ?? null, returnNumber: ret?.number ?? null }),
+    doc: buildInvoiceDocument(v, { number: inv.number, contractNumber: contract?.number ?? null, bookingNumber: booking?.number ?? null, returnNumber: ret?.number ?? null, isCurrent: inv.currentVersionId === v.id, supersedes: prev }),
     bookingId: inv.bookingId,
     invoiceId: inv.id,
-    sourceHash: inv.contentHash ?? "",
+    versionId: v.id,
+    versionNo: v.versionNo,
+    sourceHash: v.contentHash ?? "",
     renterEmail: typeof c.email === "string" && c.email.trim() ? c.email.trim() : null,
   };
 }

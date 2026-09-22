@@ -1,14 +1,21 @@
-// Rechnungen. Entwurf aus den versiegelten Quellen (Vertrag, Rückgabe, bestätigte Zusatzkosten), Bearbeitung
-// nur im Entwurf mit Änderungsprotokoll, Abschluss transaktional mit Rechnungsnummer aus der zentralen
-// Nummerierung. Danach ist alles Kopie: Anzeige und PDF rechnen nichts mehr aus Buchung oder Zusatzkosten.
+// Rechnungen mit Fassungen (Phase 10).
+//   Invoice        = logische Rechnung: Nummer, Bezug zur Buchung, Zeiger auf die aktuelle Fassung, interne Notiz.
+//   InvoiceVersion = unveränderliche Fassung: alle Rechnungsdaten, Positionen, Prüfsumme, PDF, Versand.
+// Fassung 1 entsteht aus den versiegelten Quellen (Vertrag, Rückgabe, bestätigte Zusatzkosten). Jede weitere Fassung
+// entsteht aus dem Snapshot der Vorfassung, nie aus aktuellen Stammdaten. Nichts Abgeschlossenes wird überschrieben:
+// "Rechnung bearbeiten" heißt "diese Rechnung korrigieren", und die alte Fassung bleibt vollständig erhalten.
+//
+// Fassungsart: REVISION, wenn die Vorfassung dem Kunden nie übermittelt wurde (kein Rent-Base-Versand SENT, keine
+// manuelle Übergabemarkierung); CORRECTION, sobald sie übermittelt war (dann Pflichtgrund). Ein PDF-Download ist
+// keine Übermittlung. Nach buchhalterischem Export gibt es keine Fassung mehr unter derselben Nummer.
 //
 // Steuer: Der Satz jeder Position kommt aus der Konfiguration des Mandanten (defaultTaxRate) oder aus einer
-// bewussten Auswahl (0 % mit gespeichertem Hinweistext). Ob Vertrags- und Zusatzkostenbeträge brutto oder netto
-// sind, entscheidet der Inhaber in den Einstellungen (pricesIncludeTax). Ohne diese Entscheidungen gibt es
-// keine Rechnung; das System erfindet keine steuerliche Regel.
+// bewussten Auswahl (0 % mit gespeichertem Hinweistext). Ob Beträge brutto oder netto sind, entscheidet der Inhaber
+// (pricesIncludeTax). Ohne diese Entscheidungen gibt es keine Rechnung; das System erfindet keine steuerliche Regel.
 
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
+import { recordAudit } from "@/lib/audit";
 import { EXTRA_CHARGE_TYPES, INVOICE_ITEM_SOURCES, INVOICE_STATUS, INVOICE_UNITS, type ExtraChargeType } from "@/lib/constants";
 import type { CustomerSnapshot, VehicleSnapshot } from "@/lib/contracts";
 import { DomainError, contentHash, sha256 } from "@/lib/integrity";
@@ -23,7 +30,13 @@ export type Actor = { id: string; name: string };
 
 export { INVOICE_STATUS, INVOICE_ITEM_SOURCES, INVOICE_UNITS };
 
+export type VersionRow = Prisma.InvoiceVersionGetPayload<object>;
+export type VersionWithItems = Prisma.InvoiceVersionGetPayload<{ include: { items: true } }>;
+export type InvoiceRow = Prisma.InvoiceGetPayload<object>;
+export type VersionKind = "ORIGINAL" | "REVISION" | "CORRECTION";
+
 const dateFmt = (d: Date) => d.toLocaleDateString("de-DE", { timeZone: APP_TIME_ZONE, day: "2-digit", month: "2-digit", year: "numeric" });
+const withItems = { items: { orderBy: { sortOrder: "asc" as const } } };
 
 // ---------------------------------------------------------------------------
 // Snapshots
@@ -80,6 +93,15 @@ export function invoiceSettingsMissing(t: TenantRow): string[] {
   return missing;
 }
 
+/** Firmendaten einer Fassung: vollständig? (Prüfung auf der Kopie, nicht auf den aktuellen Einstellungen) */
+function companySnapshotMissing(c: CompanySnapshot): string[] {
+  const missing: string[] = [];
+  if (!c.name?.trim()) missing.push("Unternehmensname");
+  if (!c.street?.trim() || !c.zip?.trim() || !c.city?.trim()) missing.push("vollständige Anschrift des Rechnungsstellers");
+  if (!c.taxNumber?.trim() && !c.vatId?.trim()) missing.push("Steuernummer oder Umsatzsteuer-Identifikationsnummer");
+  return missing;
+}
+
 // ---------------------------------------------------------------------------
 // Positionen
 // ---------------------------------------------------------------------------
@@ -117,10 +139,10 @@ function computeItem(mode: "NET" | "GROSS", it: ItemInput): ComputedItem {
   }
 }
 
-function itemData(tenantId: string, invoiceId: string, sortOrder: number, c: ComputedItem) {
+function itemData(tenantId: string, versionId: string, sortOrder: number, c: ComputedItem) {
   return {
     tenantId,
-    invoiceId,
+    versionId,
     sortOrder,
     description: c.description,
     quantity: (c.quantityH / 100).toFixed(2),
@@ -142,7 +164,7 @@ export function totalsOf(items: { netAmount: unknown; taxAmount: unknown; grossA
 }
 
 // ---------------------------------------------------------------------------
-// Entwurf
+// Fassung 1: Entwurf aus den Quellen
 // ---------------------------------------------------------------------------
 
 async function loadSources(tx: Tx, tenantId: string, bookingId: string) {
@@ -157,11 +179,11 @@ async function loadSources(tx: Tx, tenantId: string, bookingId: string) {
 }
 
 /**
- * Legt den Rechnungsentwurf an oder gibt den vorhandenen zurück. Positionen: Fahrzeugmiete zum finalen
- * Vertragspreis und jede bei der Rückgabe bestätigte Zusatzkostenposition, sonst nichts. Ein bei der Rückgabe
- * festgestellter Schaden erscheint nur, wenn ein Mitarbeiter dort ausdrücklich eine Position vom Typ DAMAGE angelegt hat.
+ * Legt die logische Rechnung mit Fassung 1 (Entwurf) an oder gibt die vorhandene Rechnung zurück. Positionen:
+ * Fahrzeugmiete zum finalen Vertragspreis und jede bei der Rückgabe bestätigte Zusatzkostenposition, sonst nichts.
+ * Ein festgestellter Schaden erscheint nur, wenn ein Mitarbeiter dort ausdrücklich eine Position vom Typ DAMAGE angelegt hat.
  */
-export async function ensureInvoiceDraft(tenantId: string, bookingId: string, actor: Actor) {
+export async function ensureInvoiceDraft(tenantId: string, bookingId: string, actor: Actor): Promise<InvoiceRow> {
   const existing = await db.invoice.findFirst({ where: { tenantId, bookingId, status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "desc" } });
   if (existing) return existing;
   return db.$transaction(async (tx) => {
@@ -210,6 +232,7 @@ export async function ensureInvoiceDraft(tenantId: string, bookingId: string, ac
       }
     });
     const totals = summarize(computed.map((ci) => ({ taxRateBp: ci.taxRateBp, amounts: ci.amounts })));
+    const now = new Date();
 
     const invoice = await tx.invoice.create({
       data: {
@@ -218,6 +241,17 @@ export async function ensureInvoiceDraft(tenantId: string, bookingId: string, ac
         customerId: booking.customerId,
         contractId: contract.id,
         returnHandoverId: ret.id,
+        sourceHash: sha256(`${contract.contentHash}:${ret.contentHash}`),
+        createdById: actor.id,
+        changeLog: [{ at: now.toISOString(), by: actor.name, versionNo: 1, summary: `Entwurf aus Mietvertrag ${contract.number} und Rückgabe ${ret.number} erstellt (${computed.length} Positionen)` }],
+      },
+    });
+    const version = await tx.invoiceVersion.create({
+      data: {
+        tenantId,
+        invoiceId: invoice.id,
+        versionNo: 1,
+        kind: "ORIGINAL",
         servicePeriodStart: start,
         servicePeriodEnd: end,
         pricesIncludeTax: mode === "GROSS",
@@ -228,15 +262,135 @@ export async function ensureInvoiceDraft(tenantId: string, bookingId: string, ac
         grossTotal: centsToDecimalString(totals.total.gross),
         paymentTermDays: tenant.paymentTermDays,
         taxNote: tenant.taxNote,
-        sourceHash: sha256(`${contract.contentHash}:${ret.contentHash}`),
         createdById: actor.id,
-        changeLog: [{ at: new Date().toISOString(), by: actor.name, summary: `Entwurf aus Mietvertrag ${contract.number} und Rückgabe ${ret.number} erstellt (${computed.length} Positionen)` }],
+        createdByName: actor.name,
       },
     });
-    await tx.invoiceItem.createMany({ data: computed.map((ci, i) => itemData(tenantId, invoice.id, i, ci)) });
+    await tx.invoiceVersionItem.createMany({ data: computed.map((ci, i) => itemData(tenantId, version.id, i, ci)) });
     return invoice;
   }, TX);
 }
+
+// ---------------------------------------------------------------------------
+// Übermittlung und Bearbeitungsmodus
+// ---------------------------------------------------------------------------
+
+export type DeliveryState = { sentAt: Date | null; sentTo: string | null; deliveredAt: Date | null; deliveredByName: string | null; deliveredNote: string | null; delivered: boolean };
+
+/** Übermittelt = erfolgreicher Rent-Base-Versand (EmailLog SENT dieser Fassung) oder manuelle Übergabemarkierung. Ein Download zählt nicht. */
+export async function deliveryStateOf(tenantId: string, version: { id: string; deliveredAt: Date | null; deliveredByName: string | null; deliveredNote: string | null }, client: Tx | typeof db = db): Promise<DeliveryState> {
+  const sent = await client.emailLog.findFirst({ where: { tenantId, invoiceVersionId: version.id, status: "SENT" }, orderBy: { sentAt: "asc" }, select: { sentAt: true, recipient: true } });
+  return { sentAt: sent?.sentAt ?? null, sentTo: sent?.recipient ?? null, deliveredAt: version.deliveredAt, deliveredByName: version.deliveredByName, deliveredNote: version.deliveredNote, delivered: !!sent || !!version.deliveredAt };
+}
+
+export type EditMode = "A" | "B" | "C" | "D";
+export type EditModeInfo = { mode: EditMode; nextKind: "REVISION" | "CORRECTION"; delivered: boolean; exported: boolean; paidCents: Cents; currentGrossCents: Cents; reasons: string[] };
+
+async function editModeOf(client: Tx | typeof db, tenantId: string, invoice: InvoiceRow, current: VersionRow): Promise<EditModeInfo> {
+  const [delivery, paid] = await Promise.all([
+    deliveryStateOf(tenantId, current, client),
+    client.payment.aggregate({ where: { tenantId, invoiceId: invoice.id, status: "CONFIRMED" }, _sum: { amountCents: true } }),
+  ]);
+  const exported = !!invoice.exportedAt || !!current.exportedAt;
+  const paidCents = paid._sum.amountCents ?? 0;
+  const mode: EditMode = exported ? "D" : paidCents > 0 ? "C" : delivery.delivered ? "B" : "A";
+  const reasons: string[] = [];
+  if (delivery.sentAt) reasons.push(`per E-Mail versendet am ${dateFmt(delivery.sentAt)}${delivery.sentTo ? ` an ${delivery.sentTo}` : ""}`);
+  if (delivery.deliveredAt) reasons.push(`manuell als übergeben markiert am ${dateFmt(delivery.deliveredAt)}${delivery.deliveredByName ? ` von ${delivery.deliveredByName}` : ""}`);
+  return { mode, nextKind: delivery.delivered ? "CORRECTION" : "REVISION", delivered: delivery.delivered, exported, paidCents, currentGrossCents: toCents(current.grossTotal), reasons };
+}
+
+/** Bearbeitungsmodus einer abgeschlossenen Rechnung (A nicht übermittelt, B übermittelt, C mit Zahlungen, D exportiert). */
+export async function invoiceEditMode(tenantId: string, invoiceId: string): Promise<EditModeInfo & { current: VersionRow }> {
+  const invoice = await db.invoice.findFirst({ where: { id: invoiceId, tenantId } });
+  if (!invoice || !invoice.currentVersionId) throw new DomainError("Rechnung nicht gefunden oder noch nicht abgeschlossen.");
+  const current = await db.invoiceVersion.findFirstOrThrow({ where: { id: invoice.currentVersionId, tenantId } });
+  return { ...(await editModeOf(db, tenantId, invoice, current)), current };
+}
+
+/**
+ * „Rechnung bearbeiten“: legt den Entwurf der Fassung n+1 aus dem Snapshot der aktuellen Fassung an (nicht aus
+ * Stammdaten) oder gibt den vorhandenen Entwurf zurück. Zwei gleichzeitige Klicks ergeben denselben Entwurf
+ * (Fassungsnummer ist je Rechnung eindeutig). Nach Export gesperrt.
+ */
+export async function startInvoiceEdit(tenantId: string, invoiceId: string, actor: Actor): Promise<VersionWithItems> {
+  const open = await db.invoiceVersion.findFirst({ where: { tenantId, invoiceId, status: "DRAFT" }, include: withItems });
+  if (open) return open;
+  try {
+    return await db.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Invoice" WHERE "id" = ${invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+      if (locked.length === 0) throw new DomainError("Rechnung nicht gefunden.");
+      const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
+      if (invoice.status !== "FINALIZED" || !invoice.currentVersionId) throw new DomainError("Nur abgeschlossene Rechnungen können bearbeitet werden.");
+      const again = await tx.invoiceVersion.findFirst({ where: { tenantId, invoiceId, status: "DRAFT" }, include: withItems });
+      if (again) return again;
+      const current = await tx.invoiceVersion.findFirstOrThrow({ where: { id: invoice.currentVersionId, tenantId }, include: withItems });
+      const info = await editModeOf(tx, tenantId, invoice, current);
+      if (info.exported) throw new DomainError("Diese Rechnung wurde bereits buchhalterisch exportiert. Eine Änderung unter derselben Rechnungsnummer ist nicht mehr möglich.");
+      const max = await tx.invoiceVersion.aggregate({ where: { invoiceId }, _max: { versionNo: true } });
+      const versionNo = (max._max.versionNo ?? 0) + 1;
+      const draft = await tx.invoiceVersion.create({
+        data: {
+          tenantId,
+          invoiceId,
+          versionNo,
+          kind: info.nextKind,
+          supersedesVersionId: current.id,
+          issueDate: current.issueDate,
+          servicePeriodStart: current.servicePeriodStart,
+          servicePeriodEnd: current.servicePeriodEnd,
+          currency: current.currency,
+          pricesIncludeTax: current.pricesIncludeTax,
+          customerSnapshot: current.customerSnapshot as Prisma.InputJsonValue,
+          companySnapshot: current.companySnapshot as Prisma.InputJsonValue,
+          netTotal: current.netTotal,
+          taxTotal: current.taxTotal,
+          grossTotal: current.grossTotal,
+          paymentTermDays: current.paymentTermDays,
+          customerNote: current.customerNote,
+          taxNote: current.taxNote,
+          createdById: actor.id,
+          createdByName: actor.name,
+        },
+      });
+      await tx.invoiceVersionItem.createMany({
+        data: current.items.map((i) => ({ tenantId, versionId: draft.id, sortOrder: i.sortOrder, description: i.description, quantity: i.quantity, unit: i.unit, unitPrice: i.unitPrice, netAmount: i.netAmount, taxRate: i.taxRate, taxAmount: i.taxAmount, grossAmount: i.grossAmount, source: i.source, extraChargeId: i.extraChargeId, reference: i.reference })),
+      });
+      const log = Array.isArray(invoice.changeLog) ? (invoice.changeLog as Prisma.JsonArray) : [];
+      await tx.invoice.update({ where: { id: invoiceId }, data: { changeLog: [...log, { at: new Date().toISOString(), by: actor.name, versionNo, summary: `Bearbeitung begonnen: Entwurf der Fassung ${versionNo} aus Fassung ${current.versionNo} (${info.nextKind === "CORRECTION" ? "Berichtigung, Vorfassung bereits übermittelt" : "Neufassung, Vorfassung nicht übermittelt"})` }] } });
+      await recordAudit(tx, tenantId, actor, { action: "INVOICE_VERSION_CREATED", bookingId: invoice.bookingId, invoiceId, amountCents: toCents(current.grossTotal), details: { invoiceNumber: invoice.number, fromVersion: current.versionNo, toVersion: versionNo, kind: info.nextKind } });
+      return tx.invoiceVersion.findUniqueOrThrow({ where: { id: draft.id }, include: withItems });
+    }, TX);
+  } catch (e) {
+    if (isUniqueViolation(e, "versionNo")) {
+      const winner = await db.invoiceVersion.findFirst({ where: { tenantId, invoiceId, status: "DRAFT" }, include: withItems });
+      if (winner) return winner;
+    }
+    throw e;
+  }
+}
+
+/** „Als an Kunden übergeben markieren“: einmalig, nur auf abgeschlossene Fassungen, nie still entfernbar (DB-Trigger). */
+export async function markVersionDelivered(tenantId: string, versionId: string, actor: Actor, note?: string | null): Promise<VersionRow> {
+  return db.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<{ id: string; status: string; deliveredAt: Date | null; invoiceId: string; versionNo: number }[]>`SELECT "id", "status", "deliveredAt", "invoiceId", "versionNo" FROM "InvoiceVersion" WHERE "id" = ${versionId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+    if (locked.length === 0) throw new DomainError("Rechnungsfassung nicht gefunden.");
+    if (locked[0].status !== "FINALIZED") throw new DomainError("Nur abgeschlossene Fassungen können als übergeben markiert werden.");
+    if (locked[0].deliveredAt) throw new DomainError("Diese Fassung ist bereits als übergeben markiert.");
+    const now = new Date();
+    const v = await tx.invoiceVersion.update({ where: { id: versionId }, data: { deliveredAt: now, deliveredById: actor.id, deliveredByName: actor.name, deliveredNote: note?.trim() || null } });
+    const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: locked[0].invoiceId } });
+    await recordAudit(tx, tenantId, actor, { action: "INVOICE_DELIVERED_MANUALLY", bookingId: invoice.bookingId, invoiceId: invoice.id, amountCents: toCents(v.grossTotal), details: { invoiceNumber: invoice.number, versionNo: v.versionNo } });
+    return v;
+  }, TX);
+}
+
+// ---------------------------------------------------------------------------
+// Entwurf bearbeiten
+// ---------------------------------------------------------------------------
+
+export type CustomerInput = Partial<Pick<InvoiceCustomerSnapshot, "type" | "companyName" | "firstName" | "lastName" | "street" | "zip" | "city" | "country" | "email">>;
+export type CompanyInput = Partial<Pick<CompanySnapshot, "name" | "legalForm" | "street" | "zip" | "city" | "country" | "email" | "phone" | "vatId" | "taxNumber" | "bankName" | "iban" | "bic" | "invoiceFooter">>;
 
 export type DraftInput = {
   items: ItemInput[];
@@ -244,25 +398,37 @@ export type DraftInput = {
   taxNote?: string | null;
   notes?: string | null;
   paymentTermDays?: number | null;
+  reason?: string | null;
+  servicePeriodStart?: Date | null;
+  servicePeriodEnd?: Date | null;
+  customer?: CustomerInput;
+  company?: CompanyInput;
 };
 
-async function loadDraft(tx: Tx, tenantId: string, invoiceId: string) {
-  const inv = await tx.invoice.findFirst({ where: { id: invoiceId, tenantId }, include: { items: { orderBy: { sortOrder: "asc" } } } });
-  if (!inv) throw new DomainError("Rechnung nicht gefunden.");
-  if (inv.status !== "DRAFT") throw new DomainError(`Die Rechnung ${inv.number ?? ""} ist abgeschlossen und kann nicht mehr geändert werden.`);
-  return inv;
+/** Der offene Entwurf einer Rechnung (Fassung 1 oder eine spätere), gesperrt. */
+async function lockDraft(tx: Tx, tenantId: string, invoiceId: string) {
+  const locked = await tx.$queryRaw<{ id: string; status: string; number: string | null; exportedAt: Date | null }[]>`SELECT "id", "status", "number", "exportedAt" FROM "Invoice" WHERE "id" = ${invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+  if (locked.length === 0) throw new DomainError("Rechnung nicht gefunden.");
+  const draft = await tx.invoiceVersion.findFirst({ where: { tenantId, invoiceId, status: "DRAFT" }, include: withItems });
+  if (!draft) throw new DomainError(`Die Rechnung ${locked[0].number ?? ""} hat keinen offenen Entwurf; sie ist abgeschlossen und kann nur über „Rechnung bearbeiten“ neu gefasst werden.`.replace("  ", " "));
+  await tx.$queryRaw`SELECT "id" FROM "InvoiceVersion" WHERE "id" = ${draft.id} FOR UPDATE`;
+  return { invoice: locked[0], draft };
 }
 
-/** Entwurf speichern: Positionen ersetzen, Summen neu rechnen, Änderung protokollieren. Quellen (Vertrag, Zusatzkosten) bleiben unberührt. */
-export async function updateInvoiceDraft(tenantId: string, invoiceId: string, actor: Actor, input: DraftInput) {
+const trimOrNull = (v: string | null | undefined) => (v === undefined ? undefined : v?.trim() || null);
+
+/** Entwurf speichern: Positionen ersetzen, Summen neu rechnen, Kopien bewusst ändern, Änderung protokollieren. Quellen bleiben unberührt. */
+export async function updateInvoiceDraft(tenantId: string, invoiceId: string, actor: Actor, input: DraftInput): Promise<VersionRow> {
   if (input.items.length === 0) throw new DomainError("Eine Rechnung braucht mindestens eine Position.");
   if (input.paymentTermDays != null && !(Number.isInteger(input.paymentTermDays) && input.paymentTermDays >= 0 && input.paymentTermDays <= 365)) throw new DomainError("Das Zahlungsziel liegt zwischen 0 und 365 Tagen.");
+  if (input.servicePeriodStart && input.servicePeriodEnd && input.servicePeriodEnd.getTime() < input.servicePeriodStart.getTime()) throw new DomainError("Das Ende des Leistungszeitraums liegt vor dem Beginn.");
   return db.$transaction(async (tx) => {
-    const inv = await loadDraft(tx, tenantId, invoiceId);
+    const { draft } = await lockDraft(tx, tenantId, invoiceId);
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
-    const allowedRates = new Set([toBasisPoints(tenant.defaultTaxRate ?? 0), 0]);
-    const mode = inv.pricesIncludeTax ? "GROSS" : "NET";
-    const before = new Map(inv.items.map((i) => [i.id, i]));
+    // Erlaubte Sätze: konfigurierter Standardsatz, 0 % und alle Sätze, die die Fassung bereits enthält (Korrektur ändert keine Steuerlogik)
+    const allowedRates = new Set([toBasisPoints(tenant.defaultTaxRate ?? 0), 0, ...draft.items.map((i) => toBasisPoints(i.taxRate))]);
+    const mode = draft.pricesIncludeTax ? "GROSS" : "NET";
+    const before = new Map(draft.items.map((i) => [i.id, i]));
     const computed = input.items.map((it) => {
       const prev = it.id ? before.get(it.id) : undefined;
       const ci = computeItem(mode, { ...it, source: prev?.source as ItemInput["source"] | undefined ?? "MANUAL", extraChargeId: prev?.extraChargeId ?? null, reference: prev?.reference ?? it.reference ?? null });
@@ -271,39 +437,69 @@ export async function updateInvoiceDraft(tenantId: string, invoiceId: string, ac
     });
     const totals = summarize(computed.map((ci) => ({ taxRateBp: ci.taxRateBp, amounts: ci.amounts })));
 
-    // Änderungen nachvollziehbar festhalten
     const changes: string[] = [];
     const kept = new Set(input.items.map((i) => i.id).filter(Boolean));
-    for (const old of inv.items) if (!kept.has(old.id)) changes.push(`Position entfernt: ${old.description} (${fmtCents(toCents(old.grossAmount))})`);
+    for (const old of draft.items) if (!kept.has(old.id)) changes.push(`Position entfernt: ${old.description} (${fmtCents(toCents(old.grossAmount))})`);
     input.items.forEach((it, i) => {
       const old = it.id ? before.get(it.id) : undefined;
       const ci = computed[i];
       if (!old) changes.push(`Position hinzugefügt: ${ci.description} (${fmtCents(ci.amounts.gross)})`);
       else if (old.description !== ci.description || toCents(old.grossAmount) !== ci.amounts.gross || toBasisPoints(old.taxRate) !== ci.taxRateBp || toHundredths(old.quantity) !== ci.quantityH) changes.push(`Position geändert: ${old.description} (${fmtCents(toCents(old.grossAmount))}) zu ${ci.description} (${fmtCents(ci.amounts.gross)}, ${fmtRate(ci.taxRateBp)})`);
     });
-    // Felder, die nicht mitgeschickt werden (undefined), bleiben unverändert; leer gilt als gelöscht
-    const customerNote = input.customerNote === undefined ? inv.customerNote : input.customerNote?.trim() || null;
-    const taxNote = input.taxNote === undefined ? inv.taxNote : input.taxNote?.trim() || null;
-    const notes = input.notes === undefined ? inv.notes : input.notes?.trim() || null;
-    const paymentTermDays = input.paymentTermDays === undefined ? inv.paymentTermDays : input.paymentTermDays;
-    if ((inv.customerNote ?? "") !== (customerNote ?? "")) changes.push("Rechnungstext geändert");
-    if ((inv.taxNote ?? "") !== (taxNote ?? "")) changes.push("Steuerhinweis geändert");
-    if ((inv.paymentTermDays ?? null) !== (paymentTermDays ?? null)) changes.push(`Zahlungsziel: ${paymentTermDays ?? "keines"}`);
+    const customerNote = input.customerNote === undefined ? draft.customerNote : input.customerNote?.trim() || null;
+    const taxNote = input.taxNote === undefined ? draft.taxNote : input.taxNote?.trim() || null;
+    const reason = input.reason === undefined ? draft.reason : input.reason?.trim() || null;
+    const paymentTermDays = input.paymentTermDays === undefined ? draft.paymentTermDays : input.paymentTermDays;
+    const servicePeriodStart = input.servicePeriodStart ?? draft.servicePeriodStart;
+    const servicePeriodEnd = input.servicePeriodEnd ?? draft.servicePeriodEnd;
+    if ((draft.customerNote ?? "") !== (customerNote ?? "")) changes.push("Rechnungstext geändert");
+    if ((draft.taxNote ?? "") !== (taxNote ?? "")) changes.push("Steuerhinweis geändert");
+    if ((draft.reason ?? "") !== (reason ?? "")) changes.push("Änderungsgrund erfasst");
+    if ((draft.paymentTermDays ?? null) !== (paymentTermDays ?? null)) changes.push(`Zahlungsziel: ${paymentTermDays ?? "keines"}`);
+    if (servicePeriodStart.getTime() !== draft.servicePeriodStart.getTime() || servicePeriodEnd.getTime() !== draft.servicePeriodEnd.getTime()) changes.push("Leistungszeitraum geändert");
 
-    await tx.invoiceItem.deleteMany({ where: { tenantId, invoiceId: inv.id } });
-    await tx.invoiceItem.createMany({ data: computed.map((ci, i) => itemData(tenantId, inv.id, i, ci)) });
-    const log = Array.isArray(inv.changeLog) ? (inv.changeLog as Prisma.JsonArray) : [];
-    return tx.invoice.update({
-      where: { id: inv.id },
+    // Kopien bewusst ändern: nur mitgeschickte Felder, alles andere bleibt wie in der Fassung
+    const customer = { ...(draft.customerSnapshot as InvoiceCustomerSnapshot) };
+    if (input.customer) {
+      for (const k of Object.keys(input.customer) as (keyof CustomerInput)[]) {
+        const v = trimOrNull(input.customer[k] as string | null | undefined);
+        if (v === undefined) continue;
+        if (k === "firstName" || k === "lastName" || k === "type" || k === "country") (customer as Record<string, unknown>)[k] = v ?? "";
+        else (customer as Record<string, unknown>)[k] = v;
+      }
+      if (JSON.stringify(customer) !== JSON.stringify(draft.customerSnapshot)) changes.push("Rechnungsempfänger geändert");
+    }
+    const company = { ...(draft.companySnapshot as CompanySnapshot) };
+    if (input.company) {
+      for (const k of Object.keys(input.company) as (keyof CompanyInput)[]) {
+        const v = trimOrNull(input.company[k] as string | null | undefined);
+        if (v === undefined) continue;
+        if (k === "name" || k === "country") (company as Record<string, unknown>)[k] = v ?? "";
+        else (company as Record<string, unknown>)[k] = v;
+      }
+      if (JSON.stringify(company) !== JSON.stringify(draft.companySnapshot)) changes.push("Rechnungsstellerdaten geändert");
+    }
+    const notes = input.notes === undefined ? undefined : input.notes?.trim() || null;
+
+    await tx.invoiceVersionItem.deleteMany({ where: { tenantId, versionId: draft.id } });
+    await tx.invoiceVersionItem.createMany({ data: computed.map((ci, i) => itemData(tenantId, draft.id, i, ci)) });
+    const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
+    const log = Array.isArray(invoice.changeLog) ? (invoice.changeLog as Prisma.JsonArray) : [];
+    await tx.invoice.update({ where: { id: invoiceId }, data: { ...(notes === undefined ? {} : { notes }), changeLog: changes.length > 0 ? [...log, { at: new Date().toISOString(), by: actor.name, versionNo: draft.versionNo, summary: changes.join("; ") }] : log } });
+    return tx.invoiceVersion.update({
+      where: { id: draft.id },
       data: {
         netTotal: centsToDecimalString(totals.total.net),
         taxTotal: centsToDecimalString(totals.total.tax),
         grossTotal: centsToDecimalString(totals.total.gross),
         customerNote,
         taxNote,
-        notes,
+        reason,
         paymentTermDays,
-        changeLog: changes.length > 0 ? [...log, { at: new Date().toISOString(), by: actor.name, summary: changes.join("; ") }] : log,
+        servicePeriodStart,
+        servicePeriodEnd,
+        customerSnapshot: customer as unknown as Prisma.InputJsonValue,
+        companySnapshot: company as unknown as Prisma.InputJsonValue,
       },
     });
   }, TX);
@@ -315,105 +511,234 @@ export async function updateInvoiceDraft(tenantId: string, invoiceId: string, ac
 
 export type InvoiceIssue = { code: string; severity: "error" | "warning"; message: string };
 
-async function collectIssues(tx: Tx, tenantId: string, invoiceId: string): Promise<InvoiceIssue[]> {
-  const inv = await tx.invoice.findFirst({ where: { id: invoiceId, tenantId }, include: { items: true } });
-  if (!inv) return [{ code: "NOT_FOUND", severity: "error", message: "Rechnung nicht gefunden." }];
+async function collectIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, draft: VersionWithItems, mode: EditModeInfo | null): Promise<InvoiceIssue[]> {
   const issues: InvoiceIssue[] = [];
   const err = (code: string, message: string) => issues.push({ code, severity: "error", message });
   const warn = (code: string, message: string) => issues.push({ code, severity: "warning", message });
-  const booking = await tx.booking.findFirst({ where: { id: inv.bookingId, tenantId }, include: { contract: { select: { status: true } } } });
+  const booking = await tx.booking.findFirst({ where: { id: invoice.bookingId, tenantId }, include: { contract: { select: { status: true } } } });
   if (!booking) err("BOOKING_MISSING", "Buchung nicht gefunden.");
-  else {
-    if (booking.status !== "RETURNED") err("BOOKING_STATUS", "Die Buchung ist nicht zurückgegeben.");
-    if (booking.contract?.status !== "SIGNED") err("CONTRACT", "Zu dieser Buchung gibt es keinen abgeschlossenen Mietvertrag.");
+  if (draft.versionNo === 1) {
+    if (booking && booking.status !== "RETURNED") err("BOOKING_STATUS", "Die Buchung ist nicht zurückgegeben.");
+    if (booking && booking.contract?.status !== "SIGNED") err("CONTRACT", "Zu dieser Buchung gibt es keinen abgeschlossenen Mietvertrag.");
+    const ret = invoice.returnHandoverId ? await tx.handover.findFirst({ where: { id: invoice.returnHandoverId, tenantId, status: "FINALIZED" } }) : null;
+    if (!ret) err("RETURN", "Zu dieser Rechnung gibt es keine abgeschlossene Rückgabe.");
+    const other = await tx.invoice.count({ where: { tenantId, bookingId: invoice.bookingId, status: "FINALIZED", id: { not: invoice.id } } });
+    if (other > 0) err("INVOICE_EXISTS", "Zu dieser Buchung gibt es bereits eine abgeschlossene Rechnung.");
+    // Fassung 1 friert die Firmendaten beim Abschluss aus den Einstellungen ein: dort müssen sie vollständig sein
+    const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+    for (const m of invoiceSettingsMissing(tenant)) err("COMPANY", `Firmendaten unvollständig: ${m}.`);
+  } else {
+    // spätere Fassungen prüfen ihre eigene Kopie der Firmendaten
+    for (const m of companySnapshotMissing(draft.companySnapshot as CompanySnapshot)) err("COMPANY", `Rechnungsstellerdaten unvollständig: ${m}.`);
+    if (invoice.exportedAt || mode?.exported) err("EXPORTED", "Diese Rechnung wurde bereits buchhalterisch exportiert. Eine Änderung unter derselben Rechnungsnummer ist nicht mehr möglich.");
+    if (mode?.delivered && !(draft.reason && draft.reason.trim().length >= 3)) err("REASON", "Der Kunde hat bereits eine frühere Fassung dieser Rechnung erhalten. Bitte den Grund der Berichtigung angeben.");
   }
-  const ret = inv.returnHandoverId ? await tx.handover.findFirst({ where: { id: inv.returnHandoverId, tenantId, status: "FINALIZED" } }) : null;
-  if (!ret) err("RETURN", "Zu dieser Rechnung gibt es keine abgeschlossene Rückgabe.");
-  const other = await tx.invoice.count({ where: { tenantId, bookingId: inv.bookingId, status: "FINALIZED", id: { not: inv.id } } });
-  if (other > 0) err("INVOICE_EXISTS", "Zu dieser Buchung gibt es bereits eine abgeschlossene Rechnung.");
-
-  const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
-  for (const m of invoiceSettingsMissing(tenant)) err("COMPANY", `Firmendaten unvollständig: ${m}.`);
-  const c = inv.customerSnapshot as InvoiceCustomerSnapshot;
+  const c = draft.customerSnapshot as InvoiceCustomerSnapshot;
   const name = c.type === "COMPANY" ? c.companyName : `${c.firstName} ${c.lastName}`.trim();
   if (!name) err("CUSTOMER_NAME", "Der Rechnungsempfänger hat keinen Namen.");
   if (!c.street || !c.zip || !c.city) err("CUSTOMER_ADDRESS", "Die Anschrift des Rechnungsempfängers ist unvollständig (Straße, PLZ, Ort).");
+  if (draft.servicePeriodEnd.getTime() < draft.servicePeriodStart.getTime()) err("PERIOD", "Das Ende des Leistungszeitraums liegt vor dem Beginn.");
 
-  if (inv.items.length === 0) err("NO_ITEMS", "Die Rechnung hat keine Position.");
-  const totals = totalsOf(inv.items);
-  if (totals.total.net !== toCents(inv.netTotal) || totals.total.tax !== toCents(inv.taxTotal) || totals.total.gross !== toCents(inv.grossTotal)) err("TOTALS", "Die Gesamtbeträge passen nicht zu den Positionen.");
-  for (const it of inv.items) {
-    const expected = lineAmounts(inv.pricesIncludeTax ? "GROSS" : "NET", toHundredths(it.quantity), toCents(it.unitPrice), toBasisPoints(it.taxRate));
+  if (draft.items.length === 0) err("NO_ITEMS", "Die Rechnung hat keine Position.");
+  const totals = totalsOf(draft.items);
+  if (totals.total.net !== toCents(draft.netTotal) || totals.total.tax !== toCents(draft.taxTotal) || totals.total.gross !== toCents(draft.grossTotal)) err("TOTALS", "Die Gesamtbeträge passen nicht zu den Positionen.");
+  for (const it of draft.items) {
+    const expected = lineAmounts(draft.pricesIncludeTax ? "GROSS" : "NET", toHundredths(it.quantity), toCents(it.unitPrice), toBasisPoints(it.taxRate));
     if (expected.net !== toCents(it.netAmount) || expected.tax !== toCents(it.taxAmount) || expected.gross !== toCents(it.grossAmount)) err("ITEM_AMOUNTS", `Position „${it.description}“: Beträge und Steuer sind nicht konsistent.`);
-    if (it.source === "EXTRA_CHARGE" && it.extraChargeId) {
+    if (draft.versionNo === 1 && it.source === "EXTRA_CHARGE" && it.extraChargeId) {
       const ec = await tx.extraCharge.findFirst({ where: { id: it.extraChargeId, tenantId } });
-      if (!ec || ec.handoverId !== inv.returnHandoverId) err("EXTRA_CHARGE", `Position „${it.description}“ verweist auf keine bestätigte Zusatzkostenposition dieser Rückgabe.`);
+      if (!ec || ec.handoverId !== invoice.returnHandoverId) err("EXTRA_CHARGE", `Position „${it.description}“ verweist auf keine bestätigte Zusatzkostenposition dieser Rückgabe.`);
     }
   }
-  if (inv.items.some((it) => toBasisPoints(it.taxRate) === 0) && !inv.taxNote?.trim()) err("TAX_NOTE", "Es gibt Positionen mit 0 % Steuer. Bitte den Steuerhinweis für die Rechnung angeben.");
+  if (draft.items.some((it) => toBasisPoints(it.taxRate) === 0) && !draft.taxNote?.trim()) err("TAX_NOTE", "Es gibt Positionen mit 0 % Steuer. Bitte den Steuerhinweis für die Rechnung angeben.");
   if (totals.total.gross === 0) warn("ZERO", "Der Rechnungsbetrag ist 0,00 €.");
+  if (mode && mode.paidCents > totals.total.gross) warn("OVERPAID", `Für diese Rechnung wurden bereits ${fmtCents(mode.paidCents)} Zahlungen dokumentiert. Der neue Rechnungsbetrag beträgt ${fmtCents(totals.total.gross)}. Dadurch entsteht eine Überzahlung von ${fmtCents(mode.paidCents - totals.total.gross)}. Rent-Base führt keine automatische Erstattung durch.`);
   return issues;
 }
 
-export async function getInvoiceState(tenantId: string, invoiceId: string) {
+export type InvoiceState = {
+  invoice: InvoiceRow;
+  /** offener Entwurf, falls vorhanden */
+  draft: VersionWithItems | null;
+  /** aktuelle abgeschlossene Fassung, falls vorhanden */
+  current: VersionWithItems | null;
+  versions: VersionRow[];
+  issues: InvoiceIssue[];
+  allowedRates: number[];
+  mode: EditModeInfo | null;
+};
+
+export async function getInvoiceState(tenantId: string, invoiceId: string): Promise<InvoiceState> {
   return db.$transaction(async (tx) => {
-    const invoice = await tx.invoice.findFirst({ where: { id: invoiceId, tenantId }, include: { items: { orderBy: { sortOrder: "asc" } } } });
+    const invoice = await tx.invoice.findFirst({ where: { id: invoiceId, tenantId } });
     if (!invoice) throw new DomainError("Rechnung nicht gefunden.");
-    const issues = invoice.status === "DRAFT" ? await collectIssues(tx, tenantId, invoiceId) : [];
+    const versions = await tx.invoiceVersion.findMany({ where: { tenantId, invoiceId }, orderBy: { versionNo: "asc" } });
+    const draft = await tx.invoiceVersion.findFirst({ where: { tenantId, invoiceId, status: "DRAFT" }, include: withItems });
+    const current = invoice.currentVersionId ? await tx.invoiceVersion.findFirst({ where: { id: invoice.currentVersionId, tenantId }, include: withItems }) : null;
+    const mode = current ? await editModeOf(tx, tenantId, invoice, current) : null;
+    const issues = draft ? await collectIssues(tx, tenantId, invoice, draft, draft.versionNo > 1 ? mode : null) : [];
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
-    return { invoice, issues, allowedRates: [...new Set([toBasisPoints(tenant.defaultTaxRate ?? 0), 0])].map((bp) => bp / 100) };
+    const rates = new Set([toBasisPoints(tenant.defaultTaxRate ?? 0), 0, ...(draft?.items ?? []).map((i) => toBasisPoints(i.taxRate))]);
+    return { invoice, draft, current, versions, issues, allowedRates: [...rates].sort((a, b) => b - a).map((bp) => bp / 100), mode };
   }, TX);
 }
 
-function sealedContent(inv: Prisma.InvoiceGetPayload<{ include: { items: true } }>) {
+/** Versiegelter Inhalt einer Fassung (Grundlage der Prüfsumme). */
+function sealedContent(invoice: { number: string | null; bookingId: string; contractId: string | null; returnHandoverId: string | null }, v: VersionWithItems) {
   return {
-    number: inv.number,
-    bookingId: inv.bookingId,
-    contractId: inv.contractId,
-    returnHandoverId: inv.returnHandoverId,
-    issueDate: inv.issueDate,
-    servicePeriodStart: inv.servicePeriodStart,
-    servicePeriodEnd: inv.servicePeriodEnd,
-    currency: inv.currency,
-    pricesIncludeTax: inv.pricesIncludeTax,
-    customer: inv.customerSnapshot,
-    company: inv.companySnapshot,
-    netTotal: String(inv.netTotal),
-    taxTotal: String(inv.taxTotal),
-    grossTotal: String(inv.grossTotal),
-    paymentTermDays: inv.paymentTermDays,
-    paymentDueDate: inv.paymentDueDate,
-    customerNote: inv.customerNote,
-    taxNote: inv.taxNote,
-    items: [...inv.items].sort((a, b) => a.sortOrder - b.sortOrder).map((i) => ({ description: i.description, quantity: String(i.quantity), unit: i.unit, unitPrice: String(i.unitPrice), netAmount: String(i.netAmount), taxRate: String(i.taxRate), taxAmount: String(i.taxAmount), grossAmount: String(i.grossAmount), source: i.source, extraChargeId: i.extraChargeId })),
+    number: invoice.number,
+    versionNo: v.versionNo,
+    kind: v.kind,
+    supersedesVersionId: v.supersedesVersionId,
+    reason: v.reason,
+    bookingId: invoice.bookingId,
+    contractId: invoice.contractId,
+    returnHandoverId: invoice.returnHandoverId,
+    issueDate: v.issueDate,
+    correctionDate: v.correctionDate,
+    servicePeriodStart: v.servicePeriodStart,
+    servicePeriodEnd: v.servicePeriodEnd,
+    currency: v.currency,
+    pricesIncludeTax: v.pricesIncludeTax,
+    customer: v.customerSnapshot,
+    company: v.companySnapshot,
+    netTotal: String(v.netTotal),
+    taxTotal: String(v.taxTotal),
+    grossTotal: String(v.grossTotal),
+    paymentTermDays: v.paymentTermDays,
+    paymentDueDate: v.paymentDueDate,
+    customerNote: v.customerNote,
+    taxNote: v.taxNote,
+    items: [...v.items].sort((a, b) => a.sortOrder - b.sortOrder).map((i) => ({ description: i.description, quantity: String(i.quantity), unit: i.unit, unitPrice: String(i.unitPrice), netAmount: String(i.netAmount), taxRate: String(i.taxRate), taxAmount: String(i.taxAmount), grossAmount: String(i.grossAmount), source: i.source, extraChargeId: i.extraChargeId })),
   };
 }
 
+/** Prüfsumme der Fassung 1 aus Phase 8/9 (vor der Fassungsarchitektur), damit bestehende Prüfsummen weiter verifizierbar sind. */
+function legacySealedContent(invoice: { number: string | null; bookingId: string; contractId: string | null; returnHandoverId: string | null }, v: VersionWithItems) {
+  const s = sealedContent(invoice, v);
+  return { number: s.number, bookingId: s.bookingId, contractId: s.contractId, returnHandoverId: s.returnHandoverId, issueDate: s.issueDate, servicePeriodStart: s.servicePeriodStart, servicePeriodEnd: s.servicePeriodEnd, currency: s.currency, pricesIncludeTax: s.pricesIncludeTax, customer: s.customer, company: s.company, netTotal: s.netTotal, taxTotal: s.taxTotal, grossTotal: s.grossTotal, paymentTermDays: s.paymentTermDays, paymentDueDate: s.paymentDueDate, customerNote: s.customerNote, taxNote: s.taxNote, items: s.items };
+}
+
+// ---------------------------------------------------------------------------
+// Strukturierte Differenz zweier Fassungen
+// ---------------------------------------------------------------------------
+
+export type VersionDiffEntry = { field: string; label: string; before: string | null; after: string | null };
+export type VersionDiff = { fromVersion: number; toVersion: number; entries: VersionDiffEntry[]; grossBefore: string; grossAfter: string };
+
+const addr = (s: { street?: string | null; zip?: string | null; city?: string | null; country?: string | null }) => [s.street, [s.zip, s.city].filter(Boolean).join(" "), s.country && s.country !== "DE" ? s.country : null].filter(Boolean).join(", ");
+const custName = (c: InvoiceCustomerSnapshot) => (c.type === "COMPANY" && c.companyName ? [c.companyName, `${c.firstName ?? ""} ${c.lastName ?? ""}`.trim()].filter(Boolean).join(", ") : `${c.firstName ?? ""} ${c.lastName ?? ""}`.trim());
+const dt = (d: Date) => d.toLocaleString("de-DE", { timeZone: APP_TIME_ZONE, day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+const money = (v: unknown) => fmtCents(toCents(v));
+
+export function diffVersions(prev: VersionWithItems, next: VersionWithItems): VersionDiff {
+  const entries: VersionDiffEntry[] = [];
+  const push = (field: string, label: string, before: string | null, after: string | null) => { if ((before ?? "") !== (after ?? "")) entries.push({ field, label, before: before || null, after: after || null }); };
+  const pc = prev.customerSnapshot as InvoiceCustomerSnapshot, nc = next.customerSnapshot as InvoiceCustomerSnapshot;
+  push("customer.name", "Rechnungsempfänger", custName(pc), custName(nc));
+  push("customer.address", "Anschrift", addr(pc), addr(nc));
+  push("customer.email", "E-Mail des Empfängers", pc.email, nc.email);
+  push("customer.number", "Kundennummer", pc.number, nc.number);
+  const pf = prev.companySnapshot as CompanySnapshot, nf = next.companySnapshot as CompanySnapshot;
+  push("company.name", "Rechnungssteller", [pf.name, pf.legalForm].filter(Boolean).join(" "), [nf.name, nf.legalForm].filter(Boolean).join(" "));
+  push("company.address", "Anschrift des Rechnungsstellers", addr(pf), addr(nf));
+  push("company.tax", "Steuernummer / USt-IdNr.", [pf.taxNumber, pf.vatId].filter(Boolean).join(" / "), [nf.taxNumber, nf.vatId].filter(Boolean).join(" / "));
+  push("company.bank", "Bankverbindung", [pf.bankName, pf.iban, pf.bic].filter(Boolean).join(" · "), [nf.bankName, nf.iban, nf.bic].filter(Boolean).join(" · "));
+  push("company.footer", "Fußtext", pf.invoiceFooter, nf.invoiceFooter);
+  push("servicePeriod", "Leistungszeitraum", `${dt(prev.servicePeriodStart)} – ${dt(prev.servicePeriodEnd)}`, `${dt(next.servicePeriodStart)} – ${dt(next.servicePeriodEnd)}`);
+  push("paymentTermDays", "Zahlungsziel (Tage)", prev.paymentTermDays == null ? null : String(prev.paymentTermDays), next.paymentTermDays == null ? null : String(next.paymentTermDays));
+  push("customerNote", "Rechnungstext", prev.customerNote, next.customerNote);
+  push("taxNote", "Steuerhinweis", prev.taxNote, next.taxNote);
+  push("pricesIncludeTax", "Preisbasis", prev.pricesIncludeTax ? "brutto" : "netto", next.pricesIncludeTax ? "brutto" : "netto");
+  // Positionen: nach Reihenfolge verglichen (Beschreibung, Menge, Einzelpreis, Steuersatz, Beträge)
+  const pi = [...prev.items].sort((a, b) => a.sortOrder - b.sortOrder), ni = [...next.items].sort((a, b) => a.sortOrder - b.sortOrder);
+  const line = (i: VersionWithItems["items"][number]) => `${i.description} · ${Number(i.quantity).toLocaleString("de-DE")} ${i.unit} × ${money(i.unitPrice)} · ${fmtRate(toBasisPoints(i.taxRate))} · Steuer ${money(i.taxAmount)} · ${money(i.grossAmount)}`;
+  for (let k = 0; k < Math.max(pi.length, ni.length); k++) push(`item.${k + 1}`, `Position ${k + 1}`, pi[k] ? line(pi[k]) : null, ni[k] ? line(ni[k]) : null);
+  push("netTotal", "Nettobetrag", money(prev.netTotal), money(next.netTotal));
+  push("taxTotal", "Steuerbetrag", money(prev.taxTotal), money(next.taxTotal));
+  push("grossTotal", "Rechnungsbetrag", money(prev.grossTotal), money(next.grossTotal));
+  return { fromVersion: prev.versionNo, toVersion: next.versionNo, entries, grossBefore: money(prev.grossTotal), grossAfter: money(next.grossTotal) };
+}
+
+// ---------------------------------------------------------------------------
+// Abschluss
+// ---------------------------------------------------------------------------
+
+export type FinalizeOptions = { reason?: string | null; confirmOverpayment?: boolean };
+
 /**
- * Abschluss: Zeile sperren, alles erneut prüfen, Firmendaten von jetzt einfrieren, Rechnungsnummer vergeben,
- * Zahlungsziel setzen, Hash versiegeln, Status setzen. Eine Nummer wird nie wiederverwendet: der Index verhindert
- * Doppelte, bei Kollision wird der ganze Abschluss mit der nächsten Nummer wiederholt.
+ * Abschluss des offenen Entwurfs. Fassung 1: Nummer vergeben, Rechnungsdatum setzen, Firmendaten aus den Einstellungen
+ * einfrieren. Fassung n+1: Fassungsart erneut aus dem tatsächlichen Übermittlungsstand der Vorfassung bestimmt (ein
+ * zwischenzeitlicher Versand macht aus der Neufassung eine Berichtigung), Grund bei Berichtigung Pflicht, Überzahlung
+ * nur mit ausdrücklicher Bestätigung, Differenz zur Vorfassung gespeichert. Rechnung und Entwurf sind gesperrt; ein
+ * veralteter Entwurf (nicht Nachfolger der aktuellen Fassung) wird abgewiesen. Eine Nummer wird nie wiederverwendet.
  */
-export async function finalizeInvoice(tenantId: string, invoiceId: string, actor: Actor) {
+export async function finalizeInvoice(tenantId: string, invoiceId: string, actor: Actor, opts: FinalizeOptions = {}): Promise<VersionWithItems> {
   return withNumberRetry(() =>
     db.$transaction(async (tx) => {
-      const locked = await tx.$queryRaw<{ id: string; status: string }[]>`SELECT "id", "status" FROM "Invoice" WHERE "id" = ${invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
-      if (locked.length === 0) throw new DomainError("Rechnung nicht gefunden.");
-      if (locked[0].status !== "DRAFT") throw new DomainError("Die Rechnung ist bereits abgeschlossen.");
-      const problems = (await collectIssues(tx, tenantId, invoiceId)).filter((i) => i.severity === "error");
+      const { invoice: lockedInv, draft: draft0 } = await lockDraft(tx, tenantId, invoiceId);
+      const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: lockedInv.id } });
+      let draft = draft0;
+      if (opts.reason !== undefined && (opts.reason?.trim() || "") !== (draft.reason ?? "")) {
+        draft = await tx.invoiceVersion.update({ where: { id: draft.id }, data: { reason: opts.reason?.trim() || null }, include: withItems });
+      }
+      const current = invoice.currentVersionId ? await tx.invoiceVersion.findFirstOrThrow({ where: { id: invoice.currentVersionId, tenantId }, include: withItems }) : null;
+      const mode = current ? await editModeOf(tx, tenantId, invoice, current) : null;
+      if (draft.versionNo > 1) {
+        if (!current) throw new DomainError("Die Rechnung hat keine aktuelle Fassung.");
+        if (draft.supersedesVersionId !== current.id) throw new DomainError("Dieser Entwurf basiert nicht mehr auf der aktuellen Fassung. Bitte den Entwurf verwerfen und die Bearbeitung neu beginnen.");
+        // Fassungsart folgt dem tatsächlichen Übermittlungsstand der Vorfassung zum Zeitpunkt des Abschlusses
+        const kind: VersionKind = mode!.delivered ? "CORRECTION" : "REVISION";
+        if (kind !== draft.kind) draft = await tx.invoiceVersion.update({ where: { id: draft.id }, data: { kind }, include: withItems });
+      }
+      const problems = (await collectIssues(tx, tenantId, invoice, draft, draft.versionNo > 1 ? mode : null)).filter((i) => i.severity === "error");
       if (problems.length > 0) throw new DomainError(problems.length === 1 ? problems[0].message : `${problems[0].message} (und ${problems.length - 1} weitere Punkte)`);
-      const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+      const newGross = toCents(draft.grossTotal);
+      if (mode && mode.paidCents > newGross && !opts.confirmOverpayment) {
+        throw new DomainError(`Für diese Rechnung wurden bereits ${fmtCents(mode.paidCents)} Zahlungen dokumentiert. Der neue Rechnungsbetrag beträgt ${fmtCents(newGross)}. Dadurch entsteht eine Überzahlung von ${fmtCents(mode.paidCents - newGross)}. Rent-Base führt keine automatische Erstattung durch. Bitte die Überzahlung ausdrücklich bestätigen.`);
+      }
+
       const now = new Date();
-      const number = await nextInvoiceNumber(tx, tenantId, now);
-      const paymentTermDays = (await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId } })).paymentTermDays;
-      const paymentDueDate = paymentTermDays != null ? new Date(now.getTime() + paymentTermDays * 86400_000) : null;
-      const sealedBase = await tx.invoice.update({
-        where: { id: invoiceId },
-        data: { number, issueDate: now, paymentDueDate, companySnapshot: companySnapshotOf(tenant) },
-        include: { items: true },
+      let number = invoice.number;
+      let companySnapshot = draft.companySnapshot as Prisma.InputJsonValue;
+      let issueDate = draft.issueDate;
+      if (draft.versionNo === 1) {
+        const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+        number = await nextInvoiceNumber(tx, tenantId, now);
+        companySnapshot = companySnapshotOf(tenant) as unknown as Prisma.InputJsonValue;
+        issueDate = now;
+      }
+      // Zahlungsziel läuft ab dem Abschluss der jeweiligen Fassung (bei einer Berichtigung ab dem Berichtigungsdatum)
+      const paymentDueDate = draft.paymentTermDays != null ? new Date(now.getTime() + draft.paymentTermDays * 86400_000) : null;
+      const sealedBase = await tx.invoiceVersion.update({
+        where: { id: draft.id },
+        data: { issueDate, correctionDate: draft.versionNo > 1 ? now : null, paymentDueDate, companySnapshot },
+        include: withItems,
       });
-      const hash = contentHash(sealedContent(sealedBase));
-      return tx.invoice.update({ where: { id: invoiceId }, data: { status: "FINALIZED", finalizedAt: now, contentHash: hash, changeLog: [...((sealedBase.changeLog as Prisma.JsonArray) ?? []), { at: now.toISOString(), by: actor.name, summary: `Abgeschlossen als ${number}` }] }, include: { items: { orderBy: { sortOrder: "asc" } } } });
+      const hash = contentHash(sealedContent({ ...invoice, number }, sealedBase));
+      const diff = current ? diffVersions(current, sealedBase) : null;
+      const finalized = await tx.invoiceVersion.update({
+        where: { id: draft.id },
+        data: { status: "FINALIZED", finalizedAt: now, finalizedById: actor.id, finalizedByName: actor.name, contentHash: hash, diffFromPrevious: diff ? (diff as unknown as Prisma.InputJsonValue) : undefined },
+        include: withItems,
+      });
+      const log = Array.isArray(invoice.changeLog) ? (invoice.changeLog as Prisma.JsonArray) : [];
+      const summary = draft.versionNo === 1
+        ? `Abgeschlossen als ${number} (Fassung 1)`
+        : `Fassung ${draft.versionNo} abgeschlossen (${finalized.kind === "CORRECTION" ? "Berichtigung" : "Neufassung"}, ${diff!.entries.length} Änderungen, Betrag ${diff!.grossBefore} → ${diff!.grossAfter})${finalized.reason ? `: ${finalized.reason}` : ""}`;
+      if (draft.versionNo === 1) {
+        await tx.invoice.update({ where: { id: invoice.id }, data: { number, status: "FINALIZED", finalizedAt: now, currentVersionId: finalized.id, changeLog: [...log, { at: now.toISOString(), by: actor.name, versionNo: 1, summary }] } });
+      } else {
+        await tx.invoice.update({ where: { id: invoice.id }, data: { currentVersionId: finalized.id, changeLog: [...log, { at: now.toISOString(), by: actor.name, versionNo: draft.versionNo, summary }] } });
+        await recordAudit(tx, tenantId, actor, {
+          action: finalized.kind === "CORRECTION" ? "INVOICE_CORRECTED" : "INVOICE_REVISED",
+          bookingId: invoice.bookingId,
+          invoiceId: invoice.id,
+          amountCents: newGross,
+          details: { invoiceNumber: number, fromVersion: current!.versionNo, toVersion: finalized.versionNo, grossBefore: toCents(current!.grossTotal), grossAfter: newGross, paidCents: mode!.paidCents, overpaidCents: Math.max(0, mode!.paidCents - newGross), reason: finalized.reason, changes: diff!.entries.length },
+        });
+      }
+      return finalized;
     }, TX),
   ).catch((e) => {
     if (isUniqueViolation(e, "bookingId")) throw new DomainError("Zu dieser Buchung gibt es bereits eine abgeschlossene Rechnung.");
@@ -421,18 +746,49 @@ export async function finalizeInvoice(tenantId: string, invoiceId: string, actor
   });
 }
 
-export async function verifyInvoice(tenantId: string, invoiceId: string) {
-  const inv = await db.invoice.findFirst({ where: { id: invoiceId, tenantId }, include: { items: true } });
-  if (!inv) throw new DomainError("Rechnung nicht gefunden.");
-  const hash = contentHash(sealedContent(inv));
-  return { finalized: inv.status === "FINALIZED", storedHash: inv.contentHash, currentHash: hash, intact: inv.status === "FINALIZED" && inv.contentHash === hash };
+/** Prüfsumme einer Fassung nachrechnen. Fassung 1 aus der Zeit vor den Fassungen wird mit dem damaligen Inhalt geprüft. */
+export async function verifyVersion(tenantId: string, versionId: string) {
+  const v = await db.invoiceVersion.findFirst({ where: { id: versionId, tenantId }, include: withItems });
+  if (!v) throw new DomainError("Rechnungsfassung nicht gefunden.");
+  const invoice = await db.invoice.findUniqueOrThrow({ where: { id: v.invoiceId } });
+  const current = contentHash(sealedContent(invoice, v));
+  const legacy = contentHash(legacySealedContent(invoice, v));
+  const intact = v.status === "FINALIZED" && (v.contentHash === current || v.contentHash === legacy);
+  return { finalized: v.status === "FINALIZED", storedHash: v.contentHash, currentHash: current, intact, legacyHash: legacy };
 }
 
-/** Entwurf verwerfen (nur DRAFT). Abgeschlossene Rechnungen bleiben immer erhalten. */
-export async function discardInvoiceDraft(tenantId: string, invoiceId: string) {
+/** Prüfsumme der aktuellen Fassung einer Rechnung. */
+export async function verifyInvoice(tenantId: string, invoiceId: string) {
+  const inv = await db.invoice.findFirst({ where: { id: invoiceId, tenantId } });
+  if (!inv) throw new DomainError("Rechnung nicht gefunden.");
+  if (!inv.currentVersionId) return { finalized: false, storedHash: null, currentHash: null, intact: false };
+  return verifyVersion(tenantId, inv.currentVersionId);
+}
+
+/** Entwurf verwerfen: Fassung 1 → ganze Rechnung, spätere Fassung → nur der Entwurf. Abgeschlossene Fassungen bleiben immer. */
+export async function discardInvoiceDraft(tenantId: string, invoiceId: string, actor?: Actor) {
   return db.$transaction(async (tx) => {
-    const inv = await loadDraft(tx, tenantId, invoiceId);
-    await tx.invoiceItem.deleteMany({ where: { tenantId, invoiceId: inv.id } });
-    await tx.invoice.delete({ where: { id: inv.id } });
+    const { draft } = await lockDraft(tx, tenantId, invoiceId);
+    await tx.invoiceVersionItem.deleteMany({ where: { tenantId, versionId: draft.id } });
+    await tx.invoiceVersion.delete({ where: { id: draft.id } });
+    if (draft.versionNo === 1) {
+      await tx.invoiceItem.deleteMany({ where: { tenantId, invoiceId } });
+      await tx.invoice.delete({ where: { id: invoiceId } });
+      return { invoiceDeleted: true, versionNo: 1 };
+    }
+    const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
+    const log = Array.isArray(invoice.changeLog) ? (invoice.changeLog as Prisma.JsonArray) : [];
+    await tx.invoice.update({ where: { id: invoiceId }, data: { changeLog: [...log, { at: new Date().toISOString(), by: actor?.name ?? "–", versionNo: draft.versionNo, summary: `Entwurf der Fassung ${draft.versionNo} verworfen` }] } });
+    return { invoiceDeleted: false, versionNo: draft.versionNo };
   }, TX);
+}
+
+/** Fassungen einer Rechnung mit Übermittlungsstand (für Anzeige und Listen). */
+export async function listVersions(tenantId: string, invoiceId: string) {
+  const versions = await db.invoiceVersion.findMany({ where: { tenantId, invoiceId }, orderBy: { versionNo: "asc" } });
+  const sent = await db.emailLog.findMany({ where: { tenantId, invoiceVersionId: { in: versions.map((v) => v.id) }, status: "SENT" }, orderBy: { sentAt: "asc" }, select: { invoiceVersionId: true, sentAt: true, recipient: true } });
+  return versions.map((v) => {
+    const s = sent.find((x) => x.invoiceVersionId === v.id);
+    return { ...v, sentAt: s?.sentAt ?? null, sentTo: s?.recipient ?? null, delivered: !!s || !!v.deliveredAt };
+  });
 }

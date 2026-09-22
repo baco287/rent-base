@@ -14,6 +14,7 @@ import { APP_TIME_ZONE } from "@/lib/time";
 export const PICKUP_MAIL_TEMPLATE = "PICKUP_DOCUMENTS";
 export const RETURN_MAIL_TEMPLATE = "RETURN_DOCUMENTS";
 export const INVOICE_MAIL_TEMPLATE = "INVOICE";
+export const INVOICE_CORRECTION_MAIL_TEMPLATE = "INVOICE_CORRECTION";
 export type MailKind = "PICKUP" | "RETURN" | "INVOICE";
 
 export type PickupMailFacts = { renterName: string; contractNumber: string; vehicleTitle: string; plate: string; startAt: string; landlordName: string; landlordContact: string; returnedAt?: string | null };
@@ -104,6 +105,7 @@ export type PickupMailPlan = {
   bookingId: string;
   handoverId: string | null;
   invoiceId?: string | null;
+  invoiceVersionId?: string | null;
   recipient: string | null; // aus der Vertragskopie
   facts: PickupMailFacts;
   replyTo: string | null;
@@ -144,12 +146,19 @@ export async function planHandoverMail(tenantId: string, handoverId: string): Pr
 export const planPickupMail = planHandoverMail;
 
 /** Rechnung: neutraler Text, nur das Rechnungs-PDF. Keine Aussage zu Schäden oder Verantwortung. */
-export function composeInvoiceMail(f: PickupMailFacts & { invoiceNumber: string; grossTotal: string; dueDate: string | null }): { subject: string; text: string; html: string } {
-  const subject = `Ihre Rechnung ${f.invoiceNumber}`;
+export type InvoiceMailFacts = PickupMailFacts & { invoiceNumber: string; grossTotal: string; dueDate: string | null; correction?: { versionNo: number; supersededVersionNo: number | null } | null };
+
+/** Rechnungsmail; bei einer Berichtigung neutral formuliert: die neue Fassung ersetzt die zuvor übermittelte. */
+export function composeInvoiceMail(f: InvoiceMailFacts): { subject: string; text: string; html: string } {
+  const corr = f.correction ?? null;
+  const subject = corr ? `Korrigierte Rechnung ${f.invoiceNumber}` : `Ihre Rechnung ${f.invoiceNumber}`;
+  const intro = corr
+    ? `anbei erhalten Sie die berichtigte Rechnung ${f.invoiceNumber} (Fassung ${corr.versionNo}) zu Ihrer Fahrzeugmiete. Sie ersetzt die Ihnen zuvor übermittelte Fassung${corr.supersededVersionNo ? ` ${corr.supersededVersionNo}` : ""} dieser Rechnung.`
+    : `anbei erhalten Sie die Rechnung ${f.invoiceNumber} zu Ihrer Fahrzeugmiete.`;
   const lines = [
     `Guten Tag ${f.renterName},`,
     "",
-    `anbei erhalten Sie die Rechnung ${f.invoiceNumber} zu Ihrer Fahrzeugmiete.`,
+    intro,
     "",
     `Fahrzeug: ${f.vehicleTitle}`,
     `Kennzeichen: ${f.plate}`,
@@ -158,7 +167,7 @@ export function composeInvoiceMail(f: PickupMailFacts & { invoiceNumber: string;
     ...(f.dueDate ? [`Zahlbar bis: ${f.dueDate}`] : []),
     "",
     "Im Anhang:",
-    "- Rechnung",
+    corr ? "- Berichtigte Rechnung" : "- Rechnung",
     "",
     "Bei Fragen zur Rechnung melden Sie sich gern bei uns.",
     "",
@@ -168,7 +177,7 @@ export function composeInvoiceMail(f: PickupMailFacts & { invoiceNumber: string;
   ];
   const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#1a2230">
 <p>Guten Tag ${esc(f.renterName)},</p>
-<p>anbei erhalten Sie die Rechnung ${esc(f.invoiceNumber)} zu Ihrer Fahrzeugmiete.</p>
+<p>${esc(intro)}</p>
 <table style="border-collapse:collapse;font-size:15px" cellpadding="0" cellspacing="0">
 <tr><td style="padding:2px 16px 2px 0;color:#4a5568">Fahrzeug</td><td>${esc(f.vehicleTitle)}</td></tr>
 <tr><td style="padding:2px 16px 2px 0;color:#4a5568">Kennzeichen</td><td>${esc(f.plate)}</td></tr>
@@ -177,34 +186,39 @@ export function composeInvoiceMail(f: PickupMailFacts & { invoiceNumber: string;
 ${f.dueDate ? `<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Zahlbar bis</td><td>${esc(f.dueDate)}</td></tr>` : ""}
 </table>
 <p>Im Anhang:</p>
-<ul><li>Rechnung</li></ul>
+<ul><li>${corr ? "Berichtigte Rechnung" : "Rechnung"}</li></ul>
 <p>Bei Fragen zur Rechnung melden Sie sich gern bei uns.</p>
 <p>Freundliche Grüße<br>${esc(f.landlordName)}${f.landlordContact ? `<br><span style="color:#4a5568">${esc(f.landlordContact)}</span>` : ""}</p>
 </div>`;
   return { subject, text: lines.join("\n"), html };
 }
 
-/** Stellt zusammen, was für eine Rechnung verschickt würde: das archivierte Rechnungs-PDF an die Adresse aus der Rechnungskopie. */
-export async function planInvoiceMail(tenantId: string, invoiceId: string): Promise<PickupMailPlan & { invoice: { number: string; grossTotal: string; dueDate: string | null } }> {
-  const inv = await db.invoice.findFirst({ where: { id: invoiceId, tenantId }, select: { id: true, bookingId: true, contractId: true, status: true, number: true, grossTotal: true, paymentDueDate: true } });
+export type InvoiceMailPlan = PickupMailPlan & { invoice: { number: string; grossTotal: string; dueDate: string | null; correction: { versionNo: number; supersededVersionNo: number | null } | null } };
+
+/** Stellt zusammen, was für eine Rechnungsfassung verschickt würde: ausschließlich das archivierte PDF dieser Fassung an die Adresse aus der Rechnungskopie. */
+export async function planInvoiceMail(tenantId: string, versionId: string): Promise<InvoiceMailPlan> {
+  const v = await db.invoiceVersion.findFirst({ where: { id: versionId, tenantId }, select: { id: true, status: true, kind: true, versionNo: true, invoiceId: true } });
+  if (!v) throw new DomainError("Rechnungsfassung nicht gefunden.");
+  const inv = await db.invoice.findFirst({ where: { id: v.invoiceId, tenantId }, select: { id: true, bookingId: true, contractId: true, status: true, number: true } });
   if (!inv) throw new DomainError("Rechnung nicht gefunden.");
-  if (inv.status !== "FINALIZED" || !inv.number) throw new DomainError("Eine Rechnung wird erst nach dem Abschluss versendet.");
+  if (v.status !== "FINALIZED" || inv.status !== "FINALIZED" || !inv.number) throw new DomainError("Eine Rechnung wird erst nach dem Abschluss versendet.");
   if (!inv.contractId) throw new DomainError("Zu dieser Rechnung gibt es keinen Mietvertrag.");
   const contract = await loadContractDocumentData(tenantId, inv.contractId);
   const d = contract.doc;
-  const invoiceData = await loadInvoiceDocumentData(tenantId, inv.id);
-  const doc = await db.document.findFirst({ where: { tenantId, type: "INVOICE", invoiceId: inv.id }, orderBy: { version: "desc" } });
+  const invoiceData = await loadInvoiceDocumentData(tenantId, v.id);
+  const doc = await db.document.findFirst({ where: { tenantId, type: "INVOICE", invoiceVersionId: v.id }, orderBy: { version: "desc" } });
   return {
     kind: "INVOICE",
     bookingId: inv.bookingId,
     handoverId: null,
     invoiceId: inv.id,
+    invoiceVersionId: v.id,
     recipient: invoiceData.renterEmail ?? d.renterEmail,
     facts: { renterName: d.renterName, contractNumber: d.number, vehicleTitle: d.vehicleTitle, plate: d.plate, startAt: d.startAt, landlordName: d.landlord.name, landlordContact: d.landlord.contact },
     replyTo: d.landlord.email,
     documents: doc ? [doc] : [],
     missing: doc ? [] : ["Rechnung"],
-    invoice: { number: inv.number, grossTotal: invoiceData.doc.totals.gross, dueDate: invoiceData.doc.paymentDueDate },
+    invoice: { number: inv.number, grossTotal: invoiceData.doc.totals.gross, dueDate: invoiceData.doc.paymentDueDate, correction: v.kind === "CORRECTION" ? { versionNo: v.versionNo, supersededVersionNo: invoiceData.doc.version.supersedes?.versionNo ?? null } : null },
   };
 }
 
@@ -227,24 +241,26 @@ export async function sendHandoverDocuments(tenantId: string, handoverId: string
   return sendPlannedDocuments(tenantId, await planHandoverMail(tenantId, handoverId), opts);
 }
 
-export async function sendInvoiceDocument(tenantId: string, invoiceId: string, opts: SendOptions): Promise<SendResult> {
-  return sendPlannedDocuments(tenantId, await planInvoiceMail(tenantId, invoiceId), opts);
+/** Versendet das PDF genau dieser Rechnungsfassung. Jeder Versuch hängt an der Fassung (EmailLog.invoiceVersionId). */
+export async function sendInvoiceDocument(tenantId: string, versionId: string, opts: SendOptions): Promise<SendResult> {
+  return sendPlannedDocuments(tenantId, await planInvoiceMail(tenantId, versionId), opts);
 }
 
-async function sendPlannedDocuments(tenantId: string, plan: PickupMailPlan & { invoice?: { number: string; grossTotal: string; dueDate: string | null } }, opts: SendOptions): Promise<SendResult> {
-  const template = plan.kind === "RETURN" ? RETURN_MAIL_TEMPLATE : plan.kind === "INVOICE" ? INVOICE_MAIL_TEMPLATE : PICKUP_MAIL_TEMPLATE;
-  const subjectId = plan.invoiceId ?? plan.handoverId ?? plan.bookingId;
+async function sendPlannedDocuments(tenantId: string, plan: PickupMailPlan & { invoice?: InvoiceMailPlan["invoice"] }, opts: SendOptions): Promise<SendResult> {
+  const template = plan.kind === "RETURN" ? RETURN_MAIL_TEMPLATE : plan.kind === "INVOICE" ? (plan.invoice?.correction ? INVOICE_CORRECTION_MAIL_TEMPLATE : INVOICE_MAIL_TEMPLATE) : PICKUP_MAIL_TEMPLATE;
+  const subjectId = plan.invoiceVersionId ?? plan.invoiceId ?? plan.handoverId ?? plan.bookingId;
   if (plan.missing.length > 0) throw new DomainError(`Es fehlt noch: ${plan.missing.join(" und ")}. Bitte zuerst das PDF erzeugen.`);
   if (opts.trigger === "MANUAL" && !/^[A-Za-z0-9-]{8,64}$/.test(opts.nonce ?? "")) throw new DomainError("Die Seite ist veraltet. Bitte neu laden.");
 
   const versions = plan.documents.map((doc) => `${doc.id}v${doc.version}`).join("+");
   const idempotencyKey = `${template}:${subjectId}:${versions}${opts.trigger === "MANUAL" ? `:manual:${opts.nonce}` : ""}`;
-  const mail = plan.kind === "INVOICE" && plan.invoice ? composeInvoiceMail({ ...plan.facts, invoiceNumber: plan.invoice.number, grossTotal: plan.invoice.grossTotal, dueDate: plan.invoice.dueDate }) : plan.kind === "RETURN" ? composeReturnMail(plan.facts) : composePickupMail(plan.facts);
+  const mail = plan.kind === "INVOICE" && plan.invoice ? composeInvoiceMail({ ...plan.facts, invoiceNumber: plan.invoice.number, grossTotal: plan.invoice.grossTotal, dueDate: plan.invoice.dueDate, correction: plan.invoice.correction }) : plan.kind === "RETURN" ? composeReturnMail(plan.facts) : composePickupMail(plan.facts);
   const { log, created } = await claimEmail({
     tenantId,
     bookingId: plan.bookingId,
     handoverId: plan.handoverId,
     invoiceId: plan.invoiceId ?? null,
+    invoiceVersionId: plan.invoiceVersionId ?? null,
     recipient: plan.recipient ?? "(keine Adresse)",
     subject: mail.subject,
     template,

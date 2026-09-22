@@ -97,8 +97,8 @@ test("Nach Rückgabe: Teilbetrag erhalten, vollständige Freigabe; teilweise Fre
 
   // keine Verrechnung: Zusatzkosten (270 €), Rechnung und Schaden bleiben unberührt; Einbehalt ist keine Zahlung
   const draft = await ensureInvoiceDraft(b.tenantId, b.bookingId, b.actor);
-  const inv = await finalizeInvoice(b.tenantId, draft.id, b.actor);
-  const pay = await invoicePaymentSummary(b.tenantId, inv.id);
+  await finalizeInvoice(b.tenantId, draft.id, b.actor);
+  const pay = await invoicePaymentSummary(b.tenantId, draft.id);
   assert.deepEqual([pay.paidCents, pay.status], [0, "OPEN"], "Einbehalt zählt nicht als Rechnungszahlung");
   assert.equal(await db.payment.count({ where: { tenantId: b.tenantId } }), 0, "kein automatisch erzeugtes Payment");
   const charges = await db.extraCharge.findMany({ where: { tenantId: b.tenantId, handoverId: b.returnId } });

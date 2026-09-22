@@ -34,7 +34,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const pickupDone = b.handovers.find((h) => h.type === "PICKUP" && h.status === "FINALIZED");
   const returnDraft = b.handovers.find((h) => h.type === "RETURN" && h.status === "DRAFT");
   const returnDone = b.handovers.find((h) => h.type === "RETURN" && h.status === "FINALIZED");
-  const invoice = b.status === "RETURNED" ? await db.invoice.findFirst({ where: { tenantId: tenant.id, bookingId: b.id, status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: [{ status: "asc" }, { createdAt: "desc" }], select: { id: true, number: true, status: true, grossTotal: true } }) : null;
+  const invoice = b.status === "RETURNED" ? await db.invoice.findFirst({ where: { tenantId: tenant.id, bookingId: b.id, status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: [{ status: "asc" }, { createdAt: "desc" }], select: { id: true, number: true, status: true, currentVersion: { select: { grossTotal: true, versionNo: true } }, _count: { select: { versions: true } } } }) : null;
   const charges = b.status === "RETURNED" || returnDraft ? await db.extraCharge.findMany({ where: { tenantId: tenant.id, bookingId: b.id }, orderBy: { createdAt: "asc" } }) : [];
   const chargesTotal = charges.reduce((s, c) => s + Number(c.amount), 0);
   const update = updateBookingAction.bind(null, b.id);
@@ -79,7 +79,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
             <span className="label-xs">Rechnung</span>
             {!invoice && <Chip tone="amber">noch nicht erstellt</Chip>}
             {invoice?.status === "DRAFT" && <Chip tone="amber">Entwurf</Chip>}
-            {invoice?.status === "FINALIZED" && <><Chip tone="good">{invoice.number} abgeschlossen</Chip><span className="font-mono tnum">{fmtEur(Number(invoice.grossTotal))}</span></>}
+            {invoice?.status === "FINALIZED" && <><Chip tone="good">{invoice.number} abgeschlossen</Chip><span className="font-mono tnum">{fmtEur(Number(invoice.currentVersion?.grossTotal ?? 0))}</span>{invoice._count.versions > 1 && <Link href={`/buchungen/${b.id}/rechnung`} className="chip bg-panel-2 text-ink-2 hover:underline">{invoice._count.versions} Fassungen · aktuell {invoice.currentVersion?.versionNo}</Link>}</>}
             {!invoice && user.role === "YARD" && <span className="text-ink-3">wird von der Disposition erstellt</span>}
           </div>
         )}

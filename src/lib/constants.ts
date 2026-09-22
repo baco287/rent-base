@@ -174,7 +174,8 @@ export type PaymentMethod = keyof typeof PAYMENT_METHODS;
 export const PAYMENT_TYPES = { INVOICE_PAYMENT: "Rechnungszahlung", OTHER_PAYMENT: "Sonstige Zahlung" } as const;
 export const PAYMENT_STATUS = { CONFIRMED: "Bestätigt", CANCELLED: "Storniert" } as const;
 /** Zahlungsstatus einer Rechnung, abgeleitet aus bestätigten Zahlungen; nie gespeichert. */
-export const INVOICE_PAYMENT_STATUS = { OPEN: "Offen", PARTIAL: "Teilbezahlt", PAID: "Bezahlt" } as const;
+export const INVOICE_PAYMENT_STATUS = { OPEN: "Offen", PARTIAL: "Teilbezahlt", PAID: "Bezahlt", OVERPAID: "Überzahlt – Erstattung zu klären" } as const;
+export const INVOICE_VERSION_KINDS = { ORIGINAL: "Original", REVISION: "Neufassung", CORRECTION: "Berichtigung" } as const;
 export type InvoicePaymentStatus = keyof typeof INVOICE_PAYMENT_STATUS;
 export const DEPOSIT_STATUS = { EXPECTED: "Noch nicht erhalten", RECEIVED: "Erhalten", PARTIALLY_RELEASED: "Teilweise freigegeben", RELEASED: "Freigegeben", RETAINED: "Einbehalten" } as const;
 export type DepositStatus = keyof typeof DEPOSIT_STATUS;
@@ -188,6 +189,10 @@ export const AUDIT_ACTIONS = {
   DEPOSIT_PARTIALLY_RELEASED: "Kaution teilweise freigegeben",
   DEPOSIT_RETAINED: "Kaution einbehalten",
   DEPOSIT_CORRECTION: "Kautionsbewegung storniert",
+  INVOICE_VERSION_CREATED: "Rechnungsbearbeitung begonnen",
+  INVOICE_REVISED: "Rechnung neu gefasst",
+  INVOICE_CORRECTED: "Rechnung berichtigt",
+  INVOICE_DELIVERED_MANUALLY: "Rechnung als übergeben markiert",
 } as const;
 export type AuditAction = keyof typeof AUDIT_ACTIONS;
 
