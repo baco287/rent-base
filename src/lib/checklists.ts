@@ -3,12 +3,21 @@
 // erzeugen eine neue Version und wirken nur auf künftige Protokolle.
 
 import type { Prisma } from "@prisma/client";
-import type { ChecklistAnswerType, HandoverType } from "@/lib/constants";
+import { driveClassOf, type ChecklistAnswerType, type DriveClass, type HandoverType } from "@/lib/constants";
 import { DomainError } from "@/lib/integrity";
 
 type Tx = Prisma.TransactionClient;
 
-export type ChecklistItemDef = { key: string; label: string; answerType: ChecklistAnswerType; required: boolean };
+/** appliesTo leer/fehlend = gilt für alle Antriebe; sonst nur für die genannten Antriebsklassen (COMBUSTION, ELECTRIC, PHEV). */
+export type ChecklistItemDef = { key: string; label: string; answerType: ChecklistAnswerType; required: boolean; appliesTo?: DriveClass[] };
+
+const CHARGING = ["ELECTRIC", "PHEV"] as DriveClass[];
+
+/** Punkte, die zum Antrieb des Fahrzeugs passen. Wird beim Kopieren in ein Protokoll angewendet; bestehende Protokolle bleiben unberührt. */
+export function itemsForDrive(items: ChecklistItemDef[], driveType: string): ChecklistItemDef[] {
+  const cls = driveClassOf(driveType);
+  return items.filter((i) => !i.appliesTo || i.appliesTo.length === 0 || i.appliesTo.includes(cls));
+}
 
 /** Standard, solange ein Mandant keine eigene Vorlage hat. */
 export const DEFAULT_CHECKLIST: ChecklistItemDef[] = [
@@ -20,6 +29,7 @@ export const DEFAULT_CHECKLIST: ChecklistItemDef[] = [
   { key: "interior_clean", label: "Innenraum sauber", answerType: "OK_NOT_OK", required: true },
   { key: "exterior_clean", label: "Außen sauber", answerType: "OK_NOT_OK", required: true },
   { key: "warning_lights", label: "Keine Warnleuchten im Display", answerType: "OK_NOT_OK", required: true },
+  { key: "charging_cable", label: "Ladekabel und Ladezubehör übergeben", answerType: "YES_NO", required: true, appliesTo: CHARGING },
   { key: "remarks", label: "Bemerkungen", answerType: "TEXT", required: false },
 ];
 
@@ -30,7 +40,7 @@ export const DEFAULT_RETURN_CHECKLIST: ChecklistItemDef[] = [
   { key: "warning_triangle", label: "Warndreieck vorhanden", answerType: "YES_NO", required: true },
   { key: "safety_vest", label: "Warnweste vorhanden", answerType: "YES_NO", required: true },
   { key: "first_aid", label: "Verbandkasten vorhanden", answerType: "YES_NO", required: true },
-  { key: "charging_cable", label: "Ladekabel zurück (falls ausgegeben)", answerType: "YES_NO", required: true },
+  { key: "charging_cable", label: "Ladekabel und Ladezubehör zurück", answerType: "YES_NO", required: true, appliesTo: CHARGING },
   { key: "interior_checked", label: "Innenraum geprüft, keine Auffälligkeiten", answerType: "YES_NO", required: true },
   { key: "exterior_checked", label: "Fahrzeug außen geprüft, keine Auffälligkeiten", answerType: "YES_NO", required: true },
   { key: "tires", label: "Reifen geprüft, in Ordnung", answerType: "YES_NO", required: true },
@@ -45,7 +55,8 @@ function parseItems(raw: Prisma.JsonValue): ChecklistItemDef[] {
     if (!r || typeof r !== "object" || Array.isArray(r)) return [];
     const o = r as Record<string, unknown>;
     if (typeof o.key !== "string" || typeof o.label !== "string") return [];
-    return [{ key: o.key, label: o.label, answerType: (o.answerType as ChecklistAnswerType) ?? "OK_NOT_OK", required: o.required !== false }];
+    const appliesTo = Array.isArray(o.appliesTo) ? (o.appliesTo.filter((x) => x === "COMBUSTION" || x === "ELECTRIC" || x === "PHEV") as DriveClass[]) : undefined;
+    return [{ key: o.key, label: o.label, answerType: (o.answerType as ChecklistAnswerType) ?? "OK_NOT_OK", required: o.required !== false, ...(appliesTo && appliesTo.length > 0 ? { appliesTo } : {}) }];
   });
 }
 

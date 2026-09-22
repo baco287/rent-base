@@ -8,7 +8,7 @@ import { addAdditionalDriver, ensureContractDraft, finalizeContract, getContract
 import { fakeSignaturePng, purgeTenants } from "./helpers";
 import { addNewDamage, answerChecklistItem, saveHandoverSignature, finalizeHandover, getHandoverContentHash, registerPhoto, startHandover, updateHandoverDraft, verifyHandover } from "../src/lib/handovers";
 import { setDamageStatus } from "../src/lib/damages";
-import { publishChecklistVersion, DEFAULT_CHECKLIST } from "../src/lib/checklists";
+import { publishChecklistVersion, DEFAULT_CHECKLIST, itemsForDrive } from "../src/lib/checklists";
 import { publishSketchVersion } from "../src/lib/sketches";
 import { extraMileageCharge, fuelCharge, saveExtraCharge } from "../src/lib/extra-charges";
 import { registerDocument } from "../src/lib/documents";
@@ -131,7 +131,7 @@ test("Übergabe kopiert Schäden, Checkliste und Skizze; andere Mandanten sehen 
   assert.equal((damages[0].photoRefs as unknown[]).length, 1);
 
   const items = await db.handoverChecklistItem.findMany({ where: { tenantId: ids.tenantA, handoverId: h.id } });
-  assert.equal(items.length, DEFAULT_CHECKLIST.length);
+  assert.equal(items.length, itemsForDrive(DEFAULT_CHECKLIST, "DIESEL").length, "Standard ohne Ladezubehör-Punkt beim Diesel");
 });
 
 test("Finalisieren verlangt Pflichtangaben und die Unterschrift über genau diesen Inhalt", async () => {
@@ -206,7 +206,7 @@ test("spätere Änderungen an Schadenakte, Skizze und Checkliste verändern das 
   const pickup = await db.handover.findFirstOrThrow({ where: { id: pickupId, tenantId: ids.tenantA } });
   assert.equal(pickup.sketchId, "sys_sketch_transporter_v2");
   assert.equal(pickup.sketchVersion, 2);
-  assert.equal(await db.handoverChecklistItem.count({ where: { handoverId: pickupId } }), DEFAULT_CHECKLIST.length);
+  assert.equal(await db.handoverChecklistItem.count({ where: { handoverId: pickupId } }), itemsForDrive(DEFAULT_CHECKLIST, "DIESEL").length);
 
   const check = await verifyHandover(ids.tenantA, pickupId);
   assert.equal(check.intact, true, "gespeicherter Hash passt weiterhin zum Inhalt");

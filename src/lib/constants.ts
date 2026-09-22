@@ -229,8 +229,19 @@ export type ChecklistAnswerType = keyof typeof CHECKLIST_ANSWER_TYPES;
  * Was bei Übergabe und Rückgabe je Antrieb erfasst wird:
  * Verbrenner und Hybrid ohne Stecker: Tank in Achteln. Elektro: Batterie in Prozent. Plug-in-Hybrid: beides.
  */
-export function energyRequirements(driveType: string): { fuel: boolean; battery: boolean } {
-  if (driveType === "ELEKTRO") return { fuel: false, battery: true };
-  if (driveType === "PLUGIN_HYBRID") return { fuel: true, battery: true };
-  return { fuel: true, battery: false };
+export function energyRequirements(driveType: string): { fuel: boolean; battery: boolean; chargingGear: boolean } {
+  const cls = driveClassOf(driveType);
+  return { fuel: cls !== "ELECTRIC", battery: cls !== "COMBUSTION", chargingGear: cls !== "COMBUSTION" };
+}
+
+/**
+ * Antriebsklasse als einzige Grundlage für Energiefelder, Ladezubehör und Checklistenpunkte.
+ * COMBUSTION = Diesel, Benzin, Hybrid ohne Stecker (Tank); ELECTRIC = Batterie und Ladezubehör; PHEV = beides.
+ */
+export const DRIVE_CLASSES = { COMBUSTION: "Verbrenner", ELECTRIC: "Elektro", PHEV: "Plug-in-Hybrid" } as const;
+export type DriveClass = keyof typeof DRIVE_CLASSES;
+export function driveClassOf(driveType: string): DriveClass {
+  if (driveType === "ELEKTRO") return "ELECTRIC";
+  if (driveType === "PLUGIN_HYBRID") return "PHEV";
+  return "COMBUSTION";
 }

@@ -213,6 +213,11 @@ export async function finalizeReturnAction(bookingId: string, _prev: StepState, 
   try {
     await finalizeHandover(tenant.id, handover.id, actor);
   } catch (e) {
+    if (e instanceof DomainError) {
+      // Zwischen Anzeige und Klick hat sich etwas geändert: aktuelle Liste nachladen und klar sagen, dass es offene Punkte gibt
+      revalidatePath(base(bookingId));
+      return { error: `Die Rückgabe kann noch nicht abgeschlossen werden. Es sind neue offene Punkte vorhanden: ${e.message}` };
+    }
     return asState(e);
   }
   // Ab hier gilt das Fahrzeug als zurückgegeben. PDF und E-Mail sind Nachbearbeitung und werfen nie.

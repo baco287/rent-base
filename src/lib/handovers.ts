@@ -14,11 +14,13 @@
 
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
+import { balanceOf } from "@/lib/deposits";
+import { fmtCents, toCents } from "@/lib/money";
 import { DAMAGE_KINDS, DAMAGE_SEVERITY, DAMAGE_VIEWS, PHOTO_CATEGORIES, REQUIRED_PHOTO_CATEGORIES, RETURN_ATTENTION_ON_YES, VISIBLE_DAMAGE_STATUS, energyRequirements, type HandoverType } from "@/lib/constants";
 import { DomainError, assertHandoverDraft, contentHash, sha256 } from "@/lib/integrity";
 import { nextHandoverNumber } from "@/lib/numbering";
 import { ALLOWED_PHOTO_TYPES, MAX_PHOTO_BYTES, assertKeyBelongsToTenant, buildStorageKey } from "@/lib/storage";
-import { resolveChecklist } from "@/lib/checklists";
+import { itemsForDrive, resolveChecklist } from "@/lib/checklists";
 import { vehicleStatusProblem } from "@/lib/bookings";
 import { resolveSketch } from "@/lib/sketches";
 import { recordVehicleEvent } from "@/lib/vehicle-events";
@@ -118,10 +120,12 @@ export async function startHandover(tenantId: string, bookingId: string, type: H
     }
 
     // Checkliste kopieren: Fragetext und Reihenfolge von jetzt. Ohne eigene Vorlage greift der Standard.
+    // Checkliste kopieren, dabei nur Punkte, die zum Antrieb passen (z. B. Ladezubehör nur bei Elektro/Plug-in-Hybrid)
     const checklist = await resolveChecklist(tx, tenantId, booking.vehicle.groupId, type);
-    if (checklist.items.length > 0) {
+    const applicable = itemsForDrive(checklist.items, booking.vehicle.fuel);
+    if (applicable.length > 0) {
       await tx.handoverChecklistItem.createMany({
-        data: checklist.items.map((item, i) => ({
+        data: applicable.map((item, i) => ({
           tenantId,
           handoverId: handover.id,
           templateId: checklist.templateId,
@@ -586,6 +590,17 @@ async function collectIssues(tx: Tx, tenantId: string, handoverId: string, opts:
     if (booking.endAt.getTime() < Date.now() - 15 * 60_000) {
       const minutes = Math.round((Date.now() - booking.endAt.getTime()) / 60_000);
       warn("BOOKING", "LATE_RETURN", `Die Rückgabe liegt ${Math.floor(minutes / 60)} Std. ${minutes % 60} Min. nach der vereinbarten Zeit. Eine Gebühr entsteht nur, wenn sie in Schritt 7 bewusst erfasst wird.`);
+    }
+  }
+
+  // Übergabe: Kaution laut Vertrag noch nicht als erhalten dokumentiert – nur Hinweis, blockiert nie (Entscheidung Phase 9)
+  if (h.type === "PICKUP" && booking.contract?.status === "SIGNED") {
+    const contract = await tx.rentalContract.findFirst({ where: { bookingId: h.bookingId, tenantId }, select: { deposit: true } });
+    const expected = contract ? toCents(contract.deposit) : 0;
+    if (expected > 0) {
+      const dep = await tx.securityDeposit.findFirst({ where: { tenantId, bookingId: h.bookingId }, include: { events: { select: { type: true, amountCents: true, status: true } } } });
+      const received = dep ? balanceOf(dep.expectedAmountCents, dep.events).receivedCents : 0;
+      if (received < expected) warn("BOOKING", "DEPOSIT_NOT_RECEIVED", `Kaution laut Vertrag (${fmtCents(expected)}) noch nicht ${received > 0 ? "vollständig " : ""}als erhalten dokumentiert. Die Übergabe kann trotzdem abgeschlossen werden.`);
     }
   }
 

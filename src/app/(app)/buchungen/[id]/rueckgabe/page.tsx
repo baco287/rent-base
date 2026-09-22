@@ -16,6 +16,8 @@ import { FuelGauge, HandoverDocumentView, HandoverIssueList, RETURN_STEPS } from
 import { PhotoUploader } from "../uebergabe/photo-uploader";
 import { DocumentsPanel } from "../dokumente/documents-panel";
 import { FollowUpNotice } from "../dokumente/follow-up-notice";
+import { getHandoverCompletionStatus } from "@/lib/completion";
+import { CompletionCard } from "../uebergabe/completion-card";
 import {
   addChargeAction,
   addDamageAction,
@@ -119,7 +121,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
   const storage = storageStatus();
   const renterSig = signatures.find((s) => s.role === "RENTER");
   const employeeSig = signatures.find((s) => s.role === "EMPLOYEE");
-  const blocking = issues.some((i) => i.severity === "error");
+  const completion = step === 9 ? await getHandoverCompletionStatus(tenant.id, handover.id) : null!;
   const byCategory = (d: typeof doc | null, c: string) => (d ? d.photos.filter((p) => p.category === c).map((p) => ({ id: p.id, url: p.url })) : []);
   const primaryDriver = b.contract?.drivers.find((d) => d.role === "PRIMARY_DRIVER");
   const items = [...handover.checklistItems].sort((x, y) => x.sortOrder - y.sortOrder);
@@ -261,7 +263,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
                     </div>
                   )}
                   <Field label="Bemerkung (optional)" htmlFor="notes" full>
-                    <textarea id="notes" name="notes" defaultValue={handover.notes ?? ""} rows={2} className="input" placeholder="z. B. Ladekabel zurück, Fahrzeug außen verschmutzt" />
+                    <textarea id="notes" name="notes" defaultValue={handover.notes ?? ""} rows={2} className="input" placeholder="z. B. Fahrzeug außen verschmutzt, Zubehör vollständig" />
                   </Field>
                 </div>
               </StepForm>
@@ -388,14 +390,14 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
 
         {step === 9 && (
           <>
-            <HandoverIssueList issues={[...issues, ...(renterSig ? [] : [{ code: "SIGNATURE_MISSING", area: "SIGNATURE" as const, severity: "error" as const, message: "Die Unterschrift des Mieters fehlt." }])]} okText="Alle Prüfungen bestanden. Die Rückgabe kann abgeschlossen werden." />
+            <CompletionCard status={completion} basePath={base} okText="Alle Prüfungen bestanden. Die Rückgabe kann abgeschlossen werden." />
             <HandoverDocumentView doc={doc} handoverId={handover.id} />
             <Card className="p-4 md:p-5 flex flex-col gap-3">
               <p className="text-sm text-ink-2">Nach Abschluss kann das Rückgabeprotokoll nicht mehr verändert werden. Der Kilometerstand wird ins Fahrzeug übernommen, neu festgestellte Schäden kommen mit Bezug zu dieser Miete in die Fahrzeugakte, die bestätigten Zusatzkosten werden versiegelt und die Buchung wechselt auf „Zurückgegeben“. Danach werden Rückgabeprotokoll-PDF und E-Mail erzeugt.</p>
               <FinalizeForm
                 action={finalizeReturnAction.bind(null, b.id)}
-                disabled={blocking || !renterSig}
-                reason={blocking ? "Es gibt noch offene Punkte, siehe oben." : !renterSig ? "Es fehlt noch die Unterschrift des Mieters." : undefined}
+                disabled={!completion.ready}
+                reason={!completion.ready ? (completion.blockers.length === 1 ? "1 Punkt muss noch erledigt werden, siehe „Vor Abschluss prüfen“." : `${completion.blockers.length} Punkte müssen noch erledigt werden, siehe „Vor Abschluss prüfen“.`) : undefined}
                 label="Fahrzeugrückgabe verbindlich abschließen"
                 pendingLabel="Rückgabe wird abgeschlossen…"
               />

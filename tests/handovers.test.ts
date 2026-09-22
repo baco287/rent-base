@@ -105,10 +105,11 @@ test("Kilometerstand bleibt im Entwurf und geht erst beim Abschluss ins Fahrzeug
 });
 
 test("Tank bei Verbrennern, Batterie bei Elektro, beides bei Plug-in-Hybrid", async () => {
-  assert.deepEqual(energyRequirements("DIESEL"), { fuel: true, battery: false });
-  assert.deepEqual(energyRequirements("HYBRID"), { fuel: true, battery: false });
-  assert.deepEqual(energyRequirements("ELEKTRO"), { fuel: false, battery: true });
-  assert.deepEqual(energyRequirements("PLUGIN_HYBRID"), { fuel: true, battery: true });
+  assert.deepEqual(energyRequirements("DIESEL"), { fuel: true, battery: false, chargingGear: false });
+  assert.deepEqual(energyRequirements("BENZIN"), { fuel: true, battery: false, chargingGear: false });
+  assert.deepEqual(energyRequirements("HYBRID"), { fuel: true, battery: false, chargingGear: false });
+  assert.deepEqual(energyRequirements("ELEKTRO"), { fuel: false, battery: true, chargingGear: true });
+  assert.deepEqual(energyRequirements("PLUGIN_HYBRID"), { fuel: true, battery: true, chargingGear: true });
 
   const e = await readyWorld("electric", { fuel: "ELEKTRO" });
   const he = await startHandover(e.tenantId, e.bookingId, "PICKUP", e.actor);
@@ -282,7 +283,7 @@ test("Checkliste: Standard ohne Vorlage, eigene Vorlage als Kopie, Bemerkung bei
   // ohne eigene Vorlage greift der Standard
   const plain = await readyWorld("checklist-default");
   const hp = await startHandover(plain.tenantId, plain.bookingId, "PICKUP", plain.actor);
-  assert.equal(await db.handoverChecklistItem.count({ where: { handoverId: hp.id } }), DEFAULT_CHECKLIST.length);
+  assert.equal(await db.handoverChecklistItem.count({ where: { handoverId: hp.id } }), DEFAULT_CHECKLIST.length - 1, "Standard ohne den Ladezubehör-Punkt (Diesel)");
   assert.ok((await codes(plain, hp.id)).includes("CHECKLIST_OPEN"));
 });
 

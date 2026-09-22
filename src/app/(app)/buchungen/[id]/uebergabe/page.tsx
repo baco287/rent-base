@@ -27,6 +27,8 @@ import { FuelGauge, HandoverDocumentView, HandoverIssueList, PICKUP_STEPS } from
 import { DocumentsPanel } from "../dokumente/documents-panel";
 import { FollowUpNotice } from "../dokumente/follow-up-notice";
 import { DepositNotice } from "../finanzen/panels";
+import { getHandoverCompletionStatus } from "@/lib/completion";
+import { CompletionCard } from "./completion-card";
 import { loadHandoverContext } from "@/lib/document-data";
 import { PhotoUploader } from "./photo-uploader";
 
@@ -107,7 +109,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
   const storage = storageStatus();
   const renterSig = signatures.find((s) => s.role === "RENTER");
   const employeeSig = signatures.find((s) => s.role === "EMPLOYEE");
-  const blocking = issues.some((i) => i.severity === "error");
+  const completion = step === 7 ? await getHandoverCompletionStatus(tenant.id, handover.id) : null!;
   const generalByCategory = (c: string) => doc.photos.filter((p) => p.category === c).map((p) => ({ id: p.id, url: p.url }));
   const primaryDriver = b.contract?.drivers.find((d) => d.role === "PRIMARY_DRIVER");
   const items = [...handover.checklistItems].sort((x, y) => x.sortOrder - y.sortOrder);
@@ -123,7 +125,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
       <Content className="max-w-6xl">
         <WizardProgress bookingId={b.id} current={step} reached={reached} steps={PICKUP_STEPS} basePath={base} />
         <h2 className="text-lg font-semibold -mb-1">Schritt {step} von 7: {PICKUP_STEPS[step - 1]}</h2>
-        <DepositNotice tenantId={tenant.id} bookingId={b.id} />
+        {step < 7 && <DepositNotice tenantId={tenant.id} bookingId={b.id} />}
 
         {step === 1 && (
           <>
@@ -187,7 +189,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
                     </fieldset>
                   )}
                   <Field label="Bemerkung (optional)" htmlFor="notes" full>
-                    <textarea id="notes" name="notes" defaultValue={handover.notes ?? ""} rows={2} className="input" placeholder="z. B. 2 Schlüssel übergeben, Ladekabel im Kofferraum" />
+                    <textarea id="notes" name="notes" defaultValue={handover.notes ?? ""} rows={2} className="input" placeholder="z. B. 2 Schlüssel übergeben, Zubehör im Kofferraum" />
                   </Field>
                 </div>
               </StepForm>
@@ -302,14 +304,14 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
 
         {step === 7 && (
           <>
-            <HandoverIssueList issues={[...issues, ...(renterSig ? [] : [{ code: "SIGNATURE_MISSING", area: "SIGNATURE" as const, severity: "error" as const, message: "Die Unterschrift des Mieters fehlt." }])]} okText="Alle Prüfungen bestanden. Die Übergabe kann abgeschlossen werden." />
+            <CompletionCard status={completion} basePath={base} okText="Alle Prüfungen bestanden. Die Übergabe kann abgeschlossen werden." />
             <HandoverDocumentView doc={doc} handoverId={handover.id} />
             <Card className="p-4 md:p-5 flex flex-col gap-3">
               <p className="text-sm text-ink-2">Mit dem Abschluss wird das Protokoll versiegelt, der Kilometerstand ins Fahrzeug übernommen, neu entdeckte Schäden kommen als Vorschäden in die Fahrzeugakte und die Buchung wechselt auf „Unterwegs“.</p>
               <FinalizeForm
                 action={finalizePickupAction.bind(null, b.id)}
-                disabled={blocking || !renterSig}
-                reason={blocking ? "Es gibt noch offene Punkte, siehe oben." : !renterSig ? "Es fehlt noch die Unterschrift des Mieters." : undefined}
+                disabled={!completion.ready}
+                reason={!completion.ready ? (completion.blockers.length === 1 ? "1 Punkt muss noch erledigt werden, siehe „Vor Abschluss prüfen“." : `${completion.blockers.length} Punkte müssen noch erledigt werden, siehe „Vor Abschluss prüfen“.`) : undefined}
                 label="Übergabe verbindlich abschließen"
                 pendingLabel="Übergabe wird abgeschlossen…"
               />

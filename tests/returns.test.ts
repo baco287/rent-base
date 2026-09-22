@@ -10,7 +10,7 @@ import { db } from "../src/lib/db";
 import { ensureContractDraft, finalizeContract, getContractContentHash, saveConditions, saveContractSignature } from "../src/lib/contracts";
 import { addNewDamage, answerChecklist, finalizeHandover, getHandoverContentHash, getHandoverState, registerPhoto, removeNewDamage, saveHandoverSignature, startHandover, updateHandoverDraft, updateNewDamage, verifyHandover } from "../src/lib/handovers";
 import { addManualCharge, buildComparison, confirmProposal, getReturnComparison, removeCharge } from "../src/lib/returns";
-import { DEFAULT_RETURN_CHECKLIST } from "../src/lib/checklists";
+import { DEFAULT_RETURN_CHECKLIST, itemsForDrive } from "../src/lib/checklists";
 import { ensureReturnDocument, loadSketchSvg, readDocumentFile } from "../src/lib/documents";
 import { loadHandoverDocumentData } from "../src/lib/document-data";
 import { runReturnFollowUp } from "../src/lib/followup";
@@ -110,7 +110,7 @@ test("Rückgabe startet nur bei Unterwegs mit Vertrag und finalisierter Übergab
   const r2 = await startHandover(a.w.tenantId, a.w.bookingId, "RETURN", a.w.actor);
   assert.equal(r1.id, r2.id, "nur ein Entwurf je Buchung");
   assert.match(r1.number, /^RP-/);
-  assert.equal(await db.handoverChecklistItem.count({ where: { handoverId: r1.id } }), DEFAULT_RETURN_CHECKLIST.length, "eigene Rückgabe-Checkliste");
+  assert.equal(await db.handoverChecklistItem.count({ where: { handoverId: r1.id } }), itemsForDrive(DEFAULT_RETURN_CHECKLIST, "DIESEL").length, "eigene Rückgabe-Checkliste (ohne Ladezubehör beim Diesel)");
 
   const copied = await db.handoverDamage.findMany({ where: { handoverId: r1.id }, orderBy: { sortOrder: "asc" } });
   assert.deepEqual(copied.map((d) => [d.description, d.marker]), [["Kratzer Fahrertür, vor der Miete", "EXISTING"], ["Steinschlag Haube, bei Übergabe", "PICKUP_NEW"]], "Übergabeschäden korrekt übernommen und eingestuft");
