@@ -3,6 +3,9 @@ import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { customerName, fmtDate, fmtTime } from "@/lib/format";
 import { Card, Chip, Content, KPI, PageHeader, Plate } from "@/components/ui";
+import { openDepositCounts } from "@/lib/deposits";
+import { fmtCents } from "@/lib/money";
+import { paymentSummaries } from "@/lib/payments";
 
 export const metadata = { title: "Heute" };
 
@@ -36,6 +39,16 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
   const fleet = vehicles.filter((v) => v.status === "AVAILABLE").length || vehicles.length;
   const utilization = fleet ? Math.round((bookedMs / (weekMs * fleet)) * 100) : 0;
 
+  // Operative Geldübersicht (keine Buchhaltung): offene Rechnungen, heute erfasste Zahlungen, offene Kautionen
+  const [finalInvoices, todayPayments, deposits] = await Promise.all([
+    db.invoice.findMany({ where: { tenantId: tenant.id, status: "FINALIZED" }, select: { id: true, grossTotal: true } }),
+    db.payment.aggregate({ where: { tenantId: tenant.id, status: "CONFIRMED", createdAt: { gte: start, lt: end } }, _sum: { amountCents: true }, _count: true }),
+    openDepositCounts(tenant.id),
+  ]);
+  const sums = await paymentSummaries(tenant.id, finalInvoices);
+  const openInvoices = [...sums.values()].filter((x) => x.status !== "PAID");
+  const openInvoiceCents = openInvoices.reduce((a, x) => a + x.openCents, 0);
+
   const events = [
     ...pickups.map((b) => ({ at: b.startAt, kind: "Abholung", b })),
     ...returns.map((b) => ({ at: b.endAt, kind: "Rückgabe", b })),
@@ -62,6 +75,12 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
           <KPI label="Rückgaben heute" value={returns.length} detail={overdue.length ? `${overdue.length} überfällig` : "keine überfällig"} />
           <KPI label="Auslastung 7 Tage" value={`${utilization} %`} detail={`${activeCount} von ${vehicles.length} Fahrzeugen unterwegs`} />
           <KPI label="Flotte" value={vehicles.length} detail={`${vehicles.filter((v) => v.status === "WORKSHOP").length} in Werkstatt`} />
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <KPI label="Offene Rechnungen" value={openInvoices.length} detail={<Link href="/rechnungen?filter=offen" className="underline">zur Rechnungsliste</Link>} hot={openInvoices.length > 0} />
+          <KPI label="Offener Rechnungsbetrag" value={<span className="text-2xl">{fmtCents(openInvoiceCents)}</span>} detail="aus abgeschlossenen Rechnungen" />
+          <KPI label="Zahlungen heute" value={todayPayments._count} detail={fmtCents(todayPayments._sum.amountCents ?? 0)} />
+          <KPI label="Offene Kautionen" value={deposits.held} detail={`nach Rückgabe noch nicht entschieden · ${deposits.expectedActive} unterwegs ohne Eingang`} />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">

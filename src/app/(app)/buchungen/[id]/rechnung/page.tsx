@@ -10,6 +10,8 @@ import { fmtCents, toCents } from "@/lib/money";
 import { Card, Chip, Content, PageHeader, Plate } from "@/components/ui";
 import { DocumentsPanel } from "../dokumente/documents-panel";
 import { FollowUpNotice } from "../dokumente/follow-up-notice";
+import { PaymentsPanel, PaymentStatusChip } from "../finanzen/panels";
+import { invoicePaymentSummary } from "@/lib/payments";
 import { createInvoiceAction, discardInvoiceDraftAction, finalizeInvoiceAction, saveInvoiceDraftAction } from "./actions";
 import { InvoiceEditor, type EditableItem } from "./invoice-editor";
 import { InvoiceDocumentView, InvoiceHeadCards, InvoiceIssueList } from "./invoice-parts";
@@ -77,16 +79,19 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
   const changeLog = (Array.isArray(inv.changeLog) ? inv.changeLog : []) as { at: string; by: string; summary: string }[];
 
   if (inv.status === "FINALIZED") {
+    const pay = await invoicePaymentSummary(tenant.id, inv.id);
     return (
       <>
         <PageHeader title={`Rechnung ${inv.number}`} sub={<>Buchung {b.number} · {doc.customer.name}</>}>
           <Chip tone="good">Abgeschlossen</Chip>
+          <PaymentStatusChip status={pay.status} />
           <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
         </PageHeader>
         <Content>
           {sp.abgeschlossen === "1" && <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 font-medium">Die Rechnung {inv.number} ist abgeschlossen und versiegelt. Rechnungsbetrag {doc.totals.gross}.</p>}
           {sp.abgeschlossen === "1" && <FollowUpNotice tenantId={tenant.id} bookingId={b.id} invoiceId={inv.id} kind="INVOICE" />}
           <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
+          <PaymentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
           <InvoiceDocumentView doc={doc} />
           {canEdit && (
             <Card title="Intern (nicht auf der Rechnung)">

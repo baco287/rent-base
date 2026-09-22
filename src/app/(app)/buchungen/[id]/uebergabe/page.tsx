@@ -26,6 +26,7 @@ import { DamageMap } from "./damage-map";
 import { FuelGauge, HandoverDocumentView, HandoverIssueList, PICKUP_STEPS } from "./handover-parts";
 import { DocumentsPanel } from "../dokumente/documents-panel";
 import { FollowUpNotice } from "../dokumente/follow-up-notice";
+import { DepositNotice } from "../finanzen/panels";
 import { loadHandoverContext } from "@/lib/document-data";
 import { PhotoUploader } from "./photo-uploader";
 
@@ -54,6 +55,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
         </PageHeader>
         <Content>
           {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
+          <DepositNotice tenantId={tenant.id} bookingId={b.id} />
           <Card className="p-5 max-w-2xl flex flex-col gap-3">
             <div className="flex flex-wrap items-center gap-2"><Plate>{b.vehicle.plate}</Plate><span className="font-medium">{b.vehicle.make} {b.vehicle.model}</span><span className="text-ink-3">für {customerName(b.customer)}</span></div>
             {stage === "READY_FOR_PICKUP" ? (
@@ -121,6 +123,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
       <Content className="max-w-6xl">
         <WizardProgress bookingId={b.id} current={step} reached={reached} steps={PICKUP_STEPS} basePath={base} />
         <h2 className="text-lg font-semibold -mb-1">Schritt {step} von 7: {PICKUP_STEPS[step - 1]}</h2>
+        <DepositNotice tenantId={tenant.id} bookingId={b.id} />
 
         {step === 1 && (
           <>

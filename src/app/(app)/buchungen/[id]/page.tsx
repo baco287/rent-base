@@ -12,6 +12,7 @@ import { setBookingStatusAction, updateBookingAction } from "../actions";
 import { BookingForm } from "../booking-form";
 import { loadBookingOptions } from "../options";
 import { DocumentsPanel } from "./dokumente/documents-panel";
+import { DepositPanel, PaymentsPanel } from "./finanzen/panels";
 
 export default async function BookingPage({ params, searchParams }: PageProps<"/buchungen/[id]">) {
   const { tenant, user } = await requireSession();
@@ -87,6 +88,12 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
         )}
 
         <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
+        {contractSigned && (
+          <div id="kaution" className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+            <PaymentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} compact />
+            <DepositPanel tenantId={tenant.id} bookingId={b.id} role={user.role} charges={returnDone ? { count: charges.length, total: chargesTotal } : null} />
+          </div>
+        )}
 
         <div className="grid grid-cols-1 xl:grid-cols-[1fr_360px] gap-4 items-start">
           <Card className="p-5">
@@ -130,7 +137,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                   ))}
                   {charges.length > 0 && <div className="flex justify-between py-2 mt-1 border-t-2 border-ink font-semibold"><span>Gesamt Zusatzkosten</span><span className="font-mono tnum">{fmtEur(chargesTotal)}</span></div>}
                   <div className="flex justify-between py-1.5 text-ink-3"><span>Kaution laut Buchung</span><span className="font-mono tnum">{fmtEur(b.deposit)}</span></div>
-                  <p className="text-xs text-ink-3 mt-1">Kautionsabrechnung offen. Zusatzkosten und Kaution werden nicht automatisch verrechnet.</p>
+                  <p className="text-xs text-ink-3 mt-1">Zusatzkosten und Kaution werden nicht automatisch verrechnet. Stand der Kaution siehe Bereich „Kaution“.</p>
                 </div>
               </Card>
             )}

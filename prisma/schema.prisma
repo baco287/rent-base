@@ -61,6 +61,10 @@ model Tenant {
   vehicleEvents      VehicleEvent[]
   invoices           Invoice[]
   invoiceItems       InvoiceItem[]
+  payments           Payment[]
+  deposits           SecurityDeposit[]
+  depositEvents      SecurityDepositEvent[]
+  auditLogs          AuditLog[]
 }
 
 model User {
@@ -228,14 +232,16 @@ model Booking {
   vehicle  Vehicle  @relation(fields: [vehicleId], references: [id])
   customer Customer @relation(fields: [customerId], references: [id])
 
-  contract      RentalContract?
-  handovers     Handover[]
-  damages       Damage[]
-  documents     Document[]
-  invoices      Invoice[]
-  extraCharges  ExtraCharge[]
-  emailLogs     EmailLog[]
-  vehicleEvents VehicleEvent[]
+  contract        RentalContract?
+  handovers       Handover[]
+  damages         Damage[]
+  documents       Document[]
+  invoices        Invoice[]
+  extraCharges    ExtraCharge[]
+  emailLogs       EmailLog[]
+  vehicleEvents   VehicleEvent[]
+  payments        Payment[]
+  securityDeposit SecurityDeposit?
 
   @@unique([tenantId, number])
   @@index([tenantId, vehicleId, startAt, endAt])
@@ -317,15 +323,16 @@ model RentalContract {
   signedAt    DateTime?
   cancelledAt DateTime?
 
-  tenant     Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  booking    Booking          @relation(fields: [bookingId], references: [id])
-  customer   Customer         @relation(fields: [customerId], references: [id])
-  vehicle    Vehicle          @relation(fields: [vehicleId], references: [id])
+  tenant     Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking    Booking           @relation(fields: [bookingId], references: [id])
+  customer   Customer          @relation(fields: [customerId], references: [id])
+  vehicle    Vehicle           @relation(fields: [vehicleId], references: [id])
   drivers    ContractDriver[]
   handovers  Handover[]
   signatures Signature[]
   documents  Document[]
   invoices   Invoice[]
+  deposits   SecurityDeposit[]
 
   @@unique([tenantId, number])
   @@index([tenantId, status])
@@ -741,6 +748,7 @@ model Invoice {
   returnHandover Handover?       @relation(fields: [returnHandoverId], references: [id], onDelete: SetNull)
   items          InvoiceItem[]
   documents      Document[]
+  payments       Payment[]
 
   @@unique([tenantId, number])
   @@index([tenantId, bookingId])
@@ -770,4 +778,121 @@ model InvoiceItem {
   extraCharge ExtraCharge? @relation(fields: [extraChargeId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, invoiceId])
+}
+
+// ============================================================================
+// Phase 9: Zahlungen und Kaution. Drei getrennte Fachbereiche:
+//   Invoice = Forderung, Payment = dokumentierter Geldfluss, SecurityDeposit = Sicherheitsleistung.
+// Nichts davon wird automatisch miteinander verrechnet. Beträge sind ganze Cent (money.ts).
+// Bestätigte Zahlungen und Kautionsbewegungen werden nie gelöscht, nur mit Grund storniert (DB-Trigger).
+// ============================================================================
+
+model Payment {
+  id             String   @id @default(cuid())
+  tenantId       String
+  bookingId      String
+  invoiceId      String? // bei INVOICE_PAYMENT Pflicht (Trigger), sonst leer
+  type           String // INVOICE_PAYMENT | OTHER_PAYMENT
+  method         String // CASH | CARD | BANK_TRANSFER | OTHER; CARD/BANK_TRANSFER = außerhalb von Rent-Base ausgeführt, hier nur dokumentiert
+  amountCents    Int
+  currency       String   @default("EUR")
+  status         String   @default("CONFIRMED") // CONFIRMED | CANCELLED
+  paidAt         DateTime
+  reference      String? // z. B. Belegnummer, Verwendungszweck
+  note           String?
+  idempotencyKey String? // einmaliger Formularschlüssel gegen Doppelbuchung
+  createdById    String?
+  createdByName  String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  cancelledAt        DateTime?
+  cancelledById      String?
+  cancelledByName    String?
+  cancellationReason String?
+
+  tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking Booking  @relation(fields: [bookingId], references: [id])
+  invoice Invoice? @relation(fields: [invoiceId], references: [id])
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, invoiceId, status])
+  @@index([tenantId, bookingId])
+  @@index([tenantId, paidAt])
+}
+
+// Kaution je Buchung. Der vereinbarte Betrag stammt aus dem abgeschlossenen Mietvertrag und ändert sich danach nicht.
+// Erhalten, freigegeben und einbehalten ergeben sich ausschließlich aus den bestätigten Bewegungen; der Status
+// wird in derselben Transaktion daraus abgeleitet (EXPECTED | RECEIVED | PARTIALLY_RELEASED | RELEASED | RETAINED).
+model SecurityDeposit {
+  id                  String   @id @default(cuid())
+  tenantId            String
+  bookingId           String   @unique
+  contractId          String?
+  expectedAmountCents Int
+  currency            String   @default("EUR")
+  status              String   @default("EXPECTED")
+  note                String?
+  createdById         String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  tenant   Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking  Booking                @relation(fields: [bookingId], references: [id])
+  contract RentalContract?        @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  events   SecurityDepositEvent[]
+
+  @@index([tenantId, status])
+}
+
+// Eine Bewegung der Kaution. Bestätigte Bewegungen sind unveränderlich; eine Korrektur ist ein Storno mit Grund
+// (status CANCELLED), die ursprüngliche Zeile bleibt sichtbar.
+model SecurityDepositEvent {
+  id             String   @id @default(cuid())
+  tenantId       String
+  depositId      String
+  type           String // RECEIVED | RELEASED | RETAINED
+  amountCents    Int
+  method         String? // CASH | CARD | BANK_TRANSFER | OTHER (bei RECEIVED und RELEASED)
+  reference      String?
+  reason         String? // Pflicht bei RETAINED
+  note           String?
+  occurredAt     DateTime
+  status         String   @default("CONFIRMED") // CONFIRMED | CANCELLED
+  idempotencyKey String?
+  createdById    String?
+  createdByName  String?
+  createdAt      DateTime @default(now())
+
+  cancelledAt        DateTime?
+  cancelledById      String?
+  cancelledByName    String?
+  cancellationReason String?
+
+  tenant  Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  deposit SecurityDeposit @relation(fields: [depositId], references: [id])
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, depositId, status])
+}
+
+// Protokoll kritischer Geldaktionen. Keine Kundendaten, nur Bezug, Betrag, Aktion, Benutzer, Zeitpunkt.
+model AuditLog {
+  id          String   @id @default(cuid())
+  tenantId    String
+  action      String // PAYMENT_RECORDED | PAYMENT_CANCELLED | DEPOSIT_RECEIVED | DEPOSIT_RELEASED | DEPOSIT_PARTIALLY_RELEASED | DEPOSIT_RETAINED | DEPOSIT_CORRECTION
+  bookingId   String?
+  invoiceId   String?
+  paymentId   String?
+  depositId   String?
+  amountCents Int?
+  details     Json?
+  userId      String?
+  userName    String?
+  createdAt   DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, bookingId])
 }

@@ -168,6 +168,29 @@ export const INVOICE_STATUS = { DRAFT: "Entwurf", FINALIZED: "Abgeschlossen", CA
 export const INVOICE_ITEM_SOURCES = { RENTAL: "Fahrzeugmiete laut Vertrag", EXTRA_CHARGE: "Bestätigte Zusatzkosten der Rückgabe", MANUAL: "Manuell erfasst" } as const;
 export const INVOICE_UNITS = ["pauschal", "Tag", "km", "l", "kWh", "h", "Stk"] as const;
 
+// Phase 9: Zahlungen und Kaution. CARD und BANK_TRANSFER heißen nur: außerhalb von Rent-Base ausgeführt und hier dokumentiert.
+export const PAYMENT_METHODS = { CASH: "Barzahlung", CARD: "Kartenzahlung (extern)", BANK_TRANSFER: "Überweisung (extern)", OTHER: "Sonstige" } as const;
+export type PaymentMethod = keyof typeof PAYMENT_METHODS;
+export const PAYMENT_TYPES = { INVOICE_PAYMENT: "Rechnungszahlung", OTHER_PAYMENT: "Sonstige Zahlung" } as const;
+export const PAYMENT_STATUS = { CONFIRMED: "Bestätigt", CANCELLED: "Storniert" } as const;
+/** Zahlungsstatus einer Rechnung, abgeleitet aus bestätigten Zahlungen; nie gespeichert. */
+export const INVOICE_PAYMENT_STATUS = { OPEN: "Offen", PARTIAL: "Teilbezahlt", PAID: "Bezahlt" } as const;
+export type InvoicePaymentStatus = keyof typeof INVOICE_PAYMENT_STATUS;
+export const DEPOSIT_STATUS = { EXPECTED: "Noch nicht erhalten", RECEIVED: "Erhalten", PARTIALLY_RELEASED: "Teilweise freigegeben", RELEASED: "Freigegeben", RETAINED: "Einbehalten" } as const;
+export type DepositStatus = keyof typeof DEPOSIT_STATUS;
+export const DEPOSIT_EVENT_TYPES = { RECEIVED: "Erhalten", RELEASED: "Freigegeben", RETAINED: "Einbehalten" } as const;
+export type DepositEventType = keyof typeof DEPOSIT_EVENT_TYPES;
+export const AUDIT_ACTIONS = {
+  PAYMENT_RECORDED: "Zahlung erfasst",
+  PAYMENT_CANCELLED: "Zahlung storniert",
+  DEPOSIT_RECEIVED: "Kaution erhalten",
+  DEPOSIT_RELEASED: "Kaution vollständig freigegeben",
+  DEPOSIT_PARTIALLY_RELEASED: "Kaution teilweise freigegeben",
+  DEPOSIT_RETAINED: "Kaution einbehalten",
+  DEPOSIT_CORRECTION: "Kautionsbewegung storniert",
+} as const;
+export type AuditAction = keyof typeof AUDIT_ACTIONS;
+
 export const CHARGE_UNITS = ["km", "l", "kWh", "h", "Stk", "pauschal"] as const;
 
 export const EXTRA_CHARGE_TYPES = {

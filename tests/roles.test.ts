@@ -44,4 +44,12 @@ test("Jede Server-Action-Datei und jede Prozessseite prüft die Rolle serverseit
   assert.ok(!/"YARD"/.test(invoiceActions), "Rechnungsaktionen dürfen YARD nicht zulassen");
   const docActions = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/dokumente/actions.ts"), "utf8");
   assert.match(docActions, /export async function resendInvoiceAction[\s\S]*?requireRole\("DISPO"\)/, "Rechnungsversand nur DISPO");
+  // Zahlungen und Kaution: Zahlung erfassen/stornieren, Kaution freigeben/einbehalten/korrigieren nur DISPO (und OWNER);
+  // Kaution als erhalten dokumentieren auch YARD (operativ bei der Übergabe)
+  const money = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/finanzen/actions.ts"), "utf8");
+  const bodyOf = (name: string) => new RegExp(`export async function ${name}[\\s\\S]*?\\n}`).exec(money)?.[0] ?? "";
+  for (const fn of ["recordPaymentAction", "cancelPaymentAction", "settleDepositAction", "cancelDepositEventAction", "previewPaymentAction", "previewDepositSettleAction"]) {
+    assert.match(bodyOf(fn), /requireRole\("DISPO"\)/, `${fn}: nur Inhaber und Disponent`);
+  }
+  assert.match(bodyOf("recordDepositReceivedAction"), /requireRole\("DISPO", "YARD"\)/, "Kaution erhalten: auch Hofmitarbeiter");
 });

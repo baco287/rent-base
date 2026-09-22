@@ -14,6 +14,8 @@ import { ensureContractDocument, ensurePickupDocument, ensureReturnDocument } fr
 import { addManualCharge, confirmProposal } from "../src/lib/returns";
 import { ensureInvoiceDocument } from "../src/lib/documents";
 import { ensureInvoiceDraft, finalizeInvoice } from "../src/lib/invoices";
+import { recordInvoicePayment } from "../src/lib/payments";
+import { recordDepositReceived, settleDeposit } from "../src/lib/deposits";
 
 const args = process.argv.slice(2);
 const keep = args.includes("--keep");
@@ -268,6 +270,26 @@ report(invDoc.status === 200 && (invDoc.headers.get("content-disposition") ?? ""
 const retBookingHtml2 = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
 report(retBookingHtml2.includes(`Rechnung ${finalInvoice.number} anzeigen`) && retBookingHtml2.includes("abgeschlossen"), "Buchung: Rechnung anzeigen und Status");
 
+// Zahlungen und Kaution (Phase 9): Buchungsseite mit getrennten Bereichen, Rechnungsseite mit Saldo, Rechnungsliste, Dashboard
+const bookingFin0 = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
+report(["Zahlungen", "Zahlung erfassen", "Kaution", "Kaution als erhalten erfassen", "Noch nicht erhalten", "Kautionshistorie", "Zahlungshistorie", "Offen"].every((t) => bookingFin0.includes(t)), "Buchung: Bereiche Zahlungen und Kaution mit Aktionen");
+const pickupNotice = await plain(await fetch(`${base}/buchungen/${signedBooking.id}/uebergabe?schritt=1`, { headers: { cookie } }));
+report(pickupNotice.includes("noch nicht") && pickupNotice.includes("als erhalten dokumentiert") && pickupNotice.includes("Bekannte Schäden"), "Übergabe: Warnung Kaution nicht dokumentiert, Übergabe nicht blockiert");
+const pay1 = await recordInvoicePayment(w.tenantId, w.actor, { invoiceId: invoice.id, amount: "100", method: "CASH", paidAt: new Date(Date.now() - 60_000), reference: "Beleg 77" });
+const invPage = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } }));
+report(invPage.includes("Teilbezahlt") && invPage.includes("100,00") && invPage.includes("Beleg 77") && invPage.includes("Zahlung stornieren") && invPage.includes("Zahlung erfassen"), "Rechnung: Saldo, Status Teilbezahlt, Historie, Storno-Möglichkeit");
+await recordDepositReceived(w.tenantId, w.actor, { bookingId: retBooking.id, amount: "500", method: "CASH", occurredAt: new Date(Date.now() - 60_000) });
+await settleDeposit(w.tenantId, w.actor, { bookingId: retBooking.id, releaseAmount: "350", method: "CASH", reason: "Prüfung eines bei Rückgabe festgestellten Schadens", occurredAt: new Date(Date.now() - 30_000) });
+const bookingFin1 = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
+report(["Teilweise freigegeben", "350,00", "150,00", "Prüfung eines bei Rückgabe festgestellten Schadens", "keine Verrechnung", "Bewegung korrigieren"].every((t) => bookingFin1.includes(t)) && !bookingFin1.includes("Kaution als erhalten erfassen"), "Buchung: Kaution teilweise freigegeben, Historie, Hinweis keine Verrechnung");
+const invList = await plain(await fetch(base + "/rechnungen?filter=teilbezahlt", { headers: { cookie } }));
+report(invList.includes(finalInvoice.number!) && invList.includes("Teilbezahlt") && invList.includes("100,00"), "Rechnungsliste: Filter Teilbezahlt mit Beträgen");
+const invListPaid = await plain(await fetch(base + "/rechnungen?filter=bezahlt", { headers: { cookie } }));
+report(!invListPaid.includes(finalInvoice.number!) && invListPaid.includes("Keine Rechnungen"), "Rechnungsliste: Filter Bezahlt leer");
+const today = await plain(await fetch(base + "/heute", { headers: { cookie } }));
+report(today.includes("Offene Rechnungen") && today.includes("Zahlungen heute") && today.includes("Offene Kautionen") && today.includes("Offener Rechnungsbetrag"), "Dashboard: Kennzahlen Zahlungen und Kaution");
+void pay1;
+
 // Audit: Rollen. Hofmitarbeiter dürfen Buchungen weder anlegen noch stornieren, Übergabe und Rückgabe aber durchführen.
 const yard = await db.user.create({ data: { tenantId: w.tenantId, email: `yard-${Date.now()}@example.test`, name: "Hof", passwordHash: "x", role: "YARD" } });
 const yardSession = randomBytes(32).toString("base64url");
@@ -300,6 +322,12 @@ const yardNoInvoice = await fetch(`${base}/buchungen/${doneBooking.id}/rechnung`
 report(yardNoInvoice.status === 307, `${yardNoInvoice.status} Hofmitarbeiter: keine Rechnungsanlage`);
 const yardRetBooking = await (await fetch(`${base}/buchungen/${old.id}`, { headers: { cookie: `rb_session=${yardSession}` } })).text();
 report(!yardRetBooking.includes("Rechnung erstellen"), "Hofmitarbeiter: kein Knopf „Rechnung erstellen“");
+const yardFin = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie: `rb_session=${yardSession}` } }));
+report(yardFin.includes("Teilbezahlt") && yardFin.includes("Teilweise freigegeben") && !yardFin.includes("Zahlung erfassen") && !yardFin.includes("Zahlung stornieren") && !yardFin.includes("Bewegung korrigieren") && yardFin.includes("erfasst und korrigiert die Disposition"), "Hofmitarbeiter: sieht Zahlungs- und Kautionsstatus, keine Erfassung/Storno/Korrektur");
+const yardPickupDeposit = await plain(await fetch(`${base}/buchungen/${signedBooking.id}`, { headers: { cookie: `rb_session=${yardSession}` } }));
+report(yardPickupDeposit.includes("Kaution als erhalten erfassen"), "Hofmitarbeiter: darf Kaution bei Übergabe als erhalten dokumentieren");
+const yardList = await fetch(base + "/rechnungen", { headers: { cookie: `rb_session=${yardSession}` } });
+report(yardList.status === 200, `${yardList.status} Hofmitarbeiter: Rechnungsliste lesbar`);
 const yardUpload = await (async () => { const fd = new FormData(); fd.set("file", new Blob([jpeg], { type: "image/jpeg" }), "f.jpg"); fd.set("category", "OTHER"); return fetch(`${base}/api/handovers/${pickup.id}/photos`, { method: "POST", body: fd, headers: { cookie: `rb_session=${yardSession}` } }); })();
 report(yardUpload.status === 201, `${yardUpload.status} Hofmitarbeiter: Foto im Übergabe-Entwurf hochladen`);
 const yardBookingNoStart = await (await fetch(`${base}/buchungen/${old.id}`, { headers: { cookie: `rb_session=${yardSession}` } })).text();

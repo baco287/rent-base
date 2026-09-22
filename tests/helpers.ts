@@ -33,6 +33,10 @@ export async function purgeTenants(tenantIds: string[]) {
       for (const t of tenantIds) {
         const w = { where: { tenantId: t } };
         await tx.emailLog.deleteMany(w);
+        await tx.auditLog.deleteMany(w);
+        await tx.payment.deleteMany(w);
+        await tx.securityDepositEvent.deleteMany(w);
+        await tx.securityDeposit.deleteMany(w);
         await tx.vehicleEvent.deleteMany(w);
         await tx.extraCharge.deleteMany(w);
         await tx.document.deleteMany(w);
