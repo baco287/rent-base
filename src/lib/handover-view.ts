@@ -4,7 +4,15 @@
 
 import type { Prisma } from "@prisma/client";
 import type { LandlordInfo } from "@/lib/contract-view";
-import { DAMAGE_KINDS, DAMAGE_SEVERITY, DAMAGE_VIEWS, FUELS, PHOTO_CATEGORIES, energyRequirements } from "@/lib/constants";
+import type { ReturnComparison } from "@/lib/returns";
+
+/** "2 Std. 47 Min." aus Minuten. Liegt hier, weil diese Datei bewusst frei von Server-Abhängigkeiten bleibt. */
+export function fmtMinutes(minutes: number) {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return h > 0 ? `${h} Std. ${m} Min.` : `${m} Min.`;
+}
+import { DAMAGE_KINDS, DAMAGE_SEVERITY, DAMAGE_VIEWS, FUELS, PHOTO_CATEGORIES, RETURN_ATTENTION_ON_YES, energyRequirements } from "@/lib/constants";
 
 /** Alle Skizzendateien verwenden ein 1000 Einheiten breites Zeichenfeld; die Rahmen der Ansichten beziehen sich darauf. */
 export const SKETCH_CANVAS_WIDTH = 1000;
@@ -12,10 +20,14 @@ export const SKETCH_CANVAS_WIDTH = 1000;
 export type SketchView = { key: string; label: string; box: [number, number, number, number] };
 export type SketchInfo = { assetPath: string; version: number; name: string; views: SketchView[] };
 
+/** Symbol des Markers: Kreis = vor der Miete bekannt, Raute = bei Übergabe dokumentierter Vorschaden, Dreieck = bei Rückgabe festgestellt. */
+export type DamageSymbol = "circle" | "diamond" | "triangle";
+
 export type DocDamage = {
   id: string;
   index: number; // fortlaufende Nummer auf Skizze und in der Liste
-  marker: "EXISTING" | "NEW";
+  marker: "EXISTING" | "PICKUP_NEW" | "NEW";
+  symbol: DamageSymbol;
   markerLabel: string;
   view: string;
   viewLabel: string;
@@ -42,8 +54,23 @@ export type HandoverContext = {
   vehicleGroup: string | null;
 };
 
+/** Nur Rückgabe: der Vergleich mit der Übergabe und die bestätigten Zusatzkosten, alles aus Snapshots. */
+export type DocComparison = {
+  pickupNumber: string;
+  rows: { label: string; pickup: string; ret: string; diff: string; attention: boolean }[];
+  time: { start: string; plannedEnd: string; actualEnd: string; late: string | null; rentalDays: number };
+  mileageBasis: string | null; // z. B. "200 km je Tag, 1.200 km frei"
+  fuelPolicy: string;
+  hints: string[];
+  charges: { typeLabel: string; description: string; quantity: string; unitPrice: string; amount: string; formula: string; damageIndex: number | null; source: string }[];
+  chargesTotal: string;
+  deposit: string;
+  deductible: string;
+};
+
 export type HandoverDocument = {
   context: HandoverContext | null;
+  comparison: DocComparison | null;
   title: string;
   number: string;
   type: "PICKUP" | "RETURN";
@@ -83,7 +110,45 @@ export function parseSketch(sketch: { assetPath: string; version: number; name: 
 type HandoverFull = Prisma.HandoverGetPayload<{ include: { damages: true; checklistItems: true; photos: true } }>;
 type SignatureLike = { id: string; role: string; signerName: string; signedAt: Date };
 
-export function buildHandoverDocument(h: HandoverFull, sketch: Parameters<typeof parseSketch>[0], signatures: SignatureLike[], requiredPhotoCategories: string[], context: HandoverContext | null = null): HandoverDocument {
+export function symbolFor(marker: string, type: string): DamageSymbol {
+  if (marker === "NEW") return type === "PICKUP" ? "diamond" : "triangle";
+  if (marker === "PICKUP_NEW") return "diamond";
+  return "circle";
+}
+
+export function markerLabelFor(marker: string, type: string): string {
+  if (marker === "NEW") return type === "PICKUP" ? "Neu entdeckt (Vorschaden)" : "Bei Rückgabe festgestellt";
+  if (marker === "PICKUP_NEW") return "Bei Übergabe dokumentierter Vorschaden";
+  return type === "PICKUP" ? "Bereits dokumentiert" : "Vor Mietbeginn dokumentiert";
+}
+
+const eur = (n: number) => n.toLocaleString("de-DE", { style: "currency", currency: "EUR" });
+
+/** Vergleichsteil des Rückgabeprotokolls aus dem serverseitigen Vergleich (returns.ts). */
+export function buildDocComparison(c: ReturnComparison, damages: DocDamage[]): DocComparison {
+  const fmt = (v: number | null, unit: string) => (v == null ? "–" : `${v.toLocaleString("de-DE")} ${unit}`);
+  const sign = (v: number | null, unit: string) => (v == null ? "–" : `${v > 0 ? "+" : v < 0 ? "−" : "±"}${Math.abs(v).toLocaleString("de-DE")} ${unit}`);
+  const rows: DocComparison["rows"] = [
+    { label: "Kilometerstand", pickup: fmt(c.mileage.pickup, "km"), ret: fmt(c.mileage.return, "km"), diff: c.mileage.driven == null ? "–" : `${c.mileage.driven.toLocaleString("de-DE")} km gefahren`, attention: c.mileage.driven != null && c.mileage.driven < 0 },
+  ];
+  if (c.fuel) rows.push({ label: "Tankstand", pickup: c.fuel.pickup == null ? "–" : `${c.fuel.pickup}/8`, ret: c.fuel.return == null ? "–" : `${c.fuel.return}/8`, diff: c.fuel.diff == null ? "–" : `${c.fuel.diff > 0 ? "+" : c.fuel.diff < 0 ? "−" : "±"}${Math.abs(c.fuel.diff)}/8`, attention: (c.fuel.diff ?? 0) < 0 });
+  if (c.battery) rows.push({ label: "Batteriestand", pickup: fmt(c.battery.pickup, "%"), ret: fmt(c.battery.return, "%"), diff: c.battery.diff == null ? "–" : `${sign(c.battery.diff, "Prozentpunkte")}`, attention: (c.battery.diff ?? 0) < 0 });
+  const indexOf = (handoverDamageId: string | null) => damages.find((d) => d.id === handoverDamageId)?.index ?? null;
+  return {
+    pickupNumber: c.pickup.number,
+    rows,
+    time: { start: dateTime(c.time.start), plannedEnd: dateTime(c.time.plannedEnd), actualEnd: dateTime(c.time.actualEnd), late: c.time.lateMinutes > 15 ? fmtMinutes(c.time.lateMinutes) : null, rentalDays: c.time.rentalDays },
+    mileageBasis: `${c.contract.kmIncludedPerDay.toLocaleString("de-DE")} km je Tag, ${c.contract.includedKm.toLocaleString("de-DE")} km frei, Mehrkilometer ${eur(c.contract.extraKmRate)} je km`,
+    fuelPolicy: c.contract.fuelPolicy === "OTHER" ? `${c.contract.fuelPolicyLabel}: ${c.contract.fuelPolicyNote ?? ""}` : c.contract.fuelPolicyLabel,
+    hints: c.hints.map((x) => x.text),
+    charges: c.charges.map((x) => ({ typeLabel: x.typeLabel, description: x.description, quantity: `${x.quantity.toLocaleString("de-DE")} ${x.unit}`, unitPrice: eur(x.unitPrice), amount: eur(x.amount), formula: x.formula, damageIndex: indexOf(x.handoverDamageId), source: x.source })),
+    chargesTotal: eur(c.chargesTotal),
+    deposit: eur(c.contract.deposit),
+    deductible: eur(c.contract.deductible),
+  };
+}
+
+export function buildHandoverDocument(h: HandoverFull, sketch: Parameters<typeof parseSketch>[0], signatures: SignatureLike[], requiredPhotoCategories: string[], context: HandoverContext | null = null, comparison: ReturnComparison | null = null): HandoverDocument {
   const energy = energyRequirements(h.driveType);
   const readings = [
     { label: "Kilometerstand", value: h.mileage != null ? `${h.mileage.toLocaleString("de-DE")} km` : "", missing: h.mileage == null },
@@ -99,8 +164,9 @@ export function buildHandoverDocument(h: HandoverFull, sketch: Parameters<typeof
     return {
       id: d.id,
       index: i + 1,
-      marker: d.marker === "NEW" ? "NEW" : "EXISTING",
-      markerLabel: d.marker === "NEW" ? (h.type === "PICKUP" ? "Neu entdeckt (Vorschaden)" : "Neu bei Rückgabe") : "Bereits dokumentiert",
+      marker: d.marker === "NEW" ? "NEW" : d.marker === "PICKUP_NEW" ? "PICKUP_NEW" : "EXISTING",
+      symbol: symbolFor(d.marker, h.type),
+      markerLabel: markerLabelFor(d.marker, h.type),
       view: d.view,
       viewLabel: label(DAMAGE_VIEWS, d.view),
       posX: d.posX,
@@ -121,6 +187,7 @@ export function buildHandoverDocument(h: HandoverFull, sketch: Parameters<typeof
 
   return {
     context,
+    comparison: comparison ? buildDocComparison(comparison, damages) : null,
     title: h.type === "PICKUP" ? "Übergabeprotokoll" : "Rückgabeprotokoll",
     number: h.number,
     type: h.type === "RETURN" ? "RETURN" : "PICKUP",
@@ -138,7 +205,8 @@ export function buildHandoverDocument(h: HandoverFull, sketch: Parameters<typeof
       .map((c) => ({
         label: c.label,
         result: c.result ? RESULT_LABEL[c.result] ?? c.result : "",
-        ok: c.result === "OK" || c.result === "YES" ? true : c.result === "NOT_OK" || c.result === "NO" ? false : null,
+        // ok = false heißt auffällig; bei "ungewöhnlich verschmutzt" ist das Ja die Auffälligkeit
+        ok: RETURN_ATTENTION_ON_YES.has(c.itemKey) ? (c.result === "YES" ? false : c.result === "NO" ? true : null) : c.result === "OK" || c.result === "YES" ? true : c.result === "NOT_OK" || c.result === "NO" ? false : null,
         note: c.note,
         missing: c.required && !c.result,
       })),

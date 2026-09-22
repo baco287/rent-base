@@ -120,7 +120,12 @@ export type DamageStatus = keyof typeof DAMAGE_STATUS;
 /** Schäden mit diesen Status sind am Fahrzeug sichtbar und werden in neue Protokolle kopiert. */
 export const VISIBLE_DAMAGE_STATUS: DamageStatus[] = ["OPEN", "DOCUMENTED", "REPAIR_PLANNED", "IN_REPAIR"];
 
-export const DAMAGE_MARKERS = { EXISTING: "Vorhanden", NEW: "Neu" } as const;
+/**
+ * Einstufung eines Schadens im Protokoll.
+ * EXISTING = schon vor dieser Miete in der Akte, PICKUP_NEW = bei der Übergabe dieser Miete als Vorschaden dokumentiert
+ * (nur in Rückgabeprotokollen), NEW = in diesem Protokoll neu erfasst.
+ */
+export const DAMAGE_MARKERS = { EXISTING: "Vorhanden", PICKUP_NEW: "Bei Übergabe dokumentiert", NEW: "Neu" } as const;
 export type DamageMarker = keyof typeof DAMAGE_MARKERS;
 
 export const PHOTO_CATEGORIES = {
@@ -150,6 +155,11 @@ export const DOCUMENT_TYPES = {
   INVOICE: "Rechnung",
 } as const;
 export type DocumentType = keyof typeof DOCUMENT_TYPES;
+
+/** Checklistenpunkte, bei denen "Ja" die Auffälligkeit ist (sonst "Nein" bzw. "Nicht in Ordnung"). */
+export const RETURN_ATTENTION_ON_YES = new Set(["unusually_dirty"]);
+
+export const CHARGE_UNITS = ["km", "l", "kWh", "h", "Stk", "pauschal"] as const;
 
 export const EXTRA_CHARGE_TYPES = {
   EXTRA_MILEAGE: "Mehrkilometer",

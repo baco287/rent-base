@@ -23,6 +23,22 @@ export const DEFAULT_CHECKLIST: ChecklistItemDef[] = [
   { key: "remarks", label: "Bemerkungen", answerType: "TEXT", required: false },
 ];
 
+/** Standard für die Rückgabe. Zusammen mit der Übergabe-Checkliste erkennt der Mitarbeiter fehlende Gegenstände. */
+export const DEFAULT_RETURN_CHECKLIST: ChecklistItemDef[] = [
+  { key: "keys_returned", label: "Anzahl zurückgegebener Schlüssel", answerType: "TEXT", required: true },
+  { key: "documents", label: "Fahrzeugschein und Bordmappe vorhanden", answerType: "YES_NO", required: true },
+  { key: "warning_triangle", label: "Warndreieck vorhanden", answerType: "YES_NO", required: true },
+  { key: "safety_vest", label: "Warnweste vorhanden", answerType: "YES_NO", required: true },
+  { key: "first_aid", label: "Verbandkasten vorhanden", answerType: "YES_NO", required: true },
+  { key: "charging_cable", label: "Ladekabel zurück (falls ausgegeben)", answerType: "YES_NO", required: true },
+  { key: "interior_checked", label: "Innenraum geprüft, keine Auffälligkeiten", answerType: "YES_NO", required: true },
+  { key: "exterior_checked", label: "Fahrzeug außen geprüft, keine Auffälligkeiten", answerType: "YES_NO", required: true },
+  { key: "tires", label: "Reifen geprüft, in Ordnung", answerType: "YES_NO", required: true },
+  { key: "lights", label: "Beleuchtung geprüft, in Ordnung", answerType: "YES_NO", required: true },
+  { key: "unusually_dirty", label: "Fahrzeug ungewöhnlich verschmutzt", answerType: "YES_NO", required: true },
+  { key: "remarks", label: "Bemerkungen", answerType: "TEXT", required: false },
+];
+
 function parseItems(raw: Prisma.JsonValue): ChecklistItemDef[] {
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((r) => {
@@ -40,7 +56,7 @@ export async function resolveChecklist(tx: Tx, tenantId: string, groupId: string
     orderBy: [{ version: "desc" }],
   });
   const chosen = (groupId ? candidates.find((c) => c.groupId === groupId) : undefined) ?? candidates.find((c) => c.groupId === null);
-  if (!chosen) return { templateId: null as string | null, version: null as number | null, items: DEFAULT_CHECKLIST };
+  if (!chosen) return { templateId: null as string | null, version: null as number | null, items: type === "RETURN" ? DEFAULT_RETURN_CHECKLIST : DEFAULT_CHECKLIST };
   return { templateId: chosen.id, version: chosen.version, items: parseItems(chosen.items) };
 }
 

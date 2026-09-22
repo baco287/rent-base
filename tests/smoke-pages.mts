@@ -10,7 +10,8 @@ import { buildStorageKey } from "../src/lib/storage";
 import { sha256 } from "../src/lib/integrity";
 import { REQUIRED_PHOTO_CATEGORIES } from "../src/lib/constants";
 import { createWorld, fakeSignaturePng, purgeTenants } from "./helpers";
-import { ensureContractDocument, ensurePickupDocument } from "../src/lib/documents";
+import { ensureContractDocument, ensurePickupDocument, ensureReturnDocument } from "../src/lib/documents";
+import { addManualCharge, confirmProposal } from "../src/lib/returns";
 
 const args = process.argv.slice(2);
 const keep = args.includes("--keep");
@@ -50,10 +51,54 @@ await answerChecklist(w.tenantId, done.id, doneItems.map((i) => ({ itemId: i.id,
 await saveHandoverSignature(w.tenantId, w.actor, done.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getHandoverContentHash(w.tenantId, done.id) });
 await finalizeHandover(w.tenantId, done.id, w.actor);
 
+// Rückgabe-Entwurf für die übergebene Buchung (Elektro): Vergleich, Vorschlag, manuelle Position
+const ret = await startHandover(w.tenantId, doneBooking.id, "RETURN", w.actor);
+await updateHandoverDraft(w.tenantId, ret.id, { mileage: 12690, batteryPercent: 30 });
+const retDamage = await addNewDamage(w.tenantId, ret.id, { view: "REAR", posX: 0.7, posY: 0.5, kind: "DENT", severity: "MINOR", description: "Delle Heckklappe, bei Rückgabe" });
+await addManualCharge(w.tenantId, ret.id, w.userId, { type: "CLEANING", description: "Innenreinigung", quantity: 1, unit: "pauschal", unitPrice: 30 });
+
+// Zweite übergebene Buchung mit abgeschlossener Rückgabe (Vergleich, Zusatzkosten, Return-PDF)
+const v4 = await db.vehicle.create({ data: { tenantId: w.tenantId, plate: "HB-RT 400", make: "Ford", model: "Transit", groupId: w.groupId, fuel: "DIESEL", dailyRate: 89, deposit: 500, mileage: 20000, tankCapacityLiters: 80 } });
+const retBooking = await db.booking.create({ data: { tenantId: w.tenantId, number: "RET-1", vehicleId: v4.id, customerId: w.customerId, startAt: new Date(Date.now() - 4 * 86400_000), endAt: new Date(Date.now() - 3600_000), dailyRate: 89, deposit: 500 } });
+const retContract = await ensureContractDraft(w.tenantId, retBooking.id, w.actor);
+await saveContractSignature(w.tenantId, w.actor, retContract.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getContractContentHash(w.tenantId, retContract.id) });
+await finalizeContract(w.tenantId, retContract.id);
+const fillHandover = async (handoverId: string, bookingId: string, mileage: number, fuel: number) => {
+  await updateHandoverDraft(w.tenantId, handoverId, { mileage, fuelLevelEighths: fuel });
+  for (const c of REQUIRED_PHOTO_CATEGORIES) { const key = buildStorageKey({ tenantId: w.tenantId, area: "photos", bookingId, contentType: "image/jpeg" }); await registerPhoto(w.tenantId, w.actor, { handoverId, storageKey: key, category: c, contentType: "image/jpeg", sizeBytes: 1000, checksum: sha256(key) }); }
+  const items = await db.handoverChecklistItem.findMany({ where: { handoverId } });
+  await answerChecklist(w.tenantId, handoverId, items.map((i) => ({ itemId: i.id, result: i.answerType === "TEXT" ? (i.itemKey === "remarks" ? "" : "2") : i.itemKey === "unusually_dirty" ? "NO" : i.answerType === "YES_NO" ? "YES" : "OK" })));
+  await saveHandoverSignature(w.tenantId, w.actor, handoverId, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getHandoverContentHash(w.tenantId, handoverId) });
+  await finalizeHandover(w.tenantId, handoverId, w.actor);
+};
+const retPickup = await startHandover(w.tenantId, retBooking.id, "PICKUP", w.actor);
+await fillHandover(retPickup.id, retBooking.id, 20010, 8);
+const retReturn = await startHandover(w.tenantId, retBooking.id, "RETURN", w.actor);
+await updateHandoverDraft(w.tenantId, retReturn.id, { mileage: 21600, fuelLevelEighths: 5, fuelPricePerLiter: 1.85 });
+await confirmProposal(w.tenantId, retReturn.id, w.userId, "EXTRA_MILEAGE");
+await confirmProposal(w.tenantId, retReturn.id, w.userId, "FUEL");
+await fillHandover(retReturn.id, retBooking.id, 21600, 5);
+
 // Entwurf für die erste Buchung
 const draft = await ensureContractDraft(w.tenantId, w.bookingId, w.actor);
 
 const pages: [string, string][] = [
+  [`/buchungen/${doneBooking.id}`, "Rückgabe fortsetzen"],
+  [`/buchungen/${doneBooking.id}/rueckgabe?schritt=1`, "mit dem dokumentierten Übergabezustand"],
+  [`/buchungen/${doneBooking.id}/rueckgabe?schritt=2`, "650 km"],
+  [`/buchungen/${doneBooking.id}/rueckgabe?schritt=3`, "Prozentpunkte"],
+  [`/buchungen/${doneBooking.id}/rueckgabe?schritt=4`, "Bei Rückgabe neu festgestellt"],
+  [`/buchungen/${doneBooking.id}/rueckgabe?schritt=5`, "Übergabe (vorher)"],
+  [`/buchungen/${doneBooking.id}/rueckgabe?schritt=6`, "Anzahl zurückgegebener Schlüssel"],
+  [`/buchungen/${doneBooking.id}/rueckgabe?schritt=7`, "Innenreinigung"],
+  [`/buchungen/${doneBooking.id}/rueckgabe?schritt=8`, "kein Anerkenntnis"],
+  [`/buchungen/${doneBooking.id}/rueckgabe?schritt=9`, "Fahrzeugrückgabe verbindlich abschließen"],
+  [`/buchungen/${retBooking.id}`, "Rückgabeprotokoll anzeigen"],
+  [`/buchungen/${retBooking.id}`, "Zusatzkosten"],
+  [`/buchungen/${retBooking.id}/rueckgabe`, "Vergleich mit der Übergabe"],
+  [`/buchungen/${retBooking.id}/rueckgabe`, "Prüfsumme des versiegelten Protokolls"],
+  [`/fahrzeuge/${v4.id}`, "Schadenakte"],
+  [`/fahrzeuge/${v4.id}`, "Rückgabe"],
   ["/heute", "Abholungen heute"],
   ["/dispo", "Dispo-Kalender"],
   ["/fahrzeuge", "HB-RT 200"],
@@ -142,7 +187,8 @@ report(foreignPage.status === 404, `${foreignPage.status} Vertrag für fremden M
 // Phase 5: archivierte Dokumente. Erzeugt wird über dieselbe Bibliothek wie in der App, ausgeliefert über die geschützte Adresse.
 const contractPdf = await ensureContractDocument(w.tenantId, doneContract.id, w.actor.id);
 const pickupPdf = await ensurePickupDocument(w.tenantId, done.id, w.actor.id);
-for (const [name, d] of [["Mietvertrag", contractPdf.document], ["Übergabeprotokoll", pickupPdf.document]] as const) {
+const returnPdf = await ensureReturnDocument(w.tenantId, retReturn.id, w.actor.id);
+for (const [name, d] of [["Mietvertrag", contractPdf.document], ["Übergabeprotokoll", pickupPdf.document], ["Rückgabeprotokoll", returnPdf.document]] as const) {
   const res = await fetch(`${base}/api/documents/${d.id}`, { headers: { cookie } });
   const body = new Uint8Array(await res.arrayBuffer());
   report(res.status === 200 && res.headers.get("content-type") === "application/pdf" && sha256(body) === d.checksum && (res.headers.get("cache-control") ?? "").includes("no-store") && (res.headers.get("content-disposition") ?? "").startsWith("inline"), `${res.status} ${name}-PDF mit Sitzung, Prüfsumme stimmt, nicht im Cache`);
@@ -154,7 +200,7 @@ report(anonDoc.status !== 200, `${anonDoc.status} Dokument ohne Sitzung wird ver
 const foreignDoc = await fetch(`${base}/api/documents/${pickupPdf.document.id}`, { headers: { cookie: `rb_session=${foreignSession}` } });
 report(foreignDoc.status === 404, `${foreignDoc.status} Dokument für fremden Mandanten nicht auffindbar`);
 const bookingPage = await (await fetch(`${base}/buchungen/${doneBooking.id}`, { headers: { cookie } })).text();
-report(bookingPage.includes("Dokumente") && bookingPage.includes(pickupPdf.document.fileName) && bookingPage.includes("E-Mail an den Mieter"), "200 Buchungsseite zeigt Dokumente und E-Mail-Bereich");
+report(bookingPage.includes("Dokumente") && bookingPage.includes(pickupPdf.document.fileName) && bookingPage.includes("E-Mail nach der Übergabe"), "200 Buchungsseite zeigt Dokumente und E-Mail-Bereich");
 
 const anon = await fetch(base + "/heute", { redirect: "manual" });
 report(anon.status === 307 && (anon.headers.get("location") ?? "").includes("/login"), `${anon.status} /heute ohne Sitzung leitet zum Login`);
@@ -165,7 +211,7 @@ const staleLogin = await fetch(base + "/login?abgelaufen=1", { headers: stale, r
 report(staleHome.status === 307 && (staleHome.headers.get("location") ?? "").includes("/login?abgelaufen=1") && staleLogin.status === 200 && (staleLogin.headers.get("set-cookie") ?? "").includes("rb_session=;"), `${staleHome.status}/${staleLogin.status} abgelaufene Sitzung landet sauber beim Login`);
 
 if (keep) {
-  console.log(`\nTestdaten bleiben stehen.\nSITZUNG=${sessionId}\nBUCHUNG=${w.bookingId} UEBERGEBEN=${doneBooking.id} BEREIT=${signedBooking.id}\nVERTRAG=${draft.number}\nMANDANTEN=${w.tenantId},${foreign.tenantId}`);
+  console.log(`\nTestdaten bleiben stehen.\nSITZUNG=${sessionId}\nBUCHUNG=${w.bookingId}\nRUECKGABE_ENTWURF=${doneBooking.id}\nRUECKGABE_FERTIG=${retBooking.id}\nRET_DAMAGE=${retDamage.id} UEBERGEBEN=${doneBooking.id} BEREIT=${signedBooking.id}\nVERTRAG=${draft.number}\nMANDANTEN=${w.tenantId},${foreign.tenantId}`);
 } else {
   await purgeTenants([w.tenantId, foreign.tenantId]);
 }

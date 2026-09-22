@@ -4,7 +4,7 @@
 // Schadenmarker entstehen aus denselben normalisierten Koordinaten (0 bis 1) wie in der Oberfläche.
 
 import { COLORS, type Pdf } from "@/lib/pdf/layout";
-import type { DocDamage, SketchView } from "@/lib/handover-view";
+import type { DamageSymbol, DocDamage, SketchView } from "@/lib/handover-view";
 
 type Matrix = [number, number, number, number, number, number];
 export type SketchShape =
@@ -114,18 +114,25 @@ export function drawSketchView(pdf: Pdf, model: SketchModel, view: SketchView, f
   for (const d of damages.filter((x) => x.view === view.key)) {
     const cx = Math.min(x0 + w - r, Math.max(x0 + r, x0 + Math.min(1, Math.max(0, d.posX)) * w));
     const cy = Math.min(y0 + h - r, Math.max(y0 + r, y0 + Math.min(1, Math.max(0, d.posY)) * h));
-    drawMarker(pdf, d.marker, d.index, cx, cy, r);
-    pdf.trace.markers.push({ index: d.index, marker: d.marker, view: view.key, cx, cy, r, frame: { x: x0, y: y0, w, h } });
+    drawMarker(pdf, d.symbol, d.index, cx, cy, r);
+    pdf.trace.markers.push({ index: d.index, marker: d.marker, symbol: d.symbol, view: view.key, cx, cy, r, frame: { x: x0, y: y0, w, h } });
   }
   return { x: x0, y: y0, w, h };
 }
 
-/** Kreis = bereits dokumentiert, Raute = bei Übergabe neu dokumentierter Vorschaden. Form und Farbe unterscheiden sich. */
-export function drawMarker(pdf: Pdf, marker: "EXISTING" | "NEW", index: number | null, cx: number, cy: number, r: number) {
+/**
+ * Kreis = vor der Miete dokumentiert, Raute = bei Übergabe dokumentierter Vorschaden, Dreieck = bei Rückgabe festgestellt.
+ * Form und Farbe unterscheiden sich, damit die Einstufung auch im Schwarz-Weiß-Druck erkennbar bleibt.
+ */
+export function drawMarker(pdf: Pdf, symbol: DamageSymbol, index: number | null, cx: number, cy: number, r: number) {
   const doc = pdf.doc;
   doc.save();
   doc.undash();
-  if (marker === "NEW") {
+  if (symbol === "triangle") {
+    const k = r * 1.45;
+    doc.moveTo(cx, cy - k).lineTo(cx + k * 0.95, cy + k * 0.75).lineTo(cx - k * 0.95, cy + k * 0.75).closePath();
+    doc.lineWidth(0.8).fillAndStroke(COLORS.warn, "#ffffff");
+  } else if (symbol === "diamond") {
     const k = r * 1.25;
     doc.moveTo(cx, cy - k).lineTo(cx + k, cy).lineTo(cx, cy + k).lineTo(cx - k, cy).closePath();
     doc.lineWidth(0.8).fillAndStroke(COLORS.bad, "#ffffff");
@@ -136,7 +143,7 @@ export function drawMarker(pdf: Pdf, marker: "EXISTING" | "NEW", index: number |
     doc.font("bold").fontSize(6.2).fillColor("#ffffff");
     const label = String(index);
     const tw = doc.widthOfString(label);
-    doc.text(label, cx - tw / 2, cy - doc.currentLineHeight() / 2 + 0.2, { lineBreak: false });
+    doc.text(label, cx - tw / 2, cy - doc.currentLineHeight() / 2 + (symbol === "triangle" ? 1.4 : 0.2), { lineBreak: false });
   }
   doc.restore();
 }

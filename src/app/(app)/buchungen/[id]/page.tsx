@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { customerName, fmtDateTime, fmtEur, toDateTimeInput } from "@/lib/format";
 import { calculateRentalPrice, rateCardFrom } from "@/lib/pricing";
 import { BookingStageChip, Card, Chip, Content, PageHeader, Plate } from "@/components/ui";
+import { EXTRA_CHARGE_TYPES, type ExtraChargeType } from "@/lib/constants";
 import { bookingStage } from "@/lib/booking-status";
 import { startContractAction } from "./vertrag/actions";
 import { setBookingStatusAction, updateBookingAction } from "../actions";
@@ -17,7 +18,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const { id } = await params;
   const sp = await searchParams;
 
-  const b = await db.booking.findFirst({ where: { id, tenantId: tenant.id }, include: { vehicle: true, customer: true, contract: { select: { number: true, status: true } }, handovers: { where: { type: "PICKUP", correctsId: null }, select: { number: true, status: true } } } });
+  const b = await db.booking.findFirst({ where: { id, tenantId: tenant.id }, include: { vehicle: true, customer: true, contract: { select: { number: true, status: true } }, handovers: { where: { correctsId: null }, select: { id: true, type: true, number: true, status: true } } } });
   if (!b) notFound();
 
   // Mit unterschriebenem Vertrag sind Zeitraum, Fahrzeug und Preis festgeschrieben
@@ -28,8 +29,12 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
 
   const stage = bookingStage(b, b.contract);
   const contractSigned = b.contract?.status === "SIGNED";
-  const pickupDraft = b.handovers.find((h) => h.status === "DRAFT");
-  const pickupDone = b.handovers.find((h) => h.status === "FINALIZED");
+  const pickupDraft = b.handovers.find((h) => h.type === "PICKUP" && h.status === "DRAFT");
+  const pickupDone = b.handovers.find((h) => h.type === "PICKUP" && h.status === "FINALIZED");
+  const returnDraft = b.handovers.find((h) => h.type === "RETURN" && h.status === "DRAFT");
+  const returnDone = b.handovers.find((h) => h.type === "RETURN" && h.status === "FINALIZED");
+  const charges = b.status === "RETURNED" || returnDraft ? await db.extraCharge.findMany({ where: { tenantId: tenant.id, bookingId: b.id }, orderBy: { createdAt: "asc" } }) : [];
+  const chargesTotal = charges.reduce((s, c) => s + Number(c.amount), 0);
   const update = updateBookingAction.bind(null, b.id);
   const startContract = startContractAction.bind(null, b.id);
   const finish = setBookingStatusAction.bind(null, b.id, "RETURNED");
@@ -44,6 +49,8 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
         {b.contract && b.contract.status !== "DRAFT" && <Link href={`/buchungen/${b.id}/vertrag`} className="btn">Mietvertrag anzeigen</Link>}
         {stage === "READY_FOR_PICKUP" && <Link href={`/buchungen/${b.id}/uebergabe`} className="btn btn-primary">{pickupDraft ? "Übergabe fortsetzen" : "Übergabe starten"}</Link>}
         {pickupDone && <Link href={`/buchungen/${b.id}/uebergabe`} className="btn">Übergabeprotokoll anzeigen</Link>}
+        {b.status === "ACTIVE" && pickupDone && !returnDone && <Link href={`/buchungen/${b.id}/rueckgabe`} className="btn btn-primary">{returnDraft ? "Rückgabe fortsetzen" : "Rückgabe starten"}</Link>}
+        {returnDone && <Link href={`/buchungen/${b.id}/rueckgabe`} className="btn">Rückgabeprotokoll anzeigen</Link>}
         {b.status === "ACTIVE" && !pickupDone && (
           <form action={finish}><button className="btn btn-primary">Fahrzeug zurücknehmen</button></form>
         )}
@@ -56,7 +63,10 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
         {sp.fehler === "status" && <Chip tone="bad">Dieser Statuswechsel ist nicht möglich.</Chip>}
         {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
         {b.status === "ACTIVE" && pickupDone && (
-          <p className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm">Übergeben mit Protokoll {pickupDone.number}. Die Rückgabe läuft ebenfalls über ein Protokoll und wird in der nächsten Ausbaustufe freigeschaltet.</p>
+          <p className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm">Übergeben mit Protokoll {pickupDone.number}. Die Rückgabe läuft über „Rückgabe starten“ und vergleicht den Zustand mit der Übergabe.</p>
+        )}
+        {b.status === "RETURNED" && returnDone && (
+          <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm">Zurückgegeben mit Protokoll {returnDone.number}. Übergabe {pickupDone?.number ?? "–"}. <Link href={`/fahrzeuge/${b.vehicleId}`} className="underline">Fahrzeughistorie ansehen</Link>.</p>
         )}
         {contractSigned && b.status === "RESERVED" && (
           <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Mietvertrag {b.contract!.number} ist abgeschlossen. Die Buchung ist bereit zur Übergabe.</p>
@@ -97,6 +107,19 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
           </Card>
 
           <div className="flex flex-col gap-4">
+            {(returnDone || returnDraft) && (
+              <Card title="Zusatzkosten" right={<Chip tone={charges.length > 0 ? "amber" : "grey"}>{charges.length === 0 ? "keine" : fmtEur(chargesTotal)}</Chip>}>
+                <div className="p-4 text-sm flex flex-col">
+                  {charges.length === 0 && <span className="text-ink-3">{returnDraft ? "Rückgabe läuft, noch keine Positionen bestätigt." : "Bei der Rückgabe wurden keine Zusatzkosten erfasst."}</span>}
+                  {charges.map((c) => (
+                    <div key={c.id} className="flex justify-between gap-3 py-1.5 border-b border-line-soft"><span>{EXTRA_CHARGE_TYPES[c.type as ExtraChargeType] ?? c.type}: {c.description}</span><span className="font-mono tnum">{fmtEur(Number(c.amount))}</span></div>
+                  ))}
+                  {charges.length > 0 && <div className="flex justify-between py-2 mt-1 border-t-2 border-ink font-semibold"><span>Gesamt Zusatzkosten</span><span className="font-mono tnum">{fmtEur(chargesTotal)}</span></div>}
+                  <div className="flex justify-between py-1.5 text-ink-3"><span>Kaution laut Buchung</span><span className="font-mono tnum">{fmtEur(b.deposit)}</span></div>
+                  <p className="text-xs text-ink-3 mt-1">Kautionsabrechnung offen. Zusatzkosten und Kaution werden nicht automatisch verrechnet.</p>
+                </div>
+              </Card>
+            )}
             <Card title="Kosten">
               <div className="p-4 text-sm flex flex-col">
                 <div className="text-xs text-ink-3 pb-1">{price.days} Miettage</div>
@@ -108,7 +131,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                 )}
                 <div className="flex justify-between py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>Voraussichtlich</span><span className="font-mono tnum">{fmtEur(price.total)}</span></div>
                 <div className="flex justify-between py-1.5 text-ink-3"><span>zzgl. Kaution</span><span className="font-mono tnum">{fmtEur(b.deposit)}</span></div>
-                <p className="text-xs text-ink-3 mt-2">Mehrkilometer, Tank und Schäden werden bei der Rücknahme berechnet (Etappe 2).</p>
+                <p className="text-xs text-ink-3 mt-2">Mehrkilometer, Tank und weitere Positionen werden bei der Rückgabe geprüft und erscheinen dann als Zusatzkosten.</p>
               </div>
             </Card>
             <Card title="Kunde">

@@ -7,6 +7,7 @@ import { BookingStatusChip, Card, Chip, Content, PageHeader, Plate, VehicleStatu
 import { deleteVehicleAction, updateVehicleAction } from "../actions";
 import { loadGroupOptions } from "../groups";
 import { VehicleForm } from "../vehicle-form";
+import { VehicleFile } from "./vehicle-file";
 
 export default async function VehiclePage({ params, searchParams }: PageProps<"/fahrzeuge/[id]">) {
   const { tenant, user } = await requireSession();
@@ -69,6 +70,7 @@ export default async function VehiclePage({ params, searchParams }: PageProps<"/
               </form>
             )}
           </Card>
+          <VehicleFile tenantId={tenant.id} vehicleId={vehicle.id} />
           <Card title="Letzte Buchungen">
             {vehicle.bookings.length === 0 ? (
               <p className="p-4 text-ink-3 text-sm">Noch keine Buchungen.</p>

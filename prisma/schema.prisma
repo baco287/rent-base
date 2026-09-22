@@ -369,8 +369,9 @@ model Handover {
   sketchVersion   Int?
   sketchAssetHash String? // genau diese Skizzenfassung wurde verwendet
 
-  correctsId String? // Nachtrag: verweist auf das ursprüngliche Protokoll
-  wizardStep Int     @default(1) // zuletzt erreichter Schritt im Assistenten
+  correctsId        String? // Nachtrag: verweist auf das ursprüngliche Protokoll
+  wizardStep        Int      @default(1) // zuletzt erreichter Schritt im Assistenten
+  fuelPricePerLiter Decimal? // nur Rückgabe: bei der Rückgabe ausdrücklich angegebener Literpreis, falls der Vertrag keinen nennt
 
   startedAt   DateTime  @default(now())
   finalizedAt DateTime?
@@ -421,6 +422,7 @@ model Damage {
   reportedById           String?
   repairedAt             DateTime?
   repairNote             String?
+  settlementReview       Boolean   @default(false) // bei Rückgabe festgestellt: Schadenabrechnung ist intern zu prüfen (keine Haftungsfeststellung)
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 
@@ -585,21 +587,24 @@ model Document {
 
 // Zusatzkosten mit vollständiger Rechengrundlage, z. B. 342 km × 0,25 € = 85,50 €.
 model ExtraCharge {
-  id          String   @id @default(cuid())
-  tenantId    String
-  bookingId   String
-  handoverId  String?
-  damageId    String?
-  type        String // EXTRA_MILEAGE | FUEL | CHARGING | CLEANING | LATE_RETURN | MISSING_ACCESSORY | DAMAGE | OTHER
-  description String
-  quantity    Decimal
-  unit        String // km, l, kWh, h, Stk, pauschal
-  unitPrice   Decimal
-  amount      Decimal
-  formula     String // lesbare Rechnung
-  calculation Json // Eingangswerte der Rechnung
-  createdAt   DateTime @default(now())
-  createdById String?
+  id               String   @id @default(cuid())
+  tenantId         String
+  bookingId        String
+  handoverId       String?
+  damageId         String?
+  type             String // EXTRA_MILEAGE | FUEL | CHARGING | CLEANING | LATE_RETURN | MISSING_ACCESSORY | DAMAGE | OTHER
+  description      String
+  quantity         Decimal
+  unit             String // km, l, kWh, h, Stk, pauschal
+  unitPrice        Decimal
+  amount           Decimal
+  formula          String // lesbare Rechnung
+  calculation      Json // Eingangswerte der Rechnung
+  source           String   @default("MANUAL") // PROPOSAL = vom System vorgeschlagen und vom Mitarbeiter bestätigt | MANUAL = frei erfasst
+  internalNote     String? // nur intern, nicht auf Dokumenten
+  handoverDamageId String? // Bezug zum im Protokoll erfassten Schaden (bis zum Abschluss gibt es noch keine Schadenakte)
+  createdAt        DateTime @default(now())
+  createdById      String?
 
   tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   booking  Booking   @relation(fields: [bookingId], references: [id])

@@ -3,22 +3,25 @@
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
-import { ensureContractDocument, ensurePickupDocument } from "@/lib/documents";
+import { ensureContractDocument, ensureHandoverDocument } from "@/lib/documents";
 import { DomainError } from "@/lib/integrity";
-import { sendPickupDocuments } from "@/lib/rental-mail";
+import { sendHandoverDocuments } from "@/lib/rental-mail";
 
 export type DocState = { error?: string; ok?: string } | undefined;
+type HandoverKind = "PICKUP" | "RETURN";
 
 function refresh(bookingId: string) {
-  revalidatePath(`/buchungen/${bookingId}`);
-  revalidatePath(`/buchungen/${bookingId}/uebergabe`);
-  revalidatePath(`/buchungen/${bookingId}/vertrag`);
+  for (const p of [`/buchungen/${bookingId}`, `/buchungen/${bookingId}/uebergabe`, `/buchungen/${bookingId}/rueckgabe`, `/buchungen/${bookingId}/vertrag`]) revalidatePath(p);
 }
 
 function failure(step: string, e: unknown): DocState {
   if (e instanceof DomainError) return { error: e.message };
   console.error(`[dokumente] ${step} fehlgeschlagen`, { fehler: e instanceof Error ? e.name : "unbekannt" });
   return { error: "Das hat technisch nicht geklappt. Bitte später erneut versuchen." };
+}
+
+async function finalizedHandover(tenantId: string, bookingId: string, kind: HandoverKind) {
+  return db.handover.findFirst({ where: { bookingId, tenantId, type: kind, status: "FINALIZED", correctsId: null }, orderBy: { finalizedAt: "desc" }, select: { id: true } });
 }
 
 /** Mietvertrag-PDF nachträglich erzeugen. Existiert es schon, passiert nichts (kein zweites Dokument). */
@@ -36,34 +39,39 @@ export async function generateContractPdfAction(bookingId: string, _prev: DocSta
   }
 }
 
-/** Übergabeprotokoll-PDF nachträglich erzeugen, ebenfalls nur wenn es noch keines gibt. */
-export async function generatePickupPdfAction(bookingId: string, _prev: DocState, _formData: FormData): Promise<DocState> {
+/** Protokoll-PDF (Übergabe oder Rückgabe) nachträglich erzeugen, ebenfalls nur wenn es noch keines gibt. */
+export async function generateHandoverPdfAction(bookingId: string, kind: HandoverKind, _prev: DocState, _formData: FormData): Promise<DocState> {
   void _formData;
   const { tenant, user } = await requireRole("DISPO", "YARD");
-  const handover = await db.handover.findFirst({ where: { bookingId, tenantId: tenant.id, type: "PICKUP", status: "FINALIZED", correctsId: null }, orderBy: { finalizedAt: "desc" }, select: { id: true } });
-  if (!handover) return { error: "Zu dieser Buchung gibt es keine abgeschlossene Übergabe." };
+  const handover = await finalizedHandover(tenant.id, bookingId, kind);
+  const label = kind === "PICKUP" ? "Übergabeprotokoll" : "Rückgabeprotokoll";
+  if (!handover) return { error: `Zu dieser Buchung gibt es keine abgeschlossene ${kind === "PICKUP" ? "Übergabe" : "Rückgabe"}.` };
   try {
-    const res = await ensurePickupDocument(tenant.id, handover.id, user.id);
+    const res = await ensureHandoverDocument(tenant.id, handover.id, user.id);
     refresh(bookingId);
-    return { ok: res.created ? "Übergabeprotokoll-PDF wurde erzeugt." : "Das Übergabeprotokoll-PDF war bereits vorhanden." };
+    return { ok: res.created ? `${label}-PDF wurde erzeugt.` : `Das ${label}-PDF war bereits vorhanden.` };
   } catch (e) {
-    return failure("Übergabeprotokoll-PDF", e);
+    return failure(`${label}-PDF`, e);
   }
+}
+
+export async function generatePickupPdfAction(bookingId: string, prev: DocState, formData: FormData): Promise<DocState> {
+  return generateHandoverPdfAction(bookingId, "PICKUP", prev, formData);
 }
 
 /**
  * "Unterlagen erneut senden". Das Formular trägt einen einmaligen Wert (nonce): Ein Doppelklick oder erneutes
  * Absenden desselben Formulars verschickt nichts ein zweites Mal. Verschickt werden die archivierten PDFs.
  */
-export async function resendDocumentsAction(bookingId: string, _prev: DocState, formData: FormData): Promise<DocState> {
+export async function resendDocumentsAction(bookingId: string, kind: HandoverKind, _prev: DocState, formData: FormData): Promise<DocState> {
   const { tenant, user } = await requireRole("DISPO", "YARD");
-  const handover = await db.handover.findFirst({ where: { bookingId, tenantId: tenant.id, type: "PICKUP", status: "FINALIZED", correctsId: null }, orderBy: { finalizedAt: "desc" }, select: { id: true } });
-  if (!handover) return { error: "Zu dieser Buchung gibt es keine abgeschlossene Übergabe." };
+  const handover = await finalizedHandover(tenant.id, bookingId, kind);
+  if (!handover) return { error: `Zu dieser Buchung gibt es keine abgeschlossene ${kind === "PICKUP" ? "Übergabe" : "Rückgabe"}.` };
   try {
-    const res = await sendPickupDocuments(tenant.id, handover.id, { trigger: "MANUAL", actorId: user.id, nonce: String(formData.get("nonce") ?? "") });
+    const res = await sendHandoverDocuments(tenant.id, handover.id, { trigger: "MANUAL", actorId: user.id, nonce: String(formData.get("nonce") ?? "") });
     refresh(bookingId);
     if (res.status === "SENT") return { ok: `Unterlagen wurden an ${res.log.recipient} versendet.` };
-    if (res.status === "DUPLICATE") return { ok: res.log.status === "SENT" ? "Diese Anfrage wurde bereits versendet. Es wurde nichts doppelt verschickt." : undefined, error: res.log.status === "SENT" ? undefined : "Diese Anfrage wurde bereits verarbeitet. Bitte den Stand unten prüfen." };
+    if (res.status === "DUPLICATE") return res.log.status === "SENT" ? { ok: "Diese Anfrage wurde bereits versendet. Es wurde nichts doppelt verschickt." } : { error: "Diese Anfrage wurde bereits verarbeitet. Bitte den Stand unten prüfen." };
     return { error: `E-Mail konnte nicht versendet werden: ${(res.log.error ?? "unbekannter Fehler").replace(/\.+$/, "")}.` };
   } catch (e) {
     return failure("Versand", e);

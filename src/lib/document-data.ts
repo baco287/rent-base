@@ -9,6 +9,7 @@ import { buildContractDocument, landlordOf, type ContractDocumentData, type Tena
 import type { CustomerSnapshot, VehicleSnapshot } from "@/lib/contracts";
 import { buildHandoverDocument, type HandoverContext, type HandoverDocumentData } from "@/lib/handover-view";
 import { DomainError } from "@/lib/integrity";
+import { loadSealedComparison } from "@/lib/returns";
 
 const TENANT_FIELDS = { name: true, street: true, zip: true, city: true, phone: true, email: true } as const;
 
@@ -90,8 +91,9 @@ export async function loadHandoverDocumentData(tenantId: string, handoverId: str
   const rows = await db.signature.findMany({ where: { tenantId, handoverId }, orderBy: { signedAt: "asc" }, select: { id: true, role: true, signerName: true, signedAt: true, contentHash: true, imageData: true } });
   const signatures = validSignatures(rows, h.contentHash);
   const context = await loadHandoverContext(tenantId, h);
+  const comparison = h.type === "RETURN" ? await loadSealedComparison(db, tenantId, h.id) : null;
   return {
-    doc: buildHandoverDocument(h, sketch, signatures, [...REQUIRED_PHOTO_CATEGORIES], context),
+    doc: buildHandoverDocument(h, sketch, signatures, [...REQUIRED_PHOTO_CATEGORIES], context, comparison),
     bookingId: h.bookingId,
     handoverId: h.id,
     contractId: h.contractId,

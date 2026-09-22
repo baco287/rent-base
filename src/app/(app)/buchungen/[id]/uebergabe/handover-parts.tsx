@@ -5,6 +5,69 @@ import { Card, Chip } from "@/components/ui";
 import { DamageMap } from "./damage-map";
 
 export const PICKUP_STEPS = ["Übersicht", "Kilometer & Energie", "Schäden", "Fotos", "Checkliste", "Unterschrift", "Abschluss"] as const;
+export const RETURN_STEPS = ["Übersicht", "Kilometer & Mietdauer", "Tank / Batterie", "Fahrzeugzustand", "Fotos", "Checkliste", "Zusatzkosten", "Unterschrift", "Abschluss"] as const;
+
+/** Vergleichstabelle Übergabe/Rückgabe, gemeinsam für Assistent, Protokollansicht und Abschluss. */
+export function ComparisonTable({ doc }: { doc: HandoverDocument }) {
+  const c = doc.comparison;
+  if (!c) return null;
+  return (
+    <Card title={`Vergleich mit der Übergabe ${c.pickupNumber}`}>
+      <table className="w-full text-sm">
+        <thead><tr className="text-left text-xs text-ink-3 border-b border-line-soft"><th className="px-4 py-2 font-medium"></th><th className="px-2 py-2 font-medium text-right">Übergabe</th><th className="px-2 py-2 font-medium text-right">Rückgabe</th><th className="px-4 py-2 font-medium text-right">Differenz</th></tr></thead>
+        <tbody>
+          {c.rows.map((r) => (
+            <tr key={r.label} className="border-b border-line-soft">
+              <td className="px-4 py-2 text-ink-2">{r.label}</td>
+              <td className="px-2 py-2 text-right font-mono tnum">{r.pickup}</td>
+              <td className="px-2 py-2 text-right font-mono tnum font-semibold">{r.ret}</td>
+              <td className={`px-4 py-2 text-right font-mono tnum ${r.attention ? "text-bad font-semibold" : ""}`}>{r.diff}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <dl className="px-4 py-3 grid grid-cols-[minmax(110px,40%)_1fr] gap-x-3 gap-y-1.5 text-sm">
+        <dt className="text-ink-3">Mietbeginn</dt><dd className="font-mono tnum">{c.time.start}</dd>
+        <dt className="text-ink-3">Geplante Rückgabe</dt><dd className="font-mono tnum">{c.time.plannedEnd}</dd>
+        <dt className="text-ink-3">Tatsächliche Rückgabe</dt><dd className="font-mono tnum">{c.time.actualEnd}</dd>
+        <dt className="text-ink-3">Verspätung</dt><dd className={c.time.late ? "text-bad font-medium" : ""}>{c.time.late ?? "keine"}</dd>
+        {c.mileageBasis && <><dt className="text-ink-3">Kilometer laut Vertrag</dt><dd>{c.mileageBasis}</dd></>}
+        <dt className="text-ink-3">Tankregelung</dt><dd>{c.fuelPolicy}</dd>
+      </dl>
+    </Card>
+  );
+}
+
+/** Bestätigte Zusatzkosten und Kaution, getrennt ausgewiesen. */
+export function ChargesTable({ doc }: { doc: HandoverDocument }) {
+  const c = doc.comparison;
+  if (!c) return null;
+  return (
+    <Card title="Zusatzkosten" right={<Chip tone={c.charges.length > 0 ? "amber" : "grey"}>{c.charges.length === 0 ? "keine" : c.chargesTotal}</Chip>}>
+      {c.charges.length === 0 ? (
+        <p className="px-4 py-3 text-sm text-ink-3">Es wurden keine Zusatzkosten erfasst.</p>
+      ) : (
+        <ul className="divide-y divide-line-soft text-sm">
+          {c.charges.map((x, i) => (
+            <li key={i} className="px-4 py-2 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+              <span className="font-medium">{x.typeLabel}</span>
+              <span className="flex-1 min-w-[12ch] text-ink-2">{x.description}{x.damageIndex ? ` (Schaden Nr. ${x.damageIndex})` : ""}</span>
+              <span className="text-xs text-ink-3 font-mono tnum">{x.formula}</span>
+              <span className="font-mono tnum font-semibold">{x.amount}</span>
+            </li>
+          ))}
+          <li className="px-4 py-2 flex justify-between font-semibold"><span>Gesamt Zusatzkosten</span><span className="font-mono tnum">{c.chargesTotal}</span></li>
+        </ul>
+      )}
+      <dl className="px-4 py-3 border-t border-line-soft grid grid-cols-[minmax(110px,40%)_1fr] gap-x-3 gap-y-1.5 text-sm">
+        <dt className="text-ink-3">Kaution laut Vertrag</dt><dd className="font-mono tnum">{c.deposit}</dd>
+        <dt className="text-ink-3">Selbstbeteiligung</dt><dd className="font-mono tnum">{c.deductible}</dd>
+        <dt className="text-ink-3">Kautionsabrechnung</dt><dd>offen, wird gesondert abgerechnet</dd>
+      </dl>
+      {c.charges.some((x) => x.damageIndex) && <p className="px-4 pb-3 text-xs text-ink-3">Eine Kostenposition zu einem Schaden ist nur die vom Vermieter erfasste Position, keine Feststellung darüber, wer den Schaden verursacht hat.</p>}
+    </Card>
+  );
+}
 
 /** Prüfergebnis: Fehler verhindern den Abschluss, Hinweise nicht. */
 export function HandoverIssueList({ issues, areas, okText }: { issues: HandoverIssue[]; areas?: HandoverIssue["area"][]; okText?: string }) {
@@ -44,7 +107,8 @@ export function FuelGauge({ eighths }: { eighths: number | null }) {
 /** Darstellung des Protokolls aus der gemeinsamen Dokumentstruktur. Dieselbe Struktur speist später das PDF. */
 export function HandoverDocumentView({ doc, handoverId, showSignatures = true }: { doc: HandoverDocument; handoverId: string; showSignatures?: boolean }) {
   const existing = doc.damages.filter((d) => d.marker === "EXISTING").length;
-  const fresh = doc.damages.length - existing;
+  const pickupNew = doc.damages.filter((d) => d.marker === "PICKUP_NEW").length;
+  const fresh = doc.damages.filter((d) => d.marker === "NEW").length;
   return (
     <div className="flex flex-col gap-4">
       <div className="card px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-1">
@@ -55,6 +119,8 @@ export function HandoverDocumentView({ doc, handoverId, showSignatures = true }:
         <span className="flex-1" />
         {doc.status === "FINALIZED" ? <Chip tone="good">Finalisiert am {doc.finalizedAt}</Chip> : <Chip tone="amber">Entwurf</Chip>}
       </div>
+
+      {doc.type === "RETURN" && <ComparisonTable doc={doc} />}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
         <Card title="Kilometer und Energie">
@@ -81,9 +147,9 @@ export function HandoverDocumentView({ doc, handoverId, showSignatures = true }:
         </Card>
       </div>
 
-      <Card title="Fahrzeugzustand" right={<><Chip>{existing} bereits dokumentiert</Chip><Chip tone={fresh > 0 ? "bad" : "grey"}>{fresh} neu entdeckt</Chip></>}>
+      <Card title="Fahrzeugzustand" right={doc.type === "PICKUP" ? <><Chip>{existing} bereits dokumentiert</Chip><Chip tone={fresh > 0 ? "bad" : "grey"}>{fresh} neu entdeckt</Chip></> : <><Chip>{existing} vor Mietbeginn</Chip><Chip>{pickupNew} bei Übergabe</Chip><Chip tone={fresh > 0 ? "amber" : "grey"}>{fresh} bei Rückgabe festgestellt</Chip></>}>
         <div className="p-4">
-          <DamageMap sketch={doc.sketch} damages={doc.damages} handoverId={handoverId} editable={false} pickup={doc.type === "PICKUP"} />
+          <DamageMap sketch={doc.sketch} damages={doc.damages} handoverId={handoverId} editable={false} type={doc.type} />
           {doc.sketch && <p className="text-[11px] text-ink-3 mt-2">Skizze: {doc.sketch.name}, Fassung {doc.sketch.version}</p>}
         </div>
       </Card>
@@ -104,6 +170,8 @@ export function HandoverDocumentView({ doc, handoverId, showSignatures = true }:
         )}
         {doc.missingPhotoCategories.length > 0 && <p className="px-4 pb-3 text-sm text-bad">Es fehlen: {doc.missingPhotoCategories.join(", ")}</p>}
       </Card>
+
+      {doc.type === "RETURN" && <ChargesTable doc={doc} />}
 
       {showSignatures && doc.signatures.length > 0 && (
         <Card title="Unterschriften">

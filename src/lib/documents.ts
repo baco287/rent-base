@@ -190,23 +190,35 @@ async function loadPhotosForPdf(tenantId: string, storage: StorageDriver, files:
   return out;
 }
 
-/** Übergabeprotokoll-PDF: nur für finalisierte Übergaben, einmalig je Fassung. */
-export async function ensurePickupDocument(tenantId: string, handoverId: string, actorId: string | null, opts: EnsureOptions = {}): Promise<EnsureResult> {
+/** Protokoll-PDF (Übergabe oder Rückgabe): nur für finalisierte Protokolle, einmalig je Fassung. */
+export async function ensureHandoverDocument(tenantId: string, handoverId: string, actorId: string | null, opts: EnsureOptions = {}): Promise<EnsureResult> {
   const data = await loadHandoverDocumentData(tenantId, handoverId);
-  if (data.doc.type !== "PICKUP") throw new DomainError("Dieses Protokoll ist keine Übergabe.");
+  const type: DocumentType = data.doc.type === "RETURN" ? "RETURN_PROTOCOL" : "PICKUP_PROTOCOL";
   return archive(
     tenantId,
     actorId,
-    { type: "PICKUP_PROTOCOL", bookingId: data.bookingId, contractId: null, handoverId: data.handoverId },
+    { type, bookingId: data.bookingId, contractId: null, handoverId: data.handoverId },
     opts,
     data.sourceHash,
-    (v) => documentFileName("PICKUP_PROTOCOL", data.doc.context?.contractNumber ?? data.doc.number, data.doc.context?.plate, v),
+    (v) => documentFileName(type, data.doc.context?.contractNumber ?? data.doc.number, data.doc.context?.plate, v),
     async () => {
       const storage = opts.storage ?? getStorage();
       const [sketchSvg, photos] = await Promise.all([loadSketchSvg(data.sketch), loadPhotosForPdf(tenantId, storage, data.photoFiles)]);
       return (await renderHandoverPdf(data.doc, { sketchSvg, photos, signatures: data.signatureImages })).bytes;
     },
   );
+}
+
+export async function ensurePickupDocument(tenantId: string, handoverId: string, actorId: string | null, opts: EnsureOptions = {}): Promise<EnsureResult> {
+  const h = await db.handover.findFirst({ where: { id: handoverId, tenantId }, select: { type: true } });
+  if (h && h.type !== "PICKUP") throw new DomainError("Dieses Protokoll ist keine Übergabe.");
+  return ensureHandoverDocument(tenantId, handoverId, actorId, opts);
+}
+
+export async function ensureReturnDocument(tenantId: string, handoverId: string, actorId: string | null, opts: EnsureOptions = {}): Promise<EnsureResult> {
+  const h = await db.handover.findFirst({ where: { id: handoverId, tenantId }, select: { type: true } });
+  if (h && h.type !== "RETURN") throw new DomainError("Dieses Protokoll ist keine Rückgabe.");
+  return ensureHandoverDocument(tenantId, handoverId, actorId, opts);
 }
 
 export class DocumentIntegrityError extends Error {}

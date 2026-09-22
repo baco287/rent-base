@@ -10,7 +10,7 @@ const FONT_DIR = path.join(process.cwd(), "assets", "fonts");
 const FONT_REGULAR = path.join(FONT_DIR, "IBMPlexSans-Regular.woff");
 const FONT_BOLD = path.join(FONT_DIR, "IBMPlexSans-SemiBold.woff");
 
-export const COLORS = { ink: "#1a2230", ink2: "#4a5568", ink3: "#7a8494", line: "#d5dae2", soft: "#f1f3f6", brand: "#16325c", bad: "#b23a32", good: "#2f7d4f", existing: "#4a5568" };
+export const COLORS = { ink: "#1a2230", ink2: "#4a5568", ink3: "#7a8494", line: "#d5dae2", soft: "#f1f3f6", brand: "#16325c", bad: "#b23a32", good: "#2f7d4f", warn: "#8a5a00", existing: "#4a5568" };
 
 export type PdfTrace = {
   pages: number;
@@ -18,7 +18,7 @@ export type PdfTrace = {
   /** Jede platzierte Textbox. overflow = true hieße: passt nicht in den vorgesehenen Bereich. */
   boxes: { page: number; x: number; y: number; w: number; h: number; overflow: boolean }[];
   images: { kind: "signature" | "photo"; naturalW: number; naturalH: number; w: number; h: number }[];
-  markers: { index: number; marker: "EXISTING" | "NEW"; view: string; cx: number; cy: number; r: number; frame: { x: number; y: number; w: number; h: number } }[];
+  markers: { index: number; marker: string; symbol: string; view: string; cx: number; cy: number; r: number; frame: { x: number; y: number; w: number; h: number } }[];
   notes: string[];
 };
 

@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { DAMAGE_KINDS, DAMAGE_SEVERITY } from "@/lib/constants";
-import { SKETCH_CANVAS_WIDTH, type DocDamage, type SketchInfo } from "@/lib/handover-view";
+import { SKETCH_CANVAS_WIDTH, type DamageSymbol, type DocDamage, type SketchInfo } from "@/lib/handover-view";
 import { PhotoUploader } from "./photo-uploader";
 
 export type DamagePayload = { view: string; posX: number; posY: number; kind: string; severity: string; size: string; description: string };
@@ -16,12 +16,36 @@ export type DamageActions = {
 
 const EXISTING_COLOR = "#4a5568";
 const NEW_COLOR = "#b23a32";
+const RETURN_COLOR = "#8a5a00";
+
+const SYMBOL_COLOR: Record<DamageSymbol, string> = { circle: EXISTING_COLOR, diamond: NEW_COLOR, triangle: RETURN_COLOR };
+
+/** Kleines Symbol für Legende und Liste: Kreis, Raute oder Dreieck, immer mit Farbe UND Form unterscheidbar. */
+export function MarkerIcon({ symbol, index, size = 14 }: { symbol: DamageSymbol; index?: number; size?: number }) {
+  const fill = SYMBOL_COLOR[symbol];
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" className="inline shrink-0 align-[-2px]" aria-hidden="true">
+      {symbol === "circle" && <circle cx="7" cy="7" r="6.5" fill={fill} />}
+      {symbol === "diamond" && <rect x="2.3" y="2.3" width="9.4" height="9.4" transform="rotate(45 7 7)" fill={fill} />}
+      {symbol === "triangle" && <path d="M7 0.8 L13.6 12.6 L0.4 12.6 Z" fill={fill} />}
+      {index != null && <text x="7" y={symbol === "triangle" ? 8.4 : 7} textAnchor="middle" dominantBaseline="central" fontSize={symbol === "triangle" ? 6.2 : 7} fontWeight="700" fill="#fff">{index}</text>}
+    </svg>
+  );
+}
+
+export function legendFor(type: "PICKUP" | "RETURN"): { symbol: DamageSymbol; text: string }[] {
+  return type === "PICKUP"
+    ? [{ symbol: "circle", text: "Bereits dokumentiert" }, { symbol: "diamond", text: "Neu entdeckt, gilt als Vorschaden" }]
+    : [{ symbol: "circle", text: "Vor Mietbeginn dokumentiert" }, { symbol: "diamond", text: "Bei Übergabe dokumentierter Vorschaden" }, { symbol: "triangle", text: "Bei Rückgabe neu festgestellt" }];
+}
 
 /**
  * Fahrzeugskizze mit Schäden. Positionen sind normalisiert (0 bis 1) relativ zur Ansicht, nie Pixel.
- * Bereits dokumentierte Schäden: grauer Kreis. Neu entdeckte: rote Raute. So sind sie auch ohne Farbe unterscheidbar.
+ * Kreis = vor der Miete bekannt, Raute = bei Übergabe dokumentierter Vorschaden, Dreieck = bei Rückgabe festgestellt.
+ * So sind die Einstufungen auch ohne Farbe unterscheidbar.
  */
-export function DamageMap({ sketch, damages, handoverId, editable, actions, pickup }: { sketch: SketchInfo | null; damages: DocDamage[]; handoverId: string; editable: boolean; actions?: DamageActions; pickup: boolean }) {
+export function DamageMap({ sketch, damages, handoverId, editable, actions, pickup, type, title }: { sketch: SketchInfo | null; damages: DocDamage[]; handoverId: string; editable: boolean; actions?: DamageActions; pickup?: boolean; type?: "PICKUP" | "RETURN"; title?: string }) {
+  const kind: "PICKUP" | "RETURN" = type ?? (pickup === false ? "RETURN" : "PICKUP");
   const views = sketch?.views ?? [];
   const [viewKey, setViewKey] = useState(views[0]?.key ?? "FRONT");
   const [selected, setSelected] = useState<string | null>(null);
@@ -64,6 +88,7 @@ export function DamageMap({ sketch, damages, handoverId, editable, actions, pick
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-4 items-start">
       <div className="flex flex-col gap-2.5">
+        {title && <div className="font-semibold text-sm">{title}</div>}
         <div role="tablist" aria-label="Fahrzeugansicht" className="flex gap-1.5 overflow-x-auto pb-0.5">
           {views.map((v) => (
             <button key={v.key} type="button" role="tab" aria-selected={v.key === view.key} onClick={() => { setViewKey(v.key); setPending(null); }} className={`btn !py-2 shrink-0 ${v.key === view.key ? "!bg-brand !text-brand-ink !border-brand" : ""}`}>
@@ -96,24 +121,22 @@ export function DamageMap({ sketch, damages, handoverId, editable, actions, pick
             {inView.map((d) => {
               const cx = bx + d.posX * bw;
               const cy = by + d.posY * bh;
-              const isNew = d.marker === "NEW";
+              const color = SYMBOL_COLOR[d.symbol];
               const active = d.id === selected;
               return (
                 <g key={d.id} onClick={(e) => { e.stopPropagation(); setPending(null); setMoving(false); setSelected(d.id); }} className="cursor-pointer">
-                  {active && <circle cx={cx} cy={cy} r={r * 1.7} fill="none" stroke={isNew ? NEW_COLOR : EXISTING_COLOR} strokeWidth={bw * 0.006} strokeDasharray={`${bw * 0.012} ${bw * 0.008}`} />}
-                  {isNew ? (
-                    <rect x={cx - r} y={cy - r} width={r * 2} height={r * 2} transform={`rotate(45 ${cx} ${cy})`} fill={NEW_COLOR} stroke="#fff" strokeWidth={bw * 0.005} />
-                  ) : (
-                    <circle cx={cx} cy={cy} r={r} fill={EXISTING_COLOR} stroke="#fff" strokeWidth={bw * 0.005} />
-                  )}
-                  <text x={cx} y={cy} textAnchor="middle" dominantBaseline="central" fontSize={r * 1.15} fontWeight="700" fill="#fff" style={{ pointerEvents: "none" }}>{d.index}</text>
+                  {active && <circle cx={cx} cy={cy} r={r * 1.8} fill="none" stroke={color} strokeWidth={bw * 0.006} strokeDasharray={`${bw * 0.012} ${bw * 0.008}`} />}
+                  {d.symbol === "diamond" && <rect x={cx - r} y={cy - r} width={r * 2} height={r * 2} transform={`rotate(45 ${cx} ${cy})`} fill={color} stroke="#fff" strokeWidth={bw * 0.005} />}
+                  {d.symbol === "triangle" && <path d={`M${cx} ${cy - r * 1.45} L${cx + r * 1.4} ${cy + r * 1.05} L${cx - r * 1.4} ${cy + r * 1.05} Z`} fill={color} stroke="#fff" strokeWidth={bw * 0.005} strokeLinejoin="round" />}
+                  {d.symbol === "circle" && <circle cx={cx} cy={cy} r={r} fill={color} stroke="#fff" strokeWidth={bw * 0.005} />}
+                  <text x={cx} y={d.symbol === "triangle" ? cy + r * 0.3 : cy} textAnchor="middle" dominantBaseline="central" fontSize={r * 1.15} fontWeight="700" fill="#fff" style={{ pointerEvents: "none" }}>{d.index}</text>
                 </g>
               );
             })}
             {pending && pending.view === view.key && (
               <g style={{ pointerEvents: "none" }}>
-                <circle cx={bx + pending.posX * bw} cy={by + pending.posY * bh} r={r * 1.5} fill="none" stroke={NEW_COLOR} strokeWidth={bw * 0.007} />
-                <circle cx={bx + pending.posX * bw} cy={by + pending.posY * bh} r={r * 0.35} fill={NEW_COLOR} />
+                <circle cx={bx + pending.posX * bw} cy={by + pending.posY * bh} r={r * 1.5} fill="none" stroke={kind === "RETURN" ? RETURN_COLOR : NEW_COLOR} strokeWidth={bw * 0.007} />
+                <circle cx={bx + pending.posX * bw} cy={by + pending.posY * bh} r={r * 0.35} fill={kind === "RETURN" ? RETURN_COLOR : NEW_COLOR} />
               </g>
             )}
           </svg>
@@ -121,8 +144,7 @@ export function DamageMap({ sketch, damages, handoverId, editable, actions, pick
         </div>
 
         <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-ink-2">
-          <span><svg width="14" height="14" viewBox="0 0 14 14" className="inline align-[-2px] mr-1.5"><circle cx="7" cy="7" r="6" fill={EXISTING_COLOR} /></svg>Bereits dokumentiert</span>
-          <span><svg width="14" height="14" viewBox="0 0 14 14" className="inline align-[-2px] mr-1.5"><rect x="2.5" y="2.5" width="9" height="9" transform="rotate(45 7 7)" fill={NEW_COLOR} /></svg>{pickup ? "Neu entdeckt, gilt als Vorschaden" : "Neu bei Rückgabe"}</span>
+          {legendFor(kind).map((l) => <span key={l.symbol} className="inline-flex items-center gap-1.5"><MarkerIcon symbol={l.symbol} />{l.text}</span>)}
           {editable && <span className="text-ink-3">{moving ? "Jetzt auf die neue Stelle tippen." : "Auf die Skizze tippen, um einen Schaden zu markieren."}</span>}
         </div>
       </div>
@@ -133,7 +155,7 @@ export function DamageMap({ sketch, damages, handoverId, editable, actions, pick
         {pending && editable && actions && (
           <DamageEditor
             key={`new-${pending.posX}-${pending.posY}`}
-            title={`Neuer Schaden · ${view.label}`}
+            title={`${kind === "RETURN" ? "Bei Rückgabe festgestellter Schaden" : "Neuer Schaden"} · ${view.label}`}
             busy={busy}
             submitLabel="Schaden speichern"
             onCancel={() => setPending(null)}
@@ -145,7 +167,7 @@ export function DamageMap({ sketch, damages, handoverId, editable, actions, pick
           <div className="card p-3.5 flex flex-col gap-2.5">
             <div className="flex items-center gap-2">
               <span className="font-semibold">Schaden {current.index}</span>
-              <span className={`chip ${current.marker === "NEW" ? "bg-bad-soft text-bad" : "bg-panel-2 text-ink-2"}`}>{current.markerLabel}</span>
+              <span className={`chip ${current.symbol === "triangle" ? "bg-amber-soft text-amber" : current.symbol === "diamond" ? "bg-bad-soft text-bad" : "bg-panel-2 text-ink-2"}`}>{current.markerLabel}</span>
             </div>
             {current.marker === "NEW" && editable && actions ? (
               <>
@@ -173,7 +195,8 @@ export function DamageMap({ sketch, damages, handoverId, editable, actions, pick
                   <dt className="text-ink-3">Beschreibung</dt><dd>{current.description}</dd>
                 </dl>
                 {current.photos.length > 0 && <PhotoUploader handoverId={handoverId} category="DAMAGE" label="Fotos" photos={current.photos} editable={false} compact />}
-                {current.marker === "EXISTING" && editable && <p className="text-xs text-ink-3">Dieser Schaden ist bereits in der Fahrzeugakte dokumentiert und wird im Protokoll unverändert festgehalten.</p>}
+                {current.marker !== "NEW" && editable && <p className="text-xs text-ink-3">Dieser Schaden ist bereits in der Fahrzeugakte dokumentiert und wird im Protokoll unverändert festgehalten.</p>}
+                {current.marker === "NEW" && kind === "RETURN" && <p className="text-xs text-ink-3">Festgestellt heißt nicht verursacht: Das Protokoll hält den Zustand fest. Über Verantwortung und Kosten wird gesondert entschieden.</p>}
               </>
             )}
           </div>
@@ -188,7 +211,7 @@ export function DamageMap({ sketch, damages, handoverId, editable, actions, pick
               {damages.map((d) => (
                 <li key={d.id}>
                   <button type="button" onClick={() => { setViewKey(d.view); setPending(null); setMoving(false); setSelected(d.id); }} className={`w-full text-left px-3.5 py-2 flex items-start gap-2.5 hover:bg-panel-2/60 ${d.id === selected ? "bg-panel-2" : ""}`}>
-                    <span className="mt-0.5 inline-flex size-5 shrink-0 items-center justify-center text-[11px] font-bold text-white" style={{ background: d.marker === "NEW" ? NEW_COLOR : EXISTING_COLOR, borderRadius: d.marker === "NEW" ? 3 : 999 }}>{d.index}</span>
+                    <span className="mt-0.5 shrink-0"><MarkerIcon symbol={d.symbol} index={d.index} size={20} /></span>
                     <span className="min-w-0 flex-1">
                       <span className="block text-sm font-medium truncate">{d.kindLabel} · {d.viewLabel}</span>
                       <span className="block text-xs text-ink-3 truncate">{d.description}</span>

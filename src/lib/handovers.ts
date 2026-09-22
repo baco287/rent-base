@@ -14,7 +14,7 @@
 
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { DAMAGE_KINDS, DAMAGE_SEVERITY, DAMAGE_VIEWS, PHOTO_CATEGORIES, REQUIRED_PHOTO_CATEGORIES, VISIBLE_DAMAGE_STATUS, energyRequirements, type HandoverType } from "@/lib/constants";
+import { DAMAGE_KINDS, DAMAGE_SEVERITY, DAMAGE_VIEWS, PHOTO_CATEGORIES, REQUIRED_PHOTO_CATEGORIES, RETURN_ATTENTION_ON_YES, VISIBLE_DAMAGE_STATUS, energyRequirements, type HandoverType } from "@/lib/constants";
 import { DomainError, assertHandoverDraft, contentHash, sha256 } from "@/lib/integrity";
 import { nextHandoverNumber } from "@/lib/numbering";
 import { ALLOWED_PHOTO_TYPES, MAX_PHOTO_BYTES, assertKeyBelongsToTenant, buildStorageKey } from "@/lib/storage";
@@ -61,7 +61,14 @@ export async function startHandover(tenantId: string, bookingId: string, type: H
 
     if (type === "PICKUP" && booking.status !== "RESERVED") throw new DomainError("Eine Übergabe ist nur für reservierte Buchungen möglich.");
     if (type === "PICKUP" && booking.contract?.status !== "SIGNED") throw new DomainError("Die Übergabe kann erst starten, wenn der Mietvertrag abgeschlossen ist.");
-    if (type === "RETURN" && booking.status !== "ACTIVE") throw new DomainError("Eine Rückgabe ist nur für laufende Mieten möglich.");
+    let pickupId: string | null = null;
+    if (type === "RETURN") {
+      if (booking.status !== "ACTIVE") throw new DomainError("Eine Rückgabe ist nur für laufende Mieten möglich.");
+      if (booking.contract?.status !== "SIGNED") throw new DomainError("Zu dieser Miete gibt es keinen abgeschlossenen Mietvertrag. Die Rückgabe über das Protokoll ist nur mit Vertrag möglich.");
+      const pickup = await tx.handover.findFirst({ where: { tenantId, bookingId, type: "PICKUP", status: "FINALIZED" }, orderBy: { finalizedAt: "desc" }, select: { id: true } });
+      if (!pickup) throw new DomainError("Zu dieser Miete gibt es kein abgeschlossenes Übergabeprotokoll. Ohne dokumentierten Übergabezustand ist kein Vergleich möglich.");
+      pickupId = pickup.id;
+    }
 
     const sketch = await resolveSketch(tx, tenantId, booking.vehicle.group);
     const number = await nextHandoverNumber(tx, tenantId, type);
@@ -94,7 +101,8 @@ export async function startHandover(tenantId: string, bookingId: string, type: H
           tenantId,
           handoverId: handover.id,
           damageId: d.id,
-          marker: "EXISTING",
+          // Rückgabe: Vorschäden, die bei der Übergabe dieser Miete dokumentiert wurden, bleiben als solche erkennbar
+          marker: pickupId && d.discoveredInHandoverId === pickupId ? "PICKUP_NEW" : "EXISTING",
           view: d.view,
           posX: d.posX,
           posY: d.posY,
@@ -160,10 +168,11 @@ async function handoverContent(tx: Tx, tenantId: string, handoverId: string) {
     notes: h.notes,
     sketch: { id: h.sketchId, version: h.sketchVersion, assetHash: h.sketchAssetHash },
     correctsId: h.correctsId,
+    ...(h.fuelPricePerLiter != null ? { fuelPricePerLiter: String(h.fuelPricePerLiter) } : {}),
     damages: h.damages.map((d) => ({ marker: d.marker, view: d.view, posX: d.posX, posY: d.posY, kind: d.kind, description: d.description, size: d.size, severity: d.severity, photoRefs: d.photoRefs })),
     checklist: h.checklistItems.map((c) => ({ key: c.itemKey, label: c.label, answerType: c.answerType, required: c.required, result: c.result, note: c.note, templateVersion: c.templateVersion })),
     photos: h.photos.map((p) => ({ category: p.category, storageKey: p.storageKey, checksum: p.checksum })),
-    extraCharges: h.extraCharges.map((e) => ({ type: e.type, formula: e.formula, amount: String(e.amount) })),
+    extraCharges: h.extraCharges.map((e) => ({ type: e.type, description: e.description, formula: e.formula, amount: String(e.amount), source: e.source, handoverDamageId: e.handoverDamageId })),
   };
   return { handover: h, hash: contentHash(content) };
 }
@@ -174,6 +183,12 @@ async function touch(tx: Tx, tenantId: string, handoverId: string) {
   const stale = await tx.signature.findMany({ where: { tenantId, handoverId, contentHash: { not: hash } }, select: { id: true } });
   if (stale.length > 0) await tx.signature.deleteMany({ where: { tenantId, id: { in: stale.map((s) => s.id) } } });
   return { hash, dropped: stale.length };
+}
+
+/** Für andere Module (Zusatzkosten): nach einer inhaltlichen Änderung außerhalb dieser Datei aufrufen. */
+export async function touchHandover(tx: Tx, tenantId: string, handoverId: string) {
+  await loadDraft(tx, tenantId, handoverId);
+  return touch(tx, tenantId, handoverId);
 }
 
 /** Hash des aktuellen Entwurfs. Diesen Wert zeigt die Unterschriftsseite und gibt ihn beim Unterschreiben zurück. */
@@ -244,6 +259,8 @@ export type HandoverDraftInput = {
   batteryPercent?: number | null;
   accessories?: Prisma.InputJsonValue | null;
   notes?: string | null;
+  /** nur Rückgabe: ausdrücklich angegebener Literpreis für die Nachberechnung */
+  fuelPricePerLiter?: number | null;
 };
 
 /** Ändert Messwerte eines Entwurfs. Der Kilometerstand des Fahrzeugs bleibt unberührt, bis das Protokoll finalisiert ist. */
@@ -253,6 +270,7 @@ export async function updateHandoverDraft(tenantId: string, handoverId: string, 
     if (input.mileage != null && (!Number.isInteger(input.mileage) || input.mileage < 0)) throw new DomainError("Der Kilometerstand muss eine ganze Zahl ab 0 sein.");
     if (input.fuelLevelEighths != null && (!Number.isInteger(input.fuelLevelEighths) || input.fuelLevelEighths < 0 || input.fuelLevelEighths > 8)) throw new DomainError("Der Tankstand liegt zwischen 0 und 8 Achteln.");
     if (input.batteryPercent != null && (!Number.isInteger(input.batteryPercent) || input.batteryPercent < 0 || input.batteryPercent > 100)) throw new DomainError("Der Batteriestand liegt zwischen 0 und 100 Prozent.");
+    if (input.fuelPricePerLiter != null && !(Number.isFinite(input.fuelPricePerLiter) && input.fuelPricePerLiter >= 0 && input.fuelPricePerLiter < 100)) throw new DomainError("Bitte einen Literpreis zwischen 0 und 100 Euro angeben.");
     const updated = await tx.handover.update({
       where: { id: h.id },
       data: {
@@ -261,6 +279,7 @@ export async function updateHandoverDraft(tenantId: string, handoverId: string, 
         ...(input.batteryPercent !== undefined ? { batteryPercent: input.batteryPercent } : {}),
         ...(input.accessories !== undefined ? { accessories: input.accessories ?? undefined } : {}),
         ...(input.notes !== undefined ? { notes: input.notes } : {}),
+        ...(input.fuelPricePerLiter !== undefined ? { fuelPricePerLiter: input.fuelPricePerLiter } : {}),
       },
     });
     await touch(tx, tenantId, h.id);
@@ -478,7 +497,7 @@ export async function removePhoto(tenantId: string, photoId: string): Promise<st
 
 export type HandoverIssue = {
   code: string;
-  area: "BOOKING" | "READINGS" | "DAMAGES" | "PHOTOS" | "CHECKLIST" | "SIGNATURE";
+  area: "BOOKING" | "READINGS" | "DAMAGES" | "PHOTOS" | "CHECKLIST" | "CHARGES" | "SIGNATURE";
   severity: "error" | "warning";
   message: string;
 };
@@ -487,6 +506,9 @@ export type FinalizeOptions = {
   /** Pflichtfotos prüfen. Nur für Nachträge oder Sonderfälle abschaltbar. */
   enforcePhotos?: boolean;
 };
+
+/** Eine Antwort ist auffällig, wenn sie der Erwartung widerspricht: Nein / Nicht in Ordnung, bei "ungewöhnlich verschmutzt" das Ja. */
+const isAttention = (x: { itemKey: string; result: string | null }) => (RETURN_ATTENTION_ON_YES.has(x.itemKey) ? x.result === "YES" : x.result === "NO" || x.result === "NOT_OK");
 
 /** Alle Prüfungen auf einen Blick. Dieselbe Funktion speist den Assistenten und entscheidet beim Abschluss. */
 async function collectIssues(tx: Tx, tenantId: string, handoverId: string, opts: { requireSignature: boolean; enforcePhotos: boolean }): Promise<HandoverIssue[]> {
@@ -505,16 +527,25 @@ async function collectIssues(tx: Tx, tenantId: string, handoverId: string, opts:
     if (booking.status !== "RESERVED") err("BOOKING", "BOOKING_STATUS", "Die Buchung ist nicht mehr reserviert.");
     if (booking.contract?.status !== "SIGNED") err("BOOKING", "CONTRACT_NOT_SIGNED", "Der Mietvertrag ist nicht abgeschlossen.");
     if (booking.vehicleId !== h.vehicleId) err("BOOKING", "VEHICLE_CHANGED", "Das Fahrzeug der Buchung wurde geändert. Bitte die Übergabe neu starten.");
-  } else if (booking.status !== "ACTIVE") err("BOOKING", "BOOKING_STATUS", "Die Miete ist nicht aktiv.");
+  } else {
+    if (booking.status !== "ACTIVE") err("BOOKING", "BOOKING_STATUS", "Die Miete ist nicht aktiv.");
+    if (booking.contract?.status !== "SIGNED") err("BOOKING", "CONTRACT_NOT_SIGNED", "Zu dieser Miete gibt es keinen abgeschlossenen Mietvertrag.");
+    const others = await tx.handover.count({ where: { tenantId, bookingId: h.bookingId, type: "RETURN", status: "FINALIZED", id: { not: h.id } } });
+    if (others > 0) err("BOOKING", "RETURN_EXISTS", "Zu dieser Miete gibt es bereits ein abgeschlossenes Rückgabeprotokoll.");
+  }
+  const pickup = h.type === "RETURN" ? await tx.handover.findFirst({ where: { tenantId, bookingId: h.bookingId, type: "PICKUP", status: "FINALIZED" }, orderBy: { finalizedAt: "desc" }, include: { checklistItems: true } }) : null;
+  if (h.type === "RETURN" && !pickup) err("BOOKING", "PICKUP_MISSING", "Zu dieser Miete gibt es kein abgeschlossenes Übergabeprotokoll.");
 
   // Messwerte
   if (h.mileage == null) err("READINGS", "MILEAGE_MISSING", "Der Kilometerstand fehlt.");
   else {
     if (h.type === "PICKUP" && h.mileage < vehicle.mileage) err("READINGS", "MILEAGE_BELOW_VEHICLE", `Der Kilometerstand (${h.mileage.toLocaleString("de-DE")}) liegt unter dem letzten bekannten Stand des Fahrzeugs (${vehicle.mileage.toLocaleString("de-DE")} km).`);
     if (h.type === "PICKUP" && h.mileage - vehicle.mileage > 2000) warn("READINGS", "MILEAGE_JUMP", `Der Kilometerstand liegt ${(h.mileage - vehicle.mileage).toLocaleString("de-DE")} km über dem letzten bekannten Stand. Bitte prüfen.`);
-    if (h.type === "RETURN") {
-      const pickup = await tx.handover.findFirst({ where: { tenantId, bookingId: h.bookingId, type: "PICKUP", status: "FINALIZED" }, orderBy: { finalizedAt: "desc" } });
-      if (pickup?.mileage != null && h.mileage < pickup.mileage) err("READINGS", "MILEAGE_BELOW_PICKUP", `Der Kilometerstand (${h.mileage}) liegt unter dem der Übergabe (${pickup.mileage}).`);
+    if (h.type === "RETURN" && pickup?.mileage != null) {
+      // Ein Rückgabestand unter dem Übergabestand wird nie still akzeptiert. Eine Korrektur des Übergabestands
+      // gibt es nur als eigenes, dokumentiertes Nachtragsprotokoll (correctsId), nicht hier.
+      if (h.mileage < pickup.mileage) err("READINGS", "MILEAGE_BELOW_PICKUP", `Der Rückgabe-Kilometerstand (${h.mileage.toLocaleString("de-DE")} km) liegt unter dem Übergabestand (${pickup.mileage.toLocaleString("de-DE")} km). Bitte prüfen; ein niedrigerer Stand kann nicht übernommen werden.`);
+      else if (h.mileage - pickup.mileage > 5000) warn("READINGS", "MILEAGE_JUMP", `Seit der Übergabe wurden ${(h.mileage - pickup.mileage).toLocaleString("de-DE")} km gefahren. Bitte den Stand prüfen.`);
     }
   }
   const energy = energyRequirements(h.driveType);
@@ -535,10 +566,28 @@ async function collectIssues(tx: Tx, tenantId: string, handoverId: string, opts:
     if (missing.length > 0) err("PHOTOS", "PHOTOS_MISSING", `Es fehlen Pflichtfotos: ${missing.map((c) => PHOTO_CATEGORIES[c]).join(", ")}.`);
   }
 
+  // Zusatzkosten (nur Rückgabe): jede Position muss zu einem Schaden dieses Protokolls passen, wenn sie einen nennt
+  for (const c of h.extraCharges) {
+    if (Number(c.amount) < 0 || Number(c.quantity) <= 0) err("CHARGES", "CHARGE_INVALID", `Zusatzkosten „${c.description}“: Betrag oder Menge sind ungültig.`);
+    if (c.handoverDamageId && !h.damages.some((d) => d.id === c.handoverDamageId && d.marker === "NEW")) err("CHARGES", "CHARGE_DAMAGE_MISSING", `Zusatzkosten „${c.description}“: der verknüpfte Schaden ist nicht mehr im Protokoll.`);
+  }
+
+  // Rückgabe: fehlende Gegenstände und Verspätung nur als Hinweis, nie als automatische Forderung
+  if (h.type === "RETURN" && pickup) {
+    const given = parseInt(pickup.checklistItems.find((c) => c.itemKey === "keys")?.result ?? "", 10);
+    const returned = parseInt(h.checklistItems.find((c) => c.itemKey === "keys_returned")?.result ?? "", 10);
+    if (Number.isFinite(given) && Number.isFinite(returned) && returned < given) warn("CHECKLIST", "ACCESSORY_MISSING", `Bei der Übergabe wurden ${given} Schlüssel dokumentiert, zurück kamen ${returned}. Falls etwas fehlt, kann in Schritt 7 eine Position „Fehlendes Zubehör“ erfasst werden.`);
+    for (const c of h.checklistItems.filter(isAttention)) warn("CHECKLIST", "CHECKLIST_ATTENTION", `Auffällig: ${c.label}${c.note ? ` (${c.note})` : ""}.`);
+    if (booking.endAt.getTime() < Date.now() - 15 * 60_000) {
+      const minutes = Math.round((Date.now() - booking.endAt.getTime()) / 60_000);
+      warn("BOOKING", "LATE_RETURN", `Die Rückgabe liegt ${Math.floor(minutes / 60)} Std. ${minutes % 60} Min. nach der vereinbarten Zeit. Eine Gebühr entsteht nur, wenn sie in Schritt 7 bewusst erfasst wird.`);
+    }
+  }
+
   // Checkliste
   const open = h.checklistItems.filter((c) => c.required && !c.result);
   if (open.length > 0) err("CHECKLIST", "CHECKLIST_OPEN", `Es fehlen noch ${open.length} Pflichtpunkte der Checkliste, zuerst: ${open[0].label}`);
-  for (const c of h.checklistItems.filter((x) => (x.result === "NOT_OK" || x.result === "NO") && !x.note)) err("CHECKLIST", "CHECKLIST_NOTE", `Checkliste „${c.label}“: bitte kurz notieren, was nicht in Ordnung ist.`);
+  for (const c of h.checklistItems.filter((x) => isAttention(x) && !x.note)) err("CHECKLIST", "CHECKLIST_NOTE", `Checkliste „${c.label}“: bitte kurz notieren, was aufgefallen ist.`);
 
   if (opts.requireSignature) {
     const signatures = await tx.signature.findMany({ where: { tenantId, handoverId }, select: { role: true, contentHash: true } });
@@ -609,7 +658,12 @@ export async function finalizeHandover(tenantId: string, handoverId: string, act
       });
       await tx.handoverDamage.update({ where: { id: d.id }, data: { damageId: damage.id } });
       await tx.photo.updateMany({ where: { tenantId, handoverDamageId: d.id }, data: { damageId: damage.id } });
-      await recordVehicleEvent(tx, { tenantId, vehicleId: h.vehicleId, type: "DAMAGE_DISCOVERED", occurredAt: now, mileage, bookingId: h.bookingId, damageId: damage.id, handoverId: h.id, actor, description: h.type === "PICKUP" ? `Vorschaden bei Übergabe: ${d.description}` : d.description });
+      if (h.type === "RETURN") {
+        // Festgestellt heißt nicht verursacht: die Akte merkt nur vor, dass die Abrechnung intern zu prüfen ist
+        await tx.damage.update({ where: { id: damage.id }, data: { settlementReview: true } });
+        await tx.extraCharge.updateMany({ where: { tenantId, handoverId: h.id, handoverDamageId: d.id }, data: { damageId: damage.id } });
+      }
+      await recordVehicleEvent(tx, { tenantId, vehicleId: h.vehicleId, type: "DAMAGE_DISCOVERED", occurredAt: now, mileage, bookingId: h.bookingId, damageId: damage.id, handoverId: h.id, actor, description: h.type === "PICKUP" ? `Vorschaden bei Übergabe: ${d.description}` : `Bei Rückgabe festgestellt: ${d.description}` });
     }
 
     // Kilometerstand erst jetzt fortschreiben, nie zurückdrehen

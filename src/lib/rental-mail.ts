@@ -11,8 +11,10 @@ import { getMailTransport, isValidEmail, safeMailError, type MailTransport } fro
 import type { StorageDriver } from "@/lib/storage";
 
 export const PICKUP_MAIL_TEMPLATE = "PICKUP_DOCUMENTS";
+export const RETURN_MAIL_TEMPLATE = "RETURN_DOCUMENTS";
+export type MailKind = "PICKUP" | "RETURN";
 
-export type PickupMailFacts = { renterName: string; contractNumber: string; vehicleTitle: string; plate: string; startAt: string; landlordName: string; landlordContact: string };
+export type PickupMailFacts = { renterName: string; contractNumber: string; vehicleTitle: string; plate: string; startAt: string; landlordName: string; landlordContact: string; returnedAt?: string | null };
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
@@ -56,7 +58,47 @@ export function composePickupMail(f: PickupMailFacts): { subject: string; text: 
   return { subject, text: lines.join("\n"), html };
 }
 
+/** Nach der Rückgabe: nur das Rückgabeprotokoll, neutral formuliert, keine Aussage zu Schäden oder Beträgen. */
+export function composeReturnMail(f: PickupMailFacts): { subject: string; text: string; html: string } {
+  const subject = `Ihre Rückgabeunterlagen – ${f.contractNumber}`;
+  const lines = [
+    `Guten Tag ${f.renterName},`,
+    "",
+    "vielen Dank für die Rückgabe des Fahrzeugs. Anbei erhalten Sie das Rückgabeprotokoll.",
+    "",
+    `Fahrzeug: ${f.vehicleTitle}`,
+    `Kennzeichen: ${f.plate}`,
+    ...(f.returnedAt ? [`Rückgabe: ${f.returnedAt}`] : []),
+    `Vertragsnummer: ${f.contractNumber}`,
+    "",
+    "Im Anhang:",
+    "- Rückgabeprotokoll",
+    "",
+    "Bei Fragen zum Protokoll melden Sie sich gern bei uns.",
+    "",
+    "Freundliche Grüße",
+    f.landlordName,
+    ...(f.landlordContact ? [f.landlordContact] : []),
+  ];
+  const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#1a2230">
+<p>Guten Tag ${esc(f.renterName)},</p>
+<p>vielen Dank für die Rückgabe des Fahrzeugs. Anbei erhalten Sie das Rückgabeprotokoll.</p>
+<table style="border-collapse:collapse;font-size:15px" cellpadding="0" cellspacing="0">
+<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Fahrzeug</td><td>${esc(f.vehicleTitle)}</td></tr>
+<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Kennzeichen</td><td>${esc(f.plate)}</td></tr>
+${f.returnedAt ? `<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Rückgabe</td><td>${esc(f.returnedAt)}</td></tr>` : ""}
+<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Vertragsnummer</td><td>${esc(f.contractNumber)}</td></tr>
+</table>
+<p>Im Anhang:</p>
+<ul><li>Rückgabeprotokoll</li></ul>
+<p>Bei Fragen zum Protokoll melden Sie sich gern bei uns.</p>
+<p>Freundliche Grüße<br>${esc(f.landlordName)}${f.landlordContact ? `<br><span style="color:#4a5568">${esc(f.landlordContact)}</span>` : ""}</p>
+</div>`;
+  return { subject, text: lines.join("\n"), html };
+}
+
 export type PickupMailPlan = {
+  kind: MailKind;
   bookingId: string;
   handoverId: string;
   recipient: string | null; // aus der Vertragskopie
@@ -66,28 +108,37 @@ export type PickupMailPlan = {
   missing: string[];
 };
 
-/** Stellt zusammen, was verschickt würde. Liest nur Vertragskopie und Archiv. */
-export async function planPickupMail(tenantId: string, handoverId: string): Promise<PickupMailPlan> {
-  const h = await db.handover.findFirst({ where: { id: handoverId, tenantId }, select: { id: true, bookingId: true, contractId: true, type: true, status: true } });
+/** Stellt zusammen, was verschickt würde. Liest nur Vertragskopie und Archiv. Übergabe: Vertrag + Protokoll, Rückgabe: nur Rückgabeprotokoll. */
+export async function planHandoverMail(tenantId: string, handoverId: string): Promise<PickupMailPlan> {
+  const h = await db.handover.findFirst({ where: { id: handoverId, tenantId }, select: { id: true, bookingId: true, contractId: true, type: true, status: true, finalizedAt: true } });
   if (!h) throw new DomainError("Protokoll nicht gefunden.");
-  if (h.type !== "PICKUP" || h.status !== "FINALIZED") throw new DomainError("Unterlagen werden erst nach abgeschlossener Übergabe versendet.");
-  if (!h.contractId) throw new DomainError("Zu dieser Übergabe gibt es keinen Mietvertrag.");
+  const kind: MailKind = h.type === "RETURN" ? "RETURN" : "PICKUP";
+  if (h.status !== "FINALIZED") throw new DomainError(kind === "PICKUP" ? "Unterlagen werden erst nach abgeschlossener Übergabe versendet." : "Unterlagen werden erst nach abgeschlossener Rückgabe versendet.");
+  if (!h.contractId) throw new DomainError("Zu diesem Protokoll gibt es keinen Mietvertrag.");
   const contract = await loadContractDocumentData(tenantId, h.contractId);
+  const d = contract.doc;
+  const facts = { renterName: d.renterName, contractNumber: d.number, vehicleTitle: d.vehicleTitle, plate: d.plate, startAt: d.startAt, landlordName: d.landlord.name, landlordContact: d.landlord.contact, returnedAt: h.finalizedAt ? h.finalizedAt.toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : null };
+  if (kind === "RETURN") {
+    const returnDoc = await db.document.findFirst({ where: { tenantId, type: "RETURN_PROTOCOL", handoverId: h.id }, orderBy: { version: "desc" } });
+    return { kind, bookingId: h.bookingId, handoverId: h.id, recipient: d.renterEmail, facts, replyTo: d.landlord.email, documents: returnDoc ? [returnDoc] : [], missing: returnDoc ? [] : ["Rückgabeprotokoll"] };
+  }
   const [contractDoc, pickupDoc] = await Promise.all([
     db.document.findFirst({ where: { tenantId, type: "RENTAL_CONTRACT", contractId: h.contractId }, orderBy: { version: "desc" } }),
     db.document.findFirst({ where: { tenantId, type: "PICKUP_PROTOCOL", handoverId: h.id }, orderBy: { version: "desc" } }),
   ]);
-  const d = contract.doc;
   return {
+    kind,
     bookingId: h.bookingId,
     handoverId: h.id,
     recipient: d.renterEmail,
-    facts: { renterName: d.renterName, contractNumber: d.number, vehicleTitle: d.vehicleTitle, plate: d.plate, startAt: d.startAt, landlordName: d.landlord.name, landlordContact: d.landlord.contact },
+    facts,
     replyTo: d.landlord.email,
     documents: [contractDoc, pickupDoc].filter((x): x is ArchivedDocument => x !== null),
     missing: [...(contractDoc ? [] : ["Mietvertrag"]), ...(pickupDoc ? [] : ["Übergabeprotokoll"])],
   };
 }
+
+export const planPickupMail = planHandoverMail;
 
 export type SendOptions = {
   trigger: "AUTO" | "MANUAL";
@@ -104,21 +155,22 @@ export type SendResult = { status: "SENT" | "FAILED" | "DUPLICATE"; log: EmailLo
  * Sendet die Unterlagen. Wirft nur, wenn es gar nichts zu senden gibt (Dokumente fehlen, Protokoll nicht final).
  * Jeder echte Versuch endet als SENT oder FAILED im EmailLog; ein Fehler hier berührt die Übergabe nie.
  */
-export async function sendPickupDocuments(tenantId: string, handoverId: string, opts: SendOptions): Promise<SendResult> {
-  const plan = await planPickupMail(tenantId, handoverId);
+export async function sendHandoverDocuments(tenantId: string, handoverId: string, opts: SendOptions): Promise<SendResult> {
+  const plan = await planHandoverMail(tenantId, handoverId);
+  const template = plan.kind === "RETURN" ? RETURN_MAIL_TEMPLATE : PICKUP_MAIL_TEMPLATE;
   if (plan.missing.length > 0) throw new DomainError(`Es fehlt noch: ${plan.missing.join(" und ")}. Bitte zuerst das PDF erzeugen.`);
   if (opts.trigger === "MANUAL" && !/^[A-Za-z0-9-]{8,64}$/.test(opts.nonce ?? "")) throw new DomainError("Die Seite ist veraltet. Bitte neu laden.");
 
   const versions = plan.documents.map((doc) => `${doc.id}v${doc.version}`).join("+");
-  const idempotencyKey = `${PICKUP_MAIL_TEMPLATE}:${handoverId}:${versions}${opts.trigger === "MANUAL" ? `:manual:${opts.nonce}` : ""}`;
-  const mail = composePickupMail(plan.facts);
+  const idempotencyKey = `${template}:${handoverId}:${versions}${opts.trigger === "MANUAL" ? `:manual:${opts.nonce}` : ""}`;
+  const mail = plan.kind === "RETURN" ? composeReturnMail(plan.facts) : composePickupMail(plan.facts);
   const { log, created } = await claimEmail({
     tenantId,
     bookingId: plan.bookingId,
     handoverId,
     recipient: plan.recipient ?? "(keine Adresse)",
     subject: mail.subject,
-    template: PICKUP_MAIL_TEMPLATE,
+    template,
     attachments: plan.documents.map((doc) => ({ documentId: doc.id, fileName: doc.fileName, checksum: doc.checksum, version: doc.version, type: doc.type })),
     trigger: opts.trigger,
     createdById: opts.actorId ?? null,
@@ -145,3 +197,5 @@ export async function sendPickupDocuments(tenantId: string, handoverId: string, 
     return finish("FAILED");
   }
 }
+
+export const sendPickupDocuments = sendHandoverDocuments;

@@ -2,9 +2,9 @@
 // Diese Schritte laufen bewusst NACH der abgeschlossenen Transaktion von Vertrag bzw. Übergabe und werfen nie.
 // Ein Ausfall von PDF-Erzeugung, Object Storage oder SMTP lässt die Übergabe unberührt; alles ist wiederholbar.
 
-import { ensureContractDocument, ensurePickupDocument } from "@/lib/documents";
+import { ensureContractDocument, ensurePickupDocument, ensureReturnDocument } from "@/lib/documents";
 import { DomainError } from "@/lib/integrity";
-import { sendPickupDocuments, type SendOptions } from "@/lib/rental-mail";
+import { sendHandoverDocuments, type SendOptions } from "@/lib/rental-mail";
 import type { StorageDriver } from "@/lib/storage";
 
 export type StepResult = { ok: boolean; error?: string };
@@ -41,9 +41,23 @@ export async function runPickupFollowUp(tenantId: string, handover: { id: string
   const pickupDocument = await step("Übergabeprotokoll-PDF", handover.id, () => ensurePickupDocument(tenantId, handover.id, actorId, { storage: deps.storage }));
   if (!contractDocument.ok || !pickupDocument.ok) return { contractDocument, pickupDocument, email: { status: "SKIPPED", error: "Ohne beide Dokumente wird nichts versendet." } };
   try {
-    const sent = await sendPickupDocuments(tenantId, handover.id, { trigger: "AUTO", actorId, transport: deps.transport, storage: deps.storage });
+    const sent = await sendHandoverDocuments(tenantId, handover.id, { trigger: "AUTO", actorId, transport: deps.transport, storage: deps.storage });
     return { contractDocument, pickupDocument, email: { status: sent.status, error: sent.log.error ?? undefined } };
   } catch (e) {
     return { contractDocument, pickupDocument, email: { status: "FAILED", error: describe("E-Mail-Versand", handover.id, e) } };
+  }
+}
+
+export type ReturnFollowUp = { returnDocument: StepResult; email: { status: "SENT" | "FAILED" | "DUPLICATE" | "SKIPPED"; error?: string } };
+
+/** Nach der finalisierten Rückgabe: Rückgabe-PDF sicherstellen, dann genau einmal automatisch senden. Wirft nie. */
+export async function runReturnFollowUp(tenantId: string, handover: { id: string }, actorId: string | null, deps: Deps = {}): Promise<ReturnFollowUp> {
+  const returnDocument = await step("Rückgabeprotokoll-PDF", handover.id, () => ensureReturnDocument(tenantId, handover.id, actorId, { storage: deps.storage }));
+  if (!returnDocument.ok) return { returnDocument, email: { status: "SKIPPED", error: "Ohne Dokument wird nichts versendet." } };
+  try {
+    const sent = await sendHandoverDocuments(tenantId, handover.id, { trigger: "AUTO", actorId, transport: deps.transport, storage: deps.storage });
+    return { returnDocument, email: { status: sent.status, error: sent.log.error ?? undefined } };
+  } catch (e) {
+    return { returnDocument, email: { status: "FAILED", error: describe("E-Mail-Versand", handover.id, e) } };
   }
 }

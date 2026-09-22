@@ -70,7 +70,9 @@ export function flatCharge(type: ExtraChargeType, description: string, quantity:
 }
 
 /** Speichert eine Position zur Buchung. Gehört sie zu einem Protokoll, muss dieses noch Entwurf sein. */
-export async function saveExtraCharge(tx: Tx, tenantId: string, actorId: string | null, ref: { bookingId: string; handoverId?: string | null; damageId?: string | null }, charge: ChargeDraft) {
+export type ChargeMeta = { source?: "PROPOSAL" | "MANUAL"; internalNote?: string | null; handoverDamageId?: string | null };
+
+export async function saveExtraCharge(tx: Tx, tenantId: string, actorId: string | null, ref: { bookingId: string; handoverId?: string | null; damageId?: string | null }, charge: ChargeDraft, meta: ChargeMeta = {}) {
   const booking = await tx.booking.count({ where: { id: ref.bookingId, tenantId } });
   if (booking !== 1) throw new DomainError("Buchung nicht gefunden.");
   if (ref.handoverId) {
@@ -92,6 +94,9 @@ export async function saveExtraCharge(tx: Tx, tenantId: string, actorId: string 
       amount: charge.amount,
       formula: charge.formula,
       calculation: charge.calculation as Prisma.InputJsonValue,
+      source: meta.source ?? "MANUAL",
+      internalNote: meta.internalNote ?? null,
+      handoverDamageId: meta.handoverDamageId ?? null,
       createdById: actorId,
     },
   });

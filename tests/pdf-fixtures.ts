@@ -93,7 +93,7 @@ const VIEWS = [
 function damage(i: number, marker: "EXISTING" | "NEW", view: string, posX: number, posY: number, photos: number): DocDamage {
   const v = VIEWS.find((x) => x.key === view)!;
   return {
-    id: `d${i}`, index: i, marker, markerLabel: marker === "NEW" ? "Neu entdeckt (Vorschaden)" : "Bereits dokumentiert", view, viewLabel: v.label, posX, posY,
+    id: `d${i}`, index: i, marker, symbol: marker === "NEW" ? "diamond" : "circle", markerLabel: marker === "NEW" ? "Neu entdeckt (Vorschaden)" : "Bereits dokumentiert", view, viewLabel: v.label, posX, posY,
     kind: "SCRATCH", kindLabel: i % 3 === 0 ? "Delle" : "Kratzer", severity: "MINOR", severityLabel: i % 4 === 0 ? "Mittel" : "Leicht", size: i % 2 === 0 ? "ca. 6 cm" : null,
     description: i % 5 === 0 ? "Langer Kratzer quer über die gesamte Schiebetür bis in den hinteren Radlauf, Lack bis auf die Grundierung beschädigt, bereits leicht angerostet" : `Schaden ${i} an ${v.label}`,
     photos: Array.from({ length: photos }, (_, p) => ({ id: `dp-${i}-${p}`, url: "" })),
@@ -112,6 +112,7 @@ export function handoverData(variant: "empty" | "full"): HandoverDocumentData {
   const categories = [["FRONT", "Vorne"], ["REAR", "Hinten"], ["LEFT", "Links"], ["RIGHT", "Rechts"], ["INTERIOR", "Innenraum"], ["ODOMETER", "Kilometerstand"], ["FUEL", "Tank / Batterie"], ["OTHER", "Weitere"], ["OTHER", "Weitere"]];
   return {
     context: { landlord, contractNumber: "MV-2026-0042", bookingNumber: "2026-0107", renterName: full ? LONG_NAME : "Al Li", renterNumber: "K-00042", vehicleTitle: "VW Crafter", plate: "HB-RT 200", vehicleGroup: "Transporter 3,5 t" },
+    comparison: null,
     title: "Übergabeprotokoll", number: "UP-2026-0042", type: "PICKUP", status: "FINALIZED", startedAt: "21.09.2026, 09:48", finalizedAt: "21.09.2026, 10:07", employeeName: "Sezer Karakuş",
     contentHash: "7978de30115c62c7076a1a6bdb46af436f3620d0dee3cedb88d9ddbe7a58aa01",
     readings: [{ label: "Kilometerstand", value: "50.123 km", missing: false }, { label: "Antrieb", value: full ? "Plug-in-Hybrid" : "Diesel", missing: false }, { label: "Tankstand", value: "6/8", missing: false }, ...(full ? [{ label: "Batteriestand", value: "80 %", missing: false }] : [])],

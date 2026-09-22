@@ -223,7 +223,7 @@ test("Rückgabe nutzt den Zustand von jetzt: neue Skizze, neue Checkliste, nur s
   assert.equal(h.sketchVersion, 1);
 
   const damages = await db.handoverDamage.findMany({ where: { tenantId: ids.tenantA, handoverId: h.id } });
-  assert.deepEqual(damages.map((d) => [d.description, d.marker]), [["Delle Hecktür", "EXISTING"]], "reparierter Altschaden fehlt, Schaden aus der Übergabe ist jetzt vorhanden");
+  assert.deepEqual(damages.map((d) => [d.description, d.marker]), [["Delle Hecktür", "PICKUP_NEW"]], "reparierter Altschaden fehlt, Vorschaden aus der Übergabe ist als solcher erkennbar");
   assert.equal((damages[0].photoRefs as unknown[]).length, 1, "Fotoverweis des Schadens wurde mitkopiert");
 
   const items = await db.handoverChecklistItem.findMany({ where: { tenantId: ids.tenantA, handoverId: h.id } });
@@ -237,7 +237,7 @@ test("Zusatzkosten speichern die Rechengrundlage mit den Preisen aus dem Vertrag
   for (const c of REQUIRED_PHOTO_CATEGORIES) await photo(returnId, c);
   const hash = await getHandoverContentHash(ids.tenantA, returnId);
   await saveHandoverSignature(ids.tenantA, actor, returnId, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: hash });
-  await assert.rejects(() => finalizeHandover(ids.tenantA, returnId, actor), /liegt unter dem der Übergabe/);
+  await assert.rejects(() => finalizeHandover(ids.tenantA, returnId, actor), /liegt unter dem Übergabestand/);
 
   await updateHandoverDraft(ids.tenantA, returnId, { mileage: 51_552 });
   const contract = await db.rentalContract.findFirstOrThrow({ where: { id: contractId, tenantId: ids.tenantA } });
