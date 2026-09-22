@@ -53,3 +53,11 @@ export async function withNumberRetry<T>(fn: () => Promise<T>, attempts = 6): Pr
   }
   throw lastError;
 }
+
+/** Rechnungsnummer RE-JJJJ-NNNNNN. Wird erst beim Abschluss vergeben; der eindeutige Index verhindert Doppelte, der Aufrufer wiederholt. */
+export async function nextInvoiceNumber(tx: Tx, tenantId: string, date = new Date()) {
+  const prefix = `RE-${date.getFullYear()}-`;
+  const last = await tx.invoice.findFirst({ where: { tenantId, number: { startsWith: prefix } }, orderBy: { number: "desc" }, select: { number: true } });
+  const n = last?.number ? parseInt(last.number.slice(prefix.length), 10) + 1 : 1;
+  return `${prefix}${String(n).padStart(6, "0")}`;
+}

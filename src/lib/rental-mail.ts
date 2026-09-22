@@ -4,7 +4,7 @@
 import { db } from "@/lib/db";
 import type { ArchivedDocument } from "@/lib/documents";
 import { readDocumentFile } from "@/lib/documents";
-import { loadContractDocumentData } from "@/lib/document-data";
+import { loadContractDocumentData, loadInvoiceDocumentData } from "@/lib/document-data";
 import { claimEmail, markEmailFailed, markEmailSent, type EmailLogRow } from "@/lib/email-log";
 import { DomainError } from "@/lib/integrity";
 import { getMailTransport, isValidEmail, safeMailError, type MailTransport } from "@/lib/mail";
@@ -13,7 +13,8 @@ import { APP_TIME_ZONE } from "@/lib/time";
 
 export const PICKUP_MAIL_TEMPLATE = "PICKUP_DOCUMENTS";
 export const RETURN_MAIL_TEMPLATE = "RETURN_DOCUMENTS";
-export type MailKind = "PICKUP" | "RETURN";
+export const INVOICE_MAIL_TEMPLATE = "INVOICE";
+export type MailKind = "PICKUP" | "RETURN" | "INVOICE";
 
 export type PickupMailFacts = { renterName: string; contractNumber: string; vehicleTitle: string; plate: string; startAt: string; landlordName: string; landlordContact: string; returnedAt?: string | null };
 
@@ -101,7 +102,8 @@ ${f.returnedAt ? `<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Rückgabe
 export type PickupMailPlan = {
   kind: MailKind;
   bookingId: string;
-  handoverId: string;
+  handoverId: string | null;
+  invoiceId?: string | null;
   recipient: string | null; // aus der Vertragskopie
   facts: PickupMailFacts;
   replyTo: string | null;
@@ -141,6 +143,71 @@ export async function planHandoverMail(tenantId: string, handoverId: string): Pr
 
 export const planPickupMail = planHandoverMail;
 
+/** Rechnung: neutraler Text, nur das Rechnungs-PDF. Keine Aussage zu Schäden oder Verantwortung. */
+export function composeInvoiceMail(f: PickupMailFacts & { invoiceNumber: string; grossTotal: string; dueDate: string | null }): { subject: string; text: string; html: string } {
+  const subject = `Ihre Rechnung ${f.invoiceNumber}`;
+  const lines = [
+    `Guten Tag ${f.renterName},`,
+    "",
+    `anbei erhalten Sie die Rechnung ${f.invoiceNumber} zu Ihrer Fahrzeugmiete.`,
+    "",
+    `Fahrzeug: ${f.vehicleTitle}`,
+    `Kennzeichen: ${f.plate}`,
+    `Vertragsnummer: ${f.contractNumber}`,
+    `Rechnungsbetrag: ${f.grossTotal}`,
+    ...(f.dueDate ? [`Zahlbar bis: ${f.dueDate}`] : []),
+    "",
+    "Im Anhang:",
+    "- Rechnung",
+    "",
+    "Bei Fragen zur Rechnung melden Sie sich gern bei uns.",
+    "",
+    "Freundliche Grüße",
+    f.landlordName,
+    ...(f.landlordContact ? [f.landlordContact] : []),
+  ];
+  const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#1a2230">
+<p>Guten Tag ${esc(f.renterName)},</p>
+<p>anbei erhalten Sie die Rechnung ${esc(f.invoiceNumber)} zu Ihrer Fahrzeugmiete.</p>
+<table style="border-collapse:collapse;font-size:15px" cellpadding="0" cellspacing="0">
+<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Fahrzeug</td><td>${esc(f.vehicleTitle)}</td></tr>
+<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Kennzeichen</td><td>${esc(f.plate)}</td></tr>
+<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Vertragsnummer</td><td>${esc(f.contractNumber)}</td></tr>
+<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Rechnungsbetrag</td><td><b>${esc(f.grossTotal)}</b></td></tr>
+${f.dueDate ? `<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Zahlbar bis</td><td>${esc(f.dueDate)}</td></tr>` : ""}
+</table>
+<p>Im Anhang:</p>
+<ul><li>Rechnung</li></ul>
+<p>Bei Fragen zur Rechnung melden Sie sich gern bei uns.</p>
+<p>Freundliche Grüße<br>${esc(f.landlordName)}${f.landlordContact ? `<br><span style="color:#4a5568">${esc(f.landlordContact)}</span>` : ""}</p>
+</div>`;
+  return { subject, text: lines.join("\n"), html };
+}
+
+/** Stellt zusammen, was für eine Rechnung verschickt würde: das archivierte Rechnungs-PDF an die Adresse aus der Rechnungskopie. */
+export async function planInvoiceMail(tenantId: string, invoiceId: string): Promise<PickupMailPlan & { invoice: { number: string; grossTotal: string; dueDate: string | null } }> {
+  const inv = await db.invoice.findFirst({ where: { id: invoiceId, tenantId }, select: { id: true, bookingId: true, contractId: true, status: true, number: true, grossTotal: true, paymentDueDate: true } });
+  if (!inv) throw new DomainError("Rechnung nicht gefunden.");
+  if (inv.status !== "FINALIZED" || !inv.number) throw new DomainError("Eine Rechnung wird erst nach dem Abschluss versendet.");
+  if (!inv.contractId) throw new DomainError("Zu dieser Rechnung gibt es keinen Mietvertrag.");
+  const contract = await loadContractDocumentData(tenantId, inv.contractId);
+  const d = contract.doc;
+  const invoiceData = await loadInvoiceDocumentData(tenantId, inv.id);
+  const doc = await db.document.findFirst({ where: { tenantId, type: "INVOICE", invoiceId: inv.id }, orderBy: { version: "desc" } });
+  return {
+    kind: "INVOICE",
+    bookingId: inv.bookingId,
+    handoverId: null,
+    invoiceId: inv.id,
+    recipient: invoiceData.renterEmail ?? d.renterEmail,
+    facts: { renterName: d.renterName, contractNumber: d.number, vehicleTitle: d.vehicleTitle, plate: d.plate, startAt: d.startAt, landlordName: d.landlord.name, landlordContact: d.landlord.contact },
+    replyTo: d.landlord.email,
+    documents: doc ? [doc] : [],
+    missing: doc ? [] : ["Rechnung"],
+    invoice: { number: inv.number, grossTotal: invoiceData.doc.totals.gross, dueDate: invoiceData.doc.paymentDueDate },
+  };
+}
+
 export type SendOptions = {
   trigger: "AUTO" | "MANUAL";
   actorId?: string | null;
@@ -157,18 +224,27 @@ export type SendResult = { status: "SENT" | "FAILED" | "DUPLICATE"; log: EmailLo
  * Jeder echte Versuch endet als SENT oder FAILED im EmailLog; ein Fehler hier berührt die Übergabe nie.
  */
 export async function sendHandoverDocuments(tenantId: string, handoverId: string, opts: SendOptions): Promise<SendResult> {
-  const plan = await planHandoverMail(tenantId, handoverId);
-  const template = plan.kind === "RETURN" ? RETURN_MAIL_TEMPLATE : PICKUP_MAIL_TEMPLATE;
+  return sendPlannedDocuments(tenantId, await planHandoverMail(tenantId, handoverId), opts);
+}
+
+export async function sendInvoiceDocument(tenantId: string, invoiceId: string, opts: SendOptions): Promise<SendResult> {
+  return sendPlannedDocuments(tenantId, await planInvoiceMail(tenantId, invoiceId), opts);
+}
+
+async function sendPlannedDocuments(tenantId: string, plan: PickupMailPlan & { invoice?: { number: string; grossTotal: string; dueDate: string | null } }, opts: SendOptions): Promise<SendResult> {
+  const template = plan.kind === "RETURN" ? RETURN_MAIL_TEMPLATE : plan.kind === "INVOICE" ? INVOICE_MAIL_TEMPLATE : PICKUP_MAIL_TEMPLATE;
+  const subjectId = plan.invoiceId ?? plan.handoverId ?? plan.bookingId;
   if (plan.missing.length > 0) throw new DomainError(`Es fehlt noch: ${plan.missing.join(" und ")}. Bitte zuerst das PDF erzeugen.`);
   if (opts.trigger === "MANUAL" && !/^[A-Za-z0-9-]{8,64}$/.test(opts.nonce ?? "")) throw new DomainError("Die Seite ist veraltet. Bitte neu laden.");
 
   const versions = plan.documents.map((doc) => `${doc.id}v${doc.version}`).join("+");
-  const idempotencyKey = `${template}:${handoverId}:${versions}${opts.trigger === "MANUAL" ? `:manual:${opts.nonce}` : ""}`;
-  const mail = plan.kind === "RETURN" ? composeReturnMail(plan.facts) : composePickupMail(plan.facts);
+  const idempotencyKey = `${template}:${subjectId}:${versions}${opts.trigger === "MANUAL" ? `:manual:${opts.nonce}` : ""}`;
+  const mail = plan.kind === "INVOICE" && plan.invoice ? composeInvoiceMail({ ...plan.facts, invoiceNumber: plan.invoice.number, grossTotal: plan.invoice.grossTotal, dueDate: plan.invoice.dueDate }) : plan.kind === "RETURN" ? composeReturnMail(plan.facts) : composePickupMail(plan.facts);
   const { log, created } = await claimEmail({
     tenantId,
     bookingId: plan.bookingId,
-    handoverId,
+    handoverId: plan.handoverId,
+    invoiceId: plan.invoiceId ?? null,
     recipient: plan.recipient ?? "(keine Adresse)",
     subject: mail.subject,
     template,

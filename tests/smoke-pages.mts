@@ -12,6 +12,8 @@ import { REQUIRED_PHOTO_CATEGORIES } from "../src/lib/constants";
 import { createWorld, fakeSignaturePng, purgeTenants } from "./helpers";
 import { ensureContractDocument, ensurePickupDocument, ensureReturnDocument } from "../src/lib/documents";
 import { addManualCharge, confirmProposal } from "../src/lib/returns";
+import { ensureInvoiceDocument } from "../src/lib/documents";
+import { ensureInvoiceDraft, finalizeInvoice } from "../src/lib/invoices";
 
 const args = process.argv.slice(2);
 const keep = args.includes("--keep");
@@ -240,6 +242,32 @@ report(foreignRet.status === 404, `${foreignRet.status} Rückgabeprotokoll für 
 const foreignVehicle = await fetch(`${base}/fahrzeuge/${v4.id}`, { headers: { cookie: `rb_session=${foreignSession}` } });
 report(foreignVehicle.status === 404, `${foreignVehicle.status} Fahrzeugakte für fremden Mandanten nicht auffindbar`);
 
+// Rechnungsmodul: Startseite ohne Einstellungen, Entwurf, Abschluss, PDF, Buchungsseite
+// (React trennt Text und Ausdrücke im HTML durch Kommentare; für die Textsuche werden sie entfernt)
+const plain = async (res: Response) => (await res.text()).replace(/<!-- -->/g, "");
+const invStart0 = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } }));
+report(invStart0.includes("Rechnung zur Buchung RET-1 erstellen") && invStart0.includes("Steuersatz für Rechnungspositionen") && invStart0.includes("disabled"), "Rechnung: Startseite nennt fehlende Steuereinstellungen, Knopf gesperrt");
+await db.tenant.update({ where: { id: w.tenantId }, data: { defaultTaxRate: 19, pricesIncludeTax: true, taxNumber: "60/123/45678", paymentTermDays: 14, iban: "DE02120300000000202051", bic: "BYLADEM1001", bankName: "Testbank" } });
+const settingsHtml = await (await fetch(base + "/einstellungen", { headers: { cookie } })).text();
+report(settingsHtml.includes("Rechnungsdaten und Steuer") && settingsHtml.includes("DE02120300000000202051"), "Einstellungen: Rechnungsdaten und Steuer");
+const invStart1 = await (await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } })).text();
+report(invStart1.includes("Rechnung erstellen") && !invStart1.includes("Steuersatz für Rechnungspositionen"), "Rechnung: Startseite bereit");
+const retBookingHtml0 = await (await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } })).text();
+report(retBookingHtml0.includes("Rechnung erstellen") && retBookingHtml0.includes("noch nicht erstellt"), "Buchung: Rechnung erstellen sichtbar");
+const invoice = await ensureInvoiceDraft(w.tenantId, retBooking.id, w.actor);
+const invDraft = await (await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } })).text();
+report(["Rechnung (Entwurf)", "Alle Prüfungen bestanden", "Rechnungsempfänger", "Quellen des Entwurfs", "Mehrkilometer", "Kraftstoff", "Entwurf speichern", "Rechnung finalisieren", "Position hinzufügen", "Steuerzusammenfassung", "Änderungsprotokoll", "Entwurf verwerfen"].every((t) => invDraft.includes(t)), "Rechnung: Entwurfsseite mit allen Bereichen");
+const retBookingHtml1 = await (await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } })).text();
+report(retBookingHtml1.includes("Rechnung fortsetzen"), "Buchung: Rechnung fortsetzen");
+const finalInvoice = await finalizeInvoice(w.tenantId, invoice.id, w.actor);
+const invoicePdf = await ensureInvoiceDocument(w.tenantId, invoice.id, w.actor.id);
+const invFinal = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung?abgeschlossen=1`, { headers: { cookie } }));
+report([`Rechnung ${finalInvoice.number}`, "Abgeschlossen", "Prüfsumme (SHA-256)", "Rechnungsbetrag", `Rechnung_${finalInvoice.number}.pdf`, "Herunterladen", "E-Mail mit Rechnung", "Rechnung jetzt senden", "Interne Notiz"].every((t) => invFinal.includes(t)) && !invFinal.includes("Entwurf speichern"), "Rechnung: abgeschlossene Ansicht mit Dokument und E-Mail-Bereich");
+const invDoc = await fetch(`${base}/api/documents/${invoicePdf.document.id}?download=1`, { headers: { cookie } });
+report(invDoc.status === 200 && (invDoc.headers.get("content-disposition") ?? "").includes(`Rechnung_${finalInvoice.number}.pdf`) && (await invDoc.arrayBuffer()).byteLength === invoicePdf.document.sizeBytes, `${invDoc.status} Rechnungs-PDF herunterladen`);
+const retBookingHtml2 = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
+report(retBookingHtml2.includes(`Rechnung ${finalInvoice.number} anzeigen`) && retBookingHtml2.includes("abgeschlossen"), "Buchung: Rechnung anzeigen und Status");
+
 // Audit: Rollen. Hofmitarbeiter dürfen Buchungen weder anlegen noch stornieren, Übergabe und Rückgabe aber durchführen.
 const yard = await db.user.create({ data: { tenantId: w.tenantId, email: `yard-${Date.now()}@example.test`, name: "Hof", passwordHash: "x", role: "YARD" } });
 const yardSession = randomBytes(32).toString("base64url");
@@ -263,6 +291,15 @@ const yardReturnHtml = await yardReturn.text();
 report(yardReturn.status === 200 && yardReturnHtml.includes("Herunterladen") && /Unterlagen (jetzt|erneut) senden|E-Mail erneut senden/.test(yardReturnHtml), `${yardReturn.status} Hofmitarbeiter: Rückgabeprotokoll, Dokumente und E-Mail erneut senden`);
 const yardDoc = await fetch(`${base}/api/documents/${returnPdf.document.id}?download=1`, { headers: { cookie: `rb_session=${yardSession}` } });
 report(yardDoc.status === 200, `${yardDoc.status} Hofmitarbeiter: Dokument herunterladen`);
+const yardInvoice = await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie: `rb_session=${yardSession}` } });
+const yardInvoiceHtml = await yardInvoice.text();
+report(yardInvoice.status === 200 && yardInvoiceHtml.includes("Herunterladen") && yardInvoiceHtml.includes("Der Versand der Rechnung erfolgt durch die Disposition") && !yardInvoiceHtml.includes("Interne Notiz"), `${yardInvoice.status} Hofmitarbeiter: abgeschlossene Rechnung ansehen, kein Versand, keine interne Notiz`);
+const yardInvoiceDoc = await fetch(`${base}/api/documents/${invoicePdf.document.id}?download=1`, { headers: { cookie: `rb_session=${yardSession}` } });
+report(yardInvoiceDoc.status === 200, `${yardInvoiceDoc.status} Hofmitarbeiter: Rechnungs-PDF herunterladen`);
+const yardNoInvoice = await fetch(`${base}/buchungen/${doneBooking.id}/rechnung`, { headers: { cookie: `rb_session=${yardSession}` }, redirect: "manual" });
+report(yardNoInvoice.status === 307, `${yardNoInvoice.status} Hofmitarbeiter: keine Rechnungsanlage`);
+const yardRetBooking = await (await fetch(`${base}/buchungen/${old.id}`, { headers: { cookie: `rb_session=${yardSession}` } })).text();
+report(!yardRetBooking.includes("Rechnung erstellen"), "Hofmitarbeiter: kein Knopf „Rechnung erstellen“");
 const yardUpload = await (async () => { const fd = new FormData(); fd.set("file", new Blob([jpeg], { type: "image/jpeg" }), "f.jpg"); fd.set("category", "OTHER"); return fetch(`${base}/api/handovers/${pickup.id}/photos`, { method: "POST", body: fd, headers: { cookie: `rb_session=${yardSession}` } }); })();
 report(yardUpload.status === 201, `${yardUpload.status} Hofmitarbeiter: Foto im Übergabe-Entwurf hochladen`);
 const yardBookingNoStart = await (await fetch(`${base}/buchungen/${old.id}`, { headers: { cookie: `rb_session=${yardSession}` } })).text();

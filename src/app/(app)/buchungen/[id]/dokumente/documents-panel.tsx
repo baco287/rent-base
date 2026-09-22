@@ -10,17 +10,18 @@ import { listBookingEmails } from "@/lib/email-log";
 import { fmtDateTime } from "@/lib/format";
 import { isValidEmail, mailStatus } from "@/lib/mail";
 import { storageStatus } from "@/lib/storage";
-import { generateContractPdfAction, generateHandoverPdfAction, resendDocumentsAction } from "./actions";
+import { generateContractPdfAction, generateHandoverPdfAction, generateInvoicePdfAction, resendDocumentsAction, resendInvoiceAction } from "./actions";
 import { DocActionButton, ResendForm } from "./document-forms";
 
 const kb = (bytes: number) => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1).replace(".", ",")} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
 
 export async function DocumentsPanel({ tenantId, bookingId, role }: { tenantId: string; bookingId: string; role: string }) {
-  const [contract, handovers, documents, emails] = await Promise.all([
+  const [contract, handovers, invoice, documents, emails] = await Promise.all([
     db.rentalContract.findFirst({ where: { bookingId, tenantId }, select: { id: true, number: true, status: true, customerSnapshot: true } }),
     db.handover.findMany({ where: { bookingId, tenantId, status: "FINALIZED", correctsId: null }, orderBy: { finalizedAt: "desc" }, select: { id: true, number: true, type: true } }),
+    db.invoice.findFirst({ where: { bookingId, tenantId, status: "FINALIZED" }, select: { id: true, number: true, customerSnapshot: true } }),
     listBookingDocuments(tenantId, bookingId),
-    listBookingEmails(tenantId, bookingId, 12),
+    listBookingEmails(tenantId, bookingId, 16),
   ]);
   if (!contract || contract.status !== "SIGNED") return null;
 
@@ -28,6 +29,8 @@ export async function DocumentsPanel({ tenantId, bookingId, role }: { tenantId: 
   const mail = mailStatus();
   const isOwner = role === "OWNER";
   const recipient = (contract.customerSnapshot as { email?: string | null } | null)?.email?.trim() || null;
+  const invoiceRecipient = (invoice?.customerSnapshot as { email?: string | null } | null)?.email?.trim() || null;
+  const canSendInvoice = role !== "YARD";
   const pickup = handovers.find((h) => h.type === "PICKUP");
   const ret = handovers.find((h) => h.type === "RETURN");
   const latest = (type: DocumentType) => documents.find((d) => d.type === type);
@@ -36,12 +39,14 @@ export async function DocumentsPanel({ tenantId, bookingId, role }: { tenantId: 
     { type: "RENTAL_CONTRACT", available: true, action: generateContractPdfAction.bind(null, bookingId), generateLabel: "Mietvertrag-PDF erzeugen", waitText: "" },
     { type: "PICKUP_PROTOCOL", available: !!pickup, action: generateHandoverPdfAction.bind(null, bookingId, "PICKUP"), generateLabel: "Übergabeprotokoll-PDF erzeugen", waitText: "nach der Übergabe" },
     { type: "RETURN_PROTOCOL", available: !!ret, action: generateHandoverPdfAction.bind(null, bookingId, "RETURN"), generateLabel: "Rückgabeprotokoll-PDF erzeugen", waitText: "nach der Rückgabe" },
+    { type: "INVOICE", available: !!invoice, action: generateInvoicePdfAction.bind(null, bookingId), generateLabel: "Rechnungs-PDF erzeugen", waitText: "nach Abschluss der Rechnung" },
   ];
 
   const mailBlocks = [
     pickup ? { kind: "PICKUP" as const, title: "E-Mail nach der Übergabe", handover: pickup, ready: !!latest("RENTAL_CONTRACT") && !!latest("PICKUP_PROTOCOL"), readyText: "Versendet werden kann, sobald Mietvertrag und Übergabeprotokoll als PDF vorliegen." } : null,
     ret ? { kind: "RETURN" as const, title: "E-Mail nach der Rückgabe", handover: ret, ready: !!latest("RETURN_PROTOCOL"), readyText: "Versendet werden kann, sobald das Rückgabeprotokoll als PDF vorliegt." } : null,
   ].filter((x): x is NonNullable<typeof x> => x !== null);
+  const invoiceBlock = invoice ? { title: `E-Mail mit Rechnung ${invoice.number}`, ready: !!latest("INVOICE"), readyText: "Versendet werden kann, sobald die Rechnung als PDF vorliegt.", emails: emails.filter((e) => e.invoiceId === invoice.id) } : null;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
@@ -83,7 +88,7 @@ export async function DocumentsPanel({ tenantId, bookingId, role }: { tenantId: 
         </ul>
       </Card>
 
-      {mailBlocks.length > 0 && (
+      {(mailBlocks.length > 0 || invoiceBlock) && (
         <div className="flex flex-col gap-4">
           {!mail.configured && (
             <p role="alert" className="rounded-md bg-amber-soft text-amber px-3 py-2 text-sm">
@@ -97,10 +102,7 @@ export async function DocumentsPanel({ tenantId, bookingId, role }: { tenantId: 
             return (
               <Card key={m.kind} title={m.title}>
                 <div className="px-4 py-3 flex flex-col gap-3">
-                  {!last && <div><Chip tone="amber">Noch nicht versendet</Chip></div>}
-                  {last?.status === "SENT" && <div className="flex flex-col gap-1"><div><Chip tone="good">✓ Unterlagen versendet</Chip></div><div className="text-sm text-ink-2">{fmtDateTime(last.sentAt)} · <span className="break-all">{last.recipient}</span></div></div>}
-                  {last?.status === "FAILED" && <div className="flex flex-col gap-1"><div><Chip tone="bad">⚠ E-Mail-Versand fehlgeschlagen</Chip></div><div className="text-sm text-ink-2">{fmtDateTime(last.lastAttemptAt ?? last.createdAt)} · {last.error ?? "Grund unbekannt"}</div></div>}
-                  {last?.status === "PENDING" && <div className="flex flex-col gap-1"><div><Chip tone="amber">Versand nicht bestätigt</Chip></div><div className="text-sm text-ink-2">Der Versuch vom {fmtDateTime(last.createdAt)} wurde nicht abgeschlossen. Bei Bedarf erneut senden.</div></div>}
+                  <MailStatus last={last} />
                   {!isValidEmail(recipient) && <p className="text-sm text-bad">Im Mietvertrag ist keine gültige E-Mail-Adresse hinterlegt. Die Unterlagen können heruntergeladen und persönlich übergeben werden.</p>}
                   <ResendForm
                     action={resendDocumentsAction.bind(null, bookingId, m.kind)}
@@ -109,29 +111,63 @@ export async function DocumentsPanel({ tenantId, bookingId, role }: { tenantId: 
                     label={last?.status === "SENT" ? "Unterlagen erneut senden" : last ? "E-Mail erneut senden" : "Unterlagen jetzt senden"}
                     disabledReason={!m.ready ? m.readyText : null}
                   />
-                  {own.length > 0 && (
-                    <div>
-                      <div className="label-xs mb-1">Versandhistorie</div>
-                      <ul className="text-sm divide-y divide-line-soft">
-                        {own.map((e) => (
-                          <li key={e.id} className="py-1.5 flex flex-wrap items-baseline gap-x-2">
-                            <span className="font-mono tnum text-xs text-ink-3">{fmtDateTime(e.lastAttemptAt ?? e.createdAt)}</span>
-                            <span className="break-all">{e.recipient}</span>
-                            <span className={e.status === "SENT" ? "text-good font-medium" : e.status === "FAILED" ? "text-bad font-medium" : "text-amber font-medium"}>
-                              {e.status === "SENT" ? "Erfolgreich" : e.status === "FAILED" ? `Fehlgeschlagen – ${e.error ?? "Grund unbekannt"}` : "Nicht bestätigt"}
-                            </span>
-                            <span className="text-xs text-ink-3">Versuch {e.attemptNo}{e.trigger === "MANUAL" ? ", manuell" : ", automatisch"}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
+                  <MailHistory rows={own} />
                 </div>
               </Card>
             );
           })}
+          {invoiceBlock && (
+            <Card title={invoiceBlock.title}>
+              <div className="px-4 py-3 flex flex-col gap-3">
+                <MailStatus last={invoiceBlock.emails[0]} />
+                {!isValidEmail(invoiceRecipient) && <p className="text-sm text-bad">In der Rechnung ist keine gültige E-Mail-Adresse hinterlegt. Die Rechnung kann heruntergeladen und persönlich übergeben werden.</p>}
+                {canSendInvoice ? (
+                  <ResendForm
+                    action={resendInvoiceAction.bind(null, bookingId)}
+                    recipient={invoiceRecipient}
+                    nonce={randomUUID()}
+                    label={invoiceBlock.emails[0]?.status === "SENT" ? "Rechnung erneut senden" : invoiceBlock.emails[0] ? "E-Mail erneut senden" : "Rechnung jetzt senden"}
+                    disabledReason={!invoiceBlock.ready ? invoiceBlock.readyText : null}
+                  />
+                ) : (
+                  <p className="text-sm text-ink-3">Der Versand der Rechnung erfolgt durch die Disposition.</p>
+                )}
+                <MailHistory rows={invoiceBlock.emails} />
+              </div>
+            </Card>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+type EmailRow = Awaited<ReturnType<typeof listBookingEmails>>[number];
+
+function MailStatus({ last }: { last: EmailRow | undefined }) {
+  if (!last) return <div><Chip tone="amber">Noch nicht versendet</Chip></div>;
+  if (last.status === "SENT") return <div className="flex flex-col gap-1"><div><Chip tone="good">✓ Unterlagen versendet</Chip></div><div className="text-sm text-ink-2">{fmtDateTime(last.sentAt)} · <span className="break-all">{last.recipient}</span></div></div>;
+  if (last.status === "FAILED") return <div className="flex flex-col gap-1"><div><Chip tone="bad">⚠ E-Mail-Versand fehlgeschlagen</Chip></div><div className="text-sm text-ink-2">{fmtDateTime(last.lastAttemptAt ?? last.createdAt)} · {last.error ?? "Grund unbekannt"}</div></div>;
+  return <div className="flex flex-col gap-1"><div><Chip tone="amber">Versand nicht bestätigt</Chip></div><div className="text-sm text-ink-2">Der Versuch vom {fmtDateTime(last.createdAt)} wurde nicht abgeschlossen. Bei Bedarf erneut senden.</div></div>;
+}
+
+function MailHistory({ rows }: { rows: EmailRow[] }) {
+  if (rows.length === 0) return null;
+  return (
+    <div>
+      <div className="label-xs mb-1">Versandhistorie</div>
+      <ul className="text-sm divide-y divide-line-soft">
+        {rows.map((e) => (
+          <li key={e.id} className="py-1.5 flex flex-wrap items-baseline gap-x-2">
+            <span className="font-mono tnum text-xs text-ink-3">{fmtDateTime(e.lastAttemptAt ?? e.createdAt)}</span>
+            <span className="break-all">{e.recipient}</span>
+            <span className={e.status === "SENT" ? "text-good font-medium" : e.status === "FAILED" ? "text-bad font-medium" : "text-amber font-medium"}>
+              {e.status === "SENT" ? "Erfolgreich" : e.status === "FAILED" ? `Fehlgeschlagen – ${e.error ?? "Grund unbekannt"}` : "Nicht bestätigt"}
+            </span>
+            <span className="text-xs text-ink-3">Versuch {e.attemptNo}{e.trigger === "MANUAL" ? ", manuell" : ", automatisch"}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

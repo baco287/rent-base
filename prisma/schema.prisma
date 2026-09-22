@@ -12,9 +12,9 @@ datasource db {
 }
 
 model Tenant {
-  id                 String   @id @default(cuid())
+  id                 String  @id @default(cuid())
   name               String
-  slug               String   @unique
+  slug               String  @unique
   street             String?
   zip                String?
   city               String?
@@ -22,8 +22,22 @@ model Tenant {
   email              String?
   rentalTermsVersion String? // z. B. "2026-09"
   rentalTermsText    String? // Mietbedingungen, werden beim Vertrag kopiert
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+
+  // Rechnungsdaten (Phase 8). "street" enthält Straße und Hausnummer, keine doppelte Speicherung.
+  legalForm        String? // z. B. GmbH, e. K., Einzelunternehmen; Teil des vollständigen Unternehmensnamens
+  country          String   @default("DE")
+  vatId            String? // Umsatzsteuer-Identifikationsnummer
+  taxNumber        String? // Steuernummer
+  bankName         String?
+  iban             String?
+  bic              String?
+  invoiceFooter    String? // Fußtext auf Rechnungen
+  paymentTermDays  Int? // Zahlungsziel in Tagen ab Rechnungsdatum
+  defaultTaxRate   Decimal? // Steuersatz in Prozent für Rechnungspositionen; null = noch nicht konfiguriert
+  pricesIncludeTax Boolean? // true: Vertrags- und Zusatzkostenbeträge sind Bruttobeträge; null = noch nicht entschieden
+  taxNote          String? // Hinweistext, der bei Positionen mit 0 % auf der Rechnung erscheint (Inhalt entscheidet der Inhaber)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   users     User[]
   groups    VehicleGroup[]
@@ -45,6 +59,8 @@ model Tenant {
   extraCharges       ExtraCharge[]
   emailLogs          EmailLog[]
   vehicleEvents      VehicleEvent[]
+  invoices           Invoice[]
+  invoiceItems       InvoiceItem[]
 }
 
 model User {
@@ -182,6 +198,7 @@ model Customer {
   bookings        Booking[]
   contracts       RentalContract[]
   contractDrivers ContractDriver[]
+  invoices        Invoice[]
 
   @@unique([tenantId, number])
   @@index([tenantId, lastName])
@@ -215,6 +232,7 @@ model Booking {
   handovers     Handover[]
   damages       Damage[]
   documents     Document[]
+  invoices      Invoice[]
   extraCharges  ExtraCharge[]
   emailLogs     EmailLog[]
   vehicleEvents VehicleEvent[]
@@ -307,6 +325,7 @@ model RentalContract {
   handovers  Handover[]
   signatures Signature[]
   documents  Document[]
+  invoices   Invoice[]
 
   @@unique([tenantId, number])
   @@index([tenantId, status])
@@ -396,6 +415,7 @@ model Handover {
   extraCharges   ExtraCharge[]
   discovered     Damage[]
   vehicleEvents  VehicleEvent[]
+  invoices       Invoice[]
 
   @@unique([tenantId, number])
   @@index([tenantId, bookingId, type])
@@ -566,6 +586,7 @@ model Document {
   bookingId   String
   contractId  String?
   handoverId  String?
+  invoiceId   String?
   type        String // RENTAL_CONTRACT | PICKUP_PROTOCOL | RETURN_PROTOCOL | INVOICE
   storageKey  String   @unique
   fileName    String
@@ -581,6 +602,7 @@ model Document {
   booking  Booking         @relation(fields: [bookingId], references: [id])
   contract RentalContract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
   handover Handover?       @relation(fields: [handoverId], references: [id], onDelete: SetNull)
+  invoice  Invoice?        @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, bookingId, type])
 }
@@ -606,10 +628,11 @@ model ExtraCharge {
   createdAt        DateTime @default(now())
   createdById      String?
 
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  booking  Booking   @relation(fields: [bookingId], references: [id])
-  handover Handover? @relation(fields: [handoverId], references: [id], onDelete: SetNull)
-  damage   Damage?   @relation(fields: [damageId], references: [id], onDelete: SetNull)
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking      Booking       @relation(fields: [bookingId], references: [id])
+  handover     Handover?     @relation(fields: [handoverId], references: [id], onDelete: SetNull)
+  damage       Damage?       @relation(fields: [damageId], references: [id], onDelete: SetNull)
+  invoiceItems InvoiceItem[]
 
   @@index([tenantId, bookingId])
 }
@@ -629,6 +652,7 @@ model EmailLog {
   attempts          Int       @default(0)
   idempotencyKey    String
   handoverId        String? // Bezug zum Protokoll, nur Referenz
+  invoiceId         String? // Bezug zur Rechnung, nur Referenz
   trigger           String    @default("AUTO") // AUTO = nach Abschluss | MANUAL = "erneut senden"
   attemptNo         Int       @default(1) // fortlaufender Versuch je Buchung und Vorlage
   createdById       String?
@@ -667,4 +691,83 @@ model VehicleEvent {
   handover Handover? @relation(fields: [handoverId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, vehicleId, occurredAt])
+}
+
+// Rechnung. Beträge, Empfänger und Firmendaten sind ab dem Abschluss versiegelte Kopien; nichts wird beim
+// Anzeigen aus Buchung, Vertrag oder Zusatzkosten neu berechnet. Die Nummer wird erst beim Abschluss vergeben.
+model Invoice {
+  id               String  @id @default(cuid())
+  tenantId         String
+  bookingId        String
+  customerId       String? // nur Referenz, maßgeblich ist customerSnapshot
+  contractId       String? // Vertrag, aus dem der Mietpreis stammt
+  returnHandoverId String? // Rückgabe, aus der die bestätigten Zusatzkosten stammen
+  number           String? // z. B. RE-2026-000001, erst beim Abschluss vergeben
+  status           String  @default("DRAFT") // DRAFT | FINALIZED | (vorbereitet: CANCELLED, CREDITED)
+
+  issueDate          DateTime? // Rechnungsdatum, beim Abschluss gesetzt
+  servicePeriodStart DateTime // Leistungszeitraum: tatsächliche Übergabe
+  servicePeriodEnd   DateTime // tatsächliche Rückgabe
+  currency           String    @default("EUR")
+  pricesIncludeTax   Boolean // Kopie der Einstellung zum Zeitpunkt der Erstellung
+
+  customerSnapshot Json // Rechnungsempfänger
+  companySnapshot  Json // Vermieter mit Steuer- und Bankdaten (beim Abschluss eingefroren)
+
+  netTotal   Decimal @default(0)
+  taxTotal   Decimal @default(0)
+  grossTotal Decimal @default(0)
+
+  paymentTermDays Int?
+  paymentDueDate  DateTime?
+  customerNote    String? // erscheint auf der Rechnung
+  taxNote         String? // Steuerhinweis (z. B. bei 0 %), erscheint auf der Rechnung
+  notes           String? // nur intern, nie auf Dokumenten
+  changeLog       Json      @default("[]") // [{ at, by, summary }] Änderungen am Entwurf
+
+  contentHash String? // sha256 über den versiegelten Inhalt
+  sourceHash  String? // Prüfsummen der Quellen (Vertrag, Rückgabe) beim Erstellen
+  version     Int     @default(1)
+
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  finalizedAt DateTime?
+
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking        Booking         @relation(fields: [bookingId], references: [id])
+  customer       Customer?       @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  contract       RentalContract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  returnHandover Handover?       @relation(fields: [returnHandoverId], references: [id], onDelete: SetNull)
+  items          InvoiceItem[]
+  documents      Document[]
+
+  @@unique([tenantId, number])
+  @@index([tenantId, bookingId])
+  @@index([tenantId, status])
+}
+
+model InvoiceItem {
+  id            String   @id @default(cuid())
+  tenantId      String
+  invoiceId     String
+  sortOrder     Int      @default(0)
+  description   String
+  quantity      Decimal
+  unit          String
+  unitPrice     Decimal // je Einheit; brutto oder netto laut Invoice.pricesIncludeTax
+  netAmount     Decimal
+  taxRate       Decimal // Prozent, z. B. 19.00
+  taxAmount     Decimal
+  grossAmount   Decimal
+  source        String // RENTAL | EXTRA_CHARGE | MANUAL
+  extraChargeId String?
+  reference     String? // interne Referenz, z. B. Vertragsnummer oder Formel
+  createdAt     DateTime @default(now())
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoice     Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  extraCharge ExtraCharge? @relation(fields: [extraChargeId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, invoiceId])
 }

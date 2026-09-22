@@ -164,6 +164,10 @@ export type DocumentType = keyof typeof DOCUMENT_TYPES;
 /** Checklistenpunkte, bei denen "Ja" die Auffälligkeit ist (sonst "Nein" bzw. "Nicht in Ordnung"). */
 export const RETURN_ATTENTION_ON_YES = new Set(["unusually_dirty"]);
 
+export const INVOICE_STATUS = { DRAFT: "Entwurf", FINALIZED: "Abgeschlossen", CANCELLED: "Storniert", CREDITED: "Gutgeschrieben" } as const;
+export const INVOICE_ITEM_SOURCES = { RENTAL: "Fahrzeugmiete laut Vertrag", EXTRA_CHARGE: "Bestätigte Zusatzkosten der Rückgabe", MANUAL: "Manuell erfasst" } as const;
+export const INVOICE_UNITS = ["pauschal", "Tag", "km", "l", "kWh", "h", "Stk"] as const;
+
 export const CHARGE_UNITS = ["km", "l", "kWh", "h", "Stk", "pauschal"] as const;
 
 export const EXTRA_CHARGE_TYPES = {

@@ -2,9 +2,9 @@
 // Diese Schritte laufen bewusst NACH der abgeschlossenen Transaktion von Vertrag bzw. Übergabe und werfen nie.
 // Ein Ausfall von PDF-Erzeugung, Object Storage oder SMTP lässt die Übergabe unberührt; alles ist wiederholbar.
 
-import { ensureContractDocument, ensurePickupDocument, ensureReturnDocument } from "@/lib/documents";
+import { ensureContractDocument, ensureInvoiceDocument, ensurePickupDocument, ensureReturnDocument } from "@/lib/documents";
 import { DomainError } from "@/lib/integrity";
-import { sendHandoverDocuments, type SendOptions } from "@/lib/rental-mail";
+import { sendHandoverDocuments, sendInvoiceDocument, type SendOptions } from "@/lib/rental-mail";
 import type { StorageDriver } from "@/lib/storage";
 
 export type StepResult = { ok: boolean; error?: string };
@@ -59,5 +59,19 @@ export async function runReturnFollowUp(tenantId: string, handover: { id: string
     return { returnDocument, email: { status: sent.status, error: sent.log.error ?? undefined } };
   } catch (e) {
     return { returnDocument, email: { status: "FAILED", error: describe("E-Mail-Versand", handover.id, e) } };
+  }
+}
+
+export type InvoiceFollowUp = { invoiceDocument: StepResult; email: { status: "SENT" | "FAILED" | "DUPLICATE" | "SKIPPED"; error?: string } };
+
+/** Nach dem Rechnungsabschluss: PDF sicherstellen, dann genau einmal automatisch senden. Wirft nie. */
+export async function runInvoiceFollowUp(tenantId: string, invoiceId: string, actorId: string | null, deps: Deps = {}): Promise<InvoiceFollowUp> {
+  const invoiceDocument = await step("Rechnungs-PDF", invoiceId, () => ensureInvoiceDocument(tenantId, invoiceId, actorId, { storage: deps.storage }));
+  if (!invoiceDocument.ok) return { invoiceDocument, email: { status: "SKIPPED", error: "Ohne Dokument wird nichts versendet." } };
+  try {
+    const sent = await sendInvoiceDocument(tenantId, invoiceId, { trigger: "AUTO", actorId, transport: deps.transport, storage: deps.storage });
+    return { invoiceDocument, email: { status: sent.status, error: sent.log.error ?? undefined } };
+  } catch (e) {
+    return { invoiceDocument, email: { status: "FAILED", error: describe("E-Mail-Versand", invoiceId, e) } };
   }
 }

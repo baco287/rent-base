@@ -16,6 +16,7 @@ export type EnqueueEmailInput = {
   tenantId: string;
   bookingId?: string | null;
   handoverId?: string | null;
+  invoiceId?: string | null;
   recipient: string;
   subject: string;
   template: string;
@@ -40,6 +41,7 @@ export async function claimEmail(input: EnqueueEmailInput): Promise<{ log: Email
         tenantId: input.tenantId,
         bookingId: input.bookingId ?? null,
         handoverId: input.handoverId ?? null,
+        invoiceId: input.invoiceId ?? null,
         recipient: input.recipient.trim().toLowerCase().slice(0, 320),
         subject: input.subject,
         template: input.template,

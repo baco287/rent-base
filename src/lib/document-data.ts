@@ -10,6 +10,7 @@ import type { CustomerSnapshot, VehicleSnapshot } from "@/lib/contracts";
 import { buildHandoverDocument, type HandoverContext, type HandoverDocumentData } from "@/lib/handover-view";
 import { DomainError } from "@/lib/integrity";
 import { loadSealedComparison } from "@/lib/returns";
+import { buildInvoiceDocument, type InvoiceDocumentData } from "@/lib/invoice-view";
 
 const TENANT_FIELDS = { name: true, street: true, zip: true, city: true, phone: true, email: true } as const;
 
@@ -102,5 +103,27 @@ export async function loadHandoverDocumentData(tenantId: string, handoverId: str
     photoFiles: h.photos.map((p) => ({ id: p.id, storageKey: p.storageKey, checksum: p.checksum, contentType: p.contentType })),
     // Nur wenn die Datei noch genau der im Protokoll festgehaltenen Fassung entspricht, wird sie verwendet (siehe documents.ts)
     sketch: sketch && h.sketchAssetHash ? { assetPath: sketch.assetPath, assetHash: h.sketchAssetHash } : null,
+  };
+}
+
+export type InvoiceData = { doc: InvoiceDocumentData; bookingId: string; invoiceId: string; sourceHash: string; renterEmail: string | null };
+
+/** Rechnung für Ansicht und PDF. Nur die versiegelte Rechnung selbst; Vertrags- und Buchungsnummer sind reine Verweise. */
+export async function loadInvoiceDocumentData(tenantId: string, invoiceId: string, opts: { allowDraft?: boolean } = {}): Promise<InvoiceData> {
+  const inv = await db.invoice.findFirst({ where: { id: invoiceId, tenantId }, include: { items: { orderBy: { sortOrder: "asc" } } } });
+  if (!inv) throw new DomainError("Rechnung nicht gefunden.");
+  if (!opts.allowDraft && (inv.status !== "FINALIZED" || !inv.contentHash)) throw new DomainError("Ein Rechnungs-PDF gibt es erst, wenn die Rechnung abgeschlossen ist.");
+  const [booking, contract, ret] = await Promise.all([
+    db.booking.findFirst({ where: { id: inv.bookingId, tenantId }, select: { number: true } }),
+    inv.contractId ? db.rentalContract.findFirst({ where: { id: inv.contractId, tenantId }, select: { number: true } }) : null,
+    inv.returnHandoverId ? db.handover.findFirst({ where: { id: inv.returnHandoverId, tenantId }, select: { number: true } }) : null,
+  ]);
+  const c = inv.customerSnapshot as { email?: string | null };
+  return {
+    doc: buildInvoiceDocument(inv, { contractNumber: contract?.number ?? null, bookingNumber: booking?.number ?? null, returnNumber: ret?.number ?? null }),
+    bookingId: inv.bookingId,
+    invoiceId: inv.id,
+    sourceHash: inv.contentHash ?? "",
+    renterEmail: typeof c.email === "string" && c.email.trim() ? c.email.trim() : null,
   };
 }

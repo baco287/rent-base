@@ -25,7 +25,7 @@ test("Rollenmatrix: Inhaber alles, Disponent disponiert, Hofmitarbeiter führt �
 /** Jede Server Action und jede geschützte Seite muss die Rollenprüfung enthalten, nicht nur die Oberfläche. */
 test("Jede Server-Action-Datei und jede Prozessseite prüft die Rolle serverseitig", () => {
   const files: string[] = [];
-  const walk = (dir: string) => { for (const f of readdirSync(dir)) { const p = path.join(dir, f); if (statSync(p).isDirectory()) walk(p); else if (/actions\.ts$/.test(f) || /\/(vertrag|uebergabe|rueckgabe|neu)\/page\.tsx$/.test(p.split(path.sep).join("/"))) files.push(p); } };
+  const walk = (dir: string) => { for (const f of readdirSync(dir)) { const p = path.join(dir, f); if (statSync(p).isDirectory()) walk(p); else if (/actions\.ts$/.test(f) || /\/(vertrag|uebergabe|rueckgabe|rechnung|neu)\/page\.tsx$/.test(p.split(path.sep).join("/"))) files.push(p); } };
   walk(path.join(process.cwd(), "src", "app", "(app)"));
   assert.ok(files.length >= 10);
   for (const f of files) {
@@ -39,4 +39,9 @@ test("Jede Server-Action-Datei und jede Prozessseite prüft die Rolle serverseit
   assert.ok(!/requireRole\("DISPO", "YARD"\)/.test(contractActions), "Vertragsaktionen dürfen YARD nicht zulassen");
   const bookingActions = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/actions.ts"), "utf8");
   assert.ok(!/"YARD"/.test(bookingActions), "Buchungsaktionen dürfen YARD nicht zulassen");
+  // Rechnungen: anlegen, bearbeiten, abschließen und versenden nur DISPO (und OWNER); PDF erzeugen und laden auch YARD
+  const invoiceActions = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/rechnung/actions.ts"), "utf8");
+  assert.ok(!/"YARD"/.test(invoiceActions), "Rechnungsaktionen dürfen YARD nicht zulassen");
+  const docActions = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/dokumente/actions.ts"), "utf8");
+  assert.match(docActions, /export async function resendInvoiceAction[\s\S]*?requireRole\("DISPO"\)/, "Rechnungsversand nur DISPO");
 });

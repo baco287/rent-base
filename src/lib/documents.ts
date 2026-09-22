@@ -7,11 +7,12 @@ import path from "node:path";
 import type { Prisma } from "@prisma/client";
 import type { DocumentType } from "@/lib/constants";
 import { db } from "@/lib/db";
-import { loadContractDocumentData, loadHandoverDocumentData, type HandoverData } from "@/lib/document-data";
+import { loadContractDocumentData, loadHandoverDocumentData, loadInvoiceDocumentData, type HandoverData } from "@/lib/document-data";
 import { DomainError, sha256 } from "@/lib/integrity";
 import { isUniqueViolation } from "@/lib/numbering";
 import { renderContractPdf } from "@/lib/pdf/contract-pdf";
 import { renderHandoverPdf } from "@/lib/pdf/handover-pdf";
+import { renderInvoicePdf } from "@/lib/pdf/invoice-pdf";
 import { assertKeyBelongsToTenant, buildStorageKey, getStorage, sniffImageType, type StorageDriver } from "@/lib/storage";
 
 type Tx = Prisma.TransactionClient;
@@ -20,6 +21,7 @@ export type DocumentInput = {
   bookingId: string;
   contractId?: string | null;
   handoverId?: string | null;
+  invoiceId?: string | null;
   type: DocumentType;
   storageKey: string;
   fileName: string;
@@ -36,9 +38,10 @@ export async function registerDocument(tx: Tx, tenantId: string, actorId: string
   if (booking !== 1) throw new DomainError("Buchung nicht gefunden.");
   if (input.contractId && (await tx.rentalContract.count({ where: { id: input.contractId, tenantId, bookingId: input.bookingId } })) !== 1) throw new DomainError("Der Vertrag gehört nicht zu dieser Buchung.");
   if (input.handoverId && (await tx.handover.count({ where: { id: input.handoverId, tenantId, bookingId: input.bookingId } })) !== 1) throw new DomainError("Das Protokoll gehört nicht zu dieser Buchung.");
+  if (input.invoiceId && (await tx.invoice.count({ where: { id: input.invoiceId, tenantId, bookingId: input.bookingId } })) !== 1) throw new DomainError("Die Rechnung gehört nicht zu dieser Buchung.");
 
   const last = await tx.document.findFirst({
-    where: { tenantId, bookingId: input.bookingId, type: input.type, contractId: input.contractId ?? null, handoverId: input.handoverId ?? null },
+    where: { tenantId, bookingId: input.bookingId, type: input.type, contractId: input.contractId ?? null, handoverId: input.handoverId ?? null, invoiceId: input.invoiceId ?? null },
     orderBy: { version: "desc" },
     select: { version: true },
   });
@@ -48,6 +51,7 @@ export async function registerDocument(tx: Tx, tenantId: string, actorId: string
       bookingId: input.bookingId,
       contractId: input.contractId ?? null,
       handoverId: input.handoverId ?? null,
+      invoiceId: input.invoiceId ?? null,
       type: input.type,
       storageKey: input.storageKey,
       fileName: input.fileName,
@@ -87,17 +91,17 @@ export function safeFilePart(value: string): string {
 }
 
 export function documentFileName(type: DocumentType, contractNumber: string, plate?: string | null, version = 1): string {
-  const base = type === "RENTAL_CONTRACT" ? "Mietvertrag" : type === "PICKUP_PROTOCOL" ? "Uebergabe" : type === "RETURN_PROTOCOL" ? "Rueckgabe" : "Dokument";
+  const base = type === "RENTAL_CONTRACT" ? "Mietvertrag" : type === "PICKUP_PROTOCOL" ? "Uebergabe" : type === "RETURN_PROTOCOL" ? "Rueckgabe" : type === "INVOICE" ? "Rechnung" : "Dokument";
   const parts = [base, safeFilePart(contractNumber) || "ohne-Nummer"];
-  if (type !== "RENTAL_CONTRACT" && plate && safeFilePart(plate)) parts.push(safeFilePart(plate));
+  if (type !== "RENTAL_CONTRACT" && type !== "INVOICE" && plate && safeFilePart(plate)) parts.push(safeFilePart(plate));
   if (version > 1) parts.push(`v${version}`);
   return `${parts.join("_")}.pdf`;
 }
 
-type Subject = { type: DocumentType; bookingId: string; contractId: string | null; handoverId: string | null };
+type Subject = { type: DocumentType; bookingId: string; contractId: string | null; handoverId: string | null; invoiceId?: string | null };
 
 function latestDocument(client: Tx | typeof db, tenantId: string, s: Subject) {
-  return client.document.findFirst({ where: { tenantId, bookingId: s.bookingId, type: s.type, contractId: s.contractId, handoverId: s.handoverId }, orderBy: { version: "desc" } });
+  return client.document.findFirst({ where: { tenantId, bookingId: s.bookingId, type: s.type, contractId: s.contractId, handoverId: s.handoverId, invoiceId: s.invoiceId ?? null }, orderBy: { version: "desc" } });
 }
 
 async function archive(tenantId: string, actorId: string | null, subject: Subject, opts: EnsureOptions, sourceHash: string, fileName: (version: number) => string, render: () => Promise<Buffer>): Promise<EnsureResult> {
@@ -113,7 +117,8 @@ async function archive(tenantId: string, actorId: string | null, subject: Subjec
     return await db.$transaction(
       async (tx) => {
         // Zeilensperre auf dem Vertrag bzw. Protokoll: gleichzeitige Anfragen laufen nacheinander
-        if (subject.handoverId) await tx.$queryRaw`SELECT "id" FROM "Handover" WHERE "id" = ${subject.handoverId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+        if (subject.invoiceId) await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${subject.invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+        else if (subject.handoverId) await tx.$queryRaw`SELECT "id" FROM "Handover" WHERE "id" = ${subject.handoverId} AND "tenantId" = ${tenantId} FOR UPDATE`;
         else if (subject.contractId) await tx.$queryRaw`SELECT "id" FROM "RentalContract" WHERE "id" = ${subject.contractId} AND "tenantId" = ${tenantId} FOR UPDATE`;
         const latest = await latestDocument(tx, tenantId, subject);
         if (latest && (!opts.newVersion || latest.version !== before?.version)) return { document: latest, created: false };
@@ -219,6 +224,20 @@ export async function ensureReturnDocument(tenantId: string, handoverId: string,
   const h = await db.handover.findFirst({ where: { id: handoverId, tenantId }, select: { type: true } });
   if (h && h.type !== "RETURN") throw new DomainError("Dieses Protokoll ist keine Rückgabe.");
   return ensureHandoverDocument(tenantId, handoverId, actorId, opts);
+}
+
+/** Rechnungs-PDF: nur für abgeschlossene Rechnungen, einmalig je Fassung, ausschließlich aus Invoice und InvoiceItems. */
+export async function ensureInvoiceDocument(tenantId: string, invoiceId: string, actorId: string | null, opts: EnsureOptions = {}): Promise<EnsureResult> {
+  const data = await loadInvoiceDocumentData(tenantId, invoiceId);
+  return archive(
+    tenantId,
+    actorId,
+    { type: "INVOICE", bookingId: data.bookingId, contractId: null, handoverId: null, invoiceId: data.invoiceId },
+    opts,
+    data.sourceHash,
+    (v) => documentFileName("INVOICE", data.doc.number, null, v),
+    async () => (await renderInvoicePdf(data.doc)).bytes,
+  );
 }
 
 export class DocumentIntegrityError extends Error {}

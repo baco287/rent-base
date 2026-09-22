@@ -33,6 +33,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const pickupDone = b.handovers.find((h) => h.type === "PICKUP" && h.status === "FINALIZED");
   const returnDraft = b.handovers.find((h) => h.type === "RETURN" && h.status === "DRAFT");
   const returnDone = b.handovers.find((h) => h.type === "RETURN" && h.status === "FINALIZED");
+  const invoice = b.status === "RETURNED" ? await db.invoice.findFirst({ where: { tenantId: tenant.id, bookingId: b.id, status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: [{ status: "asc" }, { createdAt: "desc" }], select: { id: true, number: true, status: true, grossTotal: true } }) : null;
   const charges = b.status === "RETURNED" || returnDraft ? await db.extraCharge.findMany({ where: { tenantId: tenant.id, bookingId: b.id }, orderBy: { createdAt: "asc" } }) : [];
   const chargesTotal = charges.reduce((s, c) => s + Number(c.amount), 0);
   const update = updateBookingAction.bind(null, b.id);
@@ -52,6 +53,9 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
         {pickupDone && <Link href={`/buchungen/${b.id}/uebergabe`} className="btn">Übergabeprotokoll anzeigen</Link>}
         {b.status === "ACTIVE" && pickupDone && !returnDone && <Link href={`/buchungen/${b.id}/rueckgabe`} className="btn btn-primary">{returnDraft ? "Rückgabe fortsetzen" : "Rückgabe starten"}</Link>}
         {returnDone && <Link href={`/buchungen/${b.id}/rueckgabe`} className="btn">Rückgabeprotokoll anzeigen</Link>}
+        {b.status === "RETURNED" && returnDone && !invoice && user.role !== "YARD" && <Link href={`/buchungen/${b.id}/rechnung`} className="btn btn-primary">Rechnung erstellen</Link>}
+        {invoice?.status === "DRAFT" && user.role !== "YARD" && <Link href={`/buchungen/${b.id}/rechnung`} className="btn btn-primary">Rechnung fortsetzen</Link>}
+        {invoice?.status === "FINALIZED" && <Link href={`/buchungen/${b.id}/rechnung`} className="btn">Rechnung {invoice.number} anzeigen</Link>}
         {b.status === "ACTIVE" && !pickupDone && (
           <form action={finish}><button className="btn btn-primary">Fahrzeug zurücknehmen</button></form>
         )}
@@ -68,6 +72,15 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
         )}
         {b.status === "RETURNED" && returnDone && (
           <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm">Zurückgegeben mit Protokoll {returnDone.number}. Übergabe {pickupDone?.number ?? "–"}. <Link href={`/fahrzeuge/${b.vehicleId}`} className="underline">Fahrzeughistorie ansehen</Link>.</p>
+        )}
+        {b.status === "RETURNED" && returnDone && (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="label-xs">Rechnung</span>
+            {!invoice && <Chip tone="amber">noch nicht erstellt</Chip>}
+            {invoice?.status === "DRAFT" && <Chip tone="amber">Entwurf</Chip>}
+            {invoice?.status === "FINALIZED" && <><Chip tone="good">{invoice.number} abgeschlossen</Chip><span className="font-mono tnum">{fmtEur(Number(invoice.grossTotal))}</span></>}
+            {!invoice && user.role === "YARD" && <span className="text-ink-3">wird von der Disposition erstellt</span>}
+          </div>
         )}
         {contractSigned && b.status === "RESERVED" && (
           <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Mietvertrag {b.contract!.number} ist abgeschlossen. Die Buchung ist bereit zur Übergabe.</p>

@@ -3,7 +3,8 @@ import { db } from "@/lib/db";
 import { ROLES, type Role } from "@/lib/constants";
 import { Card, Chip, Content, PageHeader } from "@/components/ui";
 import { toggleUserActiveAction } from "./actions";
-import { NewUserForm, TenantForm, TermsForm } from "./forms";
+import { InvoiceSettingsForm, NewUserForm, TenantForm, TermsForm } from "./forms";
+import { invoiceSettingsMissing } from "@/lib/invoices";
 
 export const metadata = { title: "Einstellungen" };
 
@@ -35,6 +36,15 @@ export default async function SettingsPage({ searchParams }: PageProps<"/einstel
           {isOwner && (
             <Card title="Mietbedingungen für Verträge" className="xl:row-start-2">
               <TermsForm version={tenant.rentalTermsVersion} text={tenant.rentalTermsText} />
+            </Card>
+          )}
+
+          {isOwner && (
+            <Card title="Rechnungsdaten und Steuer" className="xl:row-start-3 xl:col-span-2" right={invoiceSettingsMissing(tenant).length > 0 ? <Chip tone="amber">unvollständig</Chip> : <Chip tone="good">vollständig</Chip>}>
+              {invoiceSettingsMissing(tenant).length > 0 && (
+                <p className="mx-5 mt-4 rounded-md bg-amber-soft text-amber px-3 py-2 text-sm">Bevor Rechnungen erstellt werden können, fehlt noch: {invoiceSettingsMissing(tenant).join("; ")}.</p>
+              )}
+              <InvoiceSettingsForm t={{ legalForm: tenant.legalForm, country: tenant.country, vatId: tenant.vatId, taxNumber: tenant.taxNumber, bankName: tenant.bankName, iban: tenant.iban, bic: tenant.bic, invoiceFooter: tenant.invoiceFooter, paymentTermDays: tenant.paymentTermDays, defaultTaxRate: tenant.defaultTaxRate == null ? null : String(tenant.defaultTaxRate).replace(".", ","), pricesIncludeTax: tenant.pricesIncludeTax, taxNote: tenant.taxNote }} />
             </Card>
           )}
 
