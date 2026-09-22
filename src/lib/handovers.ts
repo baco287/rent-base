@@ -19,6 +19,7 @@ import { DomainError, assertHandoverDraft, contentHash, sha256 } from "@/lib/int
 import { nextHandoverNumber } from "@/lib/numbering";
 import { ALLOWED_PHOTO_TYPES, MAX_PHOTO_BYTES, assertKeyBelongsToTenant, buildStorageKey } from "@/lib/storage";
 import { resolveChecklist } from "@/lib/checklists";
+import { vehicleStatusProblem } from "@/lib/bookings";
 import { resolveSketch } from "@/lib/sketches";
 import { recordVehicleEvent } from "@/lib/vehicle-events";
 
@@ -527,6 +528,10 @@ async function collectIssues(tx: Tx, tenantId: string, handoverId: string, opts:
     if (booking.status !== "RESERVED") err("BOOKING", "BOOKING_STATUS", "Die Buchung ist nicht mehr reserviert.");
     if (booking.contract?.status !== "SIGNED") err("BOOKING", "CONTRACT_NOT_SIGNED", "Der Mietvertrag ist nicht abgeschlossen.");
     if (booking.vehicleId !== h.vehicleId) err("BOOKING", "VEHICLE_CHANGED", "Das Fahrzeug der Buchung wurde geändert. Bitte die Übergabe neu starten.");
+    const statusProblem = vehicleStatusProblem(vehicle.status);
+    if (statusProblem) err("BOOKING", "VEHICLE_NOT_RENTABLE", statusProblem);
+    const elsewhere = await tx.booking.count({ where: { tenantId, vehicleId: h.vehicleId, status: "ACTIVE", id: { not: booking.id } } });
+    if (elsewhere > 0) err("BOOKING", "VEHICLE_ALREADY_OUT", "Das Fahrzeug ist laut einer anderen Buchung noch unterwegs. Bitte zuerst die Rückgabe dieser Miete abschließen.");
   } else {
     if (booking.status !== "ACTIVE") err("BOOKING", "BOOKING_STATUS", "Die Miete ist nicht aktiv.");
     if (booking.contract?.status !== "SIGNED") err("BOOKING", "CONTRACT_NOT_SIGNED", "Zu dieser Miete gibt es keinen abgeschlossenen Mietvertrag.");

@@ -6,6 +6,7 @@
 import type { Prisma } from "@prisma/client";
 import { COUNTRIES, CUSTOMER_TYPES, DRIVER_MODES, FUELS, FUEL_POLICIES, ID_TYPES } from "@/lib/constants";
 import type { ContractPriceSnapshot, CustomerSnapshot, VehicleSnapshot } from "@/lib/contracts";
+import { APP_TIME_ZONE } from "@/lib/time";
 
 export type DocRow = { label: string; value: string; missing?: boolean };
 export type DocSection = { key: string; title: string; rows: DocRow[] };
@@ -55,8 +56,8 @@ export type ContractDocument = {
 export type ContractDocumentData = ContractDocument;
 
 const eur = (v: unknown) => Number(v ?? 0).toLocaleString("de-DE", { style: "currency", currency: "EUR" });
-const date = (v: unknown) => (v ? new Date(String(v)).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" }) : "");
-const dateTime = (v: unknown) => (v ? new Date(String(v)).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
+const date = (v: unknown) => (v ? new Date(String(v)).toLocaleDateString("de-DE", { timeZone: APP_TIME_ZONE, day: "2-digit", month: "2-digit", year: "numeric" }) : "");
+const dateTime = (v: unknown) => (v ? new Date(String(v)).toLocaleString("de-DE", { timeZone: APP_TIME_ZONE, day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
 const label = <T extends Record<string, string>>(map: T, key: unknown) => (typeof key === "string" && key in map ? map[key as keyof T] : key ? String(key) : "");
 const row = (l: string, v: unknown, required = false): DocRow => {
   const value = v === null || v === undefined ? "" : String(v).trim();

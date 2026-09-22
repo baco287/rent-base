@@ -5,12 +5,14 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
-import { findConflicts, nextBookingNumber } from "@/lib/bookings";
+import { assertVehicleBookable, nextBookingNumber, vehicleStatusProblem } from "@/lib/bookings";
 import { customerName, fmtDateTime } from "@/lib/format";
 import { customerFieldsFromForm, customerSchema, customerToData } from "@/lib/customer-schema";
 import { nextCustomerNumber, withNumberRetry } from "@/lib/numbering";
 import { changeBookingStatus } from "@/lib/booking-status";
 import { DomainError } from "@/lib/integrity";
+import { getStorage } from "@/lib/storage";
+import { parseLocalDateTime } from "@/lib/time";
 
 export type FormState = { error?: string } | undefined;
 
@@ -21,8 +23,8 @@ const bookingSchema = z
   .object({
     vehicleId: z.string().min(1, "Bitte ein Fahrzeug wählen."),
     customerId: z.string().optional(),
-    startAt: z.coerce.date({ message: "Bitte Abholung mit Datum und Uhrzeit angeben." }),
-    endAt: z.coerce.date({ message: "Bitte Rückgabe mit Datum und Uhrzeit angeben." }),
+    startAt: z.preprocess(parseLocalDateTime, z.date({ message: "Bitte Abholung mit Datum und Uhrzeit angeben." })),
+    endAt: z.preprocess(parseLocalDateTime, z.date({ message: "Bitte Rückgabe mit Datum und Uhrzeit angeben." })),
     dailyRate: num,
     deposit: num,
     notes: optStr,
@@ -42,7 +44,8 @@ async function validateRefs(tenantId: string, vehicleId: string, customerId: str
     customerId ? db.customer.findFirst({ where: { id: customerId, tenantId } }) : Promise.resolve(null),
   ]);
   if (!vehicle) return { error: "Fahrzeug nicht gefunden." };
-  if (vehicle.status === "INACTIVE") return { error: "Das Fahrzeug ist inaktiv." };
+  const statusProblem = vehicleStatusProblem(vehicle.status);
+  if (statusProblem) return { error: statusProblem };
   if (!customerId) return { vehicle, customer: null }; // neuer Kunde wird mit der Buchung angelegt
   if (!customer) return { error: "Kunde nicht gefunden." };
   if (customer.blocked) return { error: `${customerName(customer)} ist gesperrt${customer.blockReason ? `: ${customer.blockReason}` : "."}` };
@@ -71,7 +74,7 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
 
   let id = "";
   const result = await withNumberRetry(() => db.$transaction(async (tx) => {
-    const conflicts = await findConflicts(tx, tenant.id, d.vehicleId, d.startAt, d.endAt);
+    const { conflicts } = await assertVehicleBookable(tx, tenant.id, d.vehicleId, d.startAt, d.endAt);
     if (conflicts.length > 0) {
       const c = conflicts[0];
       return { error: `Doppelbelegung: ${refs.vehicle.plate} ist von ${fmtDateTime(c.startAt)} bis ${fmtDateTime(c.endAt)} an ${customerName(c.customer)} vergeben (Nr. ${c.number}).` };
@@ -88,7 +91,7 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
     });
     id = b.id;
     return undefined;
-  }));
+  })).catch((e) => (e instanceof DomainError ? { error: e.message } : Promise.reject(e)));
   if (result?.error) return result;
 
   revalidate(id);
@@ -113,7 +116,7 @@ export async function updateBookingAction(id: string, _prev: FormState, formData
   if ("error" in refs) return refs;
 
   const result = await db.$transaction(async (tx) => {
-    const conflicts = await findConflicts(tx, tenant.id, d.vehicleId, d.startAt, d.endAt, id);
+    const { conflicts } = await assertVehicleBookable(tx, tenant.id, d.vehicleId, d.startAt, d.endAt, id);
     if (conflicts.length > 0) {
       const c = conflicts[0];
       return { error: `Doppelbelegung: ${refs.vehicle.plate} ist von ${fmtDateTime(c.startAt)} bis ${fmtDateTime(c.endAt)} an ${customerName(c.customer)} vergeben (Nr. ${c.number}).` };
@@ -127,7 +130,7 @@ export async function updateBookingAction(id: string, _prev: FormState, formData
       },
     });
     return undefined;
-  });
+  }).catch((e) => (e instanceof DomainError ? { error: e.message } : Promise.reject(e)));
   if (result?.error) return result;
 
   revalidate(id);
@@ -139,9 +142,12 @@ export async function updateBookingAction(id: string, _prev: FormState, formData
  * "Unterwegs" ist hier nicht mehr möglich, das entsteht nur durch Mietvertrag und Übergabeprotokoll.
  */
 export async function setBookingStatusAction(id: string, status: "ACTIVE" | "RETURNED" | "CANCELLED") {
-  const { tenant } = await requireRole("DISPO", "YARD");
+  // Storno und Altfall-Rücknahme sind Dispositionsentscheidungen
+  const { tenant } = await requireRole("DISPO");
   try {
-    await changeBookingStatus(tenant.id, id, status);
+    const { orphanedStorageKeys } = await changeBookingStatus(tenant.id, id, status);
+    // Fotos verworfener Entwürfe aufräumen; ein Fehler hier darf den Statuswechsel nicht rückgängig machen
+    await Promise.all(orphanedStorageKeys.map((k) => Promise.resolve().then(() => getStorage().remove(k)).catch(() => {})));
   } catch (e) {
     if (e instanceof DomainError) redirect(`/buchungen/${id}?hinweis=${encodeURIComponent(e.message)}`);
     throw e;

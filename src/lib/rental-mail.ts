@@ -9,6 +9,7 @@ import { claimEmail, markEmailFailed, markEmailSent, type EmailLogRow } from "@/
 import { DomainError } from "@/lib/integrity";
 import { getMailTransport, isValidEmail, safeMailError, type MailTransport } from "@/lib/mail";
 import type { StorageDriver } from "@/lib/storage";
+import { APP_TIME_ZONE } from "@/lib/time";
 
 export const PICKUP_MAIL_TEMPLATE = "PICKUP_DOCUMENTS";
 export const RETURN_MAIL_TEMPLATE = "RETURN_DOCUMENTS";
@@ -117,7 +118,7 @@ export async function planHandoverMail(tenantId: string, handoverId: string): Pr
   if (!h.contractId) throw new DomainError("Zu diesem Protokoll gibt es keinen Mietvertrag.");
   const contract = await loadContractDocumentData(tenantId, h.contractId);
   const d = contract.doc;
-  const facts = { renterName: d.renterName, contractNumber: d.number, vehicleTitle: d.vehicleTitle, plate: d.plate, startAt: d.startAt, landlordName: d.landlord.name, landlordContact: d.landlord.contact, returnedAt: h.finalizedAt ? h.finalizedAt.toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : null };
+  const facts = { renterName: d.renterName, contractNumber: d.number, vehicleTitle: d.vehicleTitle, plate: d.plate, startAt: d.startAt, landlordName: d.landlord.name, landlordContact: d.landlord.contact, returnedAt: h.finalizedAt ? h.finalizedAt.toLocaleString("de-DE", { timeZone: APP_TIME_ZONE, day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : null };
   if (kind === "RETURN") {
     const returnDoc = await db.document.findFirst({ where: { tenantId, type: "RETURN_PROTOCOL", handoverId: h.id }, orderBy: { version: "desc" } });
     return { kind, bookingId: h.bookingId, handoverId: h.id, recipient: d.renterEmail, facts, replyTo: d.landlord.email, documents: returnDoc ? [returnDoc] : [], missing: returnDoc ? [] : ["Rückgabeprotokoll"] };

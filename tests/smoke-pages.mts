@@ -202,6 +202,57 @@ report(foreignDoc.status === 404, `${foreignDoc.status} Dokument für fremden Ma
 const bookingPage = await (await fetch(`${base}/buchungen/${doneBooking.id}`, { headers: { cookie } })).text();
 report(bookingPage.includes("Dokumente") && bookingPage.includes(pickupPdf.document.fileName) && bookingPage.includes("E-Mail nach der Übergabe"), "200 Buchungsseite zeigt Dokumente und E-Mail-Bereich");
 
+// Audit: Upload-Angriffe. Der Server erkennt den Typ am Inhalt, nicht an Name oder Content-Type.
+const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89]);
+const webp = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x24, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20, 0, 0, 0, 0, 0, 0, 0, 0]);
+const attack = async (label: string, body: Uint8Array | string, type: string, expect: number, name = "foto.jpg") => {
+  const bytes = typeof body === "string" ? new TextEncoder().encode(body) : body; const fd = new FormData(); fd.set("file", new Blob([bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer], { type }), name); fd.set("category", "OTHER");
+  const r = await fetch(`${base}/api/handovers/${pickup.id}/photos`, { method: "POST", body: fd, headers: { cookie } });
+  report(r.status === expect, `${r.status} Upload: ${label} (erwartet ${expect})`);
+};
+await attack("gültiges PNG", png, "image/png", 201, "bild.png");
+await attack("gültiges WebP", webp, "image/webp", 201, "bild.webp");
+await attack("Endung JPG, Inhalt Text", "kein bild", "image/jpeg", 415);
+await attack("SVG mit Skript", "<svg xmlns='http://www.w3.org/2000/svg' onload='alert(1)'/>", "image/svg+xml", 415, "foto.svg");
+await attack("HTML als JPG getarnt", "<html><script>alert(1)</script></html>", "image/jpeg", 415);
+await attack("JavaScript", "alert(1)", "text/javascript", 415, "foto.js");
+await attack("PDF als Foto", "%PDF-1.7 ...", "application/pdf", 415, "foto.pdf");
+await attack("0-Byte-Datei", new Uint8Array(0), "image/jpeg", 400);
+await attack("zu große Datei", new Uint8Array(8 * 1024 * 1024 + 1), "image/jpeg", 413);
+await attack("beschädigtes JPEG (nur Kopf)", new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]), "image/jpeg", 201);
+
+// Audit: direkte URLs mit falschem Prozessstand
+const direct: [string, string][] = [
+  [`/buchungen/${w.bookingId}/rueckgabe`, "nur für Fahrzeuge möglich, die unterwegs sind"],
+  [`/buchungen/${old.id}/uebergabe`, "kein Übergabeprotokoll"],
+  [`/buchungen/${old.id}/rueckgabe`, "Zurückgegeben"],
+  [`/buchungen/${w.bookingId}/vertrag?schritt=7`, "Mietvertrag"],
+  [`/buchungen/${doneBooking.id}/uebergabe?schritt=3`, "Prüfsumme des versiegelten Protokolls"],
+  [`/buchungen/${retBooking.id}/rueckgabe?schritt=2`, "Prüfsumme des versiegelten Protokolls"],
+];
+for (const [path, expected] of direct) {
+  const r = await fetch(base + path, { headers: { cookie } });
+  const html = await r.text();
+  report(r.status === 200 && html.includes(expected), `${r.status} Direkt-URL ${path} zeigt "${expected}"`);
+}
+const foreignRet = await fetch(`${base}/buchungen/${retBooking.id}/rueckgabe`, { headers: { cookie: `rb_session=${foreignSession}` } });
+report(foreignRet.status === 404, `${foreignRet.status} Rückgabeprotokoll für fremden Mandanten nicht auffindbar`);
+const foreignVehicle = await fetch(`${base}/fahrzeuge/${v4.id}`, { headers: { cookie: `rb_session=${foreignSession}` } });
+report(foreignVehicle.status === 404, `${foreignVehicle.status} Fahrzeugakte für fremden Mandanten nicht auffindbar`);
+
+// Audit: Rollen. Hofmitarbeiter dürfen Buchungen weder anlegen noch stornieren, Übergabe und Rückgabe aber durchführen.
+const yard = await db.user.create({ data: { tenantId: w.tenantId, email: `yard-${Date.now()}@example.test`, name: "Hof", passwordHash: "x", role: "YARD" } });
+const yardSession = randomBytes(32).toString("base64url");
+await db.session.create({ data: { id: yardSession, userId: yard.id, expiresAt: new Date(Date.now() + 3600_000) } });
+const yardNew = await fetch(base + "/buchungen/neu", { headers: { cookie: `rb_session=${yardSession}` }, redirect: "manual" });
+report(yardNew.status === 307 && (yardNew.headers.get("location") ?? "").includes("fehler=rechte"), `${yardNew.status} Hofmitarbeiter: keine neue Buchung`);
+const yardPickup = await fetch(`${base}/buchungen/${doneBooking.id}/uebergabe`, { headers: { cookie: `rb_session=${yardSession}` } });
+report(yardPickup.status === 200, `${yardPickup.status} Hofmitarbeiter: Übergabe erlaubt`);
+const yardBooking = await (await fetch(`${base}/buchungen/${w.bookingId}`, { headers: { cookie: `rb_session=${yardSession}` } })).text();
+report(!yardBooking.includes(">Stornieren<"), "Hofmitarbeiter: kein Storno-Knopf");
+const yardSettings = await fetch(base + "/einstellungen", { headers: { cookie: `rb_session=${yardSession}` } });
+report(yardSettings.status === 200, `${yardSettings.status} Einstellungen lesbar (Aktionen nur Inhaber)`);
+
 const anon = await fetch(base + "/heute", { redirect: "manual" });
 report(anon.status === 307 && (anon.headers.get("location") ?? "").includes("/login"), `${anon.status} /heute ohne Sitzung leitet zum Login`);
 // Abgelaufene Sitzung: keine Endlosschleife zwischen Startseite und Login, das alte Cookie wird entfernt

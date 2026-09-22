@@ -52,7 +52,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/handovers/[id]/
   } catch (e) {
     if (e instanceof DomainError) return json(422, { error: e.message });
     if (isImmutableError(e)) return json(409, { error: "Das Protokoll ist finalisiert." });
-    console.error("Foto-Upload fehlgeschlagen:", (e as Error).name, (e as Error).message);
+    console.error("Foto-Upload fehlgeschlagen:", (e as Error).name);
     return json(502, { error: "Das Foto konnte nicht gespeichert werden. Bitte erneut versuchen." });
   }
 }

@@ -4,6 +4,7 @@
 
 import type { Prisma } from "@prisma/client";
 import type { LandlordInfo } from "@/lib/contract-view";
+import { APP_TIME_ZONE } from "@/lib/time";
 import type { ReturnComparison } from "@/lib/returns";
 
 /** "2 Std. 47 Min." aus Minuten. Liegt hier, weil diese Datei bewusst frei von Server-Abhängigkeiten bleibt. */
@@ -92,7 +93,7 @@ export type HandoverDocument = {
 /** Name laut Auftrag: die Dokumentdaten der Übergabe. HTML-Ansicht und PDF lesen ausschließlich diese Struktur. */
 export type HandoverDocumentData = HandoverDocument;
 
-const dateTime = (v: Date | null | undefined) => (v ? v.toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
+const dateTime = (v: Date | null | undefined) => (v ? v.toLocaleString("de-DE", { timeZone: APP_TIME_ZONE, day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
 const label = <T extends Record<string, string>>(map: T, key: string) => (key in map ? map[key as keyof T] : key);
 
 const RESULT_LABEL: Record<string, string> = { OK: "In Ordnung", NOT_OK: "Nicht in Ordnung", YES: "Ja", NO: "Nein", NA: "Nicht zutreffend" };

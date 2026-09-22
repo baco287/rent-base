@@ -131,6 +131,16 @@ export class Pdf {
     this.doc.y = lineY + 6;
   }
 
+  /** Nutzbare Höhe einer Seite zwischen Kopf- und Fußzeile. */
+  get pageBodyHeight() { return this.bottom - MARGIN.top; }
+
+  /** Beschriftung und danach der Wert als Fließtext, der von selbst auf Folgeseiten umbricht. */
+  flowingValue(label: string, value: string, opts: { bold?: boolean; color?: string } = {}) {
+    this.ensureSpace(24);
+    this.textAt(label, this.left, this.doc.y, this.width, { size: 8.5, color: COLORS.ink3 });
+    this.paragraph(value, { size: 9.5, bold: opts.bold, color: opts.color, gapAfter: 5 });
+  }
+
   /** Wertepaare in ein oder zwei Spalten. Jede Zeile wird so hoch wie ihr längster Inhalt. */
   keyValues(rows: { label: string; value: string }[], columns: 1 | 2 = 2) {
     const colGap = 18;
@@ -151,6 +161,7 @@ export class Pdf {
         const r = group[0];
         const wideW = this.width - labelW - 6;
         const rowH = Math.max(this.measure(r.label, labelW, { size: 8.5 }), this.measure(r.value, wideW, { size: 9.5 })) + 4;
+        if (rowH > this.pageBodyHeight) { this.flowingValue(r.label, r.value); continue; }
         this.ensureSpace(rowH);
         const y = this.doc.y;
         this.textAt(r.label, this.left, y + 0.6, labelW, { size: 8.5, color: COLORS.ink3 });
@@ -160,6 +171,7 @@ export class Pdf {
       }
       const heights = group.map((r) => Math.max(this.measure(r.label, labelW, { size: 8.5 }), this.measure(r.value, valueW, { size: 9.5 })));
       const rowH = Math.max(...heights) + 4;
+      if (rowH > this.pageBodyHeight) { for (const r of group) this.flowingValue(r.label, r.value); continue; }
       this.ensureSpace(rowH);
       const y = this.doc.y;
       group.forEach((r, c) => {
@@ -190,6 +202,14 @@ export class Pdf {
     rows.forEach((row, ri) => {
       const cells = row.map((c) => (typeof c === "string" ? { text: c } : c));
       const h = Math.max(...cells.map((c, i) => this.measure(c.text, widths[i] - pad * 2, { size: 9, bold: c.bold ?? columns[i].bold }))) + pad * 2;
+      if (h > this.pageBodyHeight) {
+        // Eine Zeile, die länger als eine Seite ist: Zellen untereinander als Fließtext, damit nichts abgeschnitten wird
+        this.ensureSpace(40);
+        cells.forEach((c, i) => { if (c.text) this.flowingValue(columns[i].header || "", c.text, { bold: c.bold ?? columns[i].bold, color: c.color }); });
+        this.doc.moveTo(this.left, this.doc.y).lineTo(this.left + this.width, this.doc.y).lineWidth(0.4).strokeColor(COLORS.line).stroke();
+        this.doc.y += 2;
+        return;
+      }
       if (this.doc.y + h > this.bottom) { this.newPage(); drawHeader(); }
       const y = this.doc.y;
       if (opts.zebra && ri % 2 === 1) this.doc.rect(this.left, y, this.width, h).fill("#fafbfc");

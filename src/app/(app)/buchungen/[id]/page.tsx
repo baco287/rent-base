@@ -6,7 +6,7 @@ import { customerName, fmtDateTime, fmtEur, toDateTimeInput } from "@/lib/format
 import { calculateRentalPrice, rateCardFrom } from "@/lib/pricing";
 import { BookingStageChip, Card, Chip, Content, PageHeader, Plate } from "@/components/ui";
 import { EXTRA_CHARGE_TYPES, type ExtraChargeType } from "@/lib/constants";
-import { bookingStage } from "@/lib/booking-status";
+import { bookingStage, canCancel } from "@/lib/booking-status";
 import { startContractAction } from "./vertrag/actions";
 import { setBookingStatusAction, updateBookingAction } from "../actions";
 import { BookingForm } from "../booking-form";
@@ -54,7 +54,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
         {b.status === "ACTIVE" && !pickupDone && (
           <form action={finish}><button className="btn btn-primary">Fahrzeug zurücknehmen</button></form>
         )}
-        {b.status === "RESERVED" && (
+        {canCancel(b) && user.role !== "YARD" && (
           <form action={cancel}><button className="btn btn-danger">Stornieren</button></form>
         )}
       </PageHeader>

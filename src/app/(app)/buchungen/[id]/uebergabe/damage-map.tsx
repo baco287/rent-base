@@ -124,7 +124,15 @@ export function DamageMap({ sketch, damages, handoverId, editable, actions, pick
               const color = SYMBOL_COLOR[d.symbol];
               const active = d.id === selected;
               return (
-                <g key={d.id} onClick={(e) => { e.stopPropagation(); setPending(null); setMoving(false); setSelected(d.id); }} className="cursor-pointer">
+                <g
+                  key={d.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Schaden ${d.index}: ${d.kindLabel}, ${d.viewLabel}, ${d.markerLabel}`}
+                  onClick={(e) => { e.stopPropagation(); setPending(null); setMoving(false); setSelected(d.id); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); setPending(null); setMoving(false); setSelected(d.id); } }}
+                  className="cursor-pointer outline-none focus-visible:[&>*:first-child]:stroke-[#1a6fd1]"
+                >
                   {active && <circle cx={cx} cy={cy} r={r * 1.8} fill="none" stroke={color} strokeWidth={bw * 0.006} strokeDasharray={`${bw * 0.012} ${bw * 0.008}`} />}
                   {d.symbol === "diamond" && <rect x={cx - r} y={cy - r} width={r * 2} height={r * 2} transform={`rotate(45 ${cx} ${cy})`} fill={color} stroke="#fff" strokeWidth={bw * 0.005} />}
                   {d.symbol === "triangle" && <path d={`M${cx} ${cy - r * 1.45} L${cx + r * 1.4} ${cy + r * 1.05} L${cx - r * 1.4} ${cy + r * 1.05} Z`} fill={color} stroke="#fff" strokeWidth={bw * 0.005} strokeLinejoin="round" />}

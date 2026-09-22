@@ -1,14 +1,18 @@
-// Deutsche Formatierung für Datum, Zeit und Beträge.
+// Deutsche Formatierung für Datum, Zeit und Beträge. Zeiten immer in der Anwendungszeitzone (lib/time.ts),
+// unabhängig davon, wo der Server läuft.
 
-const dateFmt = new Intl.DateTimeFormat("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" });
+import { APP_TIME_ZONE, toDateInputValue, toDateTimeInputValue } from "@/lib/time";
+
+const dateFmt = new Intl.DateTimeFormat("de-DE", { timeZone: APP_TIME_ZONE, day: "2-digit", month: "2-digit", year: "numeric" });
 const dateTimeFmt = new Intl.DateTimeFormat("de-DE", {
+  timeZone: APP_TIME_ZONE,
   day: "2-digit",
   month: "2-digit",
   year: "numeric",
   hour: "2-digit",
   minute: "2-digit",
 });
-const timeFmt = new Intl.DateTimeFormat("de-DE", { hour: "2-digit", minute: "2-digit" });
+const timeFmt = new Intl.DateTimeFormat("de-DE", { timeZone: APP_TIME_ZONE, hour: "2-digit", minute: "2-digit" });
 const eurFmt = new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR" });
 const intFmt = new Intl.NumberFormat("de-DE");
 
@@ -33,19 +37,13 @@ export function fmtInt(v: number | null | undefined) {
   return intFmt.format(v);
 }
 
-/** Wert für <input type="date"> (lokale Zeit, ohne Zeitzonenverschiebung). */
+/** Wert für <input type="date"> in der Anwendungszeitzone. */
 export function toDateInput(d: Date | null | undefined) {
-  if (!d) return "";
-  const x = new Date(d);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}`;
+  return d ? toDateInputValue(new Date(d)) : "";
 }
-/** Wert für <input type="datetime-local">. */
+/** Wert für <input type="datetime-local"> in der Anwendungszeitzone. */
 export function toDateTimeInput(d: Date | null | undefined) {
-  if (!d) return "";
-  const x = new Date(d);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${toDateInput(x)}T${p(x.getHours())}:${p(x.getMinutes())}`;
+  return d ? toDateTimeInputValue(new Date(d)) : "";
 }
 
 // Miettage werden zentral in lib/pricing.ts berechnet.

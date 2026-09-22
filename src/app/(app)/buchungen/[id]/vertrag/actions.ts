@@ -23,6 +23,7 @@ import {
 } from "@/lib/contracts";
 
 import { runContractFollowUp } from "@/lib/followup";
+import { parseLocalDateTime } from "@/lib/time";
 
 export type StepState = { error?: string } | undefined;
 
@@ -144,8 +145,8 @@ const money = (msg: string) => z.preprocess((v) => (typeof v === "string" ? v.re
 const optMoney = (msg: string) => z.preprocess((v) => (v === "" || v === undefined ? undefined : typeof v === "string" ? v.replace(",", ".").trim() : v), z.coerce.number({ message: msg }).min(0, msg).optional());
 
 const conditionsSchema = z.object({
-  startAt: z.coerce.date({ message: "Bitte den Mietbeginn mit Datum und Uhrzeit angeben." }),
-  endAt: z.coerce.date({ message: "Bitte die geplante Rückgabe mit Datum und Uhrzeit angeben." }),
+  startAt: z.preprocess(parseLocalDateTime, z.date({ message: "Bitte den Mietbeginn mit Datum und Uhrzeit angeben." })),
+  endAt: z.preprocess(parseLocalDateTime, z.date({ message: "Bitte die geplante Rückgabe mit Datum und Uhrzeit angeben." })),
   deposit: money("Kaution: bitte eine Zahl ab 0 eingeben."),
   kmIncludedPerDay: money("Freikilometer: bitte eine Zahl ab 0 eingeben."),
   extraKmRate: money("Mehrkilometerpreis: bitte eine Zahl ab 0 eingeben."),
