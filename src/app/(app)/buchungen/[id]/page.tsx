@@ -44,8 +44,9 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
     <>
       <PageHeader title={`Buchung ${b.number}`} sub={<Plate>{b.vehicle.plate}</Plate>}>
         {overdue ? <Chip tone="bad">Rückgabe überfällig</Chip> : <BookingStageChip stage={stage} />}
-        {stage === "NEEDS_CONTRACT" && <form action={startContract}><button className="btn btn-primary">Mietvertrag erstellen</button></form>}
-        {stage === "CONTRACT_DRAFT" && <Link href={`/buchungen/${b.id}/vertrag`} className="btn btn-primary">Mietvertrag fortsetzen</Link>}
+        {stage === "NEEDS_CONTRACT" && user.role !== "YARD" && <form action={startContract}><button className="btn btn-primary">Mietvertrag erstellen</button></form>}
+        {stage === "CONTRACT_DRAFT" && user.role !== "YARD" && <Link href={`/buchungen/${b.id}/vertrag`} className="btn btn-primary">Mietvertrag fortsetzen</Link>}
+        {(stage === "NEEDS_CONTRACT" || stage === "CONTRACT_DRAFT") && user.role === "YARD" && <Chip tone="amber">Mietvertrag wird von der Disposition erstellt</Chip>}
         {b.contract && b.contract.status !== "DRAFT" && <Link href={`/buchungen/${b.id}/vertrag`} className="btn">Mietvertrag anzeigen</Link>}
         {stage === "READY_FOR_PICKUP" && <Link href={`/buchungen/${b.id}/uebergabe`} className="btn btn-primary">{pickupDraft ? "Übergabe fortsetzen" : "Übergabe starten"}</Link>}
         {pickupDone && <Link href={`/buchungen/${b.id}/uebergabe`} className="btn">Übergabeprotokoll anzeigen</Link>}

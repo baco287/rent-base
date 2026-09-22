@@ -253,6 +253,32 @@ report(!yardBooking.includes(">Stornieren<"), "Hofmitarbeiter: kein Storno-Knopf
 const yardSettings = await fetch(base + "/einstellungen", { headers: { cookie: `rb_session=${yardSession}` } });
 report(yardSettings.status === 200, `${yardSettings.status} Einstellungen lesbar (Aktionen nur Inhaber)`);
 
+// Hofmitarbeiter: Vertragsentwurf gesperrt, abgeschlossener Vertrag einsehbar, Übergabe und Rückgabe erlaubt, Dokumente und E-Mail-Bereich sichtbar
+const yardDraft = await fetch(`${base}/buchungen/${w.bookingId}/vertrag`, { headers: { cookie: `rb_session=${yardSession}` }, redirect: "manual" });
+report(yardDraft.status === 307 && decodeURIComponent(yardDraft.headers.get("location") ?? "").includes("nur Inhaber und Disponenten"), `${yardDraft.status} Hofmitarbeiter: Vertragsentwurf nicht bearbeitbar`);
+const yardSigned = await fetch(`${base}/buchungen/${doneBooking.id}/vertrag`, { headers: { cookie: `rb_session=${yardSession}` } });
+report(yardSigned.status === 200 && (await yardSigned.text()).includes("Prüfsumme"), `${yardSigned.status} Hofmitarbeiter: abgeschlossenen Vertrag ansehen`);
+const yardReturn = await fetch(`${base}/buchungen/${retBooking.id}/rueckgabe`, { headers: { cookie: `rb_session=${yardSession}` } });
+const yardReturnHtml = await yardReturn.text();
+report(yardReturn.status === 200 && yardReturnHtml.includes("Herunterladen") && /Unterlagen (jetzt|erneut) senden|E-Mail erneut senden/.test(yardReturnHtml), `${yardReturn.status} Hofmitarbeiter: Rückgabeprotokoll, Dokumente und E-Mail erneut senden`);
+const yardDoc = await fetch(`${base}/api/documents/${returnPdf.document.id}?download=1`, { headers: { cookie: `rb_session=${yardSession}` } });
+report(yardDoc.status === 200, `${yardDoc.status} Hofmitarbeiter: Dokument herunterladen`);
+const yardUpload = await (async () => { const fd = new FormData(); fd.set("file", new Blob([jpeg], { type: "image/jpeg" }), "f.jpg"); fd.set("category", "OTHER"); return fetch(`${base}/api/handovers/${pickup.id}/photos`, { method: "POST", body: fd, headers: { cookie: `rb_session=${yardSession}` } }); })();
+report(yardUpload.status === 201, `${yardUpload.status} Hofmitarbeiter: Foto im Übergabe-Entwurf hochladen`);
+const yardBookingNoStart = await (await fetch(`${base}/buchungen/${old.id}`, { headers: { cookie: `rb_session=${yardSession}` } })).text();
+report(!yardBookingNoStart.includes("Mietvertrag erstellen") && !yardBookingNoStart.includes("Mietvertrag fortsetzen"), "Hofmitarbeiter: keine Vertragsknöpfe");
+// Disponent: Vertrag bearbeiten, Buchung anlegen, keine Einstellungen
+const dispo = await db.user.create({ data: { tenantId: w.tenantId, email: `dispo-${Date.now()}@example.test`, name: "Dispo", passwordHash: "x", role: "DISPO" } });
+const dispoSession = randomBytes(32).toString("base64url");
+await db.session.create({ data: { id: dispoSession, userId: dispo.id, expiresAt: new Date(Date.now() + 3600_000) } });
+const dispoDraft = await fetch(`${base}/buchungen/${w.bookingId}/vertrag?schritt=4`, { headers: { cookie: `rb_session=${dispoSession}` } });
+report(dispoDraft.status === 200 && (await dispoDraft.text()).includes("Konditionen"), `${dispoDraft.status} Disponent: Vertragsentwurf bearbeiten`);
+const dispoNew = await fetch(base + "/buchungen/neu", { headers: { cookie: `rb_session=${dispoSession}` } });
+report(dispoNew.status === 200, `${dispoNew.status} Disponent: neue Buchung`);
+// Inhaber (Testsitzung ist OWNER): Vertragsentwurf und Einstellungen
+const ownerDraft = await fetch(`${base}/buchungen/${w.bookingId}/vertrag?schritt=7`, { headers: { cookie } });
+report(ownerDraft.status === 200 && (await ownerDraft.text()).includes("Mietvertrag verbindlich abschließen"), `${ownerDraft.status} Inhaber: Vertrag abschließen sichtbar`);
+
 const anon = await fetch(base + "/heute", { redirect: "manual" });
 report(anon.status === 307 && (anon.headers.get("location") ?? "").includes("/login"), `${anon.status} /heute ohne Sitzung leitet zum Login`);
 // Abgelaufene Sitzung: keine Endlosschleife zwischen Startseite und Login, das alte Cookie wird entfernt

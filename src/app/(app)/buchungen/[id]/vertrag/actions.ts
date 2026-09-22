@@ -29,9 +29,9 @@ export type StepState = { error?: string } | undefined;
 
 const base = (bookingId: string) => `/buchungen/${bookingId}/vertrag`;
 
-/** Rolle, Mandant und Vertrag der Buchung. Verträge bearbeiten dürfen Inhaber, Disponent und Hofmitarbeiter. */
+/** Rolle, Mandant und Vertrag der Buchung. Verträge erstellen, bearbeiten und abschließen dürfen nur Inhaber und Disponent. */
 async function context(bookingId: string) {
-  const { tenant, user } = await requireRole("DISPO", "YARD");
+  const { tenant, user } = await requireRole("DISPO");
   const contract = await db.rentalContract.findFirst({ where: { bookingId, tenantId: tenant.id } });
   if (!contract) redirect(`/buchungen/${bookingId}`);
   return { tenant, user, contract, actor: { id: user.id, name: user.name } };
@@ -53,7 +53,7 @@ async function go(bookingId: string, contractId: string, tenantId: string, from:
 }
 
 export async function startContractAction(bookingId: string) {
-  const { tenant, user } = await requireRole("DISPO", "YARD");
+  const { tenant, user } = await requireRole("DISPO");
   try {
     await ensureContractDraft(tenant.id, bookingId, { id: user.id, name: user.name });
   } catch (e) {

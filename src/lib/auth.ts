@@ -5,7 +5,7 @@ import { cache } from "react";
 import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { db } from "@/lib/db";
-import { SESSION_COOKIE, SESSION_DAYS, type Role } from "@/lib/constants";
+import { SESSION_COOKIE, SESSION_DAYS, roleAllows, type Role } from "@/lib/constants";
 
 export async function hashPassword(password: string) {
   return bcrypt.hash(password, 12);
@@ -69,10 +69,18 @@ export async function requireSession() {
   return session;
 }
 
-/** Zusätzlich Rollenprüfung. Inhaber darf alles. */
+/**
+ * Rollenmatrix (nur hier und in den Aufrufen von requireRole):
+ *   OWNER  alles
+ *   DISPO  Buchungen anlegen/ändern/stornieren, Fahrzeuge und Gruppen, Mietverträge erstellen/bearbeiten/abschließen,
+ *          Übergabe und Rückgabe, Kunden, Dokumente, E-Mail erneut senden
+ *   YARD   Kunden anlegen und ergänzen, Übergabe und Rückgabe (Kilometer, Tank, Schäden, Fotos, Checkliste,
+ *          Unterschriften, Zusatzkosten), Verträge und Protokolle ansehen, Dokumente, E-Mail erneut senden.
+ *          Keine Buchungen, keine Vertragsänderungen, kein Vertragsabschluss, keine Einstellungen.
+ */
+/** Zusätzlich Rollenprüfung. Inhaber darf alles. Jede Server Action und jede geschützte Seite ruft dies als Erstes auf. */
 export async function requireRole(...roles: Role[]) {
   const session = await requireSession();
-  const role = session.user.role as Role;
-  if (role !== "OWNER" && !roles.includes(role)) redirect("/heute?fehler=rechte");
+  if (!roleAllows(session.user.role, roles)) redirect("/heute?fehler=rechte");
   return session;
 }

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { getContractState } from "@/lib/contracts";
@@ -31,12 +31,16 @@ export const metadata = { title: "Mietvertrag" };
 const dec = (v: { toString(): string } | null | undefined) => (v === null || v === undefined ? "" : v.toString().replace(".", ","));
 
 export default async function ContractPage({ params, searchParams }: PageProps<"/buchungen/[id]/vertrag">) {
+  // Ansehen dürfen alle Mitarbeiter; erstellen und bearbeiten nur Inhaber und Disponent (siehe unten und actions.ts)
   const { tenant, user } = await requireRole("DISPO", "YARD");
+  const canEdit = user.role !== "YARD";
   const { id } = await params;
   const sp = await searchParams;
 
-  const booking = await db.booking.findFirst({ where: { id, tenantId: tenant.id }, include: { customer: true, vehicle: { include: { group: true } }, contract: { select: { id: true } } } });
+  const booking = await db.booking.findFirst({ where: { id, tenantId: tenant.id }, include: { customer: true, vehicle: { include: { group: true } }, contract: { select: { id: true, status: true } } } });
   if (!booking) notFound();
+  // Hofmitarbeiter: kein Vertragsentwurf und keine Neuanlage, nur der abgeschlossene Vertrag ist einsehbar
+  if (!canEdit && booking.contract?.status !== "SIGNED" && booking.contract?.status !== "CANCELLED") redirect(`/buchungen/${booking.id}?hinweis=${encodeURIComponent("Mietverträge erstellen und bearbeiten nur Inhaber und Disponenten.")}`);
 
   // Noch kein Vertrag: klare Startaktion
   if (!booking.contract) {

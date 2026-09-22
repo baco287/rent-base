@@ -16,6 +16,11 @@ export const FUELS = {
 } as const;
 export type Fuel = keyof typeof FUELS;
 
+/** Inhaber darf alles, sonst nur die genannten Rollen. Die Matrix steht in lib/auth.ts. */
+export function roleAllows(role: string, allowed: readonly string[]) {
+  return role === "OWNER" || allowed.includes(role);
+}
+
 export const VEHICLE_STATUS = {
   AVAILABLE: "Verfügbar",
   WORKSHOP: "Werkstatt",
