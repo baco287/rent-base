@@ -53,4 +53,15 @@ test("Jede Server-Action-Datei und jede Prozessseite prüft die Rolle serverseit
     assert.match(bodyOf(fn), /requireRole\("DISPO"\)/, `${fn}: nur Inhaber und Disponent`);
   }
   assert.match(bodyOf("recordDepositReceivedAction"), /requireRole\("DISPO", "YARD"\)/, "Kaution erhalten: auch Hofmitarbeiter");
+  // Schadenakten: Haftung, Kosten, Reparatur, Sperren/Freigeben, Kundenbelastung, Schließen nur DISPO (und OWNER) über ctx(caseId)
+  // ohne Rollenliste; Eröffnen und operative Notizen auch YARD.
+  const cases = readFileSync(path.join(process.cwd(), "src/app/(app)/schaeden/[id]/actions.ts"), "utf8");
+  const caseBody = (name: string) => new RegExp(`export async function ${name}[\\s\\S]*?\\n}`).exec(cases)?.[0] ?? "";
+  for (const fn of ["changeStatusAction", "setPriorityAction", "setLiabilityAction", "setCostsAction", "setRepairAction", "setInternalNoteAction", "closeCaseAction", "reopenCaseAction", "blockVehicleAction", "releaseVehicleAction", "chargeCustomerAction"]) {
+    assert.match(caseBody(fn), /await ctx\(caseId\)/, `${fn}: nur Inhaber und Disponent`);
+    assert.ok(!/"YARD"/.test(caseBody(fn)), `${fn}: YARD nicht zugelassen`);
+  }
+  assert.match(caseBody("addNoteAction"), /ctx\(caseId, "DISPO", "YARD"\)/, "Notiz: auch Hofmitarbeiter");
+  assert.match(caseBody("openDamageCaseAction"), /requireRole\("DISPO", "YARD"\)/, "Akte eröffnen: auch Hofmitarbeiter");
+  assert.match(cases, /const \{ tenant, user \} = roles\.length \? await requireRole\(\.\.\.roles\) : await requireRole\("DISPO"\);/, "ctx ohne Rollen = nur DISPO");
 });

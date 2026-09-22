@@ -61,3 +61,11 @@ export async function nextInvoiceNumber(tx: Tx, tenantId: string, date = new Dat
   const n = last?.number ? parseInt(last.number.slice(prefix.length), 10) + 1 : 1;
   return `${prefix}${String(n).padStart(6, "0")}`;
 }
+
+/** Schadenaktennummer SCH-JJJJ-NNNNNN, je Mandant fortlaufend; Eindeutigkeit über den Index, Kollision → withNumberRetry. */
+export async function nextDamageCaseNumber(tx: Tx, tenantId: string, date = new Date()) {
+  const prefix = `SCH-${date.getFullYear()}-`;
+  const last = await tx.damageCase.findFirst({ where: { tenantId, caseNumber: { startsWith: prefix } }, orderBy: { caseNumber: "desc" }, select: { caseNumber: true } });
+  const n = last?.caseNumber ? parseInt(last.caseNumber.slice(prefix.length), 10) + 1 : 1;
+  return `${prefix}${String(n).padStart(6, "0")}`;
+}

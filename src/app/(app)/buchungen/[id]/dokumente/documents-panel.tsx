@@ -15,11 +15,12 @@ import { DocActionButton, ResendForm } from "./document-forms";
 
 const kb = (bytes: number) => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1).replace(".", ",")} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
 
-export async function DocumentsPanel({ tenantId, bookingId, role }: { tenantId: string; bookingId: string; role: string }) {
+/** invoiceId: eine bestimmte Rechnung dieser Buchung (Schadenabrechnung); ohne Angabe die Mietrechnung. */
+export async function DocumentsPanel({ tenantId, bookingId, role, invoiceId = null }: { tenantId: string; bookingId: string; role: string; invoiceId?: string | null }) {
   const [contract, handovers, invoice, documents, emails] = await Promise.all([
     db.rentalContract.findFirst({ where: { bookingId, tenantId }, select: { id: true, number: true, status: true, customerSnapshot: true } }),
     db.handover.findMany({ where: { bookingId, tenantId, status: "FINALIZED", correctsId: null }, orderBy: { finalizedAt: "desc" }, select: { id: true, number: true, type: true } }),
-    db.invoice.findFirst({ where: { bookingId, tenantId, status: "FINALIZED" }, select: { id: true, number: true, currentVersionId: true, currentVersion: { select: { id: true, versionNo: true, customerSnapshot: true } } } }),
+    db.invoice.findFirst({ where: { bookingId, tenantId, status: "FINALIZED", ...(invoiceId ? { id: invoiceId } : { kind: "RENTAL" }) }, select: { id: true, number: true, kind: true, currentVersionId: true, currentVersion: { select: { id: true, versionNo: true, customerSnapshot: true } } } }),
     listBookingDocuments(tenantId, bookingId),
     listBookingEmails(tenantId, bookingId, 16),
   ]);
@@ -31,6 +32,8 @@ export async function DocumentsPanel({ tenantId, bookingId, role }: { tenantId: 
   const recipient = (contract.customerSnapshot as { email?: string | null } | null)?.email?.trim() || null;
   const invoiceRecipient = (invoice?.currentVersion?.customerSnapshot as { email?: string | null } | null)?.email?.trim() || null;
   const currentVersionId = invoice?.currentVersion?.id ?? null;
+  const invoiceKey = invoice?.kind === "DAMAGE" ? invoice.id : null;
+  const invoiceWord = invoice?.kind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung";
   const canSendInvoice = role !== "YARD";
   const pickup = handovers.find((h) => h.type === "PICKUP");
   const ret = handovers.find((h) => h.type === "RETURN");
@@ -41,14 +44,14 @@ export async function DocumentsPanel({ tenantId, bookingId, role }: { tenantId: 
     { type: "RENTAL_CONTRACT", available: true, action: generateContractPdfAction.bind(null, bookingId), generateLabel: "Mietvertrag-PDF erzeugen", waitText: "" },
     { type: "PICKUP_PROTOCOL", available: !!pickup, action: generateHandoverPdfAction.bind(null, bookingId, "PICKUP"), generateLabel: "Übergabeprotokoll-PDF erzeugen", waitText: "nach der Übergabe" },
     { type: "RETURN_PROTOCOL", available: !!ret, action: generateHandoverPdfAction.bind(null, bookingId, "RETURN"), generateLabel: "Rückgabeprotokoll-PDF erzeugen", waitText: "nach der Rückgabe" },
-    { type: "INVOICE", available: !!currentVersionId, action: generateInvoicePdfAction.bind(null, bookingId), generateLabel: "Rechnungs-PDF erzeugen", waitText: "nach Abschluss der Rechnung" },
+    { type: "INVOICE", available: !!currentVersionId, action: generateInvoicePdfAction.bind(null, bookingId, invoiceKey), generateLabel: `${invoiceWord}s-PDF erzeugen`, waitText: "nach Abschluss der Rechnung" },
   ];
 
   const mailBlocks = [
     pickup ? { kind: "PICKUP" as const, title: "E-Mail nach der Übergabe", handover: pickup, ready: !!latest("RENTAL_CONTRACT") && !!latest("PICKUP_PROTOCOL"), readyText: "Versendet werden kann, sobald Mietvertrag und Übergabeprotokoll als PDF vorliegen." } : null,
     ret ? { kind: "RETURN" as const, title: "E-Mail nach der Rückgabe", handover: ret, ready: !!latest("RETURN_PROTOCOL"), readyText: "Versendet werden kann, sobald das Rückgabeprotokoll als PDF vorliegt." } : null,
   ].filter((x): x is NonNullable<typeof x> => x !== null);
-  const invoiceBlock = invoice && currentVersionId ? { title: `E-Mail mit Rechnung ${invoice.number}${(invoice.currentVersion?.versionNo ?? 1) > 1 ? ` (Fassung ${invoice.currentVersion!.versionNo})` : ""}`, ready: !!latest("INVOICE"), readyText: "Versendet werden kann, sobald die aktuelle Fassung als PDF vorliegt.", emails: emails.filter((e) => e.invoiceVersionId === currentVersionId) } : null;
+  const invoiceBlock = invoice && currentVersionId ? { title: `E-Mail mit ${invoiceWord} ${invoice.number}${(invoice.currentVersion?.versionNo ?? 1) > 1 ? ` (Fassung ${invoice.currentVersion!.versionNo})` : ""}`, ready: !!latest("INVOICE"), readyText: "Versendet werden kann, sobald die aktuelle Fassung als PDF vorliegt.", emails: emails.filter((e) => e.invoiceVersionId === currentVersionId) } : null;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
@@ -66,7 +69,7 @@ export async function DocumentsPanel({ tenantId, bookingId, role }: { tenantId: 
             return (
               <li key={r.type} className="px-4 py-3 flex flex-col gap-2">
                 <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-                  <span className="font-medium">{DOCUMENT_TYPES[r.type]}</span>
+                  <span className="font-medium">{r.type === "INVOICE" && invoice?.kind === "DAMAGE" ? `Schadenabrechnung ${invoice.number}` : DOCUMENT_TYPES[r.type]}</span>
                   {doc ? <Chip tone="good">✓ erstellt</Chip> : r.available ? <Chip tone="amber">noch nicht erzeugt</Chip> : <Chip>{r.waitText}</Chip>}
                 </div>
                 {doc && (
@@ -125,10 +128,10 @@ export async function DocumentsPanel({ tenantId, bookingId, role }: { tenantId: 
                 {!isValidEmail(invoiceRecipient) && <p className="text-sm text-bad">In der Rechnung ist keine gültige E-Mail-Adresse hinterlegt. Die Rechnung kann heruntergeladen und persönlich übergeben werden.</p>}
                 {canSendInvoice ? (
                   <ResendForm
-                    action={resendInvoiceAction.bind(null, bookingId)}
+                    action={resendInvoiceAction.bind(null, bookingId, invoiceKey)}
                     recipient={invoiceRecipient}
                     nonce={randomUUID()}
-                    label={invoiceBlock.emails[0]?.status === "SENT" ? "Rechnung erneut senden" : invoiceBlock.emails[0] ? "E-Mail erneut senden" : "Rechnung jetzt senden"}
+                    label={invoiceBlock.emails[0]?.status === "SENT" ? `${invoiceWord} erneut senden` : invoiceBlock.emails[0] ? "E-Mail erneut senden" : `${invoiceWord} jetzt senden`}
                     disabledReason={!invoiceBlock.ready ? invoiceBlock.readyText : null}
                   />
                 ) : (

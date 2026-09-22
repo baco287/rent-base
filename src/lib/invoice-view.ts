@@ -19,12 +19,14 @@ export type VersionInfo = {
 
 export type InvoiceDocumentData = {
   title: string;
+  /** RENTAL = Mietrechnung, DAMAGE = Schadenabrechnung */
+  kind: "RENTAL" | "DAMAGE";
   number: string;
   status: string;
   version: VersionInfo;
   issueDate: string | null;
   servicePeriod: string;
-  reference: { contractNumber: string | null; bookingNumber: string | null; returnNumber: string | null };
+  reference: { contractNumber: string | null; bookingNumber: string | null; returnNumber: string | null; caseNumber: string | null };
   company: CompanySnapshot & { fullName: string; addressLines: string[]; taxLine: string | null; bankLines: string[] };
   customer: { name: string; number: string | null; addressLines: string[]; email: string | null };
   pricesIncludeTax: boolean;
@@ -44,7 +46,7 @@ const dateTime = (d: Date) => d.toLocaleString("de-DE", { timeZone: APP_TIME_ZON
 const qty = (v: unknown) => Number(String(v)).toLocaleString("de-DE", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
 type VersionFull = Prisma.InvoiceVersionGetPayload<{ include: { items: true } }>;
-export type DocumentRefs = { number: string | null; contractNumber: string | null; bookingNumber: string | null; returnNumber: string | null; isCurrent: boolean; supersedes: { versionNo: number; finalizedAt: Date | null } | null };
+export type DocumentRefs = { number: string | null; kind: string; contractNumber: string | null; bookingNumber: string | null; returnNumber: string | null; caseNumber: string | null; isCurrent: boolean; supersedes: { versionNo: number; finalizedAt: Date | null } | null };
 
 export function buildInvoiceDocument(inv: VersionFull, refs: DocumentRefs): InvoiceDocumentData {
   const company = inv.companySnapshot as CompanySnapshot;
@@ -53,8 +55,11 @@ export function buildInvoiceDocument(inv: VersionFull, refs: DocumentRefs): Invo
   const sums = summarize(items.map((i) => ({ taxRateBp: toBasisPoints(i.taxRate), amounts: { net: toCents(i.netAmount), tax: toCents(i.taxAmount), gross: toCents(i.grossAmount) } })));
   const personName = `${c.firstName ?? ""} ${c.lastName ?? ""}`.trim();
   const kind = inv.kind as VersionInfo["kind"];
+  const invoiceKind = refs.kind === "DAMAGE" ? "DAMAGE" : "RENTAL";
+  const baseTitle = invoiceKind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung";
   return {
-    title: kind === "CORRECTION" ? "Berichtigte Rechnung" : "Rechnung",
+    title: kind === "CORRECTION" ? `Berichtigte ${baseTitle}` : baseTitle,
+    kind: invoiceKind,
     number: refs.number ?? "Entwurf",
     status: inv.status,
     version: {
@@ -67,7 +72,7 @@ export function buildInvoiceDocument(inv: VersionFull, refs: DocumentRefs): Invo
     },
     issueDate: date(inv.issueDate),
     servicePeriod: `${dateTime(inv.servicePeriodStart)} bis ${dateTime(inv.servicePeriodEnd)}`,
-    reference: refs,
+    reference: { contractNumber: refs.contractNumber, bookingNumber: refs.bookingNumber, returnNumber: refs.returnNumber, caseNumber: refs.caseNumber },
     company: {
       ...company,
       fullName: [company.name, company.legalForm].filter(Boolean).join(" "),

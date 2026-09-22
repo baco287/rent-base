@@ -3,6 +3,7 @@ import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { customerName, fmtDate, fmtTime } from "@/lib/format";
 import { Card, Chip, Content, KPI, PageHeader, Plate } from "@/components/ui";
+import { caseCounts } from "@/lib/damage-cases";
 import { openDepositCounts } from "@/lib/deposits";
 import { fmtCents } from "@/lib/money";
 import { paymentSummaries } from "@/lib/payments";
@@ -40,12 +41,15 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
   const utilization = fleet ? Math.round((bookedMs / (weekMs * fleet)) * 100) : 0;
 
   // Operative Geldübersicht (keine Buchhaltung): offene Rechnungen, heute erfasste Zahlungen, offene Kautionen
-  const [finalInvoices, todayPayments, deposits] = await Promise.all([
-    db.invoice.findMany({ where: { tenantId: tenant.id, status: "FINALIZED", currentVersionId: { not: null } }, select: { id: true, currentVersion: { select: { grossTotal: true } } } }).then((rows) => rows.map((r) => ({ id: r.id, grossTotal: r.currentVersion!.grossTotal }))),
+  const [finalInvoices, todayPayments, deposits, damage] = await Promise.all([
+    db.invoice.findMany({ where: { tenantId: tenant.id, status: "FINALIZED", currentVersionId: { not: null } }, select: { id: true, kind: true, currentVersion: { select: { grossTotal: true } } } }).then((rows) => rows.map((r) => ({ id: r.id, kind: r.kind, grossTotal: r.currentVersion!.grossTotal }))),
     db.payment.aggregate({ where: { tenantId: tenant.id, status: "CONFIRMED", createdAt: { gte: start, lt: end } }, _sum: { amountCents: true }, _count: true }),
     openDepositCounts(tenant.id),
+    caseCounts(tenant.id),
   ]);
   const sums = await paymentSummaries(tenant.id, finalInvoices);
+  const damageInvoiceIds = new Set(finalInvoices.filter((i) => i.kind === "DAMAGE").map((i) => i.id));
+  const openDamageInvoices = [...sums.entries()].filter(([id, x]) => damageInvoiceIds.has(id) && (x.status === "OPEN" || x.status === "PARTIAL")).length;
   const openInvoices = [...sums.values()].filter((x) => x.status === "OPEN" || x.status === "PARTIAL");
   const openInvoiceCents = openInvoices.reduce((a, x) => a + x.openCents, 0);
   const overpaid = [...sums.values()].filter((x) => x.status === "OVERPAID");
@@ -83,6 +87,12 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
           <KPI label="Offener Rechnungsbetrag" value={<span className="text-2xl">{fmtCents(openInvoiceCents)}</span>} detail="aus abgeschlossenen Rechnungen" />
           <KPI label="Zahlungen heute" value={todayPayments._count} detail={fmtCents(todayPayments._sum.amountCents ?? 0)} />
           <KPI label="Offene Kautionen" value={deposits.held} detail={`nach Rückgabe noch nicht entschieden · ${deposits.expectedActive} unterwegs ohne Eingang`} />
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <KPI label="Offene Schadenakten" value={damage.open} detail={<Link href="/schaeden?filter=offen" className="underline">zu den Schäden</Link>} hot={damage.open > 0} />
+          <KPI label="In Reparatur" value={damage.inRepair} detail={<Link href="/schaeden?filter=reparatur" className="underline">Fahrzeuge in Reparatur</Link>} />
+          <KPI label="Wegen Schaden gesperrt" value={damage.blocked} detail={<Link href="/schaeden?filter=gesperrt" className="underline">Fahrzeuge mit offener Akte</Link>} hot={damage.blocked > 0} />
+          <KPI label="Haftung ungeklärt" value={damage.liability} detail={damage.openInvoices > 0 ? <Link href="/schaeden?filter=rechnung_offen" className="underline">{openDamageInvoices} Schadensrechnung{openDamageInvoices === 1 ? "" : "en"} offen</Link> : <Link href="/schaeden?filter=haftung_ungeklaert" className="underline">offene Akten ohne Bewertung</Link>} hot={damage.liability > 0} />
         </div>
         {overpaid.length > 0 && (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

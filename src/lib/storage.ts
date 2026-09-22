@@ -60,6 +60,15 @@ export function sniffImageType(bytes: Uint8Array): (typeof ALLOWED_PHOTO_TYPES)[
   return null;
 }
 
+// Dokumente zur Schadenakte (Kostenvoranschlag, Werkstattrechnung): PDF oder Foto, gleiche Obergrenze wie Fotos.
+export const MAX_DOCUMENT_BYTES = MAX_PHOTO_BYTES;
+
+/** Erkennt PDF oder Bild am Dateianfang; alles andere wird abgelehnt (kein Office, kein HTML, keine Skripte). */
+export function sniffDocumentType(bytes: Uint8Array): "application/pdf" | (typeof ALLOWED_PHOTO_TYPES)[number] | null {
+  if (bytes.length > 5 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2d) return "application/pdf";
+  return sniffImageType(bytes);
+}
+
 export interface StorageDriver {
   readonly name: "s3" | "local";
   /** Legt ein Objekt ab. Überschreibt nie: existiert der Schlüssel, ist das ein Fehler. */

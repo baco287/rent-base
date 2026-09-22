@@ -184,12 +184,12 @@ async function loadSources(tx: Tx, tenantId: string, bookingId: string) {
  * Ein festgestellter Schaden erscheint nur, wenn ein Mitarbeiter dort ausdrücklich eine Position vom Typ DAMAGE angelegt hat.
  */
 export async function ensureInvoiceDraft(tenantId: string, bookingId: string, actor: Actor): Promise<InvoiceRow> {
-  const existing = await db.invoice.findFirst({ where: { tenantId, bookingId, status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "desc" } });
+  const existing = await db.invoice.findFirst({ where: { tenantId, bookingId, kind: "RENTAL", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "desc" } });
   if (existing) return existing;
   return db.$transaction(async (tx) => {
     const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Booking" WHERE "id" = ${bookingId} AND "tenantId" = ${tenantId} FOR UPDATE`;
     if (locked.length === 0) throw new DomainError("Buchung nicht gefunden.");
-    const again = await tx.invoice.findFirst({ where: { tenantId, bookingId, status: { in: ["DRAFT", "FINALIZED"] } } });
+    const again = await tx.invoice.findFirst({ where: { tenantId, bookingId, kind: "RENTAL", status: { in: ["DRAFT", "FINALIZED"] } } });
     if (again) return again;
     const { booking, contract, tenant, ret, pickup } = await loadSources(tx, tenantId, bookingId);
     const missing = invoiceSettingsMissing(tenant);
@@ -269,6 +269,51 @@ export async function ensureInvoiceDraft(tenantId: string, bookingId: string, ac
     await tx.invoiceVersionItem.createMany({ data: computed.map((ci, i) => itemData(tenantId, version.id, i, ci)) });
     return invoice;
   }, TX);
+}
+
+/**
+ * Schadenabrechnung (kind DAMAGE) als Entwurf mit Fassung 1: eine Position über den bewusst festgelegten Belastungsbetrag.
+ * Rechnungsempfänger aus der Vertragskopie, Firmendaten aus den Einstellungen; Steuersatz folgt der gewählten steuerlichen
+ * Behandlung (echter Schadensersatz → 0 % mit Hinweistext, steuerpflichtiges Entgelt → Standardsatz). Wird von der
+ * Schadenakte aufgerufen; die Eindeutigkeit je Akte sichert der Datenbank-Index.
+ */
+export async function createDamageInvoiceDraft(tx: Tx, tenantId: string, actor: Actor, input: { bookingId: string; damageCaseId: string; damageId: string; caseNumber: string; amountCents: Cents; basis: string; taxTreatment: "NON_TAXABLE_DAMAGES" | "TAXABLE_SERVICE"; taxNote: string }): Promise<InvoiceRow> {
+  const booking = await tx.booking.findFirst({ where: { id: input.bookingId, tenantId }, include: { contract: true, tenant: true } });
+  if (!booking) throw new DomainError("Buchung nicht gefunden.");
+  if (!booking.contract || booking.contract.status !== "SIGNED") throw new DomainError("Zu dieser Buchung gibt es keinen abgeschlossenen Mietvertrag; ohne Vertragskopie gibt es keinen Rechnungsempfänger.");
+  const tenant = booking.tenant;
+  const missing = invoiceSettingsMissing(tenant);
+  if (missing.length > 0) throw new DomainError(`Bevor Rechnungen erstellt werden können, muss der Inhaber in den Einstellungen ergänzen: ${missing.join("; ")}.`);
+  if (input.amountCents <= 0) throw new DomainError("Der Belastungsbetrag muss größer als 0,00 € sein.");
+  const mode = tenant.pricesIncludeTax ? "GROSS" : "NET";
+  const rate = input.taxTreatment === "TAXABLE_SERVICE" ? Number(tenant.defaultTaxRate) : 0;
+  const c = booking.contract.customerSnapshot as Partial<CustomerSnapshot>;
+  const item = computeItem(mode, { description: `Schadenabrechnung zur Vermietung ${booking.number} (Schadenakte ${input.caseNumber}): ${input.basis.trim()}`, quantity: 1, unit: "pauschal", unitPrice: centsToDecimalString(input.amountCents), taxRate: rate, source: "MANUAL", reference: `Schadenakte ${input.caseNumber}` });
+  const totals = summarize([{ taxRateBp: item.taxRateBp, amounts: item.amounts }]);
+  const start = booking.actualPickupAt ?? booking.contract.startAt;
+  const end = booking.actualReturnAt ?? booking.contract.endAt;
+  const now = new Date();
+  const invoice = await tx.invoice.create({
+    data: {
+      tenantId, bookingId: booking.id, customerId: booking.customerId, contractId: booking.contract.id,
+      kind: "DAMAGE", damageCaseId: input.damageCaseId, damageId: input.damageId, taxTreatment: input.taxTreatment,
+      sourceHash: sha256(`${booking.contract.contentHash}:${input.damageCaseId}:${input.amountCents}`),
+      createdById: actor.id,
+      changeLog: [{ at: now.toISOString(), by: actor.name, versionNo: 1, summary: `Schadenabrechnung zur Schadenakte ${input.caseNumber} als Entwurf erstellt (Kundenbelastung ${fmtCents(input.amountCents)})` }],
+    },
+  });
+  const version = await tx.invoiceVersion.create({
+    data: {
+      tenantId, invoiceId: invoice.id, versionNo: 1, kind: "ORIGINAL",
+      servicePeriodStart: start, servicePeriodEnd: end, pricesIncludeTax: mode === "GROSS",
+      customerSnapshot: customerSnapshotFromContract(c), companySnapshot: companySnapshotOf(tenant),
+      netTotal: centsToDecimalString(totals.total.net), taxTotal: centsToDecimalString(totals.total.tax), grossTotal: centsToDecimalString(totals.total.gross),
+      paymentTermDays: tenant.paymentTermDays, taxNote: input.taxNote || null,
+      createdById: actor.id, createdByName: actor.name,
+    },
+  });
+  await tx.invoiceVersionItem.create({ data: itemData(tenantId, version.id, 0, item) });
+  return invoice;
 }
 
 // ---------------------------------------------------------------------------
@@ -517,13 +562,22 @@ async function collectIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, draf
   const warn = (code: string, message: string) => issues.push({ code, severity: "warning", message });
   const booking = await tx.booking.findFirst({ where: { id: invoice.bookingId, tenantId }, include: { contract: { select: { status: true } } } });
   if (!booking) err("BOOKING_MISSING", "Buchung nicht gefunden.");
-  if (draft.versionNo === 1) {
+  if (draft.versionNo === 1 && invoice.kind === "DAMAGE") {
+    // Schadenabrechnung: braucht Vertrag (Rechnungsempfänger) und eine Schadenakte mit bestätigter Kundenverantwortung
+    if (booking && booking.contract?.status !== "SIGNED") err("CONTRACT", "Zu dieser Buchung gibt es keinen abgeschlossenen Mietvertrag.");
+    const dc = invoice.damageCaseId ? await tx.damageCase.findFirst({ where: { id: invoice.damageCaseId, tenantId } }) : null;
+    if (!dc) err("DAMAGE_CASE", "Zu dieser Abrechnung gibt es keine Schadenakte.");
+    else if (dc.liabilityStatus !== "CUSTOMER_RESPONSIBILITY_CONFIRMED") err("LIABILITY", "Die Haftung des Kunden ist in der Schadenakte nicht (mehr) bestätigt.");
+    if (!invoice.taxTreatment) err("TAX_TREATMENT", "Die steuerliche Behandlung der Kundenbelastung ist nicht festgelegt.");
+    const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+    for (const m of invoiceSettingsMissing(tenant)) err("COMPANY", `Firmendaten unvollständig: ${m}.`);
+  } else if (draft.versionNo === 1) {
     if (booking && booking.status !== "RETURNED") err("BOOKING_STATUS", "Die Buchung ist nicht zurückgegeben.");
     if (booking && booking.contract?.status !== "SIGNED") err("CONTRACT", "Zu dieser Buchung gibt es keinen abgeschlossenen Mietvertrag.");
     const ret = invoice.returnHandoverId ? await tx.handover.findFirst({ where: { id: invoice.returnHandoverId, tenantId, status: "FINALIZED" } }) : null;
     if (!ret) err("RETURN", "Zu dieser Rechnung gibt es keine abgeschlossene Rückgabe.");
-    const other = await tx.invoice.count({ where: { tenantId, bookingId: invoice.bookingId, status: "FINALIZED", id: { not: invoice.id } } });
-    if (other > 0) err("INVOICE_EXISTS", "Zu dieser Buchung gibt es bereits eine abgeschlossene Rechnung.");
+    const other = await tx.invoice.count({ where: { tenantId, bookingId: invoice.bookingId, kind: "RENTAL", status: "FINALIZED", id: { not: invoice.id } } });
+    if (other > 0) err("INVOICE_EXISTS", "Zu dieser Buchung gibt es bereits eine abgeschlossene Mietrechnung.");
     // Fassung 1 friert die Firmendaten beim Abschluss aus den Einstellungen ein: dort müssen sie vollständig sein
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
     for (const m of invoiceSettingsMissing(tenant)) err("COMPANY", `Firmendaten unvollständig: ${m}.`);
@@ -741,7 +795,8 @@ export async function finalizeInvoice(tenantId: string, invoiceId: string, actor
       return finalized;
     }, TX),
   ).catch((e) => {
-    if (isUniqueViolation(e, "bookingId")) throw new DomainError("Zu dieser Buchung gibt es bereits eine abgeschlossene Rechnung.");
+    if (isUniqueViolation(e, "damageCaseId")) throw new DomainError("Zu dieser Schadenakte gibt es bereits eine Schadenabrechnung.");
+    if (isUniqueViolation(e, "bookingId")) throw new DomainError("Zu dieser Buchung gibt es bereits eine abgeschlossene Mietrechnung.");
     throw e;
   });
 }
@@ -772,8 +827,17 @@ export async function discardInvoiceDraft(tenantId: string, invoiceId: string, a
     await tx.invoiceVersionItem.deleteMany({ where: { tenantId, versionId: draft.id } });
     await tx.invoiceVersion.delete({ where: { id: draft.id } });
     if (draft.versionNo === 1) {
+      const inv = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
       await tx.invoiceItem.deleteMany({ where: { tenantId, invoiceId } });
       await tx.invoice.delete({ where: { id: invoiceId } });
+      if (inv.kind === "DAMAGE" && inv.damageCaseId) {
+        // Schadenabrechnung verworfen: die Kundenbelastung an der Akte wird wieder frei, damit sie neu festgelegt werden kann
+        const c = await tx.damageCase.findFirst({ where: { id: inv.damageCaseId, tenantId } });
+        if (c && c.customerChargeCents != null) {
+          await tx.damageCase.update({ where: { id: c.id }, data: { customerChargeCents: null, customerChargeBasis: null, customerChargeTaxTreatment: null, customerChargeAt: null, customerChargeByName: null } });
+          await tx.damageCaseEvent.create({ data: { tenantId, caseId: c.id, type: "NOTE_ADDED", note: "Entwurf der Schadenabrechnung verworfen; Kundenbelastung zurückgesetzt", userId: actor?.id ?? null, userName: actor?.name ?? null } });
+        }
+      }
       return { invoiceDeleted: true, versionNo: 1 };
     }
     const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId } });

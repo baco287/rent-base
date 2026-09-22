@@ -146,15 +146,18 @@ export async function planHandoverMail(tenantId: string, handoverId: string): Pr
 export const planPickupMail = planHandoverMail;
 
 /** Rechnung: neutraler Text, nur das Rechnungs-PDF. Keine Aussage zu Schäden oder Verantwortung. */
-export type InvoiceMailFacts = PickupMailFacts & { invoiceNumber: string; grossTotal: string; dueDate: string | null; correction?: { versionNo: number; supersededVersionNo: number | null } | null };
+export type InvoiceMailFacts = PickupMailFacts & { invoiceNumber: string; invoiceKind?: "RENTAL" | "DAMAGE"; grossTotal: string; dueDate: string | null; correction?: { versionNo: number; supersededVersionNo: number | null } | null };
 
 /** Rechnungsmail; bei einer Berichtigung neutral formuliert: die neue Fassung ersetzt die zuvor übermittelte. */
 export function composeInvoiceMail(f: InvoiceMailFacts): { subject: string; text: string; html: string } {
   const corr = f.correction ?? null;
-  const subject = corr ? `Korrigierte Rechnung ${f.invoiceNumber}` : `Ihre Rechnung ${f.invoiceNumber}`;
+  // Schadenabrechnung: eigener Wortlaut, ebenfalls neutral (keine Aussage zu Hergang oder Verschulden im Mailtext)
+  const dmg = f.invoiceKind === "DAMAGE";
+  const word = dmg ? "Schadenabrechnung" : "Rechnung";
+  const subject = corr ? `Korrigierte ${word} ${f.invoiceNumber}` : `Ihre ${word} ${f.invoiceNumber}`;
   const intro = corr
-    ? `anbei erhalten Sie die berichtigte Rechnung ${f.invoiceNumber} (Fassung ${corr.versionNo}) zu Ihrer Fahrzeugmiete. Sie ersetzt die Ihnen zuvor übermittelte Fassung${corr.supersededVersionNo ? ` ${corr.supersededVersionNo}` : ""} dieser Rechnung.`
-    : `anbei erhalten Sie die Rechnung ${f.invoiceNumber} zu Ihrer Fahrzeugmiete.`;
+    ? `anbei erhalten Sie die berichtigte ${word} ${f.invoiceNumber} (Fassung ${corr.versionNo}) zu Ihrer Fahrzeugmiete. Sie ersetzt die Ihnen zuvor übermittelte Fassung${corr.supersededVersionNo ? ` ${corr.supersededVersionNo}` : ""} dieser ${word}.`
+    : `anbei erhalten Sie die ${word} ${f.invoiceNumber} zu Ihrer Fahrzeugmiete.`;
   const lines = [
     `Guten Tag ${f.renterName},`,
     "",
@@ -167,7 +170,7 @@ export function composeInvoiceMail(f: InvoiceMailFacts): { subject: string; text
     ...(f.dueDate ? [`Zahlbar bis: ${f.dueDate}`] : []),
     "",
     "Im Anhang:",
-    corr ? "- Berichtigte Rechnung" : "- Rechnung",
+    corr ? `- Berichtigte ${word}` : `- ${word}`,
     "",
     "Bei Fragen zur Rechnung melden Sie sich gern bei uns.",
     "",
@@ -193,13 +196,13 @@ ${f.dueDate ? `<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Zahlbar bis<
   return { subject, text: lines.join("\n"), html };
 }
 
-export type InvoiceMailPlan = PickupMailPlan & { invoice: { number: string; grossTotal: string; dueDate: string | null; correction: { versionNo: number; supersededVersionNo: number | null } | null } };
+export type InvoiceMailPlan = PickupMailPlan & { invoice: { number: string; kind: "RENTAL" | "DAMAGE"; grossTotal: string; dueDate: string | null; correction: { versionNo: number; supersededVersionNo: number | null } | null } };
 
 /** Stellt zusammen, was für eine Rechnungsfassung verschickt würde: ausschließlich das archivierte PDF dieser Fassung an die Adresse aus der Rechnungskopie. */
 export async function planInvoiceMail(tenantId: string, versionId: string): Promise<InvoiceMailPlan> {
   const v = await db.invoiceVersion.findFirst({ where: { id: versionId, tenantId }, select: { id: true, status: true, kind: true, versionNo: true, invoiceId: true } });
   if (!v) throw new DomainError("Rechnungsfassung nicht gefunden.");
-  const inv = await db.invoice.findFirst({ where: { id: v.invoiceId, tenantId }, select: { id: true, bookingId: true, contractId: true, status: true, number: true } });
+  const inv = await db.invoice.findFirst({ where: { id: v.invoiceId, tenantId }, select: { id: true, bookingId: true, contractId: true, status: true, number: true, kind: true } });
   if (!inv) throw new DomainError("Rechnung nicht gefunden.");
   if (v.status !== "FINALIZED" || inv.status !== "FINALIZED" || !inv.number) throw new DomainError("Eine Rechnung wird erst nach dem Abschluss versendet.");
   if (!inv.contractId) throw new DomainError("Zu dieser Rechnung gibt es keinen Mietvertrag.");
@@ -218,7 +221,7 @@ export async function planInvoiceMail(tenantId: string, versionId: string): Prom
     replyTo: d.landlord.email,
     documents: doc ? [doc] : [],
     missing: doc ? [] : ["Rechnung"],
-    invoice: { number: inv.number, grossTotal: invoiceData.doc.totals.gross, dueDate: invoiceData.doc.paymentDueDate, correction: v.kind === "CORRECTION" ? { versionNo: v.versionNo, supersededVersionNo: invoiceData.doc.version.supersedes?.versionNo ?? null } : null },
+    invoice: { number: inv.number, kind: inv.kind === "DAMAGE" ? "DAMAGE" : "RENTAL", grossTotal: invoiceData.doc.totals.gross, dueDate: invoiceData.doc.paymentDueDate, correction: v.kind === "CORRECTION" ? { versionNo: v.versionNo, supersededVersionNo: invoiceData.doc.version.supersedes?.versionNo ?? null } : null },
   };
 }
 
@@ -254,7 +257,7 @@ async function sendPlannedDocuments(tenantId: string, plan: PickupMailPlan & { i
 
   const versions = plan.documents.map((doc) => `${doc.id}v${doc.version}`).join("+");
   const idempotencyKey = `${template}:${subjectId}:${versions}${opts.trigger === "MANUAL" ? `:manual:${opts.nonce}` : ""}`;
-  const mail = plan.kind === "INVOICE" && plan.invoice ? composeInvoiceMail({ ...plan.facts, invoiceNumber: plan.invoice.number, grossTotal: plan.invoice.grossTotal, dueDate: plan.invoice.dueDate, correction: plan.invoice.correction }) : plan.kind === "RETURN" ? composeReturnMail(plan.facts) : composePickupMail(plan.facts);
+  const mail = plan.kind === "INVOICE" && plan.invoice ? composeInvoiceMail({ ...plan.facts, invoiceNumber: plan.invoice.number, invoiceKind: plan.invoice.kind, grossTotal: plan.invoice.grossTotal, dueDate: plan.invoice.dueDate, correction: plan.invoice.correction }) : plan.kind === "RETURN" ? composeReturnMail(plan.facts) : composePickupMail(plan.facts);
   const { log, created } = await claimEmail({
     tenantId,
     bookingId: plan.bookingId,

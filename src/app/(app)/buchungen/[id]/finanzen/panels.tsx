@@ -20,20 +20,25 @@ export function PaymentStatusChip({ status }: { status: PaymentSummary["status"]
   return <Chip tone={tone}>{INVOICE_PAYMENT_STATUS[status]}</Chip>;
 }
 
-/** Zahlungen zu einer abgeschlossenen Rechnung: Saldo, Erfassen, Historie mit Storno. */
-export async function PaymentsPanel({ tenantId, bookingId, role, compact = false }: { tenantId: string; bookingId: string; role: string; compact?: boolean }) {
-  const invoice = await db.invoice.findFirst({ where: { tenantId, bookingId, status: "FINALIZED" }, select: { id: true, number: true, grossTotal: true } });
+/**
+ * Zahlungen zu einer abgeschlossenen Rechnung: Saldo, Erfassen, Historie mit Storno.
+ * invoiceId: eine bestimmte Rechnung (z. B. Schadenabrechnung); ohne Angabe die Mietrechnung der Buchung.
+ */
+export async function PaymentsPanel({ tenantId, bookingId, role, compact = false, invoiceId = null, title }: { tenantId: string; bookingId: string; role: string; compact?: boolean; invoiceId?: string | null; title?: string }) {
+  const invoice = await db.invoice.findFirst({ where: { tenantId, bookingId, status: "FINALIZED", ...(invoiceId ? { id: invoiceId } : { kind: "RENTAL" }) }, select: { id: true, number: true, kind: true, grossTotal: true } });
   const canManage = role !== "YARD";
+  const heading = title ?? (invoice?.kind === "DAMAGE" ? "Zahlungen zur Schadenabrechnung" : "Zahlungen");
   if (!invoice) {
     return (
-      <Card title="Zahlungen">
-        <div className="p-4 text-sm text-ink-3">Zahlungen werden zu einer abgeschlossenen Rechnung erfasst. Zu dieser Buchung gibt es noch keine.</div>
+      <Card title={heading}>
+        <div className="p-4 text-sm text-ink-3">Zahlungen werden zu einer abgeschlossenen Rechnung erfasst. Zu dieser Buchung gibt es noch keine{invoiceId ? "" : " Mietrechnung"}.</div>
       </Card>
     );
   }
   const [summary, payments] = await Promise.all([invoicePaymentSummary(tenantId, invoice.id), listInvoicePayments(tenantId, invoice.id)]);
+  const invoiceHref = `/buchungen/${bookingId}/rechnung${invoice.kind === "DAMAGE" ? `?nr=${invoice.id}` : ""}`;
   return (
-    <Card title="Zahlungen" right={<PaymentStatusChip status={summary.status} />}>
+    <Card title={heading} right={<PaymentStatusChip status={summary.status} />}>
       <div className="p-4 flex flex-col gap-4">
         <div className="grid grid-cols-3 gap-2 text-sm">
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Rechnungsbetrag</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(summary.grossCents)}</div></div>
@@ -45,7 +50,7 @@ export async function PaymentsPanel({ tenantId, bookingId, role, compact = false
           )}
         </div>
         {summary.status === "OVERPAID" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3 py-2 text-sm">Überzahlt – Erstattung zu klären: Der Rechnungsbetrag der aktuellen Fassung liegt unter den dokumentierten Zahlungen. Rent-Base führt keine automatische Erstattung durch; Zahlungen bleiben unverändert.</p>}
-        {compact && <div className="text-xs text-ink-3">Rechnung <Link href={`/buchungen/${bookingId}/rechnung`} className="underline">{invoice.number}</Link></div>}
+        {compact && <div className="text-xs text-ink-3">{invoice.kind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung"} <Link href={invoiceHref} className="underline">{invoice.number}</Link></div>}
         {canManage && summary.openCents > 0 && <PaymentForm action={recordPaymentAction.bind(null, bookingId)} preview={previewPaymentAction} invoiceId={invoice.id} nonce={randomUUID()} defaultWhen={toDateTimeInputValue(new Date())} />}
         {canManage && summary.openCents === 0 && summary.status === "PAID" && <p className="text-sm text-good">Die Rechnung ist vollständig bezahlt.</p>}
         {!canManage && <p className="text-xs text-ink-3">Zahlungen erfasst und korrigiert die Disposition.</p>}
@@ -91,7 +96,8 @@ export async function DepositPanel({ tenantId, bookingId, role, charges }: { ten
       </Card>
     );
   }
-  const invoice = await db.invoice.findFirst({ where: { tenantId, bookingId, status: "FINALIZED" }, select: { number: true, grossTotal: true } });
+  const invoices = await db.invoice.findMany({ where: { tenantId, bookingId, status: "FINALIZED" }, orderBy: { createdAt: "asc" }, select: { id: true, number: true, kind: true, currentVersion: { select: { grossTotal: true } }, grossTotal: true } });
+  const invoice = invoices[0] ?? null;
   const afterReturn = v.bookingStatus === "RETURNED" || v.bookingStatus === "CANCELLED";
   const nonce = randomUUID();
   const now = toDateTimeInputValue(new Date());
@@ -115,8 +121,8 @@ export async function DepositPanel({ tenantId, bookingId, role, charges }: { ten
           <div className="text-sm rounded-md border border-line-soft p-3 flex flex-col gap-1">
             <div className="label-xs">Zur Einordnung (keine Verrechnung)</div>
             {charges && <div className="flex justify-between"><span>Bestätigte Zusatzkosten der Rückgabe ({charges.count})</span><span className="font-mono tnum">{fmtEur(charges.total)}</span></div>}
-            {invoice && <div className="flex justify-between"><span>Rechnung {invoice.number}</span><span className="font-mono tnum">{fmtEur(Number(invoice.grossTotal))}</span></div>}
-            <p className="text-xs text-ink-3">Rent-Base verrechnet die Kaution nicht automatisch mit Zusatzkosten oder Rechnungen. Freigabe und Einbehalt sind eine dokumentierte Entscheidung des Mitarbeiters.</p>
+            {invoices.map((i) => <div key={i.id} className="flex justify-between"><span>{i.kind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung"} {i.number}</span><span className="font-mono tnum">{fmtEur(Number(i.currentVersion?.grossTotal ?? i.grossTotal))}</span></div>)}
+            <p className="text-xs text-ink-3">Rent-Base verrechnet die Kaution nicht automatisch mit Zusatzkosten, Rechnungen oder Schadenabrechnungen. Freigabe und Einbehalt sind eine dokumentierte Entscheidung des Mitarbeiters.</p>
           </div>
         )}
         {afterReturn && v.remainingCents > 0 && canDecide && (

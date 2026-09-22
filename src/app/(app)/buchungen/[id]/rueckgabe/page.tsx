@@ -15,6 +15,7 @@ import { FinalizeForm, SignatureForm, StepForm, WizardProgress } from "../vertra
 import { FuelGauge, HandoverDocumentView, HandoverIssueList, RETURN_STEPS } from "../uebergabe/handover-parts";
 import { PhotoUploader } from "../uebergabe/photo-uploader";
 import { DocumentsPanel } from "../dokumente/documents-panel";
+import { DamageCasesPanel } from "../../../schaeden/damages-panel";
 import { FollowUpNotice } from "../dokumente/follow-up-notice";
 import { getHandoverCompletionStatus } from "@/lib/completion";
 import { CompletionCard } from "../uebergabe/completion-card";
@@ -104,6 +105,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
           {sp.abgeschlossen === "1" && <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 font-medium">Die Rückgabe ist abgeschlossen und versiegelt. {b.vehicle.plate} ist zurück und die Buchung steht auf „Zurückgegeben“.</p>}
           {sp.abgeschlossen === "1" && <FollowUpNotice tenantId={tenant.id} bookingId={b.id} handoverId={handover.id} kind="RETURN" />}
           <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
+          <DamageCasesPanel tenantId={tenant.id} where={{ discoveredInHandoverId: handover.id }} title="Bei dieser Rückgabe neu festgestellte Schäden" empty="Bei dieser Rückgabe wurden keine neuen Schäden festgestellt." />
           <HandoverDocumentView doc={doc} handoverId={handover.id} />
         </Content>
       </>

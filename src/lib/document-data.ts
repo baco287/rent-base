@@ -114,15 +114,16 @@ export async function loadInvoiceDocumentData(tenantId: string, versionId: strin
   if (!v) throw new DomainError("Rechnungsfassung nicht gefunden.");
   if (!opts.allowDraft && (v.status !== "FINALIZED" || !v.contentHash)) throw new DomainError("Ein Rechnungs-PDF gibt es erst, wenn die Rechnungsfassung abgeschlossen ist.");
   const inv = await db.invoice.findFirstOrThrow({ where: { id: v.invoiceId, tenantId } });
-  const [booking, contract, ret, prev] = await Promise.all([
+  const [booking, contract, ret, prev, damageCase] = await Promise.all([
     db.booking.findFirst({ where: { id: inv.bookingId, tenantId }, select: { number: true } }),
     inv.contractId ? db.rentalContract.findFirst({ where: { id: inv.contractId, tenantId }, select: { number: true } }) : null,
     inv.returnHandoverId ? db.handover.findFirst({ where: { id: inv.returnHandoverId, tenantId }, select: { number: true } }) : null,
     v.supersedesVersionId ? db.invoiceVersion.findFirst({ where: { id: v.supersedesVersionId, tenantId }, select: { versionNo: true, finalizedAt: true } }) : null,
+    inv.damageCaseId ? db.damageCase.findFirst({ where: { id: inv.damageCaseId, tenantId }, select: { caseNumber: true } }) : null,
   ]);
   const c = v.customerSnapshot as { email?: string | null };
   return {
-    doc: buildInvoiceDocument(v, { number: inv.number, contractNumber: contract?.number ?? null, bookingNumber: booking?.number ?? null, returnNumber: ret?.number ?? null, isCurrent: inv.currentVersionId === v.id, supersedes: prev }),
+    doc: buildInvoiceDocument(v, { number: inv.number, kind: inv.kind, contractNumber: contract?.number ?? null, bookingNumber: booking?.number ?? null, returnNumber: ret?.number ?? null, caseNumber: damageCase?.caseNumber ?? null, isCurrent: inv.currentVersionId === v.id, supersedes: prev }),
     bookingId: inv.bookingId,
     invoiceId: inv.id,
     versionId: v.id,

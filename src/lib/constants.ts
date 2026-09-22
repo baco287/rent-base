@@ -193,8 +193,66 @@ export const AUDIT_ACTIONS = {
   INVOICE_REVISED: "Rechnung neu gefasst",
   INVOICE_CORRECTED: "Rechnung berichtigt",
   INVOICE_DELIVERED_MANUALLY: "Rechnung als übergeben markiert",
+  DAMAGE_CASE_CREATED: "Schadenakte eröffnet",
+  DAMAGE_CASE_STATUS_CHANGED: "Schadenakte: Status geändert",
+  DAMAGE_LIABILITY_CHANGED: "Schadenakte: Haftung geändert",
+  DAMAGE_COST_CHANGED: "Schadenakte: Kosten geändert",
+  DAMAGE_PHOTO_ADDED: "Schadenakte: Foto hinzugefügt",
+  DAMAGE_DOCUMENT_ADDED: "Schadenakte: Dokument hinzugefügt",
+  VEHICLE_BLOCKED_FOR_DAMAGE: "Fahrzeug wegen Schaden gesperrt",
+  VEHICLE_RELEASED_AFTER_DAMAGE: "Fahrzeug nach Schaden freigegeben",
+  DAMAGE_CUSTOMER_CHARGE_CREATED: "Kundenbelastung festgelegt",
+  DAMAGE_INVOICE_CREATED: "Schadenabrechnung erstellt",
+  DAMAGE_CASE_CLOSED: "Schadenakte geschlossen",
+  DAMAGE_CASE_REOPENED: "Schadenakte wieder geöffnet",
 } as const;
 export type AuditAction = keyof typeof AUDIT_ACTIONS;
+
+// Phase 12: Schadenmanagement. Fahrzeugschaden ≠ Haftung ≠ Kundenforderung ≠ Rechnung ≠ Zahlung ≠ Kaution.
+export const DAMAGE_CASE_STATUS = { OPEN: "Offen", UNDER_REVIEW: "In Prüfung", REPAIR_PLANNED: "Reparatur geplant", IN_REPAIR: "In Reparatur", REPAIRED: "Repariert", CLOSED: "Geschlossen" } as const;
+export type DamageCaseStatus = keyof typeof DAMAGE_CASE_STATUS;
+export const DAMAGE_CASE_TRANSITIONS: Record<DamageCaseStatus, DamageCaseStatus[]> = {
+  OPEN: ["UNDER_REVIEW", "REPAIR_PLANNED", "CLOSED"],
+  UNDER_REVIEW: ["OPEN", "REPAIR_PLANNED", "IN_REPAIR", "CLOSED"],
+  REPAIR_PLANNED: ["UNDER_REVIEW", "IN_REPAIR", "CLOSED"],
+  IN_REPAIR: ["REPAIR_PLANNED", "REPAIRED", "CLOSED"],
+  REPAIRED: ["IN_REPAIR", "CLOSED"],
+  CLOSED: [], // Wiederöffnen ist eine eigene Aktion mit Grund
+};
+export const DAMAGE_CASE_PRIORITY = { LOW: "Niedrig", NORMAL: "Normal", HIGH: "Hoch" } as const;
+export type DamageCasePriority = keyof typeof DAMAGE_CASE_PRIORITY;
+export const LIABILITY_STATUS = {
+  UNASSESSED: "Noch nicht bewertet",
+  UNCLEAR: "Unklar",
+  CUSTOMER_RESPONSIBILITY_CONFIRMED: "Kunde verantwortlich (bestätigt)",
+  NOT_CUSTOMER_RESPONSIBILITY: "Kunde nicht verantwortlich",
+  THIRD_PARTY: "Dritter verantwortlich",
+  INTERNAL: "Intern (eigener Betrieb)",
+} as const;
+export type LiabilityStatus = keyof typeof LIABILITY_STATUS;
+export const DAMAGE_CASE_DOCUMENT_TYPES = { ESTIMATE: "Kostenvoranschlag", REPAIR_INVOICE: "Werkstattrechnung", OTHER: "Sonstiges" } as const;
+export type DamageCaseDocumentType = keyof typeof DAMAGE_CASE_DOCUMENT_TYPES;
+export const DAMAGE_CASE_EVENT_TYPES = {
+  CREATED: "Akte eröffnet", STATUS_CHANGED: "Status geändert", LIABILITY_CHANGED: "Haftung geändert", COST_CHANGED: "Kosten geändert", REPAIR_CHANGED: "Reparatur geändert",
+  PHOTO_ADDED: "Foto hinzugefügt", DOCUMENT_ADDED: "Dokument hinzugefügt", NOTE_ADDED: "Notiz ergänzt", VEHICLE_BLOCKED: "Fahrzeug gesperrt", VEHICLE_RELEASED: "Fahrzeug freigegeben",
+  CUSTOMER_CHARGE_CREATED: "Kundenbelastung festgelegt", INVOICE_CREATED: "Schadenabrechnung erstellt", CLOSED: "Akte geschlossen", REOPENED: "Akte wieder geöffnet",
+} as const;
+export const INVOICE_KINDS = { RENTAL: "Mietrechnung", DAMAGE: "Schadenabrechnung" } as const;
+export type InvoiceKind = keyof typeof INVOICE_KINDS;
+/**
+ * Steuerliche Behandlung einer Kundenbelastung – bewusste Auswahl des Mitarbeiters, keine Vorentscheidung durch Rent-Base
+ * (Abschn. 1.3 UStAE: Ausgleich für Beschädigung durch nicht vertragsgemäße Nutzung ist echter Schadensersatz und nicht
+ * steuerbar; wird dagegen eine Leistung erbracht oder weiterberechnet, liegt ein steuerpflichtiges Entgelt vor).
+ */
+export const DAMAGE_TAX_TREATMENTS = {
+  NON_TAXABLE_DAMAGES: "Echter Schadensersatz – nicht umsatzsteuerbar, ohne Umsatzsteuerausweis",
+  TAXABLE_SERVICE: "Steuerpflichtiges Entgelt (Leistung/Weiterberechnung) – mit Umsatzsteuer zum Standardsatz",
+} as const;
+export type DamageTaxTreatment = keyof typeof DAMAGE_TAX_TREATMENTS;
+export const DAMAGE_TAX_NOTES: Record<DamageTaxTreatment, string> = {
+  NON_TAXABLE_DAMAGES: "Schadensersatz – nicht umsatzsteuerbar (§ 1 Abs. 1 Nr. 1 UStG, Abschn. 1.3 UStAE). Kein Umsatzsteuerausweis.",
+  TAXABLE_SERVICE: "",
+};
 
 export const CHARGE_UNITS = ["km", "l", "kWh", "h", "Stk", "pauschal"] as const;
 

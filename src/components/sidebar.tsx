@@ -11,6 +11,7 @@ const NAV = [
   { href: "/kunden", label: "Kunden", icon: "user" },
   { href: "/buchungen", label: "Buchungen", icon: "doc" },
   { href: "/rechnungen", label: "Rechnungen", icon: "euro" },
+  { href: "/schaeden", label: "Schäden", icon: "warn" },
   { href: "/einstellungen", label: "Einstellungen", icon: "cog" },
 ] as const;
 
@@ -23,6 +24,7 @@ function Icon({ name }: { name: (typeof NAV)[number]["icon"] }) {
     case "user": return <svg {...p}><circle cx="8" cy="5.5" r="3" /><path d="M2.5 14c.5-3 2.5-4.5 5.5-4.5s5 1.5 5.5 4.5" /></svg>;
     case "doc": return <svg {...p}><path d="M4 2h6l3 3v9H4z" /><path d="M6 8h4M6 11h4" /></svg>;
     case "euro": return <svg {...p}><path d="M12 3.5A5 5 0 0 0 4.5 8a5 5 0 0 0 7.5 4.5M2.5 6.5h7M2.5 9.5h7" /></svg>;
+    case "warn": return <svg {...p}><path d="M8 2.5 14 13H2z" /><path d="M8 6.5v3M8 11.2v.3" /></svg>;
     case "cog": return <svg {...p}><circle cx="8" cy="8" r="2.5" /><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" /></svg>;
   }
 }

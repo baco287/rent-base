@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { EXTRA_CHARGE_TYPES, INVOICE_ITEM_SOURCES, INVOICE_VERSION_KINDS, type ExtraChargeType } from "@/lib/constants";
+import { DAMAGE_TAX_TREATMENTS, EXTRA_CHARGE_TYPES, INVOICE_ITEM_SOURCES, INVOICE_VERSION_KINDS, type DamageTaxTreatment, type ExtraChargeType } from "@/lib/constants";
 import { loadInvoiceDocumentData } from "@/lib/document-data";
 import { customerName, fmtDateTime, fmtEur } from "@/lib/format";
 import { getInvoiceState, invoiceSettingsMissing, listVersions, type CompanySnapshot, type InvoiceCustomerSnapshot, type VersionDiff } from "@/lib/invoices";
@@ -33,7 +33,17 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
   });
   if (!b) notFound();
   const canEdit = user.role !== "YARD";
-  const invoice = await db.invoice.findFirst({ where: { bookingId: b.id, tenantId: tenant.id, status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: [{ status: "asc" }, { createdAt: "desc" }] });
+  // Ohne nr: die Mietrechnung. Mit nr: eine bestimmte Rechnung dieser Buchung, z. B. eine Schadenabrechnung.
+  const requestedId = typeof sp.nr === "string" ? sp.nr : null;
+  const invoice = requestedId
+    ? await db.invoice.findFirst({ where: { id: requestedId, bookingId: b.id, tenantId: tenant.id, status: { in: ["DRAFT", "FINALIZED"] } } })
+    : await db.invoice.findFirst({ where: { bookingId: b.id, tenantId: tenant.id, kind: "RENTAL", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: [{ status: "asc" }, { createdAt: "desc" }] });
+  if (requestedId && !invoice) notFound();
+  const key = invoice?.kind === "DAMAGE" ? invoice.id : null;
+  const self = `/buchungen/${b.id}/rechnung${key ? `?nr=${key}` : ""}`;
+  const selfWith = (q: string) => `${self}${self.includes("?") ? "&" : "?"}${q}`;
+  const damageCase = invoice?.damageCaseId ? await db.damageCase.findFirst({ where: { id: invoice.damageCaseId, tenantId: tenant.id }, select: { id: true, caseNumber: true, customerChargeBasis: true } }) : null;
+  const kindLabel = invoice?.kind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung";
 
   // Hofmitarbeiter: nur abgeschlossene Rechnungen, kein Entwurf und keine Neuanlage (serverseitig auch in den Actions)
   if (!canEdit && invoice?.status !== "FINALIZED") redirect(`/buchungen/${b.id}`);
@@ -99,16 +109,22 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
     const paymentPreview = mode && draft.versionNo > 1 && mode.paidCents > 0
       ? { paid: fmtCents(mode.paidCents), grossBefore: fmtCents(mode.currentGrossCents), grossAfter: fmtCents(newGross), openAfter: fmtCents(Math.max(0, newGross - mode.paidCents)), overpaid: mode.paidCents > newGross ? fmtCents(mode.paidCents - newGross) : null }
       : null;
-    const title = draft.versionNo === 1 ? "Rechnung (Entwurf)" : `Rechnung ${inv.number} · Fassung ${draft.versionNo} (Entwurf)`;
+    const title = draft.versionNo === 1 ? `${kindLabel} (Entwurf)` : `${kindLabel} ${inv.number} · Fassung ${draft.versionNo} (Entwurf)`;
     return (
       <>
-        <PageHeader title={title} sub={<>Buchung {b.number} · {doc.customer.name}</>}>
+        <PageHeader title={title} sub={<>Buchung {b.number} · {doc.customer.name}{damageCase ? <> · Schadenakte {damageCase.caseNumber}</> : null}</>}>
           <Chip tone="amber">{draft.versionNo === 1 ? "Entwurf" : kind === "CORRECTION" ? "Berichtigung in Bearbeitung" : "Neufassung in Bearbeitung"}</Chip>
+          {damageCase && <Link href={`/schaeden/${damageCase.id}`} className="btn">Zur Schadenakte</Link>}
           <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
-          <form action={discardInvoiceDraftAction.bind(null, b.id)}><button className="btn btn-danger">Entwurf verwerfen</button></form>
+          <form action={discardInvoiceDraftAction.bind(null, b.id, key)}><button className="btn btn-danger">Entwurf verwerfen</button></form>
         </PageHeader>
         <Content>
           {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
+          {inv.kind === "DAMAGE" && damageCase && (
+            <div className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm">
+              <span className="font-semibold">Schadenabrechnung zur Schadenakte {damageCase.caseNumber}.</span> Steuerliche Behandlung: {DAMAGE_TAX_TREATMENTS[inv.taxTreatment as DamageTaxTreatment] ?? inv.taxTreatment ?? "–"}. Grundlage: {damageCase.customerChargeBasis ?? "–"}. Diese Rechnung ist von der Mietrechnung getrennt; Kaution und Forderung wurden nicht miteinander verrechnet.
+            </div>
+          )}
           {draft.versionNo > 1 && mode && (
             <div className={`rounded-md px-3.5 py-2.5 text-sm ${mode.delivered ? "bg-amber-soft text-amber" : "bg-info-soft text-info"}`}>
               {mode.delivered ? (
@@ -120,7 +136,7 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
             </div>
           )}
           <InvoiceIssueList issues={issues} okText="Alle Prüfungen bestanden. Die Rechnung kann abgeschlossen werden." />
-          {draft.versionNo === 1 && (
+          {draft.versionNo === 1 && inv.kind === "RENTAL" && (
             <Card title="Quellen des Entwurfs" right={<Chip>nur bestätigte Beträge</Chip>}>
               <div className="p-4 text-sm flex flex-col gap-1.5">
                 <div className="flex justify-between gap-3"><span>Mietpreis laut Mietvertrag {doc.reference.contractNumber}</span><span className="font-mono tnum">{fmtEur(Number(b.contract?.totalAmount ?? 0))}</span></div>
@@ -152,8 +168,8 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
             blocking={blockingIssues.length > 0}
             blockingReason={blockingIssues.length > 0 ? "Bitte zuerst die offenen Punkte aus der Prüfung lösen." : undefined}
             paymentPreview={paymentPreview}
-            save={saveInvoiceDraftAction.bind(null, b.id)}
-            finalize={finalizeInvoiceAction.bind(null, b.id)}
+            save={saveInvoiceDraftAction.bind(null, b.id, key)}
+            finalize={finalizeInvoiceAction.bind(null, b.id, key)}
           />
           <Card title="Änderungsprotokoll"><div className="p-4 text-sm"><ChangeLog entries={changeLog} /></div></Card>
           <p className="text-xs text-ink-3">Steuersätze zur Auswahl: {allowedRates.map((r) => `${de(r)} %`).join(", ")} (Standardsatz aus den Einstellungen, 0 % nur mit Steuerhinweis, dazu die in der Fassung bereits verwendeten Sätze).</p>
@@ -178,16 +194,22 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
 
   return (
     <>
-      <PageHeader title={`Rechnung ${inv.number}`} sub={<>Buchung {b.number} · {doc.customer.name}</>}>
+      <PageHeader title={`${kindLabel} ${inv.number}`} sub={<>Buchung {b.number} · {doc.customer.name}{damageCase ? <> · Schadenakte {damageCase.caseNumber}</> : null}</>}>
         <Chip tone="good">Finalisiert</Chip>
         <Chip>Aktuelle Fassung {current.versionNo}</Chip>
         <Chip tone={currentInfo.delivered ? "info" : "amber"}>{transmission}</Chip>
         <PaymentStatusChip status={pay.status} />
+        {damageCase && <Link href={`/schaeden/${damageCase.id}`} className="btn">Zur Schadenakte</Link>}
         <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
-        {canEdit && !mode?.exported && <form action={startInvoiceEditAction.bind(null, b.id)}><button className="btn btn-primary">Rechnung bearbeiten</button></form>}
+        {canEdit && !mode?.exported && <form action={startInvoiceEditAction.bind(null, b.id, key)}><button className="btn btn-primary">Rechnung bearbeiten</button></form>}
       </PageHeader>
       <Content>
         {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
+        {inv.kind === "DAMAGE" && damageCase && (
+          <div className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm">
+            <span className="font-semibold">Schadenabrechnung zur Schadenakte {damageCase.caseNumber}.</span> Steuerliche Behandlung: {DAMAGE_TAX_TREATMENTS[inv.taxTreatment as DamageTaxTreatment] ?? inv.taxTreatment ?? "–"}. Diese Rechnung ist von der Mietrechnung getrennt; Kaution und Forderung wurden nicht miteinander verrechnet.
+          </div>
+        )}
         {Number.isFinite(finishedNo) && finishedNo === current.versionNo && (
           <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 font-medium">
             {finishedNo === 1 ? `Die Rechnung ${inv.number} ist abgeschlossen und versiegelt.` : `Fassung ${finishedNo} der Rechnung ${inv.number} ist abgeschlossen und versiegelt (${INVOICE_VERSION_KINDS[current.kind as keyof typeof INVOICE_VERSION_KINDS]}). Fassung ${finishedNo - 1} bleibt archiviert.`} Rechnungsbetrag {fmtCents(toCents(current.grossTotal))}.
@@ -196,7 +218,7 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
         {Number.isFinite(finishedNo) && finishedNo === current.versionNo && <FollowUpNotice tenantId={tenant.id} bookingId={b.id} invoiceId={inv.id} invoiceVersionId={current.id} kind="INVOICE" />}
         {mode?.exported && <p className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm font-medium">Diese Rechnung wurde bereits buchhalterisch exportiert. Eine Änderung unter derselben Rechnungsnummer ist nicht mehr möglich; Korrekturen laufen später über den Storno-/Korrekturbeleg-Prozess.</p>}
         {pay.status === "OVERPAID" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm font-medium">Überzahlt: Rechnungsbetrag {fmtCents(pay.grossCents)}, bezahlt {fmtCents(pay.paidCents)}, Überzahlung {fmtCents(pay.overpaidCents)} – Erstattung zu klären. Rent-Base führt keine automatische Erstattung durch.</p>}
-        {shown.id !== current.id && <p className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm font-medium">Sie sehen die ersetzte Fassung {shown.versionNo}. <Link href={`/buchungen/${b.id}/rechnung`} className="underline">Zur aktuellen Fassung {current.versionNo}</Link>.</p>}
+        {shown.id !== current.id && <p className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm font-medium">Sie sehen die ersetzte Fassung {shown.versionNo}. <Link href={self} className="underline">Zur aktuellen Fassung {current.versionNo}</Link>.</p>}
 
         <Card title="Fassungsverlauf" right={<Chip>{versions.length === 1 ? "1 Fassung" : `${versions.length} Fassungen`}</Chip>}>
           <ul className="divide-y divide-line-soft">
@@ -220,20 +242,20 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
                   {v.reason && v.kind === "CORRECTION" && <div className="text-sm">Grund: {v.reason}</div>}
                   {v.status === "FINALIZED" && (
                     <div className="flex flex-wrap gap-2 items-center">
-                      {v.id !== shown.id && <Link href={`/buchungen/${b.id}/rechnung${isCurrent ? "" : `?fassung=${v.versionNo}`}`} className="btn !py-1.5">Anzeigen</Link>}
+                      {v.id !== shown.id && <Link href={isCurrent ? self : selfWith(`fassung=${v.versionNo}`)} className="btn !py-1.5">Anzeigen</Link>}
                       {d ? <a href={`/api/documents/${d.id}?download=1`} className="btn !py-1.5">PDF</a> : <span className="text-xs text-ink-3">PDF noch nicht erzeugt{isCurrent ? " (siehe Dokumente)" : ""}</span>}
-                      {canEdit && !v.delivered && <MarkDeliveredForm action={markDeliveredAction.bind(null, b.id)} versionId={v.id} versionNo={v.versionNo} />}
+                      {canEdit && !v.delivered && <MarkDeliveredForm action={markDeliveredAction.bind(null, b.id, key)} versionId={v.id} versionNo={v.versionNo} />}
                     </div>
                   )}
-                  {v.status === "DRAFT" && canEdit && <Link href={`/buchungen/${b.id}/rechnung`} className="btn btn-primary !py-1.5 self-start">Entwurf fortsetzen</Link>}
+                  {v.status === "DRAFT" && canEdit && <Link href={self} className="btn btn-primary !py-1.5 self-start">Entwurf fortsetzen</Link>}
                 </li>
               );
             })}
           </ul>
         </Card>
 
-        {shown.id === current.id && <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />}
-        {shown.id === current.id && <PaymentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />}
+        {shown.id === current.id && <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} invoiceId={inv.id} />}
+        {shown.id === current.id && <PaymentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} invoiceId={inv.id} />}
         <InvoiceDocumentView doc={doc} />
         {shown.diffFromPrevious && <DiffCard diff={shown.diffFromPrevious as unknown as VersionDiff} />}
         {canEdit && (

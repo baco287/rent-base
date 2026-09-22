@@ -13,6 +13,7 @@ import { BookingForm } from "../booking-form";
 import { loadBookingOptions } from "../options";
 import { DocumentsPanel } from "./dokumente/documents-panel";
 import { DepositPanel, PaymentsPanel } from "./finanzen/panels";
+import { DamageCasesPanel } from "../../schaeden/damages-panel";
 
 export default async function BookingPage({ params, searchParams }: PageProps<"/buchungen/[id]">) {
   const { tenant, user } = await requireSession();
@@ -34,7 +35,9 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const pickupDone = b.handovers.find((h) => h.type === "PICKUP" && h.status === "FINALIZED");
   const returnDraft = b.handovers.find((h) => h.type === "RETURN" && h.status === "DRAFT");
   const returnDone = b.handovers.find((h) => h.type === "RETURN" && h.status === "FINALIZED");
-  const invoice = b.status === "RETURNED" ? await db.invoice.findFirst({ where: { tenantId: tenant.id, bookingId: b.id, status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: [{ status: "asc" }, { createdAt: "desc" }], select: { id: true, number: true, status: true, currentVersion: { select: { grossTotal: true, versionNo: true } }, _count: { select: { versions: true } } } }) : null;
+  const invoice = b.status === "RETURNED" ? await db.invoice.findFirst({ where: { tenantId: tenant.id, bookingId: b.id, kind: "RENTAL", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: [{ status: "asc" }, { createdAt: "desc" }], select: { id: true, number: true, status: true, currentVersion: { select: { grossTotal: true, versionNo: true } }, _count: { select: { versions: true } } } }) : null;
+  // Schadenabrechnungen sind eigene Rechnungen (kind DAMAGE) mit Bezug zur Schadenakte
+  const damageInvoices = await db.invoice.findMany({ where: { tenantId: tenant.id, bookingId: b.id, kind: "DAMAGE", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "asc" }, select: { id: true, number: true, status: true, currentVersion: { select: { grossTotal: true } }, damageCase: { select: { id: true, caseNumber: true } } } });
   const charges = b.status === "RETURNED" || returnDraft ? await db.extraCharge.findMany({ where: { tenantId: tenant.id, bookingId: b.id }, orderBy: { createdAt: "asc" } }) : [];
   const chargesTotal = charges.reduce((s, c) => s + Number(c.amount), 0);
   const update = updateBookingAction.bind(null, b.id);
@@ -83,11 +86,22 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
             {!invoice && user.role === "YARD" && <span className="text-ink-3">wird von der Disposition erstellt</span>}
           </div>
         )}
+        {damageInvoices.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="label-xs">Schadenabrechnung{damageInvoices.length > 1 ? "en" : ""}</span>
+            {damageInvoices.map((i) => (
+              <Link key={i.id} href={`/buchungen/${b.id}/rechnung?nr=${i.id}`} className={`chip ${i.status === "FINALIZED" ? "bg-good-soft text-good" : "bg-amber-soft text-amber"} hover:underline`}>
+                {i.status === "FINALIZED" ? `${i.number} · ${fmtEur(Number(i.currentVersion?.grossTotal ?? 0))}` : "Entwurf"}{i.damageCase ? ` · ${i.damageCase.caseNumber}` : ""}
+              </Link>
+            ))}
+          </div>
+        )}
         {contractSigned && b.status === "RESERVED" && (
           <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Mietvertrag {b.contract!.number} ist abgeschlossen. Die Buchung ist bereit zur Übergabe.</p>
         )}
 
         <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
+        {(b.status === "RETURNED" || b.status === "ACTIVE") && <DamageCasesPanel tenantId={tenant.id} where={{ OR: [{ bookingId: b.id }, { discoveredIn: { bookingId: b.id, type: "RETURN" } }] }} title="Schäden dieser Vermietung" empty="Zu dieser Vermietung wurde kein Schaden festgestellt." />}
         {contractSigned && (
           <div id="kaution" className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
             <PaymentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} compact />

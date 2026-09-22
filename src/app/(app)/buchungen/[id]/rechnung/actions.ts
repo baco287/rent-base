@@ -16,14 +16,20 @@ import { parseLocalDateTime } from "@/lib/time";
 
 export type InvoiceState = { error?: string; ok?: string } | undefined;
 
-const base = (bookingId: string) => `/buchungen/${bookingId}/rechnung`;
-const refresh = (bookingId: string) => { for (const p of [base(bookingId), `/buchungen/${bookingId}`, "/buchungen", "/rechnungen", "/heute"]) revalidatePath(p); };
+// Eine Buchung kann mehrere Rechnungen haben: die Mietrechnung (Standard, ohne nr) und Schadenabrechnungen (nr = Rechnungs-Id).
+const base = (bookingId: string, invoiceId?: string | null) => `/buchungen/${bookingId}/rechnung${invoiceId ? `?nr=${invoiceId}` : ""}`;
+const withParam = (url: string, key: string, value: string) => `${url}${url.includes("?") ? "&" : "?"}${key}=${encodeURIComponent(value)}`;
+const refresh = (bookingId: string) => { for (const p of [`/buchungen/${bookingId}/rechnung`, `/buchungen/${bookingId}`, "/buchungen", "/rechnungen", "/heute", "/schaeden"]) revalidatePath(p); };
 
-async function context(bookingId: string) {
+async function context(bookingId: string, invoiceId: string | null) {
   const { tenant, user } = await requireRole("DISPO");
-  const invoice = await db.invoice.findFirst({ where: { bookingId, tenantId: tenant.id, status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "desc" } });
+  const invoice = invoiceId
+    ? await db.invoice.findFirst({ where: { id: invoiceId, bookingId, tenantId: tenant.id, status: { in: ["DRAFT", "FINALIZED"] } } })
+    : await db.invoice.findFirst({ where: { bookingId, tenantId: tenant.id, kind: "RENTAL", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "desc" } });
   if (!invoice) redirect(base(bookingId));
-  return { tenant, user, invoice, actor: { id: user.id, name: user.name } };
+  const key = invoice.kind === "DAMAGE" ? invoice.id : null;
+  const caseId = invoice.damageCaseId;
+  return { tenant, user, invoice, key, caseId, actor: { id: user.id, name: user.name } };
 }
 
 function asState(e: unknown): InvoiceState {
@@ -45,16 +51,16 @@ export async function createInvoiceAction(bookingId: string) {
 }
 
 /** „Rechnung bearbeiten“: Entwurf der nächsten Fassung aus der aktuellen Fassung; der Server bestimmt den Modus. */
-export async function startInvoiceEditAction(bookingId: string) {
-  const { tenant, invoice, actor } = await context(bookingId);
+export async function startInvoiceEditAction(bookingId: string, invoiceId: string | null) {
+  const { tenant, invoice, key, actor } = await context(bookingId, invoiceId);
   try {
     await startInvoiceEdit(tenant.id, invoice.id, actor);
   } catch (e) {
-    if (e instanceof DomainError) redirect(`${base(bookingId)}?hinweis=${encodeURIComponent(e.message)}`);
+    if (e instanceof DomainError) redirect(withParam(base(bookingId, key), "hinweis", e.message));
     throw e;
   }
   refresh(bookingId);
-  redirect(base(bookingId));
+  redirect(base(bookingId, key));
 }
 
 const itemSchema = z.object({
@@ -82,8 +88,8 @@ const draftSchema = z.object({
 });
 
 /** Entwurf speichern. Beträge rechnet ausschließlich der Server (Cent-Arithmetik in lib/money.ts). */
-export async function saveInvoiceDraftAction(bookingId: string, payload: unknown): Promise<InvoiceState> {
-  const { tenant, invoice, actor } = await context(bookingId);
+export async function saveInvoiceDraftAction(bookingId: string, invoiceId: string | null, payload: unknown): Promise<InvoiceState> {
+  const { tenant, invoice, actor } = await context(bookingId, invoiceId);
   const parsed = draftSchema.safeParse(payload);
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   const d = parsed.data;
@@ -99,22 +105,24 @@ export async function saveInvoiceDraftAction(bookingId: string, payload: unknown
   return { ok: "Entwurf gespeichert." };
 }
 
-export async function discardInvoiceDraftAction(bookingId: string) {
-  const { tenant, invoice, actor } = await context(bookingId);
+export async function discardInvoiceDraftAction(bookingId: string, invoiceId: string | null) {
+  const { tenant, invoice, key, caseId, actor } = await context(bookingId, invoiceId);
   let deleted = false;
   try {
     deleted = (await discardInvoiceDraft(tenant.id, invoice.id, actor)).invoiceDeleted;
   } catch (e) {
-    if (e instanceof DomainError || isImmutableError(e)) redirect(`${base(bookingId)}?hinweis=${encodeURIComponent(e instanceof DomainError ? e.message : "Die Fassung ist abgeschlossen.")}`);
+    if (e instanceof DomainError || isImmutableError(e)) redirect(withParam(base(bookingId, key), "hinweis", e instanceof DomainError ? e.message : "Die Fassung ist abgeschlossen."));
     throw e;
   }
   refresh(bookingId);
-  redirect(deleted ? `/buchungen/${bookingId}` : base(bookingId));
+  if (caseId) revalidatePath(`/schaeden/${caseId}`);
+  // Schadenabrechnung gelöscht: zurück zur Schadenakte, Mietrechnung gelöscht: zurück zur Buchung
+  redirect(deleted ? (caseId ? `/schaeden/${caseId}` : `/buchungen/${bookingId}`) : base(bookingId, key));
 }
 
 /** Abschluss: Server prüft alles erneut, vergibt bei Fassung 1 die Nummer, versiegelt die Fassung. Danach PDF und E-Mail als Nachbearbeitung, die nie werfen. */
-export async function finalizeInvoiceAction(bookingId: string, _prev: InvoiceState, formData: FormData): Promise<InvoiceState> {
-  const { tenant, invoice, actor } = await context(bookingId);
+export async function finalizeInvoiceAction(bookingId: string, invoiceId: string | null, _prev: InvoiceState, formData: FormData): Promise<InvoiceState> {
+  const { tenant, invoice, key, caseId, actor } = await context(bookingId, invoiceId);
   let version;
   try {
     version = await finalizeInvoice(tenant.id, invoice.id, actor, { confirmOverpayment: formData.get("confirmOverpayment") === "1" });
@@ -123,14 +131,15 @@ export async function finalizeInvoiceAction(bookingId: string, _prev: InvoiceSta
   }
   await runInvoiceFollowUp(tenant.id, version.id, actor.id);
   refresh(bookingId);
-  redirect(`${base(bookingId)}?abgeschlossen=${version.versionNo}`);
+  if (caseId) revalidatePath(`/schaeden/${caseId}`);
+  redirect(withParam(base(bookingId, key), "abgeschlossen", String(version.versionNo)));
 }
 
 const deliveredSchema = z.object({ versionId: z.string().min(1), note: text(300) });
 
 /** „Als an Kunden übergeben markieren“: hängt an der konkreten Fassung, einmalig, nie still entfernbar. */
-export async function markDeliveredAction(bookingId: string, _prev: InvoiceState, formData: FormData): Promise<InvoiceState> {
-  const { tenant, actor } = await context(bookingId);
+export async function markDeliveredAction(bookingId: string, invoiceId: string | null, _prev: InvoiceState, formData: FormData): Promise<InvoiceState> {
+  const { tenant, actor } = await context(bookingId, invoiceId);
   const parsed = deliveredSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   try {

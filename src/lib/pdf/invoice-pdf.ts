@@ -6,8 +6,10 @@ import { COLORS, Pdf, type Cell, type PdfTrace } from "@/lib/pdf/layout";
 export async function renderInvoicePdf(data: InvoiceDocumentData): Promise<{ bytes: Buffer; trace: PdfTrace }> {
   const v = data.version;
   const correction = v.kind === "CORRECTION";
+  const damage = data.kind === "DAMAGE";
+  const baseTitle = damage ? "Schadenabrechnung" : "Rechnung";
   const pdf = new Pdf({
-    title: correction ? "Berichtigte Rechnung" : "Rechnung",
+    title: correction ? `Berichtigte ${baseTitle}` : baseTitle,
     number: v.versionNo > 1 ? `${data.number} · Fassung ${v.versionNo}` : data.number,
     landlord: { name: data.company.fullName, address: data.company.addressLines.join(", "), contact: [data.company.phone, data.company.email].filter(Boolean).join(" · ") },
     footerNote: data.contentHash ? { label: "Prüfsumme der Rechnung (SHA-256)", value: data.contentHash } : undefined,
@@ -27,9 +29,10 @@ export async function renderInvoicePdf(data: InvoiceDocumentData): Promise<{ byt
     ["Rechnungsnummer", data.number],
     ["Rechnungsdatum", data.issueDate],
     ["Kundennummer", data.customer.number],
-    ["Leistungszeitraum", data.servicePeriod],
+    [damage ? "Mietzeitraum" : "Leistungszeitraum", data.servicePeriod],
     ["Mietvertrag", data.reference.contractNumber],
     ["Buchung", data.reference.bookingNumber],
+    ["Schadenakte", damage ? data.reference.caseNumber : null],
   ];
   let ry = y0;
   for (const [label, value] of meta) {
@@ -39,9 +42,12 @@ export async function renderInvoicePdf(data: InvoiceDocumentData): Promise<{ byt
   }
   pdf.y = Math.max(y, ry) + 14;
 
-  pdf.textAt(`${correction ? "Berichtigte Rechnung" : "Rechnung"} ${data.number}`, pdf.left, pdf.y, pdf.width, { size: 16, bold: true, color: COLORS.brand });
+  pdf.textAt(`${correction ? `Berichtigte ${baseTitle}` : baseTitle} ${data.number}`, pdf.left, pdf.y, pdf.width, { size: 16, bold: true, color: COLORS.brand });
   pdf.y += 4;
-  pdf.textAt(`Fahrzeugmiete${data.reference.contractNumber ? ` gemäß Mietvertrag ${data.reference.contractNumber}` : ""}, Leistungszeitraum ${data.servicePeriod}`, pdf.left, pdf.y, pdf.width, { size: 9, color: COLORS.ink2 });
+  const subtitle = damage
+    ? `Schadenabrechnung zur Vermietung${data.reference.bookingNumber ? ` ${data.reference.bookingNumber}` : ""}${data.reference.contractNumber ? `, Mietvertrag ${data.reference.contractNumber}` : ""}, Mietzeitraum ${data.servicePeriod}`
+    : `Fahrzeugmiete${data.reference.contractNumber ? ` gemäß Mietvertrag ${data.reference.contractNumber}` : ""}, Leistungszeitraum ${data.servicePeriod}`;
+  pdf.textAt(subtitle, pdf.left, pdf.y, pdf.width, { size: 9, color: COLORS.ink2 });
   pdf.y += 10;
   // Fassungsinformation: Neufassung unaufdringlich, Berichtigung deutlich (Bezug auf die ersetzte Fassung, § 31 Abs. 5 UStDV)
   if (v.versionNo > 1) {

@@ -67,6 +67,9 @@ model Tenant {
   auditLogs           AuditLog[]
   invoiceVersions     InvoiceVersion[]
   invoiceVersionItems InvoiceVersionItem[]
+  damageCases         DamageCase[]
+  damageCaseEvents    DamageCaseEvent[]
+  damageCaseDocuments DamageCaseDocument[]
 }
 
 model User {
@@ -153,13 +156,14 @@ model Vehicle {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  group     VehicleGroup?    @relation(fields: [groupId], references: [id], onDelete: SetNull)
-  bookings  Booking[]
-  contracts RentalContract[]
-  handovers Handover[]
-  damages   Damage[]
-  events    VehicleEvent[]
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  group       VehicleGroup?    @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  bookings    Booking[]
+  contracts   RentalContract[]
+  handovers   Handover[]
+  damages     Damage[]
+  damageCases DamageCase[]
+  events      VehicleEvent[]
 
   @@unique([tenantId, plate])
   @@index([tenantId, groupId])
@@ -244,6 +248,7 @@ model Booking {
   vehicleEvents   VehicleEvent[]
   payments        Payment[]
   securityDeposit SecurityDeposit?
+  damageCases     DamageCase[]
 
   @@unique([tenantId, number])
   @@index([tenantId, vehicleId, startAt, endAt])
@@ -425,6 +430,7 @@ model Handover {
   discovered     Damage[]
   vehicleEvents  VehicleEvent[]
   invoices       Invoice[]
+  damageCases    DamageCase[]
 
   @@unique([tenantId, number])
   @@index([tenantId, bookingId, type])
@@ -463,6 +469,7 @@ model Damage {
   photos       Photo[]
   extraCharges ExtraCharge[]
   events       VehicleEvent[]
+  damageCase   DamageCase? // operative Schadenakte (Phase 12), genau eine je Schaden
 
   @@index([tenantId, vehicleId, status])
 }
@@ -543,6 +550,8 @@ model Photo {
   handoverId       String?
   damageId         String?
   handoverDamageId String?
+  damageCaseId     String? // zusätzliche Fotos zur Schadenakte (Detail, Werkstatt, nach Reparatur)
+  caption          String? // kurze Beschreibung, z. B. "Werkstattaufnahme"
   storageKey       String    @unique
   category         String // FRONT | REAR | LEFT | RIGHT | INTERIOR | ODOMETER | FUEL | DAMAGE | DOCUMENT | OTHER
   contentType      String
@@ -558,9 +567,11 @@ model Photo {
   handover       Handover?       @relation(fields: [handoverId], references: [id], onDelete: SetNull)
   damage         Damage?         @relation(fields: [damageId], references: [id], onDelete: SetNull)
   handoverDamage HandoverDamage? @relation(fields: [handoverDamageId], references: [id], onDelete: SetNull)
+  damageCase     DamageCase?     @relation(fields: [damageCaseId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, handoverId])
   @@index([tenantId, damageId])
+  @@index([tenantId, damageCaseId])
 }
 
 // Unterschrift, gebunden an genau den Inhalt (contentHash), der unterschrieben wurde.
@@ -718,6 +729,11 @@ model Invoice {
   returnHandoverId String? // Rückgabe, aus der die bestätigten Zusatzkosten stammen
   number           String? // z. B. RE-2026-000001, erst beim Abschluss vergeben
   status           String  @default("DRAFT") // DRAFT | FINALIZED | (vorbereitet: CANCELLED, CREDITED)
+  // Phase 12: Rechnungsart. RENTAL = Mietrechnung (höchstens eine abgeschlossene je Buchung), DAMAGE = Schadenabrechnung zu einer Schadenakte
+  kind             String  @default("RENTAL")
+  damageCaseId     String? // nur DAMAGE: die Schadenakte, deren Kundenbelastung abgerechnet wird
+  damageId         String? // nur DAMAGE: der zugrunde liegende Fahrzeugschaden (Referenz)
+  taxTreatment     String? // nur DAMAGE: NON_TAXABLE_DAMAGES (echter Schadensersatz, ohne USt) | TAXABLE_SERVICE (steuerpflichtiges Entgelt); bewusst gewählt
 
   // Phase 10: Die Rechnungsdaten liegen in unveränderlichen Fassungen (InvoiceVersion). Invoice ist nur noch die
   // logische Rechnung: Nummer, Bezug, Zeiger auf die aktuelle Fassung, interne Notiz, Änderungsprotokoll, Exportmarke.
@@ -762,10 +778,12 @@ model Invoice {
   payments       Payment[]
   versions       InvoiceVersion[] @relation("InvoiceVersions")
   currentVersion InvoiceVersion?  @relation("InvoiceCurrentVersion", fields: [currentVersionId], references: [id])
+  damageCase     DamageCase?      @relation(fields: [damageCaseId], references: [id])
 
   @@unique([tenantId, number])
   @@index([tenantId, bookingId])
   @@index([tenantId, status])
+  @@index([tenantId, kind])
 }
 
 model InvoiceItem {
@@ -998,4 +1016,110 @@ model InvoiceVersionItem {
   version InvoiceVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, versionId])
+}
+
+// ============================================================================
+// Phase 12: Schadenmanagement. Damage bleibt die objektive Schadensinformation (Übergabe, Rückgabe, Skizze, Historie).
+// DamageCase ist die operative Schadenakte: Prüfung, Haftung, Kosten, Reparatur, Dokumente, Kundenbelastung, Abschluss.
+// Fahrzeugschaden ≠ Haftung ≠ Kundenforderung ≠ Rechnung ≠ Zahlung ≠ Kaution: jeder Übergang ist eine bewusste Entscheidung.
+// ============================================================================
+
+model DamageCase {
+  id               String  @id @default(cuid())
+  tenantId         String
+  damageId         String  @unique // genau eine Akte je Schaden
+  vehicleId        String
+  bookingId        String?
+  returnHandoverId String?
+  caseNumber       String // SCH-2026-000001
+  status           String  @default("OPEN") // OPEN | UNDER_REVIEW | REPAIR_PLANNED | IN_REPAIR | REPAIRED | CLOSED
+  priority         String  @default("NORMAL") // LOW | NORMAL | HIGH
+  liabilityStatus  String  @default("UNASSESSED") // UNASSESSED | UNCLEAR | CUSTOMER_RESPONSIBILITY_CONFIRMED | NOT_CUSTOMER_RESPONSIBILITY | THIRD_PARTY | INTERNAL
+  liabilityNote    String? // Begründung der letzten Haftungsentscheidung
+
+  reportedAt     DateTime
+  reportedById   String?
+  reportedByName String?
+  description    String // Kopie der Schadensbeschreibung bei Eröffnung (Damage bleibt die Quelle)
+  internalNote   String? // nie kundensichtbar
+
+  estimatedCostCents  Int?
+  actualCostCents     Int?
+  currency            String    @default("EUR")
+  repairProviderName  String?
+  repairAppointmentAt DateTime?
+  repairCompletedAt   DateTime?
+
+  // Kundenbelastung (einmalig je Akte, bewusst festgelegt; erzeugt die Schadenabrechnung)
+  customerChargeCents        Int?
+  customerChargeBasis        String? // sachliche Grundlage, erscheint auf der Abrechnung
+  customerChargeTaxTreatment String? // NON_TAXABLE_DAMAGES | TAXABLE_SERVICE
+  customerChargeAt           DateTime?
+  customerChargeByName       String?
+
+  closedAt     DateTime?
+  closedById   String?
+  closedByName String?
+  closeReason  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  damage         Damage               @relation(fields: [damageId], references: [id])
+  vehicle        Vehicle              @relation(fields: [vehicleId], references: [id])
+  booking        Booking?             @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  returnHandover Handover?            @relation(fields: [returnHandoverId], references: [id], onDelete: SetNull)
+  events         DamageCaseEvent[]
+  documents      DamageCaseDocument[]
+  photos         Photo[]
+  invoices       Invoice[]
+
+  @@unique([tenantId, caseNumber])
+  @@index([tenantId, status])
+  @@index([tenantId, liabilityStatus])
+  @@index([tenantId, vehicleId])
+  @@index([tenantId, bookingId])
+}
+
+// Historie der Akte, nur anfügen.
+model DamageCaseEvent {
+  id        String   @id @default(cuid())
+  tenantId  String
+  caseId    String
+  type      String // CREATED | STATUS_CHANGED | LIABILITY_CHANGED | COST_CHANGED | REPAIR_CHANGED | PHOTO_ADDED | DOCUMENT_ADDED | NOTE_ADDED | VEHICLE_BLOCKED | VEHICLE_RELEASED | CUSTOMER_CHARGE_CREATED | INVOICE_CREATED | CLOSED | REOPENED
+  fromValue String?
+  toValue   String?
+  reason    String?
+  note      String?
+  userId    String?
+  userName  String?
+  createdAt DateTime @default(now())
+
+  tenant Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case   DamageCase @relation(fields: [caseId], references: [id])
+
+  @@index([tenantId, caseId, createdAt])
+}
+
+// Dokumente zur Akte (Kostenvoranschlag, Werkstattrechnung, Sonstiges), privat gespeichert, nur anfügen.
+model DamageCaseDocument {
+  id            String   @id @default(cuid())
+  tenantId      String
+  caseId        String
+  type          String // ESTIMATE | REPAIR_INVOICE | OTHER
+  fileName      String
+  storageKey    String   @unique
+  contentType   String
+  sizeBytes     Int
+  checksum      String
+  note          String?
+  createdById   String?
+  createdByName String?
+  createdAt     DateTime @default(now())
+
+  tenant Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case   DamageCase @relation(fields: [caseId], references: [id])
+
+  @@index([tenantId, caseId])
 }

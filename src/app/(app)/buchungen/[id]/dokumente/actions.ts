@@ -56,16 +56,17 @@ export async function generateHandoverPdfAction(bookingId: string, kind: Handove
 }
 
 /** Aktuelle abgeschlossene Fassung der Rechnung dieser Buchung (PDF und Versand hängen an der Fassung). */
-async function finalizedInvoice(tenantId: string, bookingId: string) {
-  const inv = await db.invoice.findFirst({ where: { bookingId, tenantId, status: "FINALIZED" }, select: { id: true, currentVersionId: true } });
+/** Ohne invoiceId die Mietrechnung der Buchung; mit invoiceId eine bestimmte Rechnung (z. B. Schadenabrechnung), stets an Buchung und Mandant gebunden. */
+async function finalizedInvoice(tenantId: string, bookingId: string, invoiceId: string | null) {
+  const inv = await db.invoice.findFirst({ where: { bookingId, tenantId, status: "FINALIZED", ...(invoiceId ? { id: invoiceId } : { kind: "RENTAL" }) }, select: { id: true, currentVersionId: true } });
   return inv?.currentVersionId ? { id: inv.currentVersionId, invoiceId: inv.id } : null;
 }
 
 /** Rechnungs-PDF nachträglich erzeugen (nur abgeschlossene Rechnung). Hofmitarbeiter dürfen das PDF erzeugen und laden. */
-export async function generateInvoicePdfAction(bookingId: string, _prev: DocState, _formData: FormData): Promise<DocState> {
+export async function generateInvoicePdfAction(bookingId: string, invoiceId: string | null, _prev: DocState, _formData: FormData): Promise<DocState> {
   void _formData;
   const { tenant, user } = await requireRole("DISPO", "YARD");
-  const invoice = await finalizedInvoice(tenant.id, bookingId);
+  const invoice = await finalizedInvoice(tenant.id, bookingId, invoiceId);
   if (!invoice) return { error: "Zu dieser Buchung gibt es keine abgeschlossene Rechnung." };
   try {
     const res = await ensureInvoiceDocument(tenant.id, invoice.id, user.id);
@@ -77,9 +78,9 @@ export async function generateInvoicePdfAction(bookingId: string, _prev: DocStat
 }
 
 /** Rechnung erneut senden: wie bei den Protokollen mit einmaligem nonce, verschickt wird das archivierte PDF. Nur Disposition und Inhaber. */
-export async function resendInvoiceAction(bookingId: string, _prev: DocState, formData: FormData): Promise<DocState> {
+export async function resendInvoiceAction(bookingId: string, invoiceId: string | null, _prev: DocState, formData: FormData): Promise<DocState> {
   const { tenant, user } = await requireRole("DISPO");
-  const invoice = await finalizedInvoice(tenant.id, bookingId);
+  const invoice = await finalizedInvoice(tenant.id, bookingId, invoiceId);
   if (!invoice) return { error: "Zu dieser Buchung gibt es keine abgeschlossene Rechnung." };
   try {
     const res = await sendInvoiceDocument(tenant.id, invoice.id, { trigger: "MANUAL", actorId: user.id, nonce: String(formData.get("nonce") ?? "") });

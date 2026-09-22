@@ -77,6 +77,9 @@ export async function requireSession() {
  *   YARD   Kunden anlegen und ergänzen, Übergabe und Rückgabe (Kilometer, Tank, Schäden, Fotos, Checkliste,
  *          Unterschriften, Zusatzkosten), Verträge und Protokolle ansehen, Dokumente, E-Mail erneut senden.
  *          Keine Buchungen, keine Vertragsänderungen, kein Vertragsabschluss, keine Einstellungen.
+ *   Schadenakten (Phase 12): OWNER und DISPO alle Aktenvorgänge (Status, Haftung, Kosten, Reparatur, Sperren/Freigeben,
+ *          Kundenbelastung, Schadenabrechnung, Schließen/Wiederöffnen). YARD sieht Akten, eröffnet sie, ergänzt Fotos,
+ *          Dokumente und operative Notizen – keine Haftung, keine Kosten, keine Belastung, kein Fahrzeugstatus, kein Abschluss.
  */
 /** Zusätzlich Rollenprüfung. Inhaber darf alles. Jede Server Action und jede geschützte Seite ruft dies als Erstes auf. */
 export async function requireRole(...roles: Role[]) {

@@ -6,13 +6,16 @@ import { Card, Chip } from "@/components/ui";
 import { DAMAGE_KINDS, DAMAGE_SEVERITY, DAMAGE_STATUS, DAMAGE_VIEWS, VEHICLE_EVENT_TYPES, type DamageKind, type DamageSeverity, type DamageStatus, type DamageView, type VehicleEventType } from "@/lib/constants";
 import { fmtDateTime, fmtInt } from "@/lib/format";
 import { listVehicleEvents } from "@/lib/vehicle-events";
+import { CaseStatusChip, LiabilityChip } from "../../schaeden/chips";
+import { openDamageCaseAction } from "../../schaeden/[id]/actions";
+import { ActionButton } from "../../schaeden/[id]/case-forms";
 
 export async function VehicleFile({ tenantId, vehicleId }: { tenantId: string; vehicleId: string }) {
   const [damages, events] = await Promise.all([
     db.damage.findMany({
       where: { tenantId, vehicleId },
       orderBy: [{ status: "asc" }, { discoveredAt: "desc" }],
-      include: { discoveredIn: { select: { id: true, number: true, type: true, bookingId: true } }, booking: { select: { id: true, number: true } }, photos: { select: { id: true }, orderBy: { uploadedAt: "asc" } } },
+      include: { discoveredIn: { select: { id: true, number: true, type: true, bookingId: true } }, booking: { select: { id: true, number: true } }, photos: { select: { id: true }, orderBy: { uploadedAt: "asc" } }, damageCase: { select: { id: true, caseNumber: true, status: true, liabilityStatus: true } } },
     }),
     listVehicleEvents(db, tenantId, vehicleId, 60),
   ]);
@@ -36,7 +39,8 @@ export async function VehicleFile({ tenantId, vehicleId }: { tenantId: string; v
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <span className="font-medium">{DAMAGE_KINDS[d.kind as DamageKind] ?? d.kind} · {DAMAGE_VIEWS[d.view as DamageView] ?? d.view}</span>
                   <Chip tone={d.status === "REPAIRED" ? "good" : d.status === "OPEN" ? "amber" : "grey"}>{DAMAGE_STATUS[d.status as DamageStatus] ?? d.status}</Chip>
-                  {d.settlementReview && d.status !== "REPAIRED" && <Chip tone="bad">Schadenabrechnung prüfen</Chip>}
+                  {d.settlementReview && !d.damageCase && d.status !== "REPAIRED" && <Chip tone="bad">Schadenabrechnung prüfen</Chip>}
+                  {d.damageCase && <><Link href={`/schaeden/${d.damageCase.id}`} className="font-mono tnum underline">{d.damageCase.caseNumber}</Link><CaseStatusChip status={d.damageCase.status} /><LiabilityChip status={d.damageCase.liabilityStatus} /></>}
                 </div>
                 <div className="text-ink-2">{d.description}{d.size ? ` (${d.size})` : ""} · {DAMAGE_SEVERITY[d.severity as DamageSeverity] ?? d.severity}</div>
                 <div className="text-xs text-ink-3 flex flex-wrap gap-x-3 gap-y-0.5">
@@ -47,6 +51,7 @@ export async function VehicleFile({ tenantId, vehicleId }: { tenantId: string; v
                   <span>{d.photos.length} {d.photos.length === 1 ? "Foto" : "Fotos"}</span>
                   {d.repairedAt && <span>repariert am {fmtDateTime(d.repairedAt)}</span>}
                 </div>
+                {!d.damageCase && <div className="mt-1"><ActionButton action={openDamageCaseAction.bind(null, d.id)} label="Schadenakte eröffnen" pendingLabel="Wird eröffnet…" small /></div>}
                 {d.photos.length > 0 && (
                   <div className="flex gap-2 flex-wrap mt-1">
                     {d.photos.slice(0, 4).map((p) => (
