@@ -11,7 +11,7 @@ import path from "node:path";
 import { db } from "../src/lib/db";
 import { ensureContractDraft, finalizeContract, getContractContentHash, saveContractSignature } from "../src/lib/contracts";
 import { addNewDamage, answerChecklist, finalizeHandover, getHandoverContentHash, registerPhoto, saveHandoverSignature, startHandover, updateHandoverDraft } from "../src/lib/handovers";
-import { DocumentIntegrityError, documentFileName, ensureContractDocument, ensurePickupDocument, loadSketchSvg, readDocumentFile, safeFilePart, shrinkPhoto } from "../src/lib/documents";
+import { DocumentIntegrityError, documentFileName, ensureContractDocument, ensurePickupDocument, loadPhotosForPdf, loadSketchSvg, readDocumentFile, safeFilePart, shrinkPhoto } from "../src/lib/documents";
 import { loadContractDocumentData, loadHandoverDocumentData } from "../src/lib/document-data";
 import { runPickupFollowUp } from "../src/lib/followup";
 import { getMailTransport, isValidEmail, mailStatus, safeMailError, type MailMessage, type MailTransport } from "../src/lib/mail";
@@ -80,6 +80,42 @@ async function pickedUpWorld(label: string, customer?: Record<string, unknown>) 
   await finalizeHandover(w.tenantId, h.id, w.actor, { enforcePhotos: false });
   return { w, contractId, handoverId: h.id, oldDamageId: old.id };
 }
+
+test("Übergabe-PDF: Fotos kopierter Vorschäden (aus Fahrzeugakte oder früherem Protokoll) werden eingebettet, nicht nur verwiesen", async () => {
+  await ready;
+  const { w } = await signedWorld("doc-pickup-prephoto");
+  // Vorschaden auf dem Hof erfasst und fotografiert – das Foto hängt am Schaden, nicht an einem Protokoll
+  const old = await db.damage.create({ data: { tenantId: w.tenantId, vehicleId: w.vehicleId, view: "LEFT", posX: 0.4, posY: 0.5, kind: "SCRATCH", severity: "MINOR", description: "Kratzer Schiebetür alt", status: "OPEN" } });
+  const jpeg = await photoJpeg("Vorschaden");
+  const key = buildStorageKey({ tenantId: w.tenantId, area: "photos", contentType: "image/jpeg" });
+  await storage.put(key, jpeg, "image/jpeg");
+  const prePhoto = await db.photo.create({ data: { tenantId: w.tenantId, damageId: old.id, storageKey: key, category: "DAMAGE", contentType: "image/jpeg", sizeBytes: jpeg.length, checksum: sha256(jpeg) } });
+  const h = await startHandover(w.tenantId, w.bookingId, "PICKUP", w.actor);
+  await updateHandoverDraft(w.tenantId, h.id, { mileage: 50_040, fuelLevelEighths: 6 });
+  const items = await db.handoverChecklistItem.findMany({ where: { tenantId: w.tenantId, handoverId: h.id }, orderBy: { sortOrder: "asc" } });
+  await answerChecklist(w.tenantId, h.id, items.map((i) => ({ itemId: i.id, result: i.answerType === "TEXT" ? "2" : i.answerType === "YES_NO" ? "YES" : "OK" })));
+  await saveHandoverSignature(w.tenantId, w.actor, h.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: await pngDataUrl(), seenHash: await getHandoverContentHash(w.tenantId, h.id), ipAddress: null, userAgent: "test" });
+  await finalizeHandover(w.tenantId, h.id, w.actor, { enforcePhotos: false });
+  assert.equal(await db.photo.count({ where: { handoverId: h.id } }), 0, "zu diesem Protokoll selbst wurde kein Foto hochgeladen");
+
+  const data = await loadHandoverDocumentData(w.tenantId, h.id);
+  const existing = data.doc.damages.find((d) => d.marker === "EXISTING")!;
+  assert.deepEqual(existing.photos.map((p) => p.id), [prePhoto.id], "Protokollkopie verweist auf das Vorschadenfoto");
+  assert.ok(data.photoFiles.some((f) => f.id === prePhoto.id && f.storageKey === key && f.checksum === sha256(jpeg)), "Fotodatei des Vorschadens wird für das PDF geladen (Speicherort und Prüfsumme aus der Kopie)");
+  const photos = await loadPhotosForPdf(w.tenantId, storage, data.photoFiles);
+  assert.ok(photos.has(prePhoto.id));
+  const { trace } = await renderHandoverPdf(data.doc, { sketchSvg: await loadSketchSvg(data.sketch), photos, signatures: data.signatureImages });
+  assertCleanLayout(trace, "Übergabe mit Vorschadenfoto");
+  assert.equal(trace.images.filter((i) => i.kind === "photo").length, 1, "das Vorschadenfoto ist eingebettet");
+  assert.ok(!trace.notes.some((n) => n.includes("nicht eingebettet")), "kein Platzhalter „Original liegt im Archiv“");
+  // Wird das Original später verändert, weicht es von der versiegelten Prüfsumme ab und wird bewusst nicht eingebettet
+  await storage.remove(key);
+  await storage.put(key, await photoJpeg("Ausgetauscht"), "image/jpeg");
+  const tampered = await loadPhotosForPdf(w.tenantId, storage, data.photoFiles);
+  assert.equal(tampered.has(prePhoto.id), false, "abweichende Datei wird nicht eingebettet");
+  const res = await ensurePickupDocument(w.tenantId, h.id, w.actor.id, { storage });
+  assert.equal(res.created, true);
+});
 
 function assertCleanLayout(trace: PdfTrace, what: string) {
   assert.deepEqual(trace.boxes.filter((b) => b.overflow), [], `${what}: kein Text außerhalb des Satzspiegels`);

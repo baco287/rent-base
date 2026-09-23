@@ -3,6 +3,7 @@
 // dazugehörigen, zum versiegelten Inhalt passenden Unterschriften. Kunden-, Fahrzeug-, Schaden-, Preis- oder
 // Vorlagen-Stammdaten werden hier bewusst nicht angefasst.
 
+import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { REQUIRED_PHOTO_CATEGORIES } from "@/lib/constants";
 import { buildContractDocument, landlordOf, type ContractDocumentData, type TenantLike } from "@/lib/contract-view";
@@ -100,10 +101,32 @@ export async function loadHandoverDocumentData(tenantId: string, handoverId: str
     contractId: h.contractId,
     sourceHash: h.contentHash,
     signatureImages: new Map(signatures.flatMap((s) => (s.imageData ? [[s.id, s.imageData] as const] : []))),
-    photoFiles: h.photos.map((p) => ({ id: p.id, storageKey: p.storageKey, checksum: p.checksum, contentType: p.contentType })),
+    photoFiles: await photoFilesOf(tenantId, h),
     // Nur wenn die Datei noch genau der im Protokoll festgehaltenen Fassung entspricht, wird sie verwendet (siehe documents.ts)
     sketch: sketch && h.sketchAssetHash ? { assetPath: sketch.assetPath, assetHash: h.sketchAssetHash } : null,
   };
+}
+
+/**
+ * Alle Fotos, die das versiegelte Protokoll zeigt: die zu diesem Protokoll hochgeladenen Fotos und die Fotoverweise der
+ * Schadenzeilen. Vorschäden werden mit ihren Fotos aus früheren Protokollen oder von der Fahrzeugakte kopiert – diese Fotos
+ * hängen nicht an diesem Protokoll, gehören aber zum Dokument. Speicherort und Prüfsumme kommen aus der Kopie im Protokoll,
+ * nie aus dem Live-Foto; beim Laden wird nur eingebettet, was der Prüfsumme entspricht.
+ */
+async function photoFilesOf(tenantId: string, h: { photos: { id: string; storageKey: string; checksum: string; contentType: string }[]; damages: { photoRefs: Prisma.JsonValue }[] }) {
+  const files = new Map(h.photos.map((p) => [p.id, { id: p.id, storageKey: p.storageKey, checksum: p.checksum, contentType: p.contentType }]));
+  const refs = h.damages.flatMap((d) => (Array.isArray(d.photoRefs) ? (d.photoRefs as { photoId?: unknown; storageKey?: unknown; checksum?: unknown }[]) : []));
+  const missing = refs.filter((r) => typeof r.photoId === "string" && typeof r.storageKey === "string" && typeof r.checksum === "string" && !files.has(r.photoId));
+  if (missing.length > 0) {
+    // Dateityp aus der Fototabelle (nur zur Information); ein inzwischen gelöschtes Foto wird trotzdem über die Kopie versucht
+    const rows = await db.photo.findMany({ where: { tenantId, id: { in: missing.map((r) => r.photoId as string) } }, select: { id: true, contentType: true } });
+    const types = new Map(rows.map((p) => [p.id, p.contentType]));
+    for (const r of missing) {
+      const id = r.photoId as string;
+      if (!files.has(id)) files.set(id, { id, storageKey: r.storageKey as string, checksum: r.checksum as string, contentType: types.get(id) ?? "image/jpeg" });
+    }
+  }
+  return [...files.values()];
 }
 
 export type InvoiceData = { doc: InvoiceDocumentData; bookingId: string; invoiceId: string; versionId: string; versionNo: number; sourceHash: string; renterEmail: string | null };

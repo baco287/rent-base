@@ -10,7 +10,7 @@ import { listBookingEmails } from "@/lib/email-log";
 import { fmtDateTime } from "@/lib/format";
 import { isValidEmail, mailStatus } from "@/lib/mail";
 import { storageStatus } from "@/lib/storage";
-import { generateContractPdfAction, generateHandoverPdfAction, generateInvoicePdfAction, resendDocumentsAction, resendInvoiceAction } from "./actions";
+import { generateContractPdfAction, generateHandoverPdfAction, generateInvoicePdfAction, regenerateHandoverPdfAction, resendDocumentsAction, resendInvoiceAction } from "./actions";
 import { DocActionButton, ResendForm } from "./document-forms";
 
 const kb = (bytes: number) => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1).replace(".", ",")} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
@@ -40,10 +40,11 @@ export async function DocumentsPanel({ tenantId, bookingId, role, invoiceId = nu
   // Rechnung: nur das PDF der aktuellen Fassung zählt hier; ältere Fassungen sind auf der Rechnungsseite im Fassungsverlauf
   const latest = (type: DocumentType) => documents.find((d) => d.type === type && (type !== "INVOICE" || d.invoiceVersionId === currentVersionId));
 
-  const rows: { type: DocumentType; available: boolean; action: (prev: import("./actions").DocState, fd: FormData) => Promise<import("./actions").DocState>; generateLabel: string; waitText: string }[] = [
+  type DocAction = (prev: import("./actions").DocState, fd: FormData) => Promise<import("./actions").DocState>;
+  const rows: { type: DocumentType; available: boolean; action: DocAction; regenerate?: DocAction; generateLabel: string; waitText: string }[] = [
     { type: "RENTAL_CONTRACT", available: true, action: generateContractPdfAction.bind(null, bookingId), generateLabel: "Mietvertrag-PDF erzeugen", waitText: "" },
-    { type: "PICKUP_PROTOCOL", available: !!pickup, action: generateHandoverPdfAction.bind(null, bookingId, "PICKUP"), generateLabel: "Übergabeprotokoll-PDF erzeugen", waitText: "nach der Übergabe" },
-    { type: "RETURN_PROTOCOL", available: !!ret, action: generateHandoverPdfAction.bind(null, bookingId, "RETURN"), generateLabel: "Rückgabeprotokoll-PDF erzeugen", waitText: "nach der Rückgabe" },
+    { type: "PICKUP_PROTOCOL", available: !!pickup, action: generateHandoverPdfAction.bind(null, bookingId, "PICKUP"), regenerate: regenerateHandoverPdfAction.bind(null, bookingId, "PICKUP"), generateLabel: "Übergabeprotokoll-PDF erzeugen", waitText: "nach der Übergabe" },
+    { type: "RETURN_PROTOCOL", available: !!ret, action: generateHandoverPdfAction.bind(null, bookingId, "RETURN"), regenerate: regenerateHandoverPdfAction.bind(null, bookingId, "RETURN"), generateLabel: "Rückgabeprotokoll-PDF erzeugen", waitText: "nach der Rückgabe" },
     { type: "INVOICE", available: !!currentVersionId, action: generateInvoicePdfAction.bind(null, bookingId, invoiceKey), generateLabel: `${invoiceWord}s-PDF erzeugen`, waitText: "nach Abschluss der Rechnung" },
   ];
 
@@ -84,6 +85,15 @@ export async function DocumentsPanel({ tenantId, bookingId, role, invoiceId = nu
                     {older.map((o) => (
                       <div key={o.id} className="text-xs text-ink-3">Frühere Version {o.version} vom {fmtDateTime(o.createdAt)}: <a className="underline" href={`/api/documents/${o.id}`} target="_blank" rel="noopener noreferrer">anzeigen</a></div>
                     ))}
+                    {isOwner && r.regenerate && (
+                      <details className="text-xs text-ink-3">
+                        <summary className="cursor-pointer">PDF neu erzeugen (nur Inhaber)</summary>
+                        <div className="mt-2 flex flex-col gap-2">
+                          <p>Erzeugt aus demselben versiegelten Protokollinhalt eine neue PDF-Version, z. B. nach einer Verbesserung der PDF-Darstellung. Die bisherige Datei bleibt als frühere Version erhalten; es wird nichts versendet.</p>
+                          <DocActionButton action={r.regenerate} label="Neue PDF-Version erzeugen" pendingLabel="PDF wird erzeugt…" />
+                        </div>
+                      </details>
+                    )}
                   </>
                 )}
                 {!doc && r.available && <DocActionButton action={r.action} label={r.generateLabel} pendingLabel="PDF wird erzeugt…" primary />}

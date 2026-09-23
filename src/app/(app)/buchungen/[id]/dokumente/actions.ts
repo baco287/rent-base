@@ -55,6 +55,25 @@ export async function generateHandoverPdfAction(bookingId: string, kind: Handove
   }
 }
 
+/**
+ * Neue PDF-Version eines Protokolls bewusst erzeugen (nur Inhaber), z. B. nach einer Verbesserung der PDF-Erzeugung.
+ * Der versiegelte Inhalt bleibt derselbe; die bisherige Datei bleibt als frühere Version erhalten, es wird nichts versendet.
+ */
+export async function regenerateHandoverPdfAction(bookingId: string, kind: HandoverKind, _prev: DocState, _formData: FormData): Promise<DocState> {
+  void _formData;
+  const { tenant, user } = await requireRole("OWNER");
+  const handover = await finalizedHandover(tenant.id, bookingId, kind);
+  const label = kind === "PICKUP" ? "Übergabeprotokoll" : "Rückgabeprotokoll";
+  if (!handover) return { error: `Zu dieser Buchung gibt es keine abgeschlossene ${kind === "PICKUP" ? "Übergabe" : "Rückgabe"}.` };
+  try {
+    const res = await ensureHandoverDocument(tenant.id, handover.id, user.id, { newVersion: true });
+    refresh(bookingId);
+    return { ok: `${label}-PDF wurde als Version ${res.document.version} neu erzeugt. Die frühere Version bleibt im Archiv.` };
+  } catch (e) {
+    return failure(`${label}-PDF`, e);
+  }
+}
+
 /** Aktuelle abgeschlossene Fassung der Rechnung dieser Buchung (PDF und Versand hängen an der Fassung). */
 /** Ohne invoiceId die Mietrechnung der Buchung; mit invoiceId eine bestimmte Rechnung (z. B. Schadenabrechnung), stets an Buchung und Mandant gebunden. */
 async function finalizedInvoice(tenantId: string, bookingId: string, invoiceId: string | null) {

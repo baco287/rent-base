@@ -182,7 +182,7 @@ export async function shrinkPhoto(body: Uint8Array): Promise<Uint8Array | null> 
   }
 }
 
-async function loadPhotosForPdf(tenantId: string, storage: StorageDriver, files: HandoverData["photoFiles"]) {
+export async function loadPhotosForPdf(tenantId: string, storage: StorageDriver, files: HandoverData["photoFiles"]) {
   const out = new Map<string, Uint8Array>();
   for (const f of files) {
     try {
