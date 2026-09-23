@@ -1,13 +1,15 @@
 import "server-only";
 import { db } from "@/lib/db";
+import { resolveDeposit } from "@/lib/business-rules";
 import { customerName } from "@/lib/format";
 import type { CustomerOption, VehicleOption } from "./booking-form";
 
 /** Auswahllisten für das Buchungsformular. Fahrzeuge sortiert nach Gruppe, dann Kennzeichen. */
 export async function loadBookingOptions(tenantId: string): Promise<{ vehicles: VehicleOption[]; customers: CustomerOption[] }> {
-  const [vehicles, customers] = await Promise.all([
+  const [vehicles, customers, tenant] = await Promise.all([
     db.vehicle.findMany({ where: { tenantId }, include: { group: true }, orderBy: [{ group: { sortOrder: "asc" } }, { plate: "asc" }] }),
     db.customer.findMany({ where: { tenantId }, orderBy: [{ lastName: "asc" }, { firstName: "asc" }] }),
+    db.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { businessRules: true } }),
   ]);
   return {
     vehicles: vehicles.map((v) => ({
@@ -19,7 +21,8 @@ export async function loadBookingOptions(tenantId: string): Promise<{ vehicles: 
       workWeekRate: v.workWeekRate?.toString() ?? null,
       weeklyRate: v.weeklyRate?.toString() ?? null,
       monthlyRate: v.monthlyRate?.toString() ?? null,
-      deposit: v.deposit.toString().replace(".", ","),
+      // Vorschlag: Fahrzeug → Fahrzeuggruppe → Mandantenstandard (Geschäftsregeln); im Formular änderbar
+      deposit: (resolveDeposit(tenant.businessRules, v.group, v).cents / 100).toFixed(2).replace(".", ","),
       status: v.status,
     })),
     customers: customers.map((c) => ({

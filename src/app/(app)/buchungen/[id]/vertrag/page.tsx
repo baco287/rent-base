@@ -75,13 +75,7 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
   const sourceLabel = (key: string) => sourceText(sourceOf(key as RuleKey), { groupName: rules.resolved.groupName, vehiclePlate: rules.resolved.vehiclePlate });
   const badge = (key: string) => <span className="text-[11px] text-ink-3">Quelle: {sourceLabel(key)}</span>;
   const ruleSources = Object.fromEntries(["kmPolicy", "fuelRule", "petsPolicy", "smokingAllowed", "abroadAllowed", "additionalDriverFeeType", "additionalDriverFeeCents"].map((k) => [k, sourceLabel(k)]));
-  const depositSource = (() => {
-    const d = Number(contract.deposit);
-    if (Number(booking.vehicle.deposit) === d) return "VEHICLE";
-    if (booking.vehicle.group && Number(booking.vehicle.group.deposit) === d) return "GROUP";
-    if (rules.resolved.values.depositCents != null && rules.resolved.values.depositCents === Math.round(d * 100)) return "TENANT";
-    return "CONTRACT";
-  })();
+  const depositSource = rules.depositSource;
   const termsHint = terms.newerAvailable && terms.active && contract.status === "DRAFT" ? (step: number) => (
     <div className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm flex flex-wrap items-center gap-3">
       <span>Eine neuere Mietbedingungen-Fassung ist verfügbar (Version {terms.active!.label}). Dieser Entwurf behält Version {contract.termsVersion}, bis sie bewusst übernommen wird. Beim Wechsel werden Kenntnisnahme und Unterschriften zurückgesetzt.</span>

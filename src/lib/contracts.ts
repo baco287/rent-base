@@ -17,7 +17,7 @@ import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { recordAudit } from "@/lib/audit";
 import { findConflicts } from "@/lib/bookings";
-import { additionalDriverFee, adoptDefaults, applyContractOverrides, contractRuleIssues, initialContractRules, readContractRules, resolveRules, rulesFingerprint, type BusinessRules, type ContractRuleKey, type ContractRules, type ResolvedRules } from "@/lib/business-rules";
+import { additionalDriverFee, adoptDefaults, applyContractOverrides, contractRuleIssues, depositSourceOf, initialContractRules, readContractRules, resolveDeposit, resolveRules, rulesFingerprint, type BusinessRules, type ContractRuleKey, type ContractRules, type ResolvedDeposit, type ResolvedRules } from "@/lib/business-rules";
 import { checkCustomer, checkDriver, errorsOf, type Issue } from "@/lib/contract-checks";
 import { driveClassOf } from "@/lib/constants";
 import { DomainError, assertContractDraft, contentHash, sha256 } from "@/lib/integrity";
@@ -123,6 +123,12 @@ type BookingWithContext = Prisma.BookingGetPayload<{ include: { customer: true; 
 function resolveFor(booking: BookingWithContext): ResolvedRules {
   return resolveRules(booking.tenant.businessRules, booking.vehicle.group, booking.vehicle);
 }
+/** Kautionsvorgabe: Fahrzeug → Gruppe → Mandantenstandard; 0 in Fahrzeug/Gruppe bedeutet „nicht gesetzt“. */
+function depositFor(booking: BookingWithContext): ResolvedDeposit {
+  return resolveDeposit(booking.tenant.businessRules, booking.vehicle.group, booking.vehicle);
+}
+/** Vertragskaution beim Anlegen: eine in der Buchung gesetzte Kaution gilt; ohne (0) greift die Vorgabekette. */
+const initialDeposit = (booking: BookingWithContext, resolved: ResolvedDeposit) => (Math.round(Number(booking.deposit) * 100) > 0 ? Number(booking.deposit) : resolved.cents / 100);
 const feeRules = (rules: ContractRules | null) => (rules ? { additionalDriverFeeType: rules.values.additionalDriverFeeType, additionalDriverFeeCents: rules.values.additionalDriverFeeCents } : null);
 
 // ---------------------------------------------------------------------------
@@ -144,7 +150,8 @@ export async function ensureContractDraft(tenantId: string, bookingId: string, a
         if (!booking) throw new DomainError("Buchung nicht gefunden.");
         if (booking.status !== "RESERVED") throw new DomainError("Ein Mietvertrag wird nur für reservierte Buchungen angelegt.");
         const resolved = resolveFor(booking);
-        const rules = initialContractRules(resolved);
+        const depositRule = depositFor(booking);
+        const rules = initialContractRules(resolved, new Date(), depositRule);
         const price = contractPrice(booking, booking.customer.discountPercent, null, null, { additionalDrivers: 0, rules: feeRules(rules) });
         const terms = termsForNewDraft(booking.tenant, await activeTermsVersion(tx, tenantId));
         const number = await nextContractNumber(tx, tenantId, booking.startAt);
@@ -162,7 +169,7 @@ export async function ensureContractDraft(tenantId: string, bookingId: string, a
             endAt: booking.endAt,
             totalAmount: price.finalTotal,
             discountPercent: price.discountPercent,
-            deposit: booking.deposit,
+            deposit: initialDeposit(booking, depositRule),
             kmIncludedPerDay: booking.vehicle.kmIncludedPerDay,
             extraKmRate: booking.vehicle.extraKmRate,
             deductible: (resolved.values.deductibleCents ?? 0) / 100,
@@ -231,7 +238,8 @@ export async function refreshContractDraft(tx: Tx, tenantId: string, contractId:
   const vehicleChanged = booking.vehicleId !== contract.vehicleId;
   // Geschäftsregeln: der Schnappschuss bleibt; nur ein Fahrzeugwechsel löst die Vorgaben neu auf (wie die Kilometerkonditionen)
   let rules = readContractRules(contract.conditions);
-  if (!rules || vehicleChanged) rules = initialContractRules(resolveFor(booking));
+  const depositRule = depositFor(booking);
+  if (!rules || vehicleChanged) rules = initialContractRules(resolveFor(booking), new Date(), depositRule);
   const additionalDrivers = await tx.contractDriver.count({ where: { tenantId, contractId, role: "ADDITIONAL_DRIVER" } });
   const price = contractPrice(booking, booking.customer.discountPercent, toNumber(contract.agreedTotal), contract.agreedTotalNote, { additionalDrivers, rules: feeRules(rules) });
   // Mietbedingungen: ein versionierter Entwurf wechselt nie von selbst. Ohne Fassung (Altbestand, noch nicht bestätigt)
@@ -260,7 +268,7 @@ export async function refreshContractDraft(tx: Tx, tenantId: string, contractId:
       totalAmount: price.finalTotal,
       discountPercent: price.discountPercent,
       // Kilometer-Konditionen gehören zum Fahrzeug: bei Fahrzeugwechsel neu übernehmen
-      ...(vehicleChanged ? { kmIncludedPerDay: booking.vehicle.kmIncludedPerDay, extraKmRate: booking.vehicle.extraKmRate, deductible: (rules.values.deductibleCents ?? 0) / 100, fuelPolicy: rules.values.fuelRule } : {}),
+      ...(vehicleChanged ? { kmIncludedPerDay: booking.vehicle.kmIncludedPerDay, extraKmRate: booking.vehicle.extraKmRate, deductible: (rules.values.deductibleCents ?? 0) / 100, fuelPolicy: rules.values.fuelRule, deposit: depositRule.cents / 100 } : {}),
       conditions: rules as unknown as Prisma.InputJsonValue,
       ...terms,
     },
@@ -694,12 +702,16 @@ async function termsStateOf(tx: Tx, tenantId: string, c: Awaited<ReturnType<type
   return { featureActive, selected, active: active ? { id: active.id, label: active.label } : null, newerAvailable: !!active && active.id !== c.rentalTermsVersionId, acknowledged: acknowledgementValid(c), acknowledgedAt: c.termsAcknowledgedAt, acknowledgedByName: c.termsAcknowledgedByName, legacy: !c.rentalTermsVersionId && !!c.termsText };
 }
 
-export type ContractRulesState = { snapshot: ContractRules | null; resolved: ResolvedRules; newerDefaults: boolean; driveClass: "COMBUSTION" | "ELECTRIC" | "PHEV" };
+export type ContractRulesState = { snapshot: ContractRules | null; resolved: ResolvedRules; deposit: ResolvedDeposit; depositSource: RuleSourceOf; newerDefaults: boolean; driveClass: "COMBUSTION" | "ELECTRIC" | "PHEV" };
+type RuleSourceOf = ReturnType<typeof depositSourceOf>;
 async function rulesStateOf(tx: Tx, tenantId: string, c: Awaited<ReturnType<typeof loadContract>>): Promise<ContractRulesState> {
   const booking = await tx.booking.findFirstOrThrow({ where: { id: c.bookingId, tenantId }, include: { customer: true, vehicle: { include: { group: true } }, tenant: true } });
   const resolved = resolveFor(booking);
+  const deposit = depositFor(booking);
   const snapshot = readContractRules(c.conditions);
-  return { snapshot, resolved, newerDefaults: c.status === "DRAFT" && !!snapshot && snapshot.defaultsFingerprint !== rulesFingerprint(resolved.values), driveClass: driveClassOf((c.vehicleSnapshot as VehicleSnapshot).fuel ?? booking.vehicle.fuel) };
+  // neuere Standardwerte: Regeln oder Kautionsvorgabe weichen vom Stand des Schnappschusses ab (Kaution nur, wenn der Schnappschuss sie kennt)
+  const depositChanged = !!snapshot && snapshot.depositResolvedCents != null && snapshot.depositResolvedCents !== deposit.cents;
+  return { snapshot, resolved, deposit, depositSource: depositSourceOf(Math.round(Number(c.deposit) * 100), deposit), newerDefaults: c.status === "DRAFT" && !!snapshot && (snapshot.defaultsFingerprint !== rulesFingerprint(resolved.values) || depositChanged), driveClass: driveClassOf((c.vehicleSnapshot as VehicleSnapshot).fuel ?? booking.vehicle.fuel) };
 }
 
 /** Bewusster Wechsel auf eine (neuere) veröffentlichte Fassung. Setzt die Kenntnisnahme zurück; Unterschriften verfallen. */
@@ -742,10 +754,14 @@ export async function adoptContractDefaults(tenantId: string, contractId: string
     assertContractDraft(c);
     const booking = await tx.booking.findFirstOrThrow({ where: { id: c.bookingId, tenantId }, include: { customer: true, vehicle: { include: { group: true } }, tenant: true } });
     const resolved = resolveFor(booking);
-    const current = readContractRules(c.conditions) ?? initialContractRules(resolved);
-    const next = adoptDefaults(current, resolved);
+    const depositRule = depositFor(booking);
+    const current = readContractRules(c.conditions) ?? initialContractRules(resolved, new Date(), depositRule);
+    const next = adoptDefaults(current, resolved, new Date(), depositRule);
     const deductibleDefault = (next.values.deductibleCents ?? 0) / 100;
-    await tx.rentalContract.update({ where: { id: c.id }, data: { conditions: next as unknown as Prisma.InputJsonValue, ...(next.sources.deductibleCents !== "CONTRACT" ? { deductible: deductibleDefault } : {}), ...(next.sources.fuelRule !== "CONTRACT" ? { fuelPolicy: next.values.fuelRule } : {}) } });
+    // Kaution: nur übernehmen, wenn sie noch der bisherigen Vorgabe entspricht (nicht individuell angepasst); Buchung folgt dem Vertragswert
+    const depositFollows = current.depositResolvedCents != null && Math.round(Number(c.deposit) * 100) === current.depositResolvedCents && depositRule.cents !== current.depositResolvedCents;
+    if (depositFollows) await tx.booking.update({ where: { id: c.bookingId }, data: { deposit: depositRule.cents / 100 } });
+    await tx.rentalContract.update({ where: { id: c.id }, data: { conditions: next as unknown as Prisma.InputJsonValue, ...(depositFollows ? { deposit: depositRule.cents / 100 } : {}), ...(next.sources.deductibleCents !== "CONTRACT" ? { deductible: deductibleDefault } : {}), ...(next.sources.fuelRule !== "CONTRACT" ? { fuelPolicy: next.values.fuelRule } : {}) } });
     await recordAudit(tx, tenantId, actor, { action: "CONTRACT_DEFAULTS_ADOPTED", bookingId: c.bookingId, details: { contractNumber: c.number, fingerprint: next.defaultsFingerprint } });
     return refreshContractDraft(tx, tenantId, contractId);
   }, TX).catch(domainFromDb);

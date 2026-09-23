@@ -178,6 +178,25 @@ export function ruleConsistencyIssues(r: BusinessRules): string[] {
 
 export type ResolvedRules = { values: BusinessRules; sources: Record<RuleKey, RuleSource>; groupName: string | null; vehiclePlate: string | null };
 
+export type ResolvedDeposit = { cents: number; source: RuleSource };
+/**
+ * Kautionsvorgabe für einen neuen Vertrag: Fahrzeug → Fahrzeuggruppe → Mandantenstandard → 0. Fahrzeug und Gruppe tragen
+ * ihre bestehenden Kautionsspalten; 0 bedeutet dort „nicht gesetzt“. Es entsteht nie eine Kautionsbewegung – nur der Vertragswert.
+ */
+export function resolveDeposit(tenantRules: unknown, group: { deposit: unknown } | null | undefined, vehicle: { deposit: unknown } | null | undefined): ResolvedDeposit {
+  const cents = (v: unknown) => Math.round(Number(v ?? 0) * 100);
+  if (vehicle && cents(vehicle.deposit) > 0) return { cents: cents(vehicle.deposit), source: "VEHICLE" };
+  if (group && cents(group.deposit) > 0) return { cents: cents(group.deposit), source: "GROUP" };
+  const tenant = safe(tenantRules, ["depositCents"]);
+  if (tenant.depositCents != null) return { cents: tenant.depositCents, source: "TENANT" };
+  return { cents: 0, source: "DEFAULT" };
+}
+
+/** Herkunft der Vertragskaution: gleich der Vorgabe → deren Quelle, sonst individuell angepasst. */
+export function depositSourceOf(contractDepositCents: number, resolved: ResolvedDeposit): RuleSource {
+  return contractDepositCents === resolved.cents ? resolved.source : "CONTRACT";
+}
+
 /** Systemvorgabe → Mandant → Gruppe → Fahrzeug. Nur gesetzte (nicht undefined) Schlüssel überschreiben. */
 export function resolveRules(tenantRules: unknown, group: { name: string; businessRules: unknown } | null | undefined, vehicle: { plate: string; businessRules: unknown } | null | undefined): ResolvedRules {
   const values: BusinessRules = { ...DEFAULT_BUSINESS_RULES };
@@ -201,8 +220,8 @@ function safe(input: unknown, allowed: readonly RuleKey[]): Partial<BusinessRule
 }
 
 /** Kurzer Fingerabdruck der aufgelösten Vorgaben: ändert er sich, sind „neuere Standardwerte verfügbar“. */
-export function rulesFingerprint(values: BusinessRules): string {
-  return contentHash(values).slice(0, 16);
+export function rulesFingerprint(values: BusinessRules, deposit?: ResolvedDeposit): string {
+  return contentHash(deposit ? { values, deposit: deposit.cents } : values).slice(0, 16);
 }
 
 export function labelOf(key: RuleKey): string {
@@ -245,11 +264,14 @@ export type ContractRules = {
   sources: Record<RuleKey, RuleSource>;
   groupName: string | null;
   vehiclePlate: string | null;
+  /** aufgelöste Kautionsvorgabe (Fahrzeug → Gruppe → Mandant) zum Zeitpunkt des Schnappschusses; fehlt bei älteren Schnappschüssen */
+  depositResolvedCents?: number;
+  depositSource?: RuleSource;
 };
 
 /** Erster Schnappschuss aus den aufgelösten Vorgaben (keine Vertragsanpassung). */
-export function initialContractRules(resolved: ResolvedRules, now = new Date()): ContractRules {
-  return { rulesVersion: 1, resolvedAt: now.toISOString(), defaultsFingerprint: rulesFingerprint(resolved.values), values: { ...resolved.values, kmPolicyNote: null }, sources: { ...resolved.sources }, groupName: resolved.groupName, vehiclePlate: resolved.vehiclePlate };
+export function initialContractRules(resolved: ResolvedRules, now = new Date(), deposit?: ResolvedDeposit): ContractRules {
+  return { rulesVersion: 1, resolvedAt: now.toISOString(), defaultsFingerprint: rulesFingerprint(resolved.values), values: { ...resolved.values, kmPolicyNote: null }, sources: { ...resolved.sources }, groupName: resolved.groupName, vehiclePlate: resolved.vehiclePlate, ...(deposit ? { depositResolvedCents: deposit.cents, depositSource: deposit.source } : {}) };
 }
 
 export function readContractRules(conditions: unknown): ContractRules | null {
@@ -277,7 +299,7 @@ export function applyContractOverrides(current: ContractRules, resolved: Resolve
 }
 
 /** „Aktuelle Standardwerte übernehmen“: nur Werte ohne individuelle Anpassung werden ersetzt. */
-export function adoptDefaults(current: ContractRules, resolved: ResolvedRules, now = new Date()): ContractRules {
+export function adoptDefaults(current: ContractRules, resolved: ResolvedRules, now = new Date(), deposit?: ResolvedDeposit): ContractRules {
   const values = { ...current.values };
   const sources = { ...current.sources };
   for (const k of RULE_KEYS) {
@@ -285,7 +307,7 @@ export function adoptDefaults(current: ContractRules, resolved: ResolvedRules, n
     (values as Record<string, unknown>)[k] = resolved.values[k];
     sources[k] = resolved.sources[k];
   }
-  return { ...current, resolvedAt: now.toISOString(), defaultsFingerprint: rulesFingerprint(resolved.values), values, sources, groupName: resolved.groupName, vehiclePlate: resolved.vehiclePlate };
+  return { ...current, resolvedAt: now.toISOString(), defaultsFingerprint: rulesFingerprint(resolved.values), values, sources, groupName: resolved.groupName, vehiclePlate: resolved.vehiclePlate, ...(deposit ? { depositResolvedCents: deposit.cents, depositSource: deposit.source } : {}) };
 }
 
 /** Vertragswerte innerhalb der erlaubten Grenzen: Auslandsländer nur aus der Freigabeliste, Zusatzfahrer nur wenn erlaubt. */

@@ -57,7 +57,7 @@ export function RulesSectionForm({ action, section, v }: { action: Action; secti
     );
     case "kaution": return (
       <form onSubmit={submitWithoutReset(formAction)} className={cls}>
-        <Field label="Kaution Standard in € (optional)" htmlFor="depositCents" hint="Fahrzeuggruppe und Fahrzeug tragen eigene Kautionen, die vorgehen. Das bestehende Kautionssystem bleibt maßgeblich; keine Bewegung durch diese Einstellung."><input id="depositCents" name="depositCents" inputMode="decimal" defaultValue={eur(v.depositCents)} className="input tnum" /></Field>
+        <Field label="Kaution Standard in € (optional)" htmlFor="depositCents" hint="Vorgabe für neue Buchungen und Verträge, wenn Fahrzeug und Fahrzeuggruppe keine eigene Kaution (über 0) tragen. Reihenfolge: Fahrzeug → Gruppe → dieser Standard. Es entsteht nie eine Kautionsbewegung."><input id="depositCents" name="depositCents" inputMode="decimal" defaultValue={eur(v.depositCents)} className="input tnum" /></Field>
         <Field label="Selbstbeteiligung in € (optional)" htmlFor="deductibleCents" hint="Vertragswert. Erzeugt bei einem Schaden nie automatisch eine Forderung; die Schadenakte entscheidet."><input id="deductibleCents" name="deductibleCents" inputMode="decimal" defaultValue={eur(v.deductibleCents)} className="input tnum" /></Field>
         <Feedback state={state} /><Submit pending={pending} />
       </form>
