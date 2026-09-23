@@ -374,6 +374,7 @@ export async function caseView(tenantId: string, caseId: string) {
       documents: { orderBy: { createdAt: "desc" } },
       events: { orderBy: { createdAt: "desc" } },
       invoices: { where: { status: { in: ["DRAFT", "FINALIZED"] } }, include: { currentVersion: { select: { id: true, versionNo: true, grossTotal: true, taxTreatment: true } } } },
+      maintenanceRecords: { orderBy: { createdAt: "desc" }, select: { id: true, maintenanceNumber: true, title: true, type: true, status: true, workshopName: true, scheduledAt: true, completedAt: true, actualCostCents: true, estimatedCostCents: true, documents: { where: { archivedAt: null }, select: { id: true, fileName: true } } } },
     },
   });
   if (!c) throw new DomainError("Schadenakte nicht gefunden.");

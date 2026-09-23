@@ -48,6 +48,12 @@ export async function purgeTenants(tenantIds: string[]) {
         await tx.photo.deleteMany(w);
         await tx.handoverChecklistItem.deleteMany(w);
         await tx.handoverDamage.deleteMany(w);
+        await tx.maintenanceEvent.deleteMany(w);
+        await tx.maintenanceDocumentLink.deleteMany(w);
+        await tx.vehicleDocument.deleteMany(w);
+        await tx.maintenancePlan.updateMany({ where: { tenantId: t }, data: { lastMaintenanceId: null } });
+        await tx.maintenanceRecord.deleteMany(w);
+        await tx.maintenancePlan.deleteMany(w);
         await tx.damageCaseEvent.deleteMany(w);
         await tx.damageCaseDocument.deleteMany(w);
         await tx.damageCase.deleteMany(w);

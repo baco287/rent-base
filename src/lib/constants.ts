@@ -203,6 +203,22 @@ export const AUDIT_ACTIONS = {
   VEHICLE_RELEASED_AFTER_DAMAGE: "Fahrzeug nach Schaden freigegeben",
   DAMAGE_CUSTOMER_CHARGE_CREATED: "Kundenbelastung festgelegt",
   DAMAGE_INVOICE_CREATED: "Schadenabrechnung erstellt",
+  MAINTENANCE_PLAN_CREATED: "Wartungsplan angelegt",
+  MAINTENANCE_PLAN_UPDATED: "Wartungsplan geändert",
+  MAINTENANCE_CREATED: "Wartungsvorgang angelegt",
+  MAINTENANCE_UPDATED: "Wartungsvorgang geändert",
+  MAINTENANCE_SCHEDULED: "Werkstatttermin gesetzt",
+  MAINTENANCE_STARTED: "Wartungsvorgang begonnen",
+  MAINTENANCE_COMPLETED: "Wartungsvorgang erledigt",
+  MAINTENANCE_CANCELLED: "Wartungsvorgang abgebrochen",
+  MAINTENANCE_DOCUMENT_ADDED: "Wartungsdokument hinzugefügt",
+  MAINTENANCE_COST_CHANGED: "Wartungskosten geändert",
+  MAINTENANCE_DAMAGE_LINKED: "Wartungsvorgang mit Schadenakte verknüpft",
+  VEHICLE_BLOCKED_FOR_MAINTENANCE: "Fahrzeug für Wartung gesperrt",
+  VEHICLE_RELEASED_AFTER_MAINTENANCE: "Fahrzeug nach Wartung freigegeben",
+  VEHICLE_DOCUMENT_ADDED: "Fahrzeugdokument hinzugefügt",
+  VEHICLE_DOCUMENT_ARCHIVED: "Fahrzeugdokument archiviert",
+  MAINTENANCE_COSTS_ADOPTED: "Reparaturkosten in Schadenakte übernommen",
   DAMAGE_CASE_CLOSED: "Schadenakte geschlossen",
   DAMAGE_CASE_REOPENED: "Schadenakte wieder geöffnet",
 } as const;
@@ -283,7 +299,54 @@ export const VEHICLE_EVENT_TYPES = {
   MILEAGE: "Kilometerstand",
   DAMAGE_DISCOVERED: "Schaden festgestellt",
   DAMAGE_REPAIRED: "Schaden repariert",
+  MAINTENANCE_COMPLETED: "Wartung / Werkstatt erledigt",
 } as const;
+
+// Phase 13: Flotten- und Wartungsmanagement. Warnung ≠ Sperre; Kosten ≠ Kundenforderung.
+export const MAINTENANCE_TYPES = {
+  INSPECTION: "Inspektion",
+  OIL_SERVICE: "Ölservice",
+  HU_AU: "HU/AU",
+  TIRES: "Reifen",
+  BRAKES: "Bremsen",
+  REPAIR: "Reparatur",
+  DAMAGE_REPAIR: "Schadenreparatur",
+  AIR_CONDITIONING: "Klimaservice",
+  OTHER: "Sonstiges",
+} as const;
+export type MaintenanceType = keyof typeof MAINTENANCE_TYPES;
+export const MAINTENANCE_STATUS = { PLANNED: "Geplant", SCHEDULED: "Werkstatttermin", IN_PROGRESS: "In Arbeit", COMPLETED: "Erledigt", CANCELLED: "Abgebrochen" } as const;
+export type MaintenanceStatus = keyof typeof MAINTENANCE_STATUS;
+/** Zentrale Übergänge; Abschluss und Abbruch sind eigene Aktionen mit Pflichtangaben. */
+export const MAINTENANCE_TRANSITIONS: Record<MaintenanceStatus, MaintenanceStatus[]> = {
+  PLANNED: ["SCHEDULED", "IN_PROGRESS", "COMPLETED", "CANCELLED"],
+  SCHEDULED: ["PLANNED", "IN_PROGRESS", "COMPLETED", "CANCELLED"],
+  IN_PROGRESS: ["SCHEDULED", "COMPLETED", "CANCELLED"],
+  COMPLETED: [],
+  CANCELLED: [],
+};
+export const MAINTENANCE_PRIORITY = { LOW: "Niedrig", NORMAL: "Normal", HIGH: "Hoch", CRITICAL: "Kritisch" } as const;
+export type MaintenancePriority = keyof typeof MAINTENANCE_PRIORITY;
+export const MAINTENANCE_EVENT_TYPES = {
+  CREATED: "Vorgang angelegt", UPDATED: "Vorgang geändert", SCHEDULED: "Termin gesetzt", STARTED: "In Arbeit", COMPLETED: "Erledigt", CANCELLED: "Abgebrochen",
+  COST_CHANGED: "Kosten geändert", DOCUMENT_ADDED: "Dokument hinzugefügt", DOCUMENT_LINKED: "Dokument aus Schadenakte verknüpft", DOCUMENT_ARCHIVED: "Dokument archiviert",
+  DAMAGE_LINKED: "Schadenakte verknüpft", NOTE_ADDED: "Notiz ergänzt", VEHICLE_BLOCKED: "Fahrzeug für Wartung gesperrt", VEHICLE_RELEASED: "Fahrzeug freigegeben", MILEAGE: "Kilometerstand dokumentiert",
+} as const;
+export const VEHICLE_DOCUMENT_TYPES = {
+  REGISTRATION: "Zulassung",
+  INSURANCE: "Versicherung",
+  HU_REPORT: "HU-Bericht",
+  INSPECTION_REPORT: "Inspektionsbericht",
+  WORKSHOP_INVOICE: "Werkstattrechnung",
+  ESTIMATE: "Kostenvoranschlag",
+  REPAIR_REPORT: "Reparaturbericht",
+  TIRE_DOCUMENT: "Reifenunterlage",
+  OTHER: "Sonstiges",
+} as const;
+export type VehicleDocumentType = keyof typeof VEHICLE_DOCUMENT_TYPES;
+/** Berechneter Warnstand einer Fälligkeit – nie gespeichert. */
+export const DUE_LEVELS = { OK: "In Ordnung", SOON: "Bald fällig", DUE: "Fällig", OVERDUE: "Überfällig" } as const;
+export type DueLevel = keyof typeof DUE_LEVELS;
 export type VehicleEventType = keyof typeof VEHICLE_EVENT_TYPES;
 
 export const CHECKLIST_ANSWER_TYPES = { OK_NOT_OK: "In Ordnung / Nicht in Ordnung", YES_NO: "Ja / Nein", TEXT: "Freitext" } as const;

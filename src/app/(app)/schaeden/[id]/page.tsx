@@ -14,6 +14,7 @@ import { resolveSketch } from "@/lib/sketches";
 import { toDateTimeInputValue } from "@/lib/time";
 import { PaymentStatusChip } from "../../buchungen/[id]/finanzen/panels";
 import { CaseStatusChip, LiabilityChip } from "../chips";
+import { MaintStatusChip, TypeChip } from "../../fahrzeuge/wartung/chips";
 import { addNoteAction, blockVehicleAction, changeStatusAction, chargeCustomerAction, closeCaseAction, releaseVehicleAction, reopenCaseAction, setCostsAction, setInternalNoteAction, setLiabilityAction, setPriorityAction, setRepairAction } from "./actions";
 import { CaseDocumentUploader, CasePhotoUploader, ChargeForm, ConfirmReasonForm, CostsForm, InternalNoteForm, LiabilityForm, NoteForm, PriorityForm, RepairForm, StatusForm } from "./case-forms";
 
@@ -221,6 +222,22 @@ export default async function DamageCasePage({ params, searchParams }: PageProps
               <p className="text-sm text-ink-3">{open ? "Die Haftung bewertet die Disposition." : "Die Akte ist geschlossen."}</p>
             )}
             <p className="text-xs text-ink-3">Mögliche Bewertungen: {Object.values(LIABILITY_STATUS).join(" · ")}. Rent-Base setzt nie automatisch eine Haftung.</p>
+          </div>
+        </Card>
+
+        <Card title="Reparatur & Werkstatt" right={<Chip>{c.maintenanceRecords.length}</Chip>}>
+          <div className="p-4 flex flex-col gap-3 text-sm">
+            {c.maintenanceRecords.length === 0 && <p className="text-ink-3">Kein Reparaturvorgang verknüpft.</p>}
+            <ul className="divide-y divide-line-soft">
+              {c.maintenanceRecords.map((r) => (
+                <li key={r.id} className="py-2 flex flex-col gap-1">
+                  <div className="flex flex-wrap items-center gap-2"><TypeChip type={r.type} /><Link href={`/fahrzeuge/wartung/${r.id}`} className="font-medium hover:underline">{r.title}</Link><MaintStatusChip status={r.status} /><span className="font-mono tnum text-xs text-ink-3">{r.maintenanceNumber}</span></div>
+                  <div className="text-xs text-ink-3 flex flex-wrap gap-x-3">{r.workshopName && <span>{r.workshopName}</span>}{r.scheduledAt && <span>Termin {fmtDateTime(r.scheduledAt)}</span>}{r.completedAt && <span>erledigt {fmtDate(r.completedAt)}</span>}{r.actualCostCents != null ? <span className="font-mono tnum">Kosten {fmtCents(r.actualCostCents)}</span> : r.estimatedCostCents != null ? <span className="font-mono tnum">Schätzung {fmtCents(r.estimatedCostCents)}</span> : null}{r.documents.length > 0 && <span>Belege: {r.documents.map((d) => <a key={d.id} href={`/api/vehicle-documents/${d.id}`} target="_blank" rel="noopener noreferrer" className="underline mr-1">{d.fileName}</a>)}</span>}</div>
+                </li>
+              ))}
+            </ul>
+            {canManage && open && <div><Link href={`/fahrzeuge/wartung/neu?fahrzeug=${c.vehicleId}&akte=${c.id}&art=DAMAGE_REPAIR`} className="btn !py-1.5">Reparaturvorgang anlegen</Link></div>}
+            <p className="text-xs text-ink-3">Werkstattkosten eines Vorgangs werden nur auf ausdrückliche Aktion („Reparaturkosten in Schadenakte übernehmen“) in die Akte übernommen – nie automatisch und nie als Kundenforderung.</p>
           </div>
         </Card>
 

@@ -42,6 +42,7 @@ export default async function VehiclesPage({ searchParams }: PageProps<"/fahrzeu
   return (
     <>
       <PageHeader title="Fahrzeuge" sub={`${active} aktiv in ${groups.length} Gruppen`}>
+        <Link href="/fahrzeuge/wartung" className="btn">Wartung & Werkstatt</Link>
         <form className="flex gap-2">
           <input name="q" defaultValue={q} placeholder="Kennzeichen, Marke, Modell" className="input !w-56 !min-h-[36px]" />
           {showInactive && <input type="hidden" name="inaktiv" value="1" />}

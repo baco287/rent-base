@@ -10,7 +10,7 @@ import { CaseStatusChip, LiabilityChip } from "../../schaeden/chips";
 import { openDamageCaseAction } from "../../schaeden/[id]/actions";
 import { ActionButton } from "../../schaeden/[id]/case-forms";
 
-export async function VehicleFile({ tenantId, vehicleId }: { tenantId: string; vehicleId: string }) {
+export async function VehicleFile({ tenantId, vehicleId, damagesOnly = false }: { tenantId: string; vehicleId: string; damagesOnly?: boolean }) {
   const [damages, events] = await Promise.all([
     db.damage.findMany({
       where: { tenantId, vehicleId },
@@ -66,7 +66,7 @@ export async function VehicleFile({ tenantId, vehicleId }: { tenantId: string; v
         )}
       </Card>
 
-      <Card title="Historie" right={<Chip>{events.length}</Chip>}>
+      {!damagesOnly && <Card title="Historie" right={<Chip>{events.length}</Chip>}>
         {events.length === 0 ? (
           <p className="p-4 text-ink-3 text-sm">Noch keine Einträge.</p>
         ) : (
@@ -83,7 +83,7 @@ export async function VehicleFile({ tenantId, vehicleId }: { tenantId: string; v
             ))}
           </ul>
         )}
-      </Card>
+      </Card>}
     </>
   );
 }

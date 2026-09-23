@@ -69,3 +69,11 @@ export async function nextDamageCaseNumber(tx: Tx, tenantId: string, date = new 
   const n = last?.caseNumber ? parseInt(last.caseNumber.slice(prefix.length), 10) + 1 : 1;
   return `${prefix}${String(n).padStart(6, "0")}`;
 }
+
+/** Wartungsvorgang: WA-JJJJ-NNNNNN, mandantenweit eindeutig; mit withNumberRetry verwenden. */
+export async function nextMaintenanceNumber(tx: Tx, tenantId: string, date = new Date()) {
+  const prefix = `WA-${date.getFullYear()}-`;
+  const last = await tx.maintenanceRecord.findFirst({ where: { tenantId, maintenanceNumber: { startsWith: prefix } }, orderBy: { maintenanceNumber: "desc" }, select: { maintenanceNumber: true } });
+  const n = last?.maintenanceNumber ? parseInt(last.maintenanceNumber.slice(prefix.length), 10) + 1 : 1;
+  return `${prefix}${String(n).padStart(6, "0")}`;
+}

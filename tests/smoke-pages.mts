@@ -18,6 +18,7 @@ import { recordInvoicePayment } from "../src/lib/payments";
 import { recordDepositReceived, settleDeposit } from "../src/lib/deposits";
 import { chargeCustomer, openDamageCase, setLiability } from "../src/lib/damage-cases";
 import { reportDamage } from "../src/lib/damages";
+import { completeMaintenance, createMaintenance, createPlan, setMaintenanceCosts } from "../src/lib/maintenance";
 
 const args = process.argv.slice(2);
 const keep = args.includes("--keep");
@@ -103,8 +104,9 @@ const pages: [string, string][] = [
   [`/buchungen/${retBooking.id}`, "Zusatzkosten"],
   [`/buchungen/${retBooking.id}/rueckgabe`, "Vergleich mit der Übergabe"],
   [`/buchungen/${retBooking.id}/rueckgabe`, "Prüfsumme des versiegelten Protokolls"],
-  [`/fahrzeuge/${v4.id}`, "Schadenakte"],
-  [`/fahrzeuge/${v4.id}`, "Rückgabe"],
+  [`/fahrzeuge/${v4.id}`, "Nächste Fälligkeiten"],
+  [`/fahrzeuge/${v4.id}?tab=schaeden`, "Schadenakte"],
+  [`/fahrzeuge/${v4.id}?tab=historie`, "Rückgabe"],
   ["/heute", "Abholungen heute"],
   ["/dispo", "Dispo-Kalender"],
   ["/fahrzeuge", "HB-RT 200"],
@@ -355,7 +357,7 @@ const invListRent = await plain(await fetch(base + "/rechnungen?filter=alle&art=
 report(invListDmg.includes(dmgInvoice.number!) && invListDmg.includes(dc.caseNumber) && !invListDmg.includes(finalInvoice.number!) && invListRent.includes(finalInvoice.number!) && !invListRent.includes(dmgInvoice.number!), "Rechnungsliste: Filter Mietrechnung / Schadensrechnung");
 const bookingDmg = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
 report(bookingDmg.includes("Schadenabrechnung") && bookingDmg.includes(dc.caseNumber) && bookingDmg.includes("Schäden dieser Vermietung") && bookingDmg.includes("Rechnung " + finalInvoice.number), "Buchung: Mietrechnung und Schadenabrechnung getrennt, Schäden-Karte");
-const vehicleDmg = await plain(await fetch(`${base}/fahrzeuge/${v4.id}`, { headers: { cookie } }));
+const vehicleDmg = await plain(await fetch(`${base}/fahrzeuge/${v4.id}?tab=schaeden`, { headers: { cookie } }));
 report(vehicleDmg.includes(dc.caseNumber) && vehicleDmg.includes("Kunde verantwortlich (bestätigt)"), "Fahrzeugakte: Schaden mit Aktenbezug und Haftungsstand");
 const todayDmg = await plain(await fetch(base + "/heute", { headers: { cookie } }));
 report(todayDmg.includes("Offene Schadenakten") && todayDmg.includes("Wegen Schaden gesperrt") && todayDmg.includes("Haftung ungeklärt") && todayDmg.includes("In Reparatur"), "Dashboard: Schaden-Kennzahlen");
@@ -363,6 +365,51 @@ const hofOnly = await reportDamage(w.tenantId, w.actor, { vehicleId: v3.id, view
 const { damageCase: dcHof } = await openDamageCase(w.tenantId, hofOnly.id, w.actor);
 const hofCase = await plain(await fetch(`${base}/schaeden/${dcHof.id}`, { headers: { cookie } }));
 report(hofCase.includes("keiner Vermietung zugeordnet") && !hofCase.includes("Schaden dem Kunden berechnen"), "Schadenakte ohne Vermietung: keine Kundenbelastung möglich");
+
+// Phase 13: Flotten- und Wartungsmanagement. Plan → Fälligkeit → Vorgang → Beleg → Abschluss → Fahrzeugakte, Übersicht, Dashboard.
+const huPlan = await createPlan(w.tenantId, w.actor, { vehicleId: v4.id, type: "HU_AU", nextDueDate: new Date(Date.now() + 5 * 86400_000) });
+const inspPlan = await createPlan(w.tenantId, w.actor, { vehicleId: v4.id, type: "INSPECTION", intervalMonths: "12", intervalKilometers: "20000", nextDueDate: new Date(Date.now() + 200 * 86400_000), nextDueMileage: "22000" });
+const maintRes = await createMaintenance(w.tenantId, w.actor, { vehicleId: v4.id, type: "INSPECTION", title: "Inspektion 20.000 km", planId: inspPlan.id, workshopName: "Autohaus Muster GmbH", scheduledAt: new Date(Date.now() + 2 * 86400_000), estimatedCostCents: "650" });
+const maint = maintRes.record;
+const wartung = await plain(await fetch(base + "/fahrzeuge/wartung", { headers: { cookie } }));
+report(wartung.includes("Werkstattvorgänge") && wartung.includes("Anstehende Fälligkeiten") && wartung.includes(maint.maintenanceNumber) && wartung.includes("HU/AU") && wartung.includes("Bald fällig") && wartung.includes("HB-RT 400"), "Wartungsübersicht: Fälligkeiten und Vorgänge");
+const wartungFilter = await plain(await fetch(base + "/fahrzeuge/wartung?filter=erledigt", { headers: { cookie } }));
+report(!wartungFilter.includes(maint.maintenanceNumber), "Wartungsübersicht: Filter Erledigt blendet offene Vorgänge aus");
+const maintPage0 = await plain(await fetch(`${base}/fahrzeuge/wartung/${maint.id}`, { headers: { cookie } }));
+report(maintPage0.includes(maint.maintenanceNumber) && maintPage0.includes("Werkstatttermin") && maintPage0.includes("Autohaus Muster GmbH") && maintPage0.includes("Fahrzeug für Wartung sperren") && maintPage0.includes("Als erledigt markieren") && maintPage0.includes("Kilometer dokumentieren"), "Wartungsvorgang: Termin, Werkstatt, Aktionen");
+const maintUp = await (async () => { const fd = new FormData(); fd.set("file", new Blob([pdfBytes], { type: "application/pdf" }), "Werkstattrechnung.pdf"); fd.set("type", "WORKSHOP_INVOICE"); fd.set("description", "Rechnung 4711"); return fetch(`${base}/api/maintenance/${maint.id}/documents`, { method: "POST", body: fd, headers: { cookie } }); })();
+const maintUpJson = (await maintUp.json()) as { id: string };
+report(maintUp.status === 201, `${maintUp.status} Wartungsvorgang: Werkstattrechnung hochgeladen`);
+const maintUpBad = await (async () => { const fd = new FormData(); fd.set("file", new Blob([new TextEncoder().encode("<html>")], { type: "application/pdf" }), "x.pdf"); return fetch(`${base}/api/maintenance/${maint.id}/documents`, { method: "POST", body: fd, headers: { cookie } }); })();
+report(maintUpBad.status === 415, `${maintUpBad.status} Wartungsvorgang: Datei ohne PDF/Bild-Signatur abgewiesen`);
+const vdocGet = await fetch(`${base}/api/vehicle-documents/${maintUpJson.id}`, { headers: { cookie } });
+report(vdocGet.status === 200 && vdocGet.headers.get("content-type") === "application/pdf", `${vdocGet.status} Fahrzeugdokument über geschützte Adresse`);
+const vdocForeign = await fetch(`${base}/api/vehicle-documents/${maintUpJson.id}`, { headers: { cookie: `rb_session=${foreignSession}` } });
+report(vdocForeign.status === 404, `${vdocForeign.status} Fahrzeugdokument für fremden Mandanten nicht auffindbar`);
+const maintForeign = await fetch(`${base}/fahrzeuge/wartung/${maint.id}`, { headers: { cookie: `rb_session=${foreignSession}` } });
+report(maintForeign.status === 404, `${maintForeign.status} Wartungsvorgang für fremden Mandanten nicht auffindbar`);
+const genUp = await (async () => { const fd = new FormData(); fd.set("file", new Blob([pdfBytes], { type: "application/pdf" }), "Zulassung.pdf"); fd.set("type", "REGISTRATION"); return fetch(`${base}/api/vehicles/${v4.id}/documents`, { method: "POST", body: fd, headers: { cookie } }); })();
+report(genUp.status === 201, `${genUp.status} Allgemeines Fahrzeugdokument hochgeladen`);
+await setMaintenanceCosts(w.tenantId, maint.id, w.actor, { actual: "684,32" });
+const maintDone = await completeMaintenance(w.tenantId, maint.id, w.actor, { completedAt: new Date(), mileage: "21900", actualCost: "684,32", workDone: "Inspektion nach Herstellervorgabe", setNextDue: true, nextDueDate: new Date(Date.now() + 365 * 86400_000), nextDueMileage: "41900" });
+report(maintDone.record.status === "COMPLETED" && maintDone.plan?.nextDueMileage === 41_900, "Wartungsvorgang erledigt, Plan fortgeschrieben");
+const maintPage1 = await plain(await fetch(`${base}/fahrzeuge/wartung/${maint.id}`, { headers: { cookie } }));
+report(maintPage1.includes("Erledigt") && maintPage1.includes("684,32") && maintPage1.includes("Werkstattrechnung.pdf") && maintPage1.includes("21.900 km") && !maintPage1.includes("Als erledigt markieren"), "Wartungsvorgang: erledigt mit Kosten, Beleg, Kilometer");
+const vehWartung = await plain(await fetch(`${base}/fahrzeuge/${v4.id}?tab=wartung`, { headers: { cookie } }));
+report(vehWartung.includes("Wartung / Werkstatt hinzufügen") && vehWartung.includes(maint.maintenanceNumber) && vehWartung.includes("Gesamt Wartung/Werkstatt") && vehWartung.includes("684,32"), "Fahrzeugakte: Wartung & Werkstatt mit Kostenhistorie");
+const vehFaellig = await plain(await fetch(`${base}/fahrzeuge/${v4.id}?tab=faelligkeiten`, { headers: { cookie } }));
+report(vehFaellig.includes("Wartungspläne") && vehFaellig.includes("Bald fällig") && vehFaellig.includes("Nächste HU") && vehFaellig.includes("Wartungsplan anlegen"), "Fahrzeugakte: Fälligkeiten und Pläne");
+const vehDocs = await plain(await fetch(`${base}/fahrzeuge/${v4.id}?tab=dokumente`, { headers: { cookie } }));
+report(vehDocs.includes("Zulassung.pdf") && vehDocs.includes("Werkstattrechnung.pdf") && vehDocs.includes("KV-4711.pdf"), "Fahrzeugakte: allgemeine, Wartungs- und Schadendokumente an einem Ort");
+const vehUeb = await plain(await fetch(`${base}/fahrzeuge/${v4.id}`, { headers: { cookie } }));
+report(vehUeb.includes("Nächste Fälligkeiten") && vehUeb.includes("Wartung / Werkstatt") && vehUeb.includes("Übersicht"), "Fahrzeugakte: Reiter und Übersicht");
+const maintNew = await plain(await fetch(`${base}/fahrzeuge/wartung/neu?fahrzeug=${v4.id}&akte=${dc.id}&art=DAMAGE_REPAIR`, { headers: { cookie } }));
+report(maintNew.includes("Wartung / Werkstatt hinzufügen") && maintNew.includes("Zugehörige Schadenakte") && maintNew.includes(dc.caseNumber) && maintNew.includes("Fahrzeug jetzt für die Werkstatt sperren"), "Neuanlage: aus Schadenakte vorbelegt, Sperre als bewusste Option");
+const casePage3 = await plain(await fetch(`${base}/schaeden/${dc.id}`, { headers: { cookie } }));
+report(casePage3.includes("Kein Reparaturvorgang verknüpft") && casePage3.includes("Reparaturvorgang anlegen"), "Schadenakte: Bereich Reparatur & Werkstatt");
+const todayMaint = await plain(await fetch(base + "/heute", { headers: { cookie } }));
+report(todayMaint.includes("Wartung überfällig") && todayMaint.includes("Wartung bald fällig") && todayMaint.includes("Werkstatttermine 7 Tage") && todayMaint.includes("Fahrzeuge in Werkstatt"), "Dashboard: Wartungskennzahlen");
+void huPlan;
 
 // Audit: Rollen. Hofmitarbeiter dürfen Buchungen weder anlegen noch stornieren, Übergabe und Rückgabe aber durchführen.
 const yard = await db.user.create({ data: { tenantId: w.tenantId, email: `yard-${Date.now()}@example.test`, name: "Hof", passwordHash: "x", role: "YARD" } });
@@ -406,6 +453,14 @@ const yardCase = await plain(await fetch(`${base}/schaeden/${dcHof.id}`, { heade
 report(yardCase.includes("Notiz speichern") && yardCase.includes("Foto aufnehmen") && yardCase.includes("Dokument hochladen") && !yardCase.includes("Haftung festlegen") && !yardCase.includes("Kosten speichern") && !yardCase.includes("Fahrzeug wegen Schaden sperren") && !yardCase.includes("Schadenakte schließen") && !yardCase.includes("Schaden dem Kunden berechnen") && yardCase.includes("entscheidet die Disposition"), "Hofmitarbeiter: Schadenakte sehen, Notiz/Foto/Dokument, keine Haftung/Kosten/Sperre/Abschluss/Belastung");
 const yardCaseUp = await (async () => { const fd = new FormData(); fd.set("file", new Blob([jpeg], { type: "image/jpeg" }), "f.jpg"); return fetch(`${base}/api/damage-cases/${dcHof.id}/photos`, { method: "POST", body: fd, headers: { cookie: `rb_session=${yardSession}` } }); })();
 report(yardCaseUp.status === 201, `${yardCaseUp.status} Hofmitarbeiter: Foto an Schadenakte`);
+const yardMaint = await plain(await fetch(`${base}/fahrzeuge/wartung/${maint.id}`, { headers: { cookie: `rb_session=${yardSession}` } }));
+report(yardMaint.includes(maint.maintenanceNumber) && !yardMaint.includes("Vorgang bearbeiten") && !yardMaint.includes("Kosten speichern") && !yardMaint.includes("Fahrzeug für Wartung sperren") && !yardMaint.includes("Als erledigt markieren") && !yardMaint.includes("Archivieren") && yardMaint.includes("entscheidet die Disposition"), "Hofmitarbeiter: Wartungsvorgang ansehen, keine Kosten/Sperre/Abschluss/Archivierung");
+const yardMaintNew = await fetch(`${base}/fahrzeuge/wartung/neu?fahrzeug=${v4.id}`, { headers: { cookie: `rb_session=${yardSession}` }, redirect: "manual" });
+report(yardMaintNew.status === 307, `${yardMaintNew.status} Hofmitarbeiter: keine Anlage von Wartungsvorgängen`);
+const yardGenUp = await (async () => { const fd = new FormData(); fd.set("file", new Blob([pdfBytes], { type: "application/pdf" }), "Vers.pdf"); fd.set("type", "INSURANCE"); return fetch(`${base}/api/vehicles/${v4.id}/documents`, { method: "POST", body: fd, headers: { cookie: `rb_session=${yardSession}` } }); })();
+report(yardGenUp.status === 403, `${yardGenUp.status} Hofmitarbeiter: keine allgemeinen Fahrzeugdokumente`);
+const yardVehDocs = await plain(await fetch(`${base}/fahrzeuge/${v4.id}?tab=dokumente`, { headers: { cookie: `rb_session=${yardSession}` } }));
+report(yardVehDocs.includes("Zulassung.pdf") && !yardVehDocs.includes("Archivieren"), "Hofmitarbeiter: Fahrzeugdokumente sehen, nicht archivieren");
 const yardCases = await fetch(base + "/schaeden", { headers: { cookie: `rb_session=${yardSession}` } });
 report(yardCases.status === 200, `${yardCases.status} Hofmitarbeiter: Schadenliste lesbar`);
 const yardDmgInvoice = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung?nr=${charge.invoiceId}`, { headers: { cookie: `rb_session=${yardSession}` } }));

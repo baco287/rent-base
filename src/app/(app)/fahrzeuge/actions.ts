@@ -86,6 +86,8 @@ export async function updateVehicleAction(id: string, _prev: FormState, formData
     // tenantId in der where-Klausel: niemand kann fremde Fahrzeuge ändern.
     const r = await db.vehicle.updateMany({ where: { id, tenantId: tenant.id }, data: toData(parsed.data) });
     if (r.count === 0) return { error: "Fahrzeug nicht gefunden." };
+    // HU/AU-Plan und HU-Datum am Fahrzeug bleiben synchron (der Plan ist die Fälligkeit, das Datum die Stammdatenansicht)
+    await db.maintenancePlan.updateMany({ where: { tenantId: tenant.id, vehicleId: id, type: "HU_AU", isActive: true }, data: { nextDueDate: parsed.data.huDate ?? null } });
   } catch (e) {
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")
       return { error: `Das Kennzeichen ${parsed.data.plate} ist bereits angelegt.` };

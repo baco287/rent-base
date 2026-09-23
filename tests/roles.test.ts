@@ -64,4 +64,16 @@ test("Jede Server-Action-Datei und jede Prozessseite prüft die Rolle serverseit
   assert.match(caseBody("addNoteAction"), /ctx\(caseId, "DISPO", "YARD"\)/, "Notiz: auch Hofmitarbeiter");
   assert.match(caseBody("openDamageCaseAction"), /requireRole\("DISPO", "YARD"\)/, "Akte eröffnen: auch Hofmitarbeiter");
   assert.match(cases, /const \{ tenant, user \} = roles\.length \? await requireRole\(\.\.\.roles\) : await requireRole\("DISPO"\);/, "ctx ohne Rollen = nur DISPO");
+  // Wartung: Pläne, Anlage, Bearbeiten, Kosten, Abschluss, Abbruch, Sperren/Freigeben, Schadenakte, Kostenübernahme, Archivieren nur DISPO (und OWNER);
+  // Kilometer, Notiz und „In Arbeit“ auch YARD.
+  const maint = readFileSync(path.join(process.cwd(), "src/app/(app)/fahrzeuge/wartung/actions.ts"), "utf8");
+  const maintBody = (name: string) => new RegExp(`export async function ${name}[\\s\\S]*?\\n}`).exec(maint)?.[0] ?? "";
+  for (const fn of ["createPlanAction", "updatePlanAction", "setPlanActiveAction", "createMaintenanceAction", "archiveDocumentAction"]) assert.match(maintBody(fn), /requireRole\("DISPO"\)/, `${fn}: nur Inhaber und Disponent`);
+  for (const fn of ["updateMaintenanceAction", "setCostsAction", "completeMaintenanceAction", "cancelMaintenanceAction", "blockVehicleAction", "releaseVehicleAction", "linkDamageCaseAction", "adoptCostsAction", "linkDamageDocumentAction"]) {
+    assert.match(maintBody(fn), /await ctx\(maintenanceId\)/, `${fn}: nur Inhaber und Disponent`);
+    assert.ok(!/"YARD"/.test(maintBody(fn)), `${fn}: YARD nicht zugelassen`);
+  }
+  for (const fn of ["documentMileageAction", "addNoteAction"]) assert.match(maintBody(fn), /ctx\(maintenanceId, "DISPO", "YARD"\)/, `${fn}: auch Hofmitarbeiter`);
+  assert.match(maintBody("changeStatusAction"), /p\.data\.to === "IN_PROGRESS" \? await ctx\(maintenanceId, "DISPO", "YARD"\) : await ctx\(maintenanceId\)/, "Status: nur „In Arbeit“ für den Hof");
+  assert.match(maint, /const \{ tenant, user \} = roles\.length \? await requireRole\(\.\.\.roles\) : await requireRole\("DISPO"\);/, "Wartung: ctx ohne Rollen = nur DISPO");
 });

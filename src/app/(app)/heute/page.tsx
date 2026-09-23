@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { customerName, fmtDate, fmtTime } from "@/lib/format";
 import { Card, Chip, Content, KPI, PageHeader, Plate } from "@/components/ui";
 import { caseCounts } from "@/lib/damage-cases";
+import { maintenanceCounts } from "@/lib/maintenance";
 import { openDepositCounts } from "@/lib/deposits";
 import { fmtCents } from "@/lib/money";
 import { paymentSummaries } from "@/lib/payments";
@@ -47,6 +48,7 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
     openDepositCounts(tenant.id),
     caseCounts(tenant.id),
   ]);
+  const maint = await maintenanceCounts(tenant.id);
   const sums = await paymentSummaries(tenant.id, finalInvoices);
   const damageInvoiceIds = new Set(finalInvoices.filter((i) => i.kind === "DAMAGE").map((i) => i.id));
   const openDamageInvoices = [...sums.entries()].filter(([id, x]) => damageInvoiceIds.has(id) && (x.status === "OPEN" || x.status === "PARTIAL")).length;
@@ -94,6 +96,21 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
           <KPI label="Wegen Schaden gesperrt" value={damage.blocked} detail={<Link href="/schaeden?filter=gesperrt" className="underline">Fahrzeuge mit offener Akte</Link>} hot={damage.blocked > 0} />
           <KPI label="Haftung ungeklärt" value={damage.liability} detail={damage.openInvoices > 0 ? <Link href="/schaeden?filter=rechnung_offen" className="underline">{openDamageInvoices} Schadensrechnung{openDamageInvoices === 1 ? "" : "en"} offen</Link> : <Link href="/schaeden?filter=haftung_ungeklaert" className="underline">offene Akten ohne Bewertung</Link>} hot={damage.liability > 0} />
         </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <KPI label="Wartung überfällig" value={maint.overdue} detail={<Link href="/fahrzeuge/wartung?filter=ueberfaellig" className="underline">fällig oder überfällig</Link>} hot={maint.overdue > 0} />
+          <KPI label="Wartung bald fällig" value={maint.soon} detail={<Link href="/fahrzeuge/wartung?filter=bald" className="underline">innerhalb der Vorwarnung</Link>} />
+          <KPI label="Werkstatttermine 7 Tage" value={maint.appointmentsWeek} detail={maint.appointmentsToday.length > 0 ? `${maint.appointmentsToday.length} heute` : "keine heute"} />
+          <KPI label="Fahrzeuge in Werkstatt" value={maint.inWorkshop} detail={<Link href="/fahrzeuge/wartung?filter=in_arbeit" className="underline">{maint.inProgress} Vorgänge in Arbeit</Link>} hot={maint.inWorkshop > 0} />
+        </div>
+        {(maint.appointmentsToday.length > 0 || maint.overdueList.length > 0 || maint.huSoonList.length > 0) && (
+          <Card title="Wartung heute" right={<Chip tone="amber">{maint.appointmentsToday.length + maint.overdueList.length}</Chip>}>
+            <ul className="divide-y divide-line-soft text-sm">
+              {maint.appointmentsToday.map((r) => <li key={r.id} className="px-4 py-2 flex flex-wrap items-center gap-2"><span className="font-mono tnum text-xs text-ink-3">{fmtTime(r.scheduledAt!)}</span><Plate>{r.vehicle.plate}</Plate><Link href={`/fahrzeuge/wartung/${r.id}`} className="font-medium hover:underline">{r.title}</Link><span className="text-xs text-ink-3">Werkstatttermin{r.workshopName ? ` · ${r.workshopName}` : ""}</span></li>)}
+              {maint.overdueList.slice(0, 8).map((d) => <li key={d.id} className="px-4 py-2 flex flex-wrap items-center gap-2"><Plate>{d.vehicle.plate}</Plate><Link href={`/fahrzeuge/${d.vehicle.id}?tab=faelligkeiten`} className="font-medium hover:underline">{d.title}</Link><Chip tone="bad">{d.due.text}</Chip></li>)}
+              {maint.huSoonList.filter((d) => d.due.level === "SOON").slice(0, 5).map((d) => <li key={d.id} className="px-4 py-2 flex flex-wrap items-center gap-2"><Plate>{d.vehicle.plate}</Plate><span className="font-medium">HU/AU</span><Chip tone="amber">{d.due.text}</Chip></li>)}
+            </ul>
+          </Card>
+        )}
         {overpaid.length > 0 && (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KPI label="Erstattungen zu klären" value={overpaid.length} detail={<Link href="/rechnungen?filter=ueberzahlt" className="underline">{fmtCents(overpaidCents)} überzahlt – keine automatische Erstattung</Link>} hot />
