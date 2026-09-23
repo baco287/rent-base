@@ -85,6 +85,7 @@ model Tenant {
   authorityReceipts        AuthoritySubmissionReceipt[]
   authorityCaseEvents      AuthorityCaseEvent[]
   rentalTermsVersions      RentalTermsVersion[]
+  payouts                  Payout[]
 }
 
 model User {
@@ -230,6 +231,7 @@ model Customer {
   contracts       RentalContract[]
   contractDrivers ContractDriver[]
   invoices        Invoice[]
+  payouts         Payout[]
 
   @@unique([tenantId, number])
   @@index([tenantId, lastName])
@@ -268,6 +270,7 @@ model Booking {
   emailLogs       EmailLog[]
   vehicleEvents   VehicleEvent[]
   payments        Payment[]
+  payouts         Payout[]
   securityDeposit SecurityDeposit?
   damageCases     DamageCase[]
 
@@ -644,7 +647,8 @@ model Document {
   handoverId       String?
   invoiceId        String?
   invoiceVersionId String? // Rechnungsfassung, aus der das PDF entstand
-  type             String // RENTAL_CONTRACT | PICKUP_PROTOCOL | RETURN_PROTOCOL | INVOICE
+  payoutId         String? // Auszahlung (Phase 18): Auszahlungsbeleg (PAYOUT_RECEIPT) oder hochgeladener Nachweis (PAYOUT_ATTACHMENT)
+  type             String // RENTAL_CONTRACT | PICKUP_PROTOCOL | RETURN_PROTOCOL | INVOICE | CREDIT_NOTE | CANCELLATION | PAYOUT_RECEIPT | PAYOUT_ATTACHMENT
   storageKey       String   @unique
   fileName         String
   contentType      String   @default("application/pdf")
@@ -661,8 +665,10 @@ model Document {
   handover       Handover?       @relation(fields: [handoverId], references: [id], onDelete: SetNull)
   invoice        Invoice?        @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
   invoiceVersion InvoiceVersion? @relation(fields: [invoiceVersionId], references: [id], onDelete: SetNull)
+  payout         Payout?         @relation(fields: [payoutId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, bookingId, type])
+  @@index([tenantId, payoutId])
 }
 
 // Zusatzkosten mit vollständiger Rechengrundlage, z. B. 342 km × 0,25 € = 85,50 €.
@@ -712,6 +718,7 @@ model EmailLog {
   handoverId        String? // Bezug zum Protokoll, nur Referenz
   invoiceId         String? // Bezug zur Rechnung, nur Referenz
   invoiceVersionId  String? // welche Rechnungsfassung versendet wurde (Anhang = deren PDF)
+  payoutId          String? // Auszahlungsbeleg (Phase 18), nur Referenz
   trigger           String    @default("AUTO") // AUTO = nach Abschluss | MANUAL = "erneut senden"
   attemptNo         Int       @default(1) // fortlaufender Versuch je Buchung und Vorlage
   createdById       String?
@@ -722,6 +729,7 @@ model EmailLog {
   tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   booking        Booking?        @relation(fields: [bookingId], references: [id], onDelete: SetNull)
   invoiceVersion InvoiceVersion? @relation(fields: [invoiceVersionId], references: [id], onDelete: SetNull)
+  payout         Payout?         @relation(fields: [payoutId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, status])
@@ -819,6 +827,7 @@ model Invoice {
   items            InvoiceItem[] // Altbestand (Positionen der Fassung 1 vor Phase 10)
   documents        Document[]
   payments         Payment[]
+  payouts          Payout[]
   versions         InvoiceVersion[] @relation("InvoiceVersions")
   currentVersion   InvoiceVersion?  @relation("InvoiceCurrentVersion", fields: [currentVersionId], references: [id])
   damageCase       DamageCase?      @relation(fields: [damageCaseId], references: [id])
@@ -919,6 +928,7 @@ model SecurityDeposit {
   booking  Booking                @relation(fields: [bookingId], references: [id])
   contract RentalContract?        @relation(fields: [contractId], references: [id], onDelete: SetNull)
   events   SecurityDepositEvent[]
+  payouts  Payout[]
 
   @@index([tenantId, status])
 }
@@ -952,6 +962,73 @@ model SecurityDepositEvent {
 
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, depositId, status])
+}
+
+// Phase 18: Auszahlung = tatsächlicher Geldabfluss an den Kunden (Rechnungserstattung oder Kautionsrückzahlung).
+// Vier Dinge bleiben getrennt: Forderung (Invoice), Zahlung (Payment, Geld rein), Guthaben/Freigabe (abgeleitet bzw.
+// SecurityDepositEvent RELEASED) und Auszahlung (Payout, Geld raus). Nur COMPLETED zählt finanziell. Rent-Base führt
+// keine Überweisung, Karten- oder Providertransaktion aus; es dokumentiert den Vorgang und erzeugt einen Nachweis.
+model Payout {
+  id                String    @id @default(cuid())
+  tenantId          String
+  number            String? // AZ-JJJJ-NNNNNN, erst beim Abschluss (COMPLETED) vergeben
+  sourceType        String // INVOICE_REFUND | SECURITY_DEPOSIT_REFUND
+  invoiceId         String? // genau eine Quelle: Rechnung ...
+  securityDepositId String? // ... oder Kaution
+  bookingId         String
+  customerId        String?
+  status            String    @default("DRAFT") // DRAFT | COMPLETED | CANCELLED
+  amountCents       Int
+  currency          String    @default("EUR")
+  method            String // BANK_TRANSFER | CASH | CARD | OTHER
+  methodDescription String? // Pflicht bei OTHER: wie wurde ausgezahlt
+  executedAt        DateTime? // tatsächlicher Zeitpunkt der Auszahlung (Pflicht bei COMPLETED)
+  plannedAt         DateTime? // geplanter Zeitpunkt im Entwurf (optional)
+
+  // Empfänger-Snapshot: Standard = Kunde aus Rechnung/Kaution; abweichender Empfänger nur mit Grund. Nie Stammdaten ändern.
+  recipientName     String
+  recipientDeviates Boolean @default(false)
+  recipientReason   String?
+  iban              String? // nur BANK_TRANSFER, nur an dieser Auszahlung (keine dauerhafte Bankverbindung)
+  ibanMasked        String? // z. B. DE** **** **** **** **12 34 – für Anzeige, PDF und Protokoll
+  reference         String? // Verwendungszweck, Transaktions-/Belegnummer (generisch)
+  receiptConfirmed  Boolean @default(false) // Barauszahlung: Empfang vom Empfänger bestätigt
+  historicalEntry   Boolean @default(false) // nachträglich dokumentiert (Auszahlung erfolgte außerhalb von Rent-Base, vor der Erfassung)
+  customerNote      String? // Text auf dem Auszahlungsbeleg
+  internalNote      String? // nur intern, nie auf dem Beleg
+
+  sourceSnapshot Json? // Stand der Quelle beim Abschluss (Nummern, Forderung, Zahlungen, Guthaben, bereits ausgezahlt)
+  contentHash    String? // sha256 über den versiegelten Inhalt (beim Abschluss)
+  idempotencyKey String? // einmaliger Formularschlüssel gegen Doppelbuchung
+
+  createdById     String?
+  createdByName   String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  completedAt     DateTime?
+  completedById   String?
+  completedByName String?
+
+  cancelledAt        DateTime?
+  cancelledById      String?
+  cancelledByName    String?
+  cancellationReason String?
+
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking   Booking          @relation(fields: [bookingId], references: [id])
+  invoice   Invoice?         @relation(fields: [invoiceId], references: [id])
+  deposit   SecurityDeposit? @relation(fields: [securityDepositId], references: [id])
+  customer  Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  documents Document[]
+  emailLogs EmailLog[]
+
+  @@unique([tenantId, number])
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, status])
+  @@index([tenantId, invoiceId, status])
+  @@index([tenantId, securityDepositId, status])
+  @@index([tenantId, customerId])
+  @@index([tenantId, bookingId])
 }
 
 // Protokoll kritischer Geldaktionen. Keine Kundendaten, nur Bezug, Betrag, Aktion, Benutzer, Zeitpunkt.

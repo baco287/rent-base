@@ -105,9 +105,9 @@ test("Nummernkreise: Standard RE/GS/ST, Präfix-Prüfung (Form, verschieden), ge
   assert.deepEqual(numberRangesOf(null), DEFAULT_NUMBER_RANGES);
   assert.deepEqual(numberRangesOf({ creditNote: { prefix: "GU" }, unknown: 1, cancellation: { prefix: "st" } }).creditNote.prefix, "GU");
   assert.equal(numberRangesOf({ cancellation: { prefix: "st" } }).cancellation.prefix, "ST", "ungültiges Präfix → Standard");
-  assert.throws(() => validateNumberRanges({ invoice: "RE", creditNote: "RE", cancellation: "ST" }), /unterscheiden/);
-  assert.throws(() => validateNumberRanges({ invoice: "RE-1", creditNote: "GS", cancellation: "ST" }), /1 bis 6 Großbuchstaben/);
-  assert.deepEqual(validateNumberRanges({ invoice: "re", creditNote: " gs ", cancellation: "STORNO" }), { invoice: { prefix: "RE" }, creditNote: { prefix: "GS" }, cancellation: { prefix: "STORNO" } });
+  assert.throws(() => validateNumberRanges({ invoice: "RE", creditNote: "RE", cancellation: "ST", payout: "AZ" }), /unterscheiden/);
+  assert.throws(() => validateNumberRanges({ invoice: "RE-1", creditNote: "GS", cancellation: "ST", payout: "AZ" }), /1 bis 6 Großbuchstaben/);
+  assert.deepEqual(validateNumberRanges({ invoice: "re", creditNote: " gs ", cancellation: "STORNO", payout: "az" }), { invoice: { prefix: "RE" }, creditNote: { prefix: "GS" }, cancellation: { prefix: "STORNO" }, payout: { prefix: "AZ" } });
 });
 
 test("Teilgutschrift und Restgutschrift: eigene Nummern GS-…, positive Beträge, Original unverändert, Kette, Restbeträge je Position, keine dritte Gutschrift (Code und DB)", async () => {

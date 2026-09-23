@@ -73,7 +73,7 @@ test("Nach Rückgabe: Teilbetrag erhalten, vollständige Freigabe; teilweise Fre
   let v = await depositView(a.tenantId, a.bookingId);
   assert.deepEqual([v.expectedCents, v.receivedCents, v.remainingCents, v.status], [50_000, 50_000, 50_000, "RECEIVED"]);
   await assert.rejects(() => settleDeposit(a.tenantId, a.actor, { bookingId: a.bookingId, releaseAmount: "500,01", method: "CASH", occurredAt: at }), /Freigabe über die erhaltene Kaution hinaus/);
-  await assert.rejects(() => settleDeposit(a.tenantId, a.actor, { bookingId: a.bookingId, releaseAmount: "500", occurredAt: at }), /Zahlungsart/);
+  await assert.rejects(() => settleDeposit(a.tenantId, a.actor, { bookingId: a.bookingId, releaseAmount: "500", method: "PAYPAL", occurredAt: at }), /Zahlungsart/, "unbekannter Auszahlungsweg; ohne Angabe ist er optional (Phase 18: Auszahlung wird separat erfasst)");
   const pv = await previewDepositSettlement(a.tenantId, a.bookingId, "500");
   assert.deepEqual([pv.kind, pv.releaseCents, pv.retainCents, pv.statusAfter, pv.error], ["RELEASE", 50_000, 0, "RELEASED", null]);
   const rel = await settleDeposit(a.tenantId, a.actor, { bookingId: a.bookingId, releaseAmount: "500", method: "BANK_TRANSFER", occurredAt: at, note: "Rücküberweisung veranlasst" });

@@ -55,9 +55,9 @@ export default async function SettingsPage({ searchParams }: PageProps<"/einstel
             </div>
           </Card>
 
-          <Card title="Nummernkreise der Belege" right={<Chip>{ranges.invoice.prefix} · {ranges.creditNote.prefix} · {ranges.cancellation.prefix}</Chip>}>
+          <Card title="Nummernkreise der Belege" right={<Chip>{ranges.invoice.prefix} · {ranges.creditNote.prefix} · {ranges.cancellation.prefix} · {ranges.payout.prefix}</Chip>}>
             <div className="p-5 flex flex-col gap-3 text-sm">
-              <p>Rechnungen <span className="font-mono">{ranges.invoice.prefix}-JJJJ-NNNNNN</span>, Gutschriften <span className="font-mono">{ranges.creditNote.prefix}-JJJJ-NNNNNN</span>, Stornobelege <span className="font-mono">{ranges.cancellation.prefix}-JJJJ-NNNNNN</span>. Jeder Kreis zählt für sich; Nummern werden beim Abschluss vergeben und nie wiederverwendet.</p>
+              <p>Rechnungen <span className="font-mono">{ranges.invoice.prefix}-JJJJ-NNNNNN</span>, Gutschriften <span className="font-mono">{ranges.creditNote.prefix}-JJJJ-NNNNNN</span>, Stornobelege <span className="font-mono">{ranges.cancellation.prefix}-JJJJ-NNNNNN</span>, Auszahlungen <span className="font-mono">{ranges.payout.prefix}-JJJJ-NNNNNN</span>. Jeder Kreis zählt für sich; Nummern werden beim Abschluss vergeben und nie wiederverwendet.</p>
               <div><Link href="/einstellungen/nummernkreise" className="btn">{isOwner ? "Nummernkreise verwalten" : "Nummernkreise ansehen"}</Link></div>
             </div>
           </Card>

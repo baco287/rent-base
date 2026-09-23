@@ -360,7 +360,7 @@ test("Übermittlung Post/Portal: nur freigegebene Fassung, Datum Pflicht, Nachwe
   // Nachweisdokument (Portal-Screenshot als PDF) vorab registriert
   const key = buildStorageKey({ tenantId: w.tenantId, area: "documents", contentType: "application/pdf" });
   const receiptDoc = await registerAuthorityDocument(w.tenantId, c.id, w.actor, { type: "SUBMISSION_RECEIPT", fileName: "portal-bestaetigung.pdf", storageKey: key, contentType: "application/pdf", sizeBytes: 10, checksum: sha256("x") });
-  const when = at(0, 9);
+  const when = at(-1, 9); // gestern 09:15: unabhängig von der Uhrzeit des Testlaufs nie in der Zukunft
   const [a, b] = await Promise.all([
     submitResponse(w.tenantId, draft.id, w.actor, { submittedAt: when, reference: "PORTAL-4711", receiptDocumentId: receiptDoc.id }),
     submitResponse(w.tenantId, draft.id, w.actor, { submittedAt: when, reference: "PORTAL-4711", receiptDocumentId: receiptDoc.id }),

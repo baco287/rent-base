@@ -23,6 +23,8 @@ import { approveResponse, createAuthorityCase, prepareResponse, setDriver, submi
 import { acknowledgeTerms } from "../src/lib/contracts";
 import { createTermsDraft, publishTermsVersion } from "../src/lib/rental-terms";
 import { createCancellationDraft, createCreditNoteDraft, finalizeCounterDocument, updateCounterDocumentDraft } from "../src/lib/counter-documents";
+import { createPayout } from "../src/lib/payouts";
+import { ensurePayoutDocument } from "../src/lib/documents";
 import { toDateInputValue, zonedParts } from "../src/lib/time";
 
 const args = process.argv.slice(2);
@@ -634,7 +636,7 @@ report(afterStorno.includes("Storniert") && afterStorno.includes("Kundenguthaben
 const listRefund = await plain(await fetch(base + "/rechnungen?filter=erstattung", { headers: { cookie } }));
 report(listRefund.includes(finalInvoice.number) && listRefund.includes("Erstattung") && listRefund.includes("Storniert"), "Rechnungsliste: Filter Erstattung erforderlich mit Storno-Kennzeichen");
 const todayRefund = await plain(await fetch(base + "/heute", { headers: { cookie } }));
-report(todayRefund.includes("Erstattungen zu klären") && todayRefund.includes("Kundenguthaben"), "Dashboard: Erstattungen zu klären aus der zentralen Summierung");
+report(todayRefund.includes("Rechnungserstattungen offen") && todayRefund.includes("noch auszuzahlen"), "Dashboard: offene Rechnungserstattungen aus der zentralen Summierung");
 const bookingChain = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
 report(bookingChain.includes("Gutschriften / Storno") && bookingChain.includes(creditNumber), "Buchung: Gegenbelege sichtbar");
 const settingsRanges = await plain(await fetch(base + "/einstellungen", { headers: { cookie } }));
@@ -650,6 +652,55 @@ const yardChain = await plain(await fetch(`${base}/buchungen/${retBooking.id}/re
 report(yardChain.includes("Belegkette") && !yardChain.includes("Gutschrift erstellen") && !yardChain.includes("Rechnung stornieren"), "Hofmitarbeiter: Belegkette lesbar, keine Aktionen");
 const yardRanges = await plain(await fetch(base + "/einstellungen/nummernkreise", { headers: { cookie } }));
 report(yardRanges.includes("nur lesend") && !yardRanges.includes("Nummernkreise speichern"), "Hofmitarbeiter: Nummernkreise nur lesend");
+await db.user.update({ where: { id: w.userId }, data: { role: "OWNER" } });
+
+// Auszahlungen, Erstattungen & Kautionsrückzahlung (Phase 18)
+const payoutsOpen = await plain(await fetch(base + "/auszahlungen", { headers: { cookie } }));
+report(["Auszahlungen", "Offene Ansprüche", "Rechnungserstattung", finalInvoice.number, "Kautionsauszahlung", "RET-1", "Entwürfe", "Alle Wege"].every((t) => payoutsOpen.includes(t)), "Auszahlungen: offene Ansprüche aus Storno-Guthaben und Kautionsfreigabe ohne Entwurf sichtbar");
+const invRefund = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } }));
+report(["Erstattungen an den Kunden", "Erstattung erfassen", "Noch auszuzahlen", "Zahlung stornieren:", "Erstattung erfassen:"].every((t) => invRefund.includes(t)), "Rechnung: Erstattungsbereich mit Erklärung Zahlungsstorno vs. Erstattung");
+const bookingDep = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
+report(["Zur Auszahlung freigegeben", "Tatsächlich ausgezahlt", "Noch auszuzahlen", "Kautionsauszahlung (tatsächlicher Geldfluss)", "Kaution auszahlen"].every((t) => bookingDep.includes(t)), "Buchung: Kaution mit Auszahlungsdimension und Aktion");
+const refundDraft = (await createPayout(w.tenantId, w.actor, { sourceType: "INVOICE_REFUND", invoiceId: invoice.id }, { amount: "40", method: "BANK_TRANSFER", iban: "DE02120300000000202051", executedAt: new Date(Date.now() - 3600_000), reference: "Erstattung Storno" }, { complete: false })).payout;
+const payoutDraftPage = await plain(await fetch(`${base}/auszahlungen/${refundDraft.id}`, { headers: { cookie } }));
+report(["Auszahlungsbeleg Entwurf", "Entwurf: Es ist noch kein Geldfluss dokumentiert", "Entwurf bearbeiten", "Als tatsächlich erfolgt erfassen", "Entwurf aufheben", "DE** **** **** **** **20 51", "Heute noch auszuzahlen"].every((t) => payoutDraftPage.includes(t)) && !payoutDraftPage.includes("Nachweis hochladen"), "Auszahlung: Entwurfsseite mit Bearbeitung, Abschluss und verkürzter IBAN");
+const refund = (await createPayout(w.tenantId, w.actor, { sourceType: "INVOICE_REFUND", invoiceId: invoice.id }, { amount: "40", method: "CASH", executedAt: new Date(Date.now() - 3600_000), receiptConfirmed: true }, { complete: true, confirmed: true })).payout;
+const refundPdf = await ensurePayoutDocument(w.tenantId, refund.id, w.actor.id);
+const payoutPage = await plain(await fetch(`${base}/auszahlungen/${refund.id}`, { headers: { cookie } }));
+report(refund.number!.startsWith("AZ-") && [`Auszahlungsbeleg ${refund.number}`, "Ausgezahlt", "Barauszahlung", "Erstattung zu Rechnung", "Auszahlungsbeleg per E-Mail senden", "Herunterladen", "Nachweis hochladen", "Auszahlung stornieren (Fehlbuchung)", "Empfang bestätigt", "Prüfsumme"].every((t) => payoutPage.includes(t)), `Auszahlung ${refund.number}: Detailseite mit Beleg, Nachweis, Versand, Storno`);
+const payoutDoc = await fetch(`${base}/api/documents/${refundPdf.document.id}?download=1`, { headers: { cookie } });
+report(payoutDoc.status === 200 && (payoutDoc.headers.get("content-disposition") ?? "").includes(`Auszahlungsbeleg_${refund.number}.pdf`), `${payoutDoc.status} Auszahlungsbeleg-PDF herunterladen`);
+const attUp = await (async () => { const fd = new FormData(); fd.set("file", new Blob([jpeg], { type: "image/jpeg" }), "quittung.jpg"); return fetch(`${base}/api/payouts/${refund.id}/documents`, { method: "POST", body: fd, headers: { cookie } }); })();
+report(attUp.status === 201, `${attUp.status} Auszahlung: Nachweis hochgeladen`);
+const attId = ((await attUp.json()) as { id: string }).id;
+const attGet = await fetch(`${base}/api/documents/${attId}`, { headers: { cookie } });
+report(attGet.status === 200 && (attGet.headers.get("content-type") ?? "").includes("image/jpeg"), `${attGet.status} Auszahlung: Nachweis mit richtigem Inhaltstyp abrufbar`);
+const payoutList = await plain(await fetch(base + "/auszahlungen?filter=abgeschlossen", { headers: { cookie } }));
+report(payoutList.includes(refund.number!) && payoutList.includes("Rechnungserstattung") && payoutList.includes("40,00"), "Auszahlungsliste: abgeschlossene Auszahlung mit Quelle");
+const invAfterRefund = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } }));
+report(invAfterRefund.includes(refund.number!) && invAfterRefund.includes("40,00") && invAfterRefund.includes("noch auszuzahlen 60,00"), "Rechnung: Auszahlungshistorie und Rest nach Teilerstattung");
+const listRefundOpen = await plain(await fetch(base + "/rechnungen?filter=erstattung", { headers: { cookie } }));
+report(listRefundOpen.includes(finalInvoice.number) && listRefundOpen.includes("Erstattung 60,00"), "Rechnungsliste: noch zu erstattender Rest");
+const depPayout = (await createPayout(w.tenantId, w.actor, { sourceType: "SECURITY_DEPOSIT_REFUND", bookingId: retBooking.id }, { amount: "350", method: "BANK_TRANSFER", iban: "DE02120300000000202051", executedAt: new Date(Date.now() - 3600_000), reference: "Kaution RET-1" }, { complete: true, confirmed: true })).payout;
+const bookingDep2 = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
+report(depPayout.sourceType === "SECURITY_DEPOSIT_REFUND" && bookingDep2.includes(depPayout.number!) && bookingDep2.includes("ausgezahlt 350,00") && !bookingDep2.includes("Kaution auszahlen"), "Buchung: Kaution vollständig ausgezahlt, keine weitere Auszahlung");
+const todayPayouts = await plain(await fetch(base + "/heute", { headers: { cookie } }));
+report(todayPayouts.includes("Rechnungserstattungen offen") && todayPayouts.includes("60,00"), "Dashboard: offene Rechnungserstattungen aus der zentralen Summierung");
+const customerPage = await plain(await fetch(`${base}/kunden/${w.customerId}`, { headers: { cookie } }));
+report(customerPage.includes("Auszahlungen") && customerPage.includes(refund.number!), "Kunde: Auszahlungsreferenz");
+const rangesPayout = await plain(await fetch(base + "/einstellungen/nummernkreise", { headers: { cookie } }));
+report(rangesPayout.includes("Präfix Auszahlungen") && rangesPayout.includes("AZ-"), "Nummernkreise: Kreis Auszahlungen");
+const foreignPayout = await fetch(`${base}/auszahlungen/${refund.id}`, { headers: { cookie: `rb_session=${foreignSession}` } });
+report(foreignPayout.status === 404, `${foreignPayout.status} Auszahlung für fremden Mandanten nicht auffindbar`);
+const foreignUpload = await (async () => { const fd = new FormData(); fd.set("file", new Blob([jpeg], { type: "image/jpeg" }), "x.jpg"); return fetch(`${base}/api/payouts/${refund.id}/documents`, { method: "POST", body: fd, headers: { cookie: `rb_session=${foreignSession}` } }); })();
+report(foreignUpload.status === 403 || foreignUpload.status === 404, `${foreignUpload.status} Nachweis-Upload für fremden Mandanten abgelehnt`);
+await db.user.update({ where: { id: w.userId }, data: { role: "YARD" } });
+const yardPayout = await plain(await fetch(`${base}/auszahlungen/${refund.id}`, { headers: { cookie } }));
+report(yardPayout.includes(`Auszahlungsbeleg ${refund.number}`) && !yardPayout.includes("vollständig anzeigen") && !yardPayout.includes("Auszahlung stornieren") && !yardPayout.includes("Nachweis hochladen") && !yardPayout.includes("per E-Mail senden"), "Hofmitarbeiter: Auszahlung lesbar, keine volle IBAN, keine Aktionen");
+const yardInvRefund = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } }));
+report(yardInvRefund.includes("Auszahlungen erfasst die Disposition") && !yardInvRefund.includes(">Erstattung erfassen<"), "Hofmitarbeiter: keine Erstattung erfassen");
+const yardPayoutUpload = await (async () => { const fd = new FormData(); fd.set("file", new Blob([jpeg], { type: "image/jpeg" }), "x.jpg"); return fetch(`${base}/api/payouts/${refund.id}/documents`, { method: "POST", body: fd, headers: { cookie } }); })();
+report(yardPayoutUpload.status === 403, `${yardPayoutUpload.status} Hofmitarbeiter: kein Nachweis-Upload`);
 await db.user.update({ where: { id: w.userId }, data: { role: "OWNER" } });
 
 if (keep) {

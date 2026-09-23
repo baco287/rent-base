@@ -180,6 +180,13 @@ export async function cancelPayment(tenantId: string, actor: Actor, paymentId: s
     const locked = await tx.$queryRaw<{ id: string; status: string }[]>`SELECT "id", "status" FROM "Payment" WHERE "id" = ${paymentId} AND "tenantId" = ${tenantId} FOR UPDATE`;
     if (locked.length === 0) throw new DomainError("Zahlung nicht gefunden.");
     if (locked[0].status !== "CONFIRMED") throw new DomainError("Diese Zahlung ist bereits storniert.");
+    const row = await tx.payment.findUniqueOrThrow({ where: { id: paymentId } });
+    if (row.invoiceId) {
+      // Zahlung = Geld rein, Erstattung = Geld raus: ein Storno der Zahlung darf bereits ausgezahlte Erstattungen nicht ohne Deckung lassen
+      await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${row.invoiceId} FOR UPDATE`;
+      const f = (await financialsFor(tenantId, [{ id: row.invoiceId, grossTotal: (await tx.invoice.findUniqueOrThrow({ where: { id: row.invoiceId }, select: { grossTotal: true, currentVersion: { select: { grossTotal: true } } } })).currentVersion?.grossTotal ?? 0 }], tx)).get(row.invoiceId)!;
+      if (f.completedRefundCents > 0 && f.completedRefundCents > Math.max(0, f.paidCents - row.amountCents - f.effectiveCents)) throw new DomainError(`Zu dieser Rechnung wurden bereits ${fmtCents(f.completedRefundCents)} erstattet. Die Zahlung kann erst storniert werden, wenn die Auszahlung storniert ist. Hinweis: Eine Zahlung wird storniert, wenn sie falsch erfasst wurde; eine tatsächliche Rückzahlung an den Kunden ist eine Erstattung.`);
+    }
     const now = new Date();
     const payment = await tx.payment.update({ where: { id: paymentId }, data: { status: "CANCELLED", cancelledAt: now, cancelledById: actor.id, cancelledByName: actor.name, cancellationReason: why } });
     await recordAudit(tx, tenantId, actor, { action: "PAYMENT_CANCELLED", bookingId: payment.bookingId, invoiceId: payment.invoiceId, paymentId: payment.id, amountCents: payment.amountCents, details: { reason: why, method: payment.method } });

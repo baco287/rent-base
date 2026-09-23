@@ -34,6 +34,8 @@ export async function purgeTenants(tenantIds: string[]) {
         const w = { where: { tenantId: t } };
         await tx.emailLog.deleteMany(w);
         await tx.auditLog.deleteMany(w);
+        await tx.document.deleteMany({ where: { tenantId: t, payoutId: { not: null } } });
+        await tx.payout.deleteMany(w);
         await tx.payment.deleteMany(w);
         await tx.securityDepositEvent.deleteMany(w);
         await tx.securityDeposit.deleteMany(w);

@@ -3,11 +3,11 @@
 // (Index Invoice.tenantId + number), nie wiederverwendet, nach dem Abschluss unveränderlich. Frei von Server-Importen.
 
 export type InvoiceDocumentType = "INVOICE" | "CREDIT_NOTE" | "CANCELLATION";
-export type NumberRangeKey = "invoice" | "creditNote" | "cancellation";
+export type NumberRangeKey = "invoice" | "creditNote" | "cancellation" | "payout";
 export type NumberRanges = Record<NumberRangeKey, { prefix: string }>;
 
-export const DEFAULT_NUMBER_RANGES: NumberRanges = { invoice: { prefix: "RE" }, creditNote: { prefix: "GS" }, cancellation: { prefix: "ST" } };
-export const NUMBER_RANGE_LABELS: Record<NumberRangeKey, string> = { invoice: "Rechnungen", creditNote: "Gutschriften", cancellation: "Stornobelege" };
+export const DEFAULT_NUMBER_RANGES: NumberRanges = { invoice: { prefix: "RE" }, creditNote: { prefix: "GS" }, cancellation: { prefix: "ST" }, payout: { prefix: "AZ" } };
+export const NUMBER_RANGE_LABELS: Record<NumberRangeKey, string> = { invoice: "Rechnungen", creditNote: "Gutschriften", cancellation: "Stornobelege", payout: "Auszahlungen" };
 export const RANGE_OF_TYPE: Record<InvoiceDocumentType, NumberRangeKey> = { INVOICE: "invoice", CREDIT_NOTE: "creditNote", CANCELLATION: "cancellation" };
 
 const PREFIX = /^[A-Z]{1,6}$/;
@@ -17,7 +17,7 @@ export class NumberRangeError extends Error {}
 
 /** Gespeicherte Konfiguration lesen; unbekannte oder ungültige Einträge fallen still auf den Standard zurück. */
 export function numberRangesOf(stored: unknown): NumberRanges {
-  const out: NumberRanges = { invoice: { ...DEFAULT_NUMBER_RANGES.invoice }, creditNote: { ...DEFAULT_NUMBER_RANGES.creditNote }, cancellation: { ...DEFAULT_NUMBER_RANGES.cancellation } };
+  const out: NumberRanges = { invoice: { ...DEFAULT_NUMBER_RANGES.invoice }, creditNote: { ...DEFAULT_NUMBER_RANGES.creditNote }, cancellation: { ...DEFAULT_NUMBER_RANGES.cancellation }, payout: { ...DEFAULT_NUMBER_RANGES.payout } };
   if (!stored || typeof stored !== "object" || Array.isArray(stored)) return out;
   for (const k of Object.keys(out) as NumberRangeKey[]) {
     const v = (stored as Record<string, unknown>)[k];
@@ -36,11 +36,12 @@ export function validateNumberRanges(input: Record<NumberRangeKey, string>): Num
     out[k] = { prefix: p };
   }
   const prefixes = Object.values(out).map((r) => r.prefix);
-  if (new Set(prefixes).size !== prefixes.length) throw new NumberRangeError("Die Präfixe der drei Nummernkreise müssen sich unterscheiden, sonst wären die Belegnummern nicht eindeutig.");
+  if (new Set(prefixes).size !== prefixes.length) throw new NumberRangeError("Die Präfixe der Nummernkreise müssen sich unterscheiden, sonst wären die Belegnummern nicht eindeutig.");
   return out;
 }
 
 export const rangePrefix = (ranges: NumberRanges, type: InvoiceDocumentType, year: number) => `${ranges[RANGE_OF_TYPE[type]].prefix}-${year}-`;
+export const payoutPrefix = (ranges: NumberRanges, year: number) => `${ranges.payout.prefix}-${year}-`;
 
 /** Nächste Nummer eines Kreises aus der höchsten vergebenen Nummer desselben Präfixes und Jahres. */
 export function nextInRange(prefix: string, last: string | null | undefined): string {

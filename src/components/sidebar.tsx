@@ -12,6 +12,7 @@ const NAV = [
   { href: "/kunden", label: "Kunden", icon: "user" },
   { href: "/buchungen", label: "Buchungen", icon: "doc" },
   { href: "/rechnungen", label: "Rechnungen", icon: "euro" },
+  { href: "/auszahlungen", label: "Auszahlungen", icon: "euro" },
   { href: "/schaeden", label: "Schäden", icon: "warn" },
   { href: "/behoerden", label: "Behörden", icon: "stamp" },
   { href: "/einstellungen", label: "Einstellungen", icon: "cog" },

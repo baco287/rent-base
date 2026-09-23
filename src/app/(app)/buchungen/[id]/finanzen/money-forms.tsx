@@ -217,7 +217,7 @@ export function DepositSettleForm({ action, preview, bookingId, nonce, remaining
           <input type="hidden" name="releaseAmount" value={mode === "RELEASE" ? eur(remainingCents) : "0"} />
         )}
         <label className="flex flex-col gap-1"><span className="label-xs">Datum und Uhrzeit</span><input name="occurredAt" type="datetime-local" defaultValue={defaultWhen} required className="input" /></label>
-        {mode !== "RETAIN" && <label className="flex flex-col gap-1"><span className="label-xs">Rückgabeweg der Freigabe</span><MethodSelect id="settle-method" name="method" /></label>}
+        {mode !== "RETAIN" && <label className="flex flex-col gap-1"><span className="label-xs">Geplanter Auszahlungsweg (optional)</span><select id="settle-method" name="method" defaultValue="" className="input"><option value="">noch offen</option>{Object.entries(PAYMENT_METHODS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>}
         {mode !== "RELEASE" && <label className="flex flex-col gap-1 sm:col-span-2"><span className="label-xs">Grund für den einbehaltenen Betrag (Pflicht)</span><input name="reason" required minLength={3} maxLength={500} className="input" placeholder="z. B. Prüfung eines bei Rückgabe festgestellten Schadens" /></label>}
         <label className="flex flex-col gap-1 sm:col-span-2"><span className="label-xs">Notiz (optional)</span><input name="note" maxLength={500} className="input" /></label>
       </div>
@@ -231,10 +231,10 @@ export function DepositSettleForm({ action, preview, bookingId, nonce, remaining
       {pvError && <p role="alert" className="text-bad bg-bad-soft rounded-md px-3 py-2 text-sm">{pvError}</p>}
       {full && (
         <div className="rounded-lg border-2 border-brand bg-panel p-4 flex flex-col gap-2">
-          {full.kind === "RELEASE" && <><div className="text-sm font-medium">Freigeben</div><Big>{fmtCents(full.releaseCents)}</Big><div className="text-sm">der Kaution als freigegeben/zurückgegeben dokumentieren?</div></>}
+          {full.kind === "RELEASE" && <><div className="text-sm font-medium">Freigeben</div><Big>{fmtCents(full.releaseCents)}</Big><div className="text-sm">der Kaution zur Rückzahlung freigeben? Die tatsächliche Auszahlung wird danach als eigener Vorgang erfasst.</div></>}
           {full.kind === "RETAIN" && <><div className="text-sm font-medium">Einbehalten</div><Big>{fmtCents(full.retainCents)}</Big><div className="text-sm">der Kaution als einbehalten dokumentieren?</div></>}
           {full.kind === "PARTIAL" && <><div className="text-sm font-medium">Teilweise freigeben</div><Big>{fmtCents(full.releaseCents)}</Big><div className="text-sm">der Kaution freigeben und <span className="font-mono tnum font-semibold">{fmtCents(full.retainCents)}</span> einbehalten?</div></>}
-          <div className="text-xs text-ink-3">Status danach: {full.statusAfter === "RELEASED" ? "Freigegeben" : full.statusAfter === "RETAINED" ? "Einbehalten" : "Teilweise freigegeben"}. Rent-Base dokumentiert die Entscheidung; eine Auszahlung führt es nicht selbst aus.</div>
+          <div className="text-xs text-ink-3">Status danach: {full.statusAfter === "RELEASED" ? "Freigegeben" : full.statusAfter === "RETAINED" ? "Einbehalten" : "Teilweise freigegeben"}. Freigabe ist die Entscheidung, nicht die Auszahlung: Der Geldfluss wird anschließend unter „Kautionsauszahlung“ dokumentiert; Rent-Base zahlt nichts selbst aus.</div>
           <div className="flex flex-wrap gap-2 mt-1">
             <button type="submit" disabled={pending} className="btn btn-primary !py-2.5">{pending ? "Wird dokumentiert…" : "Ja, dokumentieren"}</button>
             <button type="button" className="btn" onClick={() => setPv(null)}>Zurück</button>

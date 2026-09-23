@@ -10,6 +10,7 @@ import { AuthorityTypeChip } from "../behoerden/chips";
 import { openDepositCounts } from "@/lib/deposits";
 import { fmtCents } from "@/lib/money";
 import { paymentSummaries } from "@/lib/payments";
+import { payoutCounts } from "@/lib/payouts";
 
 export const metadata = { title: "Heute" };
 
@@ -50,7 +51,7 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
     openDepositCounts(tenant.id),
     caseCounts(tenant.id),
   ]);
-  const [maint, authority] = await Promise.all([maintenanceCounts(tenant.id), authorityCounts(tenant.id)]);
+  const [maint, authority, payouts] = await Promise.all([maintenanceCounts(tenant.id), authorityCounts(tenant.id), payoutCounts(tenant.id)]);
   const sums = await paymentSummaries(tenant.id, finalInvoices);
   const damageInvoiceIds = new Set(finalInvoices.filter((i) => i.kind === "DAMAGE").map((i) => i.id));
   const openDamageInvoices = [...sums.entries()].filter(([id, x]) => damageInvoiceIds.has(id) && (x.status === "OPEN" || x.status === "PARTIAL")).length;
@@ -126,11 +127,13 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
             </ul>
           </Card>
         )}
-        {overpaid.length > 0 && (
+        {(payouts.invoiceRefunds > 0 || payouts.depositPayouts > 0) && (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <KPI label="Erstattungen zu klären" value={overpaid.length} detail={<Link href="/rechnungen?filter=erstattung" className="underline">{fmtCents(overpaidCents)} Kundenguthaben – keine automatische Erstattung</Link>} hot />
+            <KPI label="Rechnungserstattungen offen" value={payouts.invoiceRefunds} detail={<Link href="/auszahlungen?filter=offen&quelle=rechnung" className="underline">{fmtCents(payouts.invoiceRefundCents)} noch auszuzahlen</Link>} hot={payouts.invoiceRefunds > 0} />
+            <KPI label="Kautionsauszahlungen offen" value={payouts.depositPayouts} detail={<Link href="/auszahlungen?filter=offen&quelle=kaution" className="underline">{fmtCents(payouts.depositPayoutCents)} freigegeben, noch nicht ausgezahlt</Link>} hot={payouts.depositPayouts > 0} />
           </div>
         )}
+        {void overpaid}{void overpaidCents}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
           <Card title="Heute auf dem Hof" right={<Chip>{events.length} Termine</Chip>}>

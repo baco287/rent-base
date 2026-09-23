@@ -12,6 +12,7 @@ import { buildHandoverDocument, type HandoverContext, type HandoverDocumentData 
 import { DomainError } from "@/lib/integrity";
 import { loadSealedComparison } from "@/lib/returns";
 import { buildInvoiceDocument, type InvoiceDocumentData } from "@/lib/invoice-view";
+import { buildPayoutDocument, type PayoutDocumentData } from "@/lib/payout-view";
 
 const TENANT_FIELDS = { name: true, street: true, zip: true, city: true, phone: true, email: true } as const;
 
@@ -156,4 +157,19 @@ export async function loadInvoiceDocumentData(tenantId: string, versionId: strin
     renterEmail: typeof c.email === "string" && c.email.trim() ? c.email.trim() : null,
     documentType: inv.documentType === "CREDIT_NOTE" || inv.documentType === "CANCELLATION" ? inv.documentType : "INVOICE",
   };
+}
+
+// ---------------------------------------------------------------------------
+// Auszahlungsbeleg (Phase 18): versiegelter Auszahlungsdatensatz mit Quellen-Snapshot; Firmendaten aus den Einstellungen
+// ---------------------------------------------------------------------------
+
+export type PayoutData = { doc: PayoutDocumentData; bookingId: string; payoutId: string; sourceHash: string; recipientEmail: string | null };
+
+export async function loadPayoutDocumentData(tenantId: string, payoutId: string, opts: { allowDraft?: boolean } = {}): Promise<PayoutData> {
+  const p = await db.payout.findFirst({ where: { id: payoutId, tenantId } });
+  if (!p) throw new DomainError("Auszahlung nicht gefunden.");
+  if (!opts.allowDraft && (p.status === "DRAFT" || !p.contentHash)) throw new DomainError("Einen Auszahlungsbeleg gibt es erst, wenn die Auszahlung als erfolgt erfasst ist.");
+  const tenant = await db.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { ...TENANT_FIELDS, legalForm: true } });
+  const snap = p.sourceSnapshot as { customerEmail?: string | null } | null;
+  return { doc: buildPayoutDocument(p, tenant), bookingId: p.bookingId, payoutId: p.id, sourceHash: p.contentHash ?? "", recipientEmail: typeof snap?.customerEmail === "string" && snap.customerEmail.trim() ? snap.customerEmail.trim() : null };
 }

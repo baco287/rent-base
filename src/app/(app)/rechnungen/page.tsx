@@ -17,7 +17,7 @@ const FILTERS: Filter[] = [
   { key: "bezahlt", label: "Bezahlt", match: (f) => f.paymentStatus === "PAID" && !f.refundRequired && f.effectiveCents > 0 },
   { key: "gutgeschrieben", label: "Gutgeschrieben / teilweise", match: (f) => f.chain === "CREDITED" || f.chain === "PARTIALLY_CREDITED" },
   { key: "storniert", label: "Storniert", match: (f) => f.chain === "CANCELLED" },
-  { key: "erstattung", label: "Erstattung erforderlich", match: (f) => f.refundRequired },
+  { key: "erstattung", label: "Erstattung erforderlich", match: (f) => f.refundOpen },
   { key: "alle", label: "Alle", match: () => true },
 ];
 const KINDS: { key: string; label: string; kind: string | null }[] = [
@@ -41,7 +41,8 @@ function StatusCell({ f }: { f: InvoiceFinancials }) {
     <div className="flex flex-wrap gap-1 items-center">
       {(f.effectiveCents > 0 || f.paidCents > 0) && <PaymentStatusChip status={f.refundRequired ? "OVERPAID" : f.paymentStatus} />}
       {f.chain !== "NONE" && <Chip tone={f.chain === "CANCELLED" ? "bad" : "info"}>{INVOICE_CHAIN_STATUS[f.chain]}</Chip>}
-      {f.refundRequired && <Chip tone="bad">Erstattung {fmtCents(f.customerCreditCents)} erforderlich</Chip>}
+      {f.refundOpen && <Chip tone="bad">Erstattung {fmtCents(f.refundRemainingCents)} erforderlich</Chip>}
+      {f.refundRequired && !f.refundOpen && <Chip tone="good">Erstattet {fmtCents(f.completedRefundCents)}</Chip>}
       {f.hasDraftCounter && <Chip tone="amber">Gegenbeleg-Entwurf offen</Chip>}
     </div>
   );
@@ -75,7 +76,7 @@ export default async function InvoicesPage({ searchParams }: PageProps<"/rechnun
   const pages = Math.max(1, Math.ceil(rows.length / PAGE));
   const slice = rows.slice((page - 1) * PAGE, page * PAGE);
   const totalOpen = rows.reduce((a, i) => a + (fin.get(i.id)?.openCents ?? 0), 0);
-  const totalCredit = rows.reduce((a, i) => a + (fin.get(i.id)?.customerCreditCents ?? 0), 0);
+  const totalCredit = rows.reduce((a, i) => a + (fin.get(i.id)?.refundRemainingCents ?? 0), 0);
   const customerOf = (c: unknown) => {
     const s = c as { type?: string; companyName?: string | null; firstName?: string; lastName?: string };
     const person = `${s.firstName ?? ""} ${s.lastName ?? ""}`.trim();
@@ -86,7 +87,7 @@ export default async function InvoicesPage({ searchParams }: PageProps<"/rechnun
 
   return (
     <>
-      <PageHeader title="Rechnungen" sub={`${rows.length} ${filter.label.toLowerCase()} · offen ${fmtCents(totalOpen)}${totalCredit > 0 ? ` · Kundenguthaben ${fmtCents(totalCredit)}` : ""}`} />
+      <PageHeader title="Rechnungen" sub={`${rows.length} ${filter.label.toLowerCase()} · offen ${fmtCents(totalOpen)}${totalCredit > 0 ? ` · noch zu erstatten ${fmtCents(totalCredit)}` : ""}`} />
       <Content>
         <div className="flex gap-1.5 flex-wrap">
           {FILTERS.map((f) => (
@@ -120,7 +121,7 @@ export default async function InvoicesPage({ searchParams }: PageProps<"/rechnun
                         <div className="grid grid-cols-3 gap-2 text-xs">
                           <div><div className="label-xs">Forderung</div><div className="font-mono tnum">{fmtCents(f.effectiveCents)}</div>{f.effectiveCents !== f.invoiceCents && <div className="text-ink-3">Rechnung {fmtCents(f.invoiceCents)}</div>}</div>
                           <div><div className="label-xs">Bezahlt</div><div className="font-mono tnum text-good">{fmtCents(f.paidCents)}</div></div>
-                          <div><div className="label-xs">{f.refundRequired ? "Guthaben" : "Offen"}</div><div className={`font-mono tnum ${f.openCents > 0 || f.refundRequired ? "text-bad font-semibold" : ""}`}>{fmtCents(f.refundRequired ? f.customerCreditCents : f.openCents)}</div></div>
+                          <div><div className="label-xs">{f.refundRequired ? "Zu erstatten" : "Offen"}</div><div className={`font-mono tnum ${f.openCents > 0 || f.refundOpen ? "text-bad font-semibold" : ""}`}>{fmtCents(f.refundRequired ? f.refundRemainingCents : f.openCents)}</div></div>
                         </div>
                       ) : (
                         <div className="text-xs"><span className="label-xs">Betrag</span> <span className="font-mono tnum text-bad">− {fmtCents(toCents(i.grossTotal))}</span></div>
@@ -162,7 +163,7 @@ export default async function InvoicesPage({ searchParams }: PageProps<"/rechnun
                           <td className={`px-3 py-2.5 font-mono tnum ${overdue ? "text-bad font-semibold" : ""}`}>{f && i.paymentDueDate ? fmtDate(i.paymentDueDate) : "–"}{overdue ? " (überfällig)" : ""}</td>
                           <td className="px-3 py-2.5 text-right font-mono tnum">{f ? <>{fmtCents(f.effectiveCents)}{f.effectiveCents !== f.invoiceCents && <div className="text-xs text-ink-3 font-normal">Rechnung {fmtCents(f.invoiceCents)}</div>}</> : <span className="text-bad">− {fmtCents(toCents(i.grossTotal))}</span>}</td>
                           <td className="px-3 py-2.5 text-right font-mono tnum text-good">{f ? fmtCents(f.paidCents) : "–"}</td>
-                          <td className={`px-3 py-2.5 text-right font-mono tnum ${f && (f.openCents > 0 || f.refundRequired) ? "text-bad font-semibold" : ""}`}>{f ? (f.refundRequired ? `Guthaben ${fmtCents(f.customerCreditCents)}` : fmtCents(f.openCents)) : "–"}</td>
+                          <td className={`px-3 py-2.5 text-right font-mono tnum ${f && (f.openCents > 0 || f.refundOpen) ? "text-bad font-semibold" : ""}`}>{f ? (f.refundRequired ? `zu erstatten ${fmtCents(f.refundRemainingCents)}` : fmtCents(f.openCents)) : "–"}</td>
                           <td className="px-3 py-2.5">{f ? <StatusCell f={f} /> : <Chip tone="info">{INVOICE_DOCUMENT_TYPES[i.documentType as keyof typeof INVOICE_DOCUMENT_TYPES]} · Minderung</Chip>}</td>
                           <td className="px-3 py-2.5 text-xs">{i.delivered ? <Chip tone="info">übermittelt</Chip> : <Chip tone="amber">nicht übermittelt</Chip>}</td>
                         </tr>

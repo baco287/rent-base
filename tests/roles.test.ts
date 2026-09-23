@@ -48,6 +48,14 @@ test("Jede Server-Action-Datei und jede Prozessseite prüft die Rolle serverseit
   assert.ok(!/"YARD"/.test(counterActions), "Gegenbeleg-Aktionen dürfen YARD nicht zulassen");
   for (const fn of ["createCreditNoteAction", "createCancellationAction", "saveCounterDraftAction", "finalizeCounterAction", "discardCounterAction"]) assert.ok(new RegExp(`export async function ${fn}`).test(counterActions), `${fn} vorhanden`);
   assert.match(counterActions, /const \{ tenant, user \} = await requireRole\("DISPO"\);\n  const invoice = await db\.invoice\.findFirst\(\{ where: \{ id: invoiceId, bookingId, tenantId: tenant\.id/, "Gegenbeleg-Kontext: nur DISPO und eigener Mandant");
+  // Auszahlungen (Phase 18): Entwurf, Abschluss, Storno, PDF, E-Mail nur DISPO (und OWNER); YARD sieht nur; Upload nur DISPO
+  const payoutActions = readFileSync(path.join(process.cwd(), "src/app/(app)/auszahlungen/actions.ts"), "utf8");
+  assert.ok(!/"YARD"/.test(payoutActions), "Auszahlungsaktionen dürfen YARD nicht zulassen");
+  for (const fn of ["previewPayoutAction", "createPayoutAction", "updatePayoutDraftAction", "completePayoutAction", "cancelPayoutAction", "generatePayoutPdfAction", "sendPayoutReceiptAction"]) {
+    assert.match(new RegExp(`export async function ${fn}[\\s\\S]*?\\n}`).exec(payoutActions)?.[0] ?? "", /requireRole\("DISPO"\)/, `${fn}: nur Inhaber und Disponent`);
+  }
+  const payoutUpload = readFileSync(path.join(process.cwd(), "src/app/api/payouts/[id]/documents/route.ts"), "utf8");
+  assert.match(payoutUpload, /roleAllows\(session\.user\.role, \["DISPO"\]\)/, "Nachweis-Upload nur DISPO");
   const rangesActions = readFileSync(path.join(process.cwd(), "src/app/(app)/einstellungen/nummernkreise/actions.ts"), "utf8");
   assert.match(rangesActions, /export async function updateNumberRangesAction[\s\S]*?requireRole\("OWNER"\)/, "Nummernkreise nur Inhaber");
   const docActions = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/dokumente/actions.ts"), "utf8");

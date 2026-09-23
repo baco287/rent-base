@@ -40,7 +40,38 @@ export function balanceOf(expectedCents: Cents, events: { type: string; amountCe
   return { expectedCents, receivedCents, releasedCents, retainedCents, remainingCents: receivedCents - releasedCents - retainedCents, status: deriveDepositStatus(receivedCents, releasedCents, retainedCents) };
 }
 
-export type DepositView = DepositBalance & {
+/**
+ * Phase 18: Kautionsstand mit Auszahlungsdimension. Freigabe (RELEASED) ist die Entscheidung, Auszahlung (Payout COMPLETED) der
+ * tatsächliche Geldfluss. Auszahlbar ist höchstens freigegeben und nie mehr als erhalten − einbehalten; abzüglich bereits ausgezahlt.
+ * Alte RELEASED-Bewegungen ohne dokumentierte Auszahlung werden nicht umgedeutet („Freigegeben – Auszahlung nicht dokumentiert“).
+ */
+export type DepositFinancials = DepositBalance & { completedPayoutCents: Cents; payoutRemainingCents: Cents; payoutExcessCents: Cents; releasedWithoutPayoutCents: Cents };
+
+export function computeDepositFinancials(balance: DepositBalance, completedPayoutCents: Cents): DepositFinancials {
+  const payable = Math.max(0, Math.min(balance.releasedCents, balance.receivedCents - balance.retainedCents));
+  return { ...balance, completedPayoutCents, payoutRemainingCents: Math.max(0, payable - completedPayoutCents), payoutExcessCents: Math.max(0, completedPayoutCents - payable), releasedWithoutPayoutCents: Math.max(0, balance.releasedCents - completedPayoutCents) };
+}
+
+/** Stand mehrerer Kautionen inkl. Auszahlungen (Listen, Kennzahlen). */
+export async function depositFinancialsFor(tenantId: string, deposits: { id: string; expectedAmountCents: number; events: { type: string; amountCents: number; status: string }[] }[], client: Tx | typeof db = db): Promise<Map<string, DepositFinancials>> {
+  const ids = deposits.map((d) => d.id);
+  const groups = ids.length ? await client.payout.groupBy({ by: ["securityDepositId"], where: { tenantId, securityDepositId: { in: ids }, status: "COMPLETED" }, _sum: { amountCents: true } }) : [];
+  const paid = new Map(groups.map((g) => [g.securityDepositId, g._sum.amountCents ?? 0]));
+  return new Map(deposits.map((d) => [d.id, computeDepositFinancials(balanceOf(d.expectedAmountCents, d.events), paid.get(d.id) ?? 0)]));
+}
+
+/** Zentrale Auszahlungsrechnung einer Kaution (Buchung). Ohne Kautionszeile ist nichts auszahlbar. */
+export async function securityDepositFinancials(tenantId: string, bookingId: string, client: Tx | typeof db = db): Promise<DepositFinancials & { depositId: string | null }> {
+  const booking = await client.booking.findFirst({ where: { id: bookingId, tenantId }, select: { contract: { select: { status: true, deposit: true } }, securityDeposit: { include: { events: { select: { type: true, amountCents: true, status: true } } } } } });
+  if (!booking) throw new DomainError("Buchung nicht gefunden.");
+  const dep = booking.securityDeposit;
+  const expected = dep ? dep.expectedAmountCents : booking.contract?.status === "SIGNED" ? toCents(booking.contract.deposit) : 0;
+  if (!dep) return { ...computeDepositFinancials(balanceOf(expected, []), 0), depositId: null };
+  const m = await depositFinancialsFor(tenantId, [dep], client);
+  return { ...m.get(dep.id)!, depositId: dep.id };
+}
+
+export type DepositView = DepositFinancials & {
   deposit: DepositRow | null;
   events: DepositEventRow[];
   contractNumber: string | null;
@@ -57,7 +88,8 @@ export async function depositView(tenantId: string, bookingId: string): Promise<
   const deposit = booking.securityDeposit;
   const expected = deposit ? deposit.expectedAmountCents : signed ? toCents(booking.contract!.deposit) : 0;
   const events = deposit?.events ?? [];
-  return { ...balanceOf(expected, events), deposit, events, contractNumber: booking.contract?.number ?? null, contractSigned: signed, bookingStatus: booking.status };
+  const fin = deposit ? (await depositFinancialsFor(tenantId, [deposit])).get(deposit.id)! : computeDepositFinancials(balanceOf(expected, []), 0);
+  return { ...fin, deposit, events, contractNumber: booking.contract?.number ?? null, contractSigned: signed, bookingStatus: booking.status };
 }
 
 /** Legt die Kaution aus dem abgeschlossenen Vertrag an oder gibt die vorhandene zurück (innerhalb einer Transaktion, gesperrt). */
@@ -221,7 +253,7 @@ export async function settleDeposit(tenantId: string, actor: Actor, input: Settl
       if (plan.error) throw new DomainError(plan.error);
       const reason = input.reason?.trim() || null;
       if (plan.retainCents > 0 && (!reason || reason.length < 3)) throw new DomainError("Bitte den Grund für den einbehaltenen Betrag angeben.");
-      const method = plan.releaseCents > 0 ? checkMethod(input.method) : null;
+      const method = plan.releaseCents > 0 && input.method ? checkMethod(input.method) : null;
       const note = input.note?.trim() || null;
       const events: DepositEventRow[] = [];
       if (plan.releaseCents > 0) {
@@ -256,6 +288,13 @@ export async function cancelDepositEvent(tenantId: string, actor: Actor, eventId
       await tx.$queryRaw`SELECT "id" FROM "SecurityDeposit" WHERE "id" = ${ev.depositId} FOR UPDATE`;
       const fresh = await tx.securityDepositEvent.findFirstOrThrow({ where: { id: eventId, tenantId } });
       if (fresh.status !== "CONFIRMED") throw new DomainError("Diese Bewegung ist bereits storniert.");
+      if (fresh.type !== "RETAINED") {
+        const others = await tx.securityDepositEvent.findMany({ where: { tenantId, depositId: ev.depositId, status: "CONFIRMED", id: { not: eventId } }, select: { type: true, amountCents: true, status: true } });
+        const dep0 = await tx.securityDeposit.findFirstOrThrow({ where: { id: ev.depositId, tenantId } });
+        const paidOut = (await tx.payout.aggregate({ where: { tenantId, securityDepositId: ev.depositId, status: "COMPLETED" }, _sum: { amountCents: true } }))._sum.amountCents ?? 0;
+        const after = computeDepositFinancials(balanceOf(dep0.expectedAmountCents, others), paidOut);
+        if (after.payoutExcessCents > 0) throw new DomainError(`Von dieser Kaution wurden bereits ${fmtCents(paidOut)} ausgezahlt. Diese Bewegung kann erst storniert werden, wenn die Auszahlung storniert ist.`);
+      }
       const now = new Date();
       const updated = await tx.securityDepositEvent.update({ where: { id: eventId }, data: { status: "CANCELLED", cancelledAt: now, cancelledById: actor.id, cancelledByName: actor.name, cancellationReason: why } });
       const after = await syncStatus(tx, tenantId, ev.depositId);

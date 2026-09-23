@@ -12,6 +12,7 @@ import { invoicePaymentSummary, listInvoicePayments, type PaymentSummary } from 
 import { toDateTimeInputValue } from "@/lib/time";
 import { cancelDepositEventAction, cancelPaymentAction, previewDepositSettleAction, previewPaymentAction, recordDepositReceivedAction, recordPaymentAction, settleDepositAction } from "./actions";
 import { DepositReceiveForm, DepositSettleForm, PaymentForm, ReasonForm } from "./money-forms";
+import { PayoutPanel } from "../../../auszahlungen/payout-panel";
 
 const methodLabel = (m: string | null) => (m ? PAYMENT_METHODS[m as PaymentMethod] ?? m : "–");
 
@@ -118,6 +119,16 @@ export async function DepositPanel({ tenantId, bookingId, role, charges }: { ten
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Freigegeben</div><div className="font-mono tnum text-lg font-semibold text-good">{fmtCents(v.releasedCents)}</div></div>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Einbehalten</div><div className="font-mono tnum text-lg font-semibold text-bad">{fmtCents(v.retainedCents)}</div></div>
         </div>
+        {(v.releasedCents > 0 || v.completedPayoutCents > 0) && (
+          <div className="grid grid-cols-3 gap-2 text-sm">
+            <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Zur Auszahlung freigegeben</div><div className="font-mono tnum font-semibold">{fmtCents(v.releasedCents)}</div><div className="text-[11px] text-ink-3">Entscheidung, kein Geldfluss</div></div>
+            <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Tatsächlich ausgezahlt</div><div className="font-mono tnum font-semibold text-good">{fmtCents(v.completedPayoutCents)}</div></div>
+            <div className={`rounded-md p-3 ${v.payoutRemainingCents > 0 ? "bg-bad-soft" : "bg-panel-2"}`}><div className="label-xs">Noch auszuzahlen</div><div className={`font-mono tnum font-semibold ${v.payoutRemainingCents > 0 ? "text-bad" : ""}`}>{fmtCents(v.payoutRemainingCents)}</div></div>
+          </div>
+        )}
+        {v.releasedWithoutPayoutCents > 0 && v.completedPayoutCents === 0 && v.events.some((e) => e.type === "RELEASED" && e.status === "CONFIRMED" && e.method) && (
+          <p className="rounded-md bg-info-soft text-info px-3 py-2 text-sm">Freigegeben – Auszahlung nicht in Rent-Base dokumentiert. Wurde die Kaution bereits außerhalb zurückgezahlt, kann die Auszahlung unten als „historisch nacherfasst“ dokumentiert werden.</p>
+        )}
         {v.expectedCents === 0 && <p className="text-sm text-ink-3">Laut Mietvertrag wurde keine Kaution vereinbart.</p>}
         {v.expectedCents > 0 && v.receivedCents < v.expectedCents && v.bookingStatus !== "CANCELLED" && (
           <p role="alert" className="rounded-md bg-amber-soft text-amber px-3 py-2 text-sm font-medium">Kaution laut Vertrag noch nicht {v.receivedCents > 0 ? "vollständig " : ""}als erhalten dokumentiert.</p>
@@ -138,6 +149,9 @@ export async function DepositPanel({ tenantId, bookingId, role, charges }: { ten
         )}
         {afterReturn && v.remainingCents > 0 && !canDecide && <p className="text-xs text-ink-3">Freigabe oder Einbehalt der Kaution entscheidet die Disposition.</p>}
         {!afterReturn && v.receivedCents > 0 && <p className="text-xs text-ink-3">Freigabe oder Einbehalt wird nach der Rückgabe dokumentiert.</p>}
+        {v.deposit && (v.payoutRemainingCents > 0 || v.completedPayoutCents > 0) && (
+          <PayoutPanel tenantId={tenantId} role={role} sourceRef={{ sourceType: "SECURITY_DEPOSIT_REFUND", bookingId }} bookingId={bookingId} title="Kautionsauszahlung (tatsächlicher Geldfluss)" />
+        )}
         <div>
           <div className="label-xs mb-1">Kautionshistorie</div>
           {v.events.length === 0 && <div className="text-sm text-ink-3">Noch keine Bewegung dokumentiert.</div>}

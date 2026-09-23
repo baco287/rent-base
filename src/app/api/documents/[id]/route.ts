@@ -20,7 +20,7 @@ export async function GET(req: Request, ctx: RouteContext<"/api/documents/[id]">
     const name = file.document.fileName.replace(/[^A-Za-z0-9._-]/g, "_");
     return new Response(file.body as BodyInit, {
       headers: {
-        "Content-Type": "application/pdf",
+        "Content-Type": file.document.contentType || "application/pdf",
         "Content-Length": String(file.body.length),
         "Content-Disposition": `${download ? "attachment" : "inline"}; filename="${name}"`,
         "Cache-Control": "private, no-store",

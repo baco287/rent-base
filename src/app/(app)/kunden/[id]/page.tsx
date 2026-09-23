@@ -8,6 +8,8 @@ import { BookingStatusChip, Card, Chip, Content, PageHeader, Plate } from "@/com
 import { deleteCustomerAction, updateCustomerAction } from "../actions";
 import { CustomerForm } from "../customer-form";
 import { AuthorityCasesPanel } from "../../behoerden/authority-panel";
+import { fmtCents } from "@/lib/money";
+import { PAYOUT_SOURCE_TYPES, type PayoutSourceType } from "@/lib/constants";
 
 export default async function CustomerPage({ params, searchParams }: PageProps<"/kunden/[id]">) {
   const { tenant, user } = await requireSession();
@@ -21,6 +23,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps<"
   if (!c) notFound();
 
   const values = customerToFormValues(c);
+  const payouts = await db.payout.findMany({ where: { tenantId: tenant.id, customerId: c.id }, orderBy: { createdAt: "desc" }, take: 5, select: { id: true, number: true, status: true, amountCents: true, sourceType: true, executedAt: true } });
 
   const update = updateCustomerAction.bind(null, c.id);
   const remove = deleteCustomerAction.bind(null, c.id);
@@ -64,6 +67,13 @@ export default async function CustomerPage({ params, searchParams }: PageProps<"
             )}
           </Card>
           <AuthorityCasesPanel tenantId={tenant.id} scope={{ customerId: c.id }} canManage={user.role !== "YARD"} />
+          {payouts.length > 0 && (
+            <Card title="Auszahlungen" right={<Link href={`/auszahlungen?filter=alle&q=${encodeURIComponent(c.number ?? "")}`} className="text-xs underline">alle</Link>}>
+              <ul className="divide-y divide-line-soft text-sm">
+                {payouts.map((p) => <li key={p.id} className="px-4 py-2 flex flex-wrap items-center gap-x-2"><Link href={`/auszahlungen/${p.id}`} className="font-mono tnum font-medium hover:underline">{p.number ?? "Entwurf"}</Link><span className="text-xs text-ink-3">{PAYOUT_SOURCE_TYPES[p.sourceType as PayoutSourceType]}{p.executedAt ? ` · ${fmtDateTime(p.executedAt)}` : ""}</span><span className={`ml-auto font-mono tnum ${p.status === "CANCELLED" ? "line-through text-ink-3" : ""}`}>{fmtCents(p.amountCents)}</span></li>)}
+              </ul>
+            </Card>
+          )}
           </div>
         </div>
       </Content>

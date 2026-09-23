@@ -160,6 +160,8 @@ export const DOCUMENT_TYPES = {
   INVOICE: "Rechnung",
   CREDIT_NOTE: "Gutschrift",
   CANCELLATION: "Stornobeleg",
+  PAYOUT_RECEIPT: "Auszahlungsbeleg",
+  PAYOUT_ATTACHMENT: "Auszahlungsnachweis",
 } as const;
 export type DocumentType = keyof typeof DOCUMENT_TYPES;
 
@@ -185,6 +187,18 @@ export const INVOICE_UNITS = ["pauschal", "Tag", "km", "l", "kWh", "h", "Stk"] a
 export const PAYMENT_METHODS = { CASH: "Barzahlung", CARD: "Kartenzahlung (extern)", BANK_TRANSFER: "Überweisung (extern)", OTHER: "Sonstige" } as const;
 export type PaymentMethod = keyof typeof PAYMENT_METHODS;
 export const PAYMENT_TYPES = { INVOICE_PAYMENT: "Rechnungszahlung", OTHER_PAYMENT: "Sonstige Zahlung" } as const;
+// Phase 18: Auszahlungen (Geld raus). Rent-Base führt keine Überweisung, Karten- oder Providertransaktion aus; es dokumentiert.
+export const PAYOUT_SOURCE_TYPES = { INVOICE_REFUND: "Rechnungserstattung", SECURITY_DEPOSIT_REFUND: "Kautionsrückzahlung" } as const;
+export type PayoutSourceType = keyof typeof PAYOUT_SOURCE_TYPES;
+export const PAYOUT_STATUS = { DRAFT: "Entwurf", COMPLETED: "Ausgezahlt", CANCELLED: "Storniert" } as const;
+export type PayoutStatus = keyof typeof PAYOUT_STATUS;
+export const PAYOUT_METHODS = { BANK_TRANSFER: "Überweisung (extern ausgeführt)", CASH: "Barauszahlung", CARD: "Kartenrückbuchung (extern ausgeführt)", OTHER: "Sonstiger Weg" } as const;
+export type PayoutMethod = keyof typeof PAYOUT_METHODS;
+export const PAYOUT_HELP = {
+  REVERSAL: "Zahlung stornieren: Eine Zahlung wurde falsch erfasst (z. B. es ist nie Geld geflossen). Die Zahlung zählt danach nicht mehr; es fließt kein Geld.",
+  REFUND: "Erstattung erfassen: Der Kunde hat tatsächlich gezahlt und bekommt später Geld zurück (z. B. nach einer Gutschrift). Die Zahlung bleibt unverändert; die Auszahlung wird als eigener Vorgang dokumentiert.",
+  DEPOSIT: "Kautionsfreigabe ist die Entscheidung, Kautionsauszahlung der tatsächliche Geldfluss. Beides wird getrennt dokumentiert; Rent-Base verrechnet nichts automatisch.",
+} as const;
 export const PAYMENT_STATUS = { CONFIRMED: "Bestätigt", CANCELLED: "Storniert" } as const;
 /** Zahlungsstatus einer Rechnung, abgeleitet aus bestätigten Zahlungen; nie gespeichert. */
 export const INVOICE_PAYMENT_STATUS = { OPEN: "Offen", PARTIAL: "Teilbezahlt", PAID: "Bezahlt", OVERPAID: "Bezahlt – Erstattung erforderlich" } as const;
@@ -270,6 +284,13 @@ export const AUDIT_ACTIONS = {
   CANCELLATION_FINALIZED: "Stornobeleg abgeschlossen",
   CANCELLATION_SENT: "Stornobeleg versendet",
   NUMBER_RANGES_UPDATED: "Nummernkreise geändert",
+  PAYOUT_DRAFT_CREATED: "Auszahlung: Entwurf angelegt",
+  PAYOUT_UPDATED: "Auszahlung: Entwurf geändert",
+  PAYOUT_COMPLETED: "Auszahlung als erfolgt erfasst",
+  PAYOUT_CANCELLED: "Auszahlung storniert",
+  PAYOUT_DOCUMENT_UPLOADED: "Auszahlung: Nachweis hochgeladen",
+  PAYOUT_DOCUMENT_ARCHIVED: "Auszahlung: Beleg archiviert",
+  PAYOUT_EMAIL_SENT: "Auszahlungsbeleg versendet",
 } as const;
 export type AuditAction = keyof typeof AUDIT_ACTIONS;
 
