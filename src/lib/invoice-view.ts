@@ -2,6 +2,7 @@
 // Positionen) und die Nummer der logischen Rechnung; nichts wird nachgerechnet oder aus Stammdaten nachgeladen. Frei von Server-Importen.
 
 import type { Prisma } from "@prisma/client";
+import { DAMAGE_TAX_NOTES, DAMAGE_TAX_TREATMENTS, type DamageTaxTreatment } from "@/lib/constants";
 import { fmtCents, fmtRate, summarize, toBasisPoints, toCents } from "@/lib/money";
 import { APP_TIME_ZONE } from "@/lib/time";
 import type { CompanySnapshot, InvoiceCustomerSnapshot } from "@/lib/invoices";
@@ -38,6 +39,11 @@ export type InvoiceDocumentData = {
   customerNote: string | null;
   taxNote: string | null;
   hasZeroRate: boolean;
+  /** Steuerliche Behandlung der Fassung (nur Schadenabrechnung); nonTaxable = echter Schadensersatz: kein Steuersatz, kein USt-Ausweis */
+  taxTreatment: DamageTaxTreatment | null;
+  taxTreatmentLabel: string | null;
+  taxTreatmentNote: string | null;
+  nonTaxable: boolean;
   contentHash: string | null;
 };
 
@@ -56,6 +62,8 @@ export function buildInvoiceDocument(inv: VersionFull, refs: DocumentRefs): Invo
   const personName = `${c.firstName ?? ""} ${c.lastName ?? ""}`.trim();
   const kind = inv.kind as VersionInfo["kind"];
   const invoiceKind = refs.kind === "DAMAGE" ? "DAMAGE" : "RENTAL";
+  const taxTreatment = inv.taxTreatment && inv.taxTreatment in DAMAGE_TAX_TREATMENTS ? (inv.taxTreatment as DamageTaxTreatment) : null;
+  const nonTaxable = taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION";
   const baseTitle = invoiceKind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung";
   return {
     title: kind === "CORRECTION" ? `Berichtigte ${baseTitle}` : baseTitle,
@@ -87,14 +95,18 @@ export function buildInvoiceDocument(inv: VersionFull, refs: DocumentRefs): Invo
       email: c.email,
     },
     pricesIncludeTax: inv.pricesIncludeTax,
-    items: items.map((i, n) => ({ index: n + 1, description: i.description, quantity: qty(i.quantity), unit: i.unit, unitPrice: fmtCents(toCents(i.unitPrice)), taxRate: fmtRate(toBasisPoints(i.taxRate)), net: fmtCents(toCents(i.netAmount)), tax: fmtCents(toCents(i.taxAmount)), gross: fmtCents(toCents(i.grossAmount)), source: i.source })),
-    taxSummary: sums.byRate.map((r) => ({ rate: fmtRate(r.taxRateBp), net: fmtCents(r.net), tax: fmtCents(r.tax), gross: fmtCents(r.gross) })),
+    items: items.map((i, n) => ({ index: n + 1, description: i.description, quantity: qty(i.quantity), unit: i.unit, unitPrice: fmtCents(toCents(i.unitPrice)), taxRate: nonTaxable ? "–" : fmtRate(toBasisPoints(i.taxRate)), net: fmtCents(toCents(i.netAmount)), tax: fmtCents(toCents(i.taxAmount)), gross: fmtCents(toCents(i.grossAmount)), source: i.source })),
+    taxSummary: nonTaxable ? [] : sums.byRate.map((r) => ({ rate: fmtRate(r.taxRateBp), net: fmtCents(r.net), tax: fmtCents(r.tax), gross: fmtCents(r.gross) })),
     totals: { net: fmtCents(toCents(inv.netTotal)), tax: fmtCents(toCents(inv.taxTotal)), gross: fmtCents(toCents(inv.grossTotal)) },
     paymentDueDate: date(inv.paymentDueDate),
     paymentTermDays: inv.paymentTermDays,
     customerNote: inv.customerNote,
-    taxNote: inv.taxNote,
-    hasZeroRate: items.some((i) => toBasisPoints(i.taxRate) === 0),
+    taxNote: nonTaxable ? null : inv.taxNote,
+    hasZeroRate: !nonTaxable && items.some((i) => toBasisPoints(i.taxRate) === 0),
+    taxTreatment,
+    taxTreatmentLabel: taxTreatment ? DAMAGE_TAX_TREATMENTS[taxTreatment] : null,
+    taxTreatmentNote: taxTreatment ? DAMAGE_TAX_NOTES[taxTreatment] || null : null,
+    nonTaxable,
     contentHash: inv.contentHash,
   };
 }

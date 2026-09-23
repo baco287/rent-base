@@ -7,14 +7,14 @@
 import { useActionState, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { submitWithoutReset } from "@/components/submit-without-reset";
-import { INVOICE_UNITS } from "@/lib/constants";
+import { DAMAGE_TAX_TREATMENT_HELP, DAMAGE_TAX_TREATMENTS, INVOICE_UNITS, type DamageTaxTreatment } from "@/lib/constants";
 import type { InvoiceDocumentData } from "@/lib/invoice-view";
 import type { InvoiceState } from "./actions";
 
 export type EditableItem = { id: string; description: string; quantity: string; unit: string; unitPrice: string; taxRate: string; source: string; sourceLabel: string; net: string; tax: string; gross: string };
 export type EditableCustomer = { type: string; companyName: string; firstName: string; lastName: string; street: string; zip: string; city: string; country: string; email: string; number: string };
 export type EditableCompany = { name: string; legalForm: string; street: string; zip: string; city: string; country: string; email: string; phone: string; vatId: string; taxNumber: string; bankName: string; iban: string; bic: string; invoiceFooter: string };
-export type EditableDraft = { customerNote: string; taxNote: string; notes: string; paymentTermDays: number | null; reason: string; servicePeriodStart: string; servicePeriodEnd: string; customer: EditableCustomer; company: EditableCompany };
+export type EditableDraft = { customerNote: string; taxNote: string; taxTreatment: string | null; notes: string; paymentTermDays: number | null; reason: string; servicePeriodStart: string; servicePeriodEnd: string; customer: EditableCustomer; company: EditableCompany };
 
 type Props = {
   /** Stand des Entwurfs auf dem Server; ändert er sich (nach dem Speichern), werden die Felder neu befüllt */
@@ -22,6 +22,8 @@ type Props = {
   versionNo: number;
   /** Fassungsart des Entwurfs; bei CORRECTION ist der Grund Pflicht */
   kind: "ORIGINAL" | "REVISION" | "CORRECTION";
+  /** Rechnungsart: bei DAMAGE ist die steuerliche Behandlung Teil des Entwurfs */
+  invoiceKind: "RENTAL" | "DAMAGE";
   doc: InvoiceDocumentData;
   items: EditableItem[];
   allowedRates: number[];
@@ -96,11 +98,13 @@ const Field = ({ label, children, className = "" }: { label: string; children: R
   <label className={`flex flex-col gap-1 ${className}`}><span className="label-xs">{label}</span>{children}</label>
 );
 
-function EditorBody({ doc, items: initial, allowedRates, draft, kind, versionNo, save, onSaved, onDirty }: Props & { onSaved: (s: InvoiceState) => void; onDirty: (d: boolean) => void }) {
+function EditorBody({ doc, items: initial, allowedRates, draft, kind, versionNo, invoiceKind, save, onSaved, onDirty }: Props & { onSaved: (s: InvoiceState) => void; onDirty: (d: boolean) => void }) {
   const router = useRouter();
   const [items, setItems] = useState(initial.map((i) => ({ ...i })));
   const [customerNote, setCustomerNote] = useState(draft.customerNote);
   const [taxNote, setTaxNote] = useState(draft.taxNote);
+  const [taxTreatment, setTaxTreatment] = useState<string>(draft.taxTreatment ?? "");
+  const nonTaxable = invoiceKind === "DAMAGE" && taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION";
   const [notes, setNotes] = useState(draft.notes);
   const [reason, setReason] = useState(draft.reason);
   const [paymentTermDays, setPaymentTermDays] = useState(draft.paymentTermDays == null ? "" : String(draft.paymentTermDays));
@@ -124,6 +128,7 @@ function EditorBody({ doc, items: initial, allowedRates, draft, kind, versionNo,
       const res = await save({
         items: items.map((i) => ({ id: i.id || undefined, description: i.description, quantity: i.quantity, unit: i.unit, unitPrice: i.unitPrice, taxRate: i.taxRate.replace(" %", "") })),
         customerNote, taxNote, notes, reason, paymentTermDays,
+        ...(invoiceKind === "DAMAGE" ? { taxTreatment } : {}),
         servicePeriodStart: period.start, servicePeriodEnd: period.end,
         customer, company,
       });
@@ -198,11 +203,25 @@ function EditorBody({ doc, items: initial, allowedRates, draft, kind, versionNo,
         </div>
       </div>
 
+      {invoiceKind === "DAMAGE" && (
+        <div className="card p-4 flex flex-col gap-2">
+          <label className="flex flex-col gap-1">
+            <span className="label-xs">Steuerliche Behandlung dieser Fassung (bewusste Einordnung, keine Steuerberatung)</span>
+            <select value={taxTreatment} onChange={(e) => { setTaxTreatment(e.target.value); setDirty(true); }} className="input max-w-xl">
+              <option value="" disabled>Bitte auswählen</option>
+              {Object.entries(DAMAGE_TAX_TREATMENTS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          </label>
+          {taxTreatment in DAMAGE_TAX_TREATMENT_HELP && <p className="text-xs text-ink-3">{DAMAGE_TAX_TREATMENT_HELP[taxTreatment as DamageTaxTreatment]}</p>}
+          {nonTaxable && <p className="rounded-md bg-info-soft text-info px-3 py-2 text-sm">Nicht steuerbar ist nicht dasselbe wie „0 % Umsatzsteuer“: Die Positionen tragen keinen Steuersatz, das Dokument weist keine Umsatzsteuer aus und enthält den Hinweis zur gewählten Behandlung.</p>}
+        </div>
+      )}
+
       <div className="card">
-        <div className="px-4 py-2.5 border-b border-line-soft flex items-center gap-2"><span className="font-semibold text-sm">Positionen</span><span className="text-xs text-ink-3">{doc.pricesIncludeTax ? "Einzelpreise sind Bruttobeträge, die Steuer wird herausgerechnet" : "Einzelpreise sind Nettobeträge, die Steuer kommt hinzu"}</span></div>
+        <div className="px-4 py-2.5 border-b border-line-soft flex items-center gap-2"><span className="font-semibold text-sm">Positionen</span><span className="text-xs text-ink-3">{nonTaxable ? "Nicht steuerbarer Schadensersatz: Beträge ohne Steuersatz" : doc.pricesIncludeTax ? "Einzelpreise sind Bruttobeträge, die Steuer wird herausgerechnet" : "Einzelpreise sind Nettobeträge, die Steuer kommt hinzu"}</span></div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm min-w-[820px]">
-            <thead><tr className="text-left text-xs text-ink-3 border-b border-line-soft"><th className="px-3 py-2 font-medium">Beschreibung</th><th className="px-2 py-2 font-medium w-20">Menge</th><th className="px-2 py-2 font-medium w-24">Einheit</th><th className="px-2 py-2 font-medium w-28 text-right">{doc.pricesIncludeTax ? "Einzelpreis brutto" : "Einzelpreis netto"}</th><th className="px-2 py-2 font-medium w-24">Steuer</th><th className="px-2 py-2 font-medium text-right">Netto</th><th className="px-2 py-2 font-medium text-right">Steuer</th><th className="px-2 py-2 font-medium text-right">Brutto</th><th className="w-10" /></tr></thead>
+            <thead><tr className="text-left text-xs text-ink-3 border-b border-line-soft"><th className="px-3 py-2 font-medium">Beschreibung</th><th className="px-2 py-2 font-medium w-20">Menge</th><th className="px-2 py-2 font-medium w-24">Einheit</th><th className="px-2 py-2 font-medium w-28 text-right">{doc.pricesIncludeTax ? "Einzelpreis brutto" : "Einzelpreis netto"}</th>{!nonTaxable && <th className="px-2 py-2 font-medium w-24">Steuer</th>}{!nonTaxable && <th className="px-2 py-2 font-medium text-right">Netto</th>}{!nonTaxable && <th className="px-2 py-2 font-medium text-right">Steuer</th>}<th className="px-2 py-2 font-medium text-right">{nonTaxable ? "Betrag" : "Brutto"}</th><th className="w-10" /></tr></thead>
             <tbody>
               {items.map((it, idx) => (
                 <tr key={it.id || `new-${idx}`} className="border-b border-line-soft align-top">
@@ -213,9 +232,9 @@ function EditorBody({ doc, items: initial, allowedRates, draft, kind, versionNo,
                   <td className="px-2 py-2"><input value={it.quantity} onChange={(e) => update(idx, { quantity: e.target.value })} inputMode="decimal" className="input !py-1.5 tnum" aria-label={`Menge Position ${idx + 1}`} /></td>
                   <td className="px-2 py-2"><select value={it.unit} onChange={(e) => update(idx, { unit: e.target.value })} className="input !py-1.5" aria-label={`Einheit Position ${idx + 1}`}>{INVOICE_UNITS.map((u) => <option key={u} value={u}>{u}</option>)}</select></td>
                   <td className="px-2 py-2"><input value={it.unitPrice} onChange={(e) => update(idx, { unitPrice: e.target.value })} inputMode="decimal" className="input !py-1.5 tnum text-right" aria-label={`Einzelpreis Position ${idx + 1}`} /></td>
-                  <td className="px-2 py-2"><select value={it.taxRate} onChange={(e) => update(idx, { taxRate: e.target.value })} className="input !py-1.5" aria-label={`Steuersatz Position ${idx + 1}`}>{[...new Set([...rateOptions, it.taxRate])].map((r) => <option key={r} value={r}>{r} %</option>)}</select></td>
-                  <td className="px-2 py-2 text-right font-mono tnum">{it.net}</td>
-                  <td className="px-2 py-2 text-right font-mono tnum">{it.tax}</td>
+                  {!nonTaxable && <td className="px-2 py-2"><select value={it.taxRate} onChange={(e) => update(idx, { taxRate: e.target.value })} className="input !py-1.5" aria-label={`Steuersatz Position ${idx + 1}`}>{[...new Set([...rateOptions, it.taxRate])].map((r) => <option key={r} value={r}>{r} %</option>)}</select></td>}
+                  {!nonTaxable && <td className="px-2 py-2 text-right font-mono tnum">{it.net}</td>}
+                  {!nonTaxable && <td className="px-2 py-2 text-right font-mono tnum">{it.tax}</td>}
                   <td className="px-2 py-2 text-right font-mono tnum font-semibold">{it.gross}</td>
                   <td className="px-2 py-2"><button type="button" onClick={() => remove(idx)} className="text-bad text-xs underline" aria-label={`Position ${idx + 1} entfernen`}>entfernen</button></td>
                 </tr>
@@ -233,15 +252,20 @@ function EditorBody({ doc, items: initial, allowedRates, draft, kind, versionNo,
         <div className="card p-4 flex flex-col gap-3">
           <label className="flex flex-col gap-1"><span className="label-xs">Zahlungsziel in Tagen (leer = keins)</span><input value={paymentTermDays} onChange={(e) => { setPaymentTermDays(e.target.value); setDirty(true); }} type="number" min={0} max={365} className="input tnum max-w-[10rem]" /></label>
           <label className="flex flex-col gap-1"><span className="label-xs">Text auf der Rechnung (optional)</span><textarea value={customerNote} onChange={(e) => { setCustomerNote(e.target.value); setDirty(true); }} rows={2} className="input" /></label>
-          <label className="flex flex-col gap-1"><span className="label-xs">Steuerhinweis (erscheint bei Positionen mit 0 %)</span><input value={taxNote} onChange={(e) => { setTaxNote(e.target.value); setDirty(true); }} className="input" /></label>
+          {nonTaxable ? (
+            <div className="flex flex-col gap-1"><span className="label-xs">Hinweis auf dem Dokument (fest, aus der gewählten Behandlung)</span><p className="text-sm text-ink-2">{doc.taxTreatmentNote}</p></div>
+          ) : (
+            <label className="flex flex-col gap-1"><span className="label-xs">Steuerhinweis (erscheint bei Positionen mit 0 %)</span><input value={taxNote} onChange={(e) => { setTaxNote(e.target.value); setDirty(true); }} className="input" /></label>
+          )}
           <label className="flex flex-col gap-1"><span className="label-xs">Interne Notiz (nicht auf der Rechnung)</span><textarea value={notes} onChange={(e) => { setNotes(e.target.value); setDirty(true); }} rows={2} className="input" /></label>
         </div>
         <div className="card p-4 flex flex-col gap-2 text-sm">
-          <div className="font-semibold">Steuerzusammenfassung</div>
-          {doc.taxSummary.map((t) => <div key={t.rate} className="flex justify-between"><span className="text-ink-3">{t.rate} auf {t.net}</span><span className="font-mono tnum">{t.tax}</span></div>)}
-          <div className="flex justify-between border-t border-line-soft pt-2"><span className="text-ink-3">Netto</span><span className="font-mono tnum">{doc.totals.net}</span></div>
-          <div className="flex justify-between"><span className="text-ink-3">Steuer</span><span className="font-mono tnum">{doc.totals.tax}</span></div>
-          <div className="flex justify-between text-base font-semibold border-t-2 border-ink pt-2"><span>Gesamt</span><span className="font-mono tnum">{doc.totals.gross}</span></div>
+          <div className="font-semibold">{doc.nonTaxable ? "Forderung" : "Steuerzusammenfassung"}</div>
+          {doc.nonTaxable && <div className="flex justify-between"><span className="text-ink-3">Nicht steuerbarer Schadensersatz</span><span className="font-mono tnum">{doc.totals.gross}</span></div>}
+          {!doc.nonTaxable && doc.taxSummary.map((t) => <div key={t.rate} className="flex justify-between"><span className="text-ink-3">{t.rate} auf {t.net}</span><span className="font-mono tnum">{t.tax}</span></div>)}
+          {!doc.nonTaxable && <div className="flex justify-between border-t border-line-soft pt-2"><span className="text-ink-3">Netto</span><span className="font-mono tnum">{doc.totals.net}</span></div>}
+          {!doc.nonTaxable && <div className="flex justify-between"><span className="text-ink-3">Steuer</span><span className="font-mono tnum">{doc.totals.tax}</span></div>}
+          <div className="flex justify-between text-base font-semibold border-t-2 border-ink pt-2"><span>{doc.nonTaxable ? "Gesamtforderung" : "Gesamt"}</span><span className="font-mono tnum">{doc.totals.gross}</span></div>
           {dirty && <div className="text-xs text-amber">Ungespeicherte Änderungen: Die Summen zeigen den gespeicherten Stand.</div>}
         </div>
       </div>

@@ -78,6 +78,7 @@ const draftSchema = z.object({
   items: z.array(itemSchema).min(1, "Eine Rechnung braucht mindestens eine Position."),
   customerNote: text(2000),
   taxNote: text(1000),
+  taxTreatment: z.enum(["NON_TAXABLE_DAMAGE_COMPENSATION", "TAXABLE_SUPPLY"]).optional(),
   notes: text(2000),
   reason: text(500),
   paymentTermDays: z.preprocess((v) => (v === "" || v == null ? null : Number(v)), z.number().int().min(0).max(365).nullable()),

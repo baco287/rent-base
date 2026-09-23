@@ -148,7 +148,7 @@ test("Haftung: „Kunde verantwortlich“ nur mit Begründung, keine automatisch
   assert.equal(await db.extraCharge.count({ where: { tenantId: w.tenantId, damageId: d.id } }), 0, "keine Zusatzkostenposition durch Kosten");
   assert.equal(await db.securityDepositEvent.count({ where: { tenantId: w.tenantId } }), 0);
   // Ohne bestätigte Kundenverantwortung keine Belastung
-  await assert.rejects(() => chargeCustomer(w.tenantId, c.id, w.actor, { amount: "500", basis: "Reparaturkosten Heckklappe", taxTreatment: "NON_TAXABLE_DAMAGES" }), /Kunde verantwortlich/);
+  await assert.rejects(() => chargeCustomer(w.tenantId, c.id, w.actor, { amount: "500", basis: "Reparaturkosten Heckklappe", taxTreatment: "NON_TAXABLE_DAMAGE_COMPENSATION" }), /Kunde verantwortlich/);
   const audits = await db.auditLog.findMany({ where: { tenantId: w.tenantId, action: { in: ["DAMAGE_LIABILITY_CHANGED", "DAMAGE_COST_CHANGED"] } } });
   assert.equal(audits.filter((a) => a.action === "DAMAGE_LIABILITY_CHANGED").length, 1);
   assert.equal(audits.filter((a) => a.action === "DAMAGE_COST_CHANGED").length, 2);
@@ -228,32 +228,33 @@ async function confirmedCase(w: ReturnedWorld) {
 test("Schaden dem Kunden berechnen: Betrag und Grundlage Pflicht, steuerliche Behandlung gewählt, eigene Schadenabrechnung als Entwurf, Belastung einmalig", async () => {
   const w = await world("case-charge");
   const { c } = await confirmedCase(w);
-  await assert.rejects(() => chargeCustomer(w.tenantId, c.id, w.actor, { amount: "0", basis: "Reparaturkosten laut Werkstattrechnung", taxTreatment: "NON_TAXABLE_DAMAGES" }), /größer als 0/);
-  await assert.rejects(() => chargeCustomer(w.tenantId, c.id, w.actor, { amount: "500", basis: "x", taxTreatment: "NON_TAXABLE_DAMAGES" }), /Grundlage/);
+  await assert.rejects(() => chargeCustomer(w.tenantId, c.id, w.actor, { amount: "0", basis: "Reparaturkosten laut Werkstattrechnung", taxTreatment: "NON_TAXABLE_DAMAGE_COMPENSATION" }), /größer als 0/);
+  await assert.rejects(() => chargeCustomer(w.tenantId, c.id, w.actor, { amount: "500", basis: "x", taxTreatment: "NON_TAXABLE_DAMAGE_COMPENSATION" }), /Grundlage/);
   await assert.rejects(() => chargeCustomer(w.tenantId, c.id, w.actor, { amount: "500", basis: "Reparaturkosten laut Werkstattrechnung", taxTreatment: "" }), /steuerliche Behandlung/);
   assert.equal(await db.invoice.count({ where: { tenantId: w.tenantId } }), 0);
 
-  const r = await chargeCustomer(w.tenantId, c.id, w.actor, { amount: "980,50", basis: "Reparaturkosten laut Werkstattrechnung 4711", taxTreatment: "NON_TAXABLE_DAMAGES" });
+  const r = await chargeCustomer(w.tenantId, c.id, w.actor, { amount: "980,50", basis: "Reparaturkosten laut Werkstattrechnung 4711", taxTreatment: "NON_TAXABLE_DAMAGE_COMPENSATION" });
   assert.equal(r.created, true);
   const inv = await db.invoice.findUniqueOrThrow({ where: { id: r.invoiceId }, include: { versions: { include: { items: true } } } });
   assert.equal(inv.kind, "DAMAGE");
   assert.equal(inv.status, "DRAFT");
   assert.equal(inv.damageCaseId, c.id);
   assert.equal(inv.bookingId, w.bookingId);
-  assert.equal(inv.taxTreatment, "NON_TAXABLE_DAMAGES");
+  assert.equal(inv.taxTreatment, "NON_TAXABLE_DAMAGE_COMPENSATION");
   assert.equal(inv.number, null, "Nummer erst beim Abschluss");
   assert.equal(inv.versions.length, 1);
   assert.equal(inv.versions[0].items.length, 1);
   assert.equal(toCents(inv.versions[0].grossTotal), 98_050);
   assert.equal(toCents(inv.versions[0].taxTotal), 0, "echter Schadensersatz ohne USt");
-  assert.match(inv.versions[0].taxNote ?? "", /nicht umsatzsteuerbar/);
+  assert.match(inv.versions[0].taxNote ?? "", /nicht steuerbar/);
+  assert.equal(inv.versions[0].taxTreatment, "NON_TAXABLE_DAMAGE_COMPENSATION", "Behandlung in der Fassung versiegelt");
   assert.match(inv.versions[0].items[0].description, /Schadenakte SCH-/);
   const row = await db.damageCase.findUniqueOrThrow({ where: { id: c.id } });
   assert.equal(row.customerChargeCents, 98_050);
-  assert.equal(row.customerChargeTaxTreatment, "NON_TAXABLE_DAMAGES");
+  assert.equal(row.customerChargeTaxTreatment, "NON_TAXABLE_DAMAGE_COMPENSATION");
   assert.equal(row.status, "UNDER_REVIEW");
   // Belastung ist einmalig und unveränderlich; Haftung danach festgeschrieben
-  const again = await chargeCustomer(w.tenantId, c.id, w.actor, { amount: "1", basis: "noch einmal, versehentlich", taxTreatment: "TAXABLE_SERVICE" });
+  const again = await chargeCustomer(w.tenantId, c.id, w.actor, { amount: "1", basis: "noch einmal, versehentlich", taxTreatment: "TAXABLE_SUPPLY" });
   assert.equal(again.created, false);
   assert.equal(again.invoiceId, r.invoiceId);
   await assert.rejects(() => db.damageCase.update({ where: { id: c.id }, data: { customerChargeCents: 1 } }), /RB_IMMUTABLE/);
@@ -269,7 +270,7 @@ test("Schaden dem Kunden berechnen: Betrag und Grundlage Pflicht, steuerliche Be
 test("Parallel: „Schaden dem Kunden berechnen“ mehrfach gleichzeitig ergibt genau eine Schadenabrechnung", async () => {
   const w = await world("case-charge-race");
   const { c } = await confirmedCase(w);
-  const results = await Promise.all(Array.from({ length: 5 }, () => chargeCustomer(w.tenantId, c.id, w.actor, { amount: "300", basis: "Kostenvoranschlag Heckklappe", taxTreatment: "NON_TAXABLE_DAMAGES" })));
+  const results = await Promise.all(Array.from({ length: 5 }, () => chargeCustomer(w.tenantId, c.id, w.actor, { amount: "300", basis: "Kostenvoranschlag Heckklappe", taxTreatment: "NON_TAXABLE_DAMAGE_COMPENSATION" })));
   assert.equal(new Set(results.map((r) => r.invoiceId)).size, 1);
   assert.equal(results.filter((r) => r.created).length, 1);
   assert.equal(await db.invoice.count({ where: { tenantId: w.tenantId, damageCaseId: c.id } }), 1);
@@ -286,7 +287,7 @@ test("Schadenabrechnung neben Mietrechnung: beide finalisierbar, Nummern getrenn
   const depBefore = await db.securityDepositEvent.findMany({ where: { tenantId: w.tenantId } });
   // Schadenabrechnung
   const { c } = await confirmedCase(w);
-  const { invoiceId } = await chargeCustomer(w.tenantId, c.id, w.actor, { amount: "1.190,00", basis: "Instandsetzung Heckklappe inkl. Lackierung, Werkstattrechnung 4712", taxTreatment: "TAXABLE_SERVICE" });
+  const { invoiceId } = await chargeCustomer(w.tenantId, c.id, w.actor, { amount: "1.190,00", basis: "Instandsetzung Heckklappe inkl. Lackierung, Werkstattrechnung 4712", taxTreatment: "TAXABLE_SUPPLY" });
   const st = await getInvoiceState(w.tenantId, invoiceId);
   assert.equal(st.issues.filter((i) => i.severity === "error").length, 0, JSON.stringify(st.issues));
   const dv = await finalizeInvoice(w.tenantId, invoiceId, w.actor);
@@ -341,12 +342,12 @@ test("Schadenabrechnung neben Mietrechnung: beide finalisierbar, Nummern getrenn
 test("Schadenabrechnung: Fassungen (Neufassung) funktionieren wie bei der Mietrechnung; Entwurf verwerfen setzt die Belastung zurück", async () => {
   const w = await world("case-versions");
   const { c } = await confirmedCase(w);
-  const { invoiceId } = await chargeCustomer(w.tenantId, c.id, w.actor, { amount: "400", basis: "Kostenvoranschlag Heckklappe", taxTreatment: "NON_TAXABLE_DAMAGES" });
+  const { invoiceId } = await chargeCustomer(w.tenantId, c.id, w.actor, { amount: "400", basis: "Kostenvoranschlag Heckklappe", taxTreatment: "NON_TAXABLE_DAMAGE_COMPENSATION" });
   // Entwurf verwerfen → Belastung frei, erneut möglich
   const res = await discardInvoiceDraft(w.tenantId, invoiceId, w.actor);
   assert.equal(res.invoiceDeleted, true);
   assert.equal((await db.damageCase.findUniqueOrThrow({ where: { id: c.id } })).customerChargeCents, null);
-  const second = await chargeCustomer(w.tenantId, c.id, w.actor, { amount: "450", basis: "Kostenvoranschlag Heckklappe, korrigiert", taxTreatment: "NON_TAXABLE_DAMAGES" });
+  const second = await chargeCustomer(w.tenantId, c.id, w.actor, { amount: "450", basis: "Kostenvoranschlag Heckklappe, korrigiert", taxTreatment: "NON_TAXABLE_DAMAGE_COMPENSATION" });
   assert.equal(second.created, true);
   const v1 = await finalizeInvoice(w.tenantId, second.invoiceId, w.actor);
   assert.equal(toCents(v1.grossTotal), 45_000);
@@ -371,10 +372,10 @@ test("Schadenabrechnung: Fassungen (Neufassung) funktionieren wie bei der Mietre
 test("Doppelabrechnungsschutz: je Akte höchstens eine Schadenabrechnung (DB-Index), Rechnung ohne Akte darf nicht DAMAGE sein", async () => {
   const w = await world("case-double");
   const { c } = await confirmedCase(w);
-  const { invoiceId } = await chargeCustomer(w.tenantId, c.id, w.actor, { amount: "100", basis: "Kleinreparatur Stoßfänger", taxTreatment: "NON_TAXABLE_DAMAGES" });
+  const { invoiceId } = await chargeCustomer(w.tenantId, c.id, w.actor, { amount: "100", basis: "Kleinreparatur Stoßfänger", taxTreatment: "NON_TAXABLE_DAMAGE_COMPENSATION" });
   const first = await db.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
   await assert.rejects(
-    () => db.invoice.create({ data: { tenantId: w.tenantId, bookingId: w.bookingId, customerId: first.customerId, contractId: first.contractId, kind: "DAMAGE", damageCaseId: c.id, damageId: c.damageId, taxTreatment: "NON_TAXABLE_DAMAGES", sourceHash: "x", createdById: w.actor.id } }),
+    () => db.invoice.create({ data: { tenantId: w.tenantId, bookingId: w.bookingId, customerId: first.customerId, contractId: first.contractId, kind: "DAMAGE", damageCaseId: c.id, damageId: c.damageId, taxTreatment: "NON_TAXABLE_DAMAGE_COMPENSATION", sourceHash: "x", createdById: w.actor.id } }),
     /rb_invoice_one_per_damage_case|Unique constraint/,
   );
   await assert.rejects(
@@ -439,7 +440,7 @@ test("Mandantentrennung: fremde Akte ist unsichtbar und unbearbeitbar, fremder S
   await assert.rejects(() => setCaseCosts(b.tenantId, c.id, b.actor, { estimated: "1" }), /nicht gefunden/);
   await assert.rejects(() => blockVehicleForCase(b.tenantId, c.id, b.actor), /nicht gefunden/);
   await assert.rejects(() => closeCase(b.tenantId, c.id, b.actor, "fremd"), /nicht gefunden/);
-  await assert.rejects(() => chargeCustomer(b.tenantId, c.id, b.actor, { amount: "1", basis: "fremder Zugriff", taxTreatment: "NON_TAXABLE_DAMAGES" }), /nicht gefunden/);
+  await assert.rejects(() => chargeCustomer(b.tenantId, c.id, b.actor, { amount: "1", basis: "fremder Zugriff", taxTreatment: "NON_TAXABLE_DAMAGE_COMPENSATION" }), /nicht gefunden/);
   assert.equal((await listCases(b.tenantId, { filter: "alle" })).total, 0);
   // DB: Akte mit fremdem Fahrzeug / fremder Buchung ist unmöglich
   const foreignVehicle = await db.vehicle.findFirstOrThrow({ where: { tenantId: b.tenantId } });

@@ -733,7 +733,7 @@ model Invoice {
   kind             String  @default("RENTAL")
   damageCaseId     String? // nur DAMAGE: die Schadenakte, deren Kundenbelastung abgerechnet wird
   damageId         String? // nur DAMAGE: der zugrunde liegende Fahrzeugschaden (Referenz)
-  taxTreatment     String? // nur DAMAGE: NON_TAXABLE_DAMAGES (echter Schadensersatz, ohne USt) | TAXABLE_SERVICE (steuerpflichtiges Entgelt); bewusst gewählt
+  taxTreatment     String? // nur DAMAGE: bei Anlage gewählte Behandlung NON_TAXABLE_DAMAGE_COMPENSATION | TAXABLE_SUPPLY; maßgeblich ist der Wert der jeweiligen Fassung (InvoiceVersion.taxTreatment)
 
   // Phase 10: Die Rechnungsdaten liegen in unveränderlichen Fassungen (InvoiceVersion). Invoice ist nur noch die
   // logische Rechnung: Nummer, Bezug, Zeiger auf die aktuelle Fassung, interne Notiz, Änderungsprotokoll, Exportmarke.
@@ -962,6 +962,8 @@ model InvoiceVersion {
   paymentDueDate  DateTime?
   customerNote    String?
   taxNote         String?
+  // Steuerliche Behandlung der Fassung (nur Schadenabrechnung): NON_TAXABLE_DAMAGE_COMPENSATION (echter Schadensersatz, nicht steuerbar, kein USt-Ausweis) | TAXABLE_SUPPLY (steuerpflichtiges Entgelt). Versiegelter Bestandteil der Fassung.
+  taxTreatment    String?
 
   contentHash      String? // sha256 über den versiegelten Inhalt dieser Fassung
   diffFromPrevious Json? // strukturierte Differenz zur Vorfassung (beim Abschluss erzeugt)
@@ -1053,7 +1055,7 @@ model DamageCase {
   // Kundenbelastung (einmalig je Akte, bewusst festgelegt; erzeugt die Schadenabrechnung)
   customerChargeCents        Int?
   customerChargeBasis        String? // sachliche Grundlage, erscheint auf der Abrechnung
-  customerChargeTaxTreatment String? // NON_TAXABLE_DAMAGES | TAXABLE_SERVICE
+  customerChargeTaxTreatment String? // NON_TAXABLE_DAMAGE_COMPENSATION | TAXABLE_SUPPLY
   customerChargeAt           DateTime?
   customerChargeByName       String?
 

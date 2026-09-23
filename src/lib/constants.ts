@@ -245,13 +245,19 @@ export type InvoiceKind = keyof typeof INVOICE_KINDS;
  * steuerbar; wird dagegen eine Leistung erbracht oder weiterberechnet, liegt ein steuerpflichtiges Entgelt vor).
  */
 export const DAMAGE_TAX_TREATMENTS = {
-  NON_TAXABLE_DAMAGES: "Echter Schadensersatz – nicht umsatzsteuerbar, ohne Umsatzsteuerausweis",
-  TAXABLE_SERVICE: "Steuerpflichtiges Entgelt (Leistung/Weiterberechnung) – mit Umsatzsteuer zum Standardsatz",
+  NON_TAXABLE_DAMAGE_COMPENSATION: "Echter Schadensersatz – nicht steuerbar",
+  TAXABLE_SUPPLY: "Steuerpflichtiges Entgelt – mit Umsatzsteuer",
 } as const;
 export type DamageTaxTreatment = keyof typeof DAMAGE_TAX_TREATMENTS;
+/** Längere Erläuterung zur Auswahl (nur Oberfläche, keine Rechtsberatung). */
+export const DAMAGE_TAX_TREATMENT_HELP: Record<DamageTaxTreatment, string> = {
+  NON_TAXABLE_DAMAGE_COMPENSATION: "Ausgleich für die Beschädigung der Mietsache, kein Entgelt für eine Leistung. Es wird keine Umsatzsteuer ausgewiesen; die Positionen tragen keinen Steuersatz.",
+  TAXABLE_SUPPLY: "Entgelt für eine Leistung oder Weiterberechnung (z. B. vereinbarte Reinigung, Bearbeitungspauschale). Die normale Umsatzsteuerlogik mit Steuersatz, Netto, Umsatzsteuer und Brutto gilt.",
+};
+/** Hinweistext auf der Schadenabrechnung; bei echtem Schadensersatz fester Bestandteil des Dokuments, sonst leer. */
 export const DAMAGE_TAX_NOTES: Record<DamageTaxTreatment, string> = {
-  NON_TAXABLE_DAMAGES: "Schadensersatz – nicht umsatzsteuerbar (§ 1 Abs. 1 Nr. 1 UStG, Abschn. 1.3 UStAE). Kein Umsatzsteuerausweis.",
-  TAXABLE_SERVICE: "",
+  NON_TAXABLE_DAMAGE_COMPENSATION: "Steuerliche Behandlung: Echter Schadensersatz – nicht steuerbar. Der Betrag ist kein Entgelt für eine Leistung und unterliegt nicht der Umsatzsteuer (§ 1 Abs. 1 Nr. 1 UStG, Abschn. 1.3 UStAE). Umsatzsteuer wird nicht ausgewiesen.",
+  TAXABLE_SUPPLY: "",
 };
 
 export const CHARGE_UNITS = ["km", "l", "kWh", "h", "Stk", "pauschal"] as const;

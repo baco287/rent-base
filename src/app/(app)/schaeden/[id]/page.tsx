@@ -274,7 +274,7 @@ export default async function DamageCasePage({ params, searchParams }: PageProps
               <dl className="grid grid-cols-[170px_1fr] gap-y-1.5">
                 <dt className="label-xs self-center">Betrag</dt><dd className="font-mono tnum font-semibold text-lg">{fmtCents(c.customerChargeCents)}</dd>
                 <dt className="label-xs self-center">Grundlage</dt><dd>{c.customerChargeBasis}</dd>
-                <dt className="label-xs self-center">Steuerlich</dt><dd>{DAMAGE_TAX_TREATMENTS[c.customerChargeTaxTreatment as DamageTaxTreatment] ?? c.customerChargeTaxTreatment}</dd>
+                <dt className="label-xs self-center">Steuerlich</dt><dd>{DAMAGE_TAX_TREATMENTS[c.customerChargeTaxTreatment as DamageTaxTreatment] ?? c.customerChargeTaxTreatment} <span className="text-ink-3">(bei Festlegung gewählt; maßgeblich ist die jeweilige Rechnungsfassung)</span></dd>
                 <dt className="label-xs self-center">Festgelegt</dt><dd>{c.customerChargeAt ? fmtDateTime(c.customerChargeAt) : "–"}{c.customerChargeByName ? ` von ${c.customerChargeByName}` : ""}</dd>
               </dl>
             ) : (
@@ -286,6 +286,7 @@ export default async function DamageCasePage({ params, searchParams }: PageProps
                   <span className="font-medium">Schadenabrechnung {c.invoice.number ?? "(Entwurf)"}</span>
                   {c.invoice.status === "FINALIZED" ? <Chip tone="good">Finalisiert</Chip> : <Chip tone="amber">Entwurf</Chip>}
                   {c.invoice.currentVersion && <Chip>Fassung {c.invoice.currentVersion.versionNo}</Chip>}
+                  {c.invoice.currentVersion?.taxTreatment && <Chip tone="info">{DAMAGE_TAX_TREATMENTS[c.invoice.currentVersion.taxTreatment as DamageTaxTreatment] ?? c.invoice.currentVersion.taxTreatment}</Chip>}
                   {c.payment && <PaymentStatusChip status={c.payment.status} />}
                 </div>
                 {c.payment && <div className="text-xs text-ink-2 flex flex-wrap gap-x-3"><span>Betrag {fmtCents(c.payment.grossCents)}</span><span>bezahlt {fmtCents(c.payment.paidCents)}</span><span>{c.payment.status === "OVERPAID" ? `überzahlt ${fmtCents(c.payment.overpaidCents)}` : `offen ${fmtCents(c.payment.openCents)}`}</span></div>}

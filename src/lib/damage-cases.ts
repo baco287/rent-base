@@ -8,7 +8,7 @@
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { recordAudit, type Actor } from "@/lib/audit";
-import { DAMAGE_CASE_PRIORITY, DAMAGE_CASE_STATUS, DAMAGE_CASE_TRANSITIONS, DAMAGE_TAX_NOTES, DAMAGE_TAX_TREATMENTS, LIABILITY_STATUS, type DamageCaseStatus, type DamageTaxTreatment } from "@/lib/constants";
+import { DAMAGE_CASE_PRIORITY, DAMAGE_CASE_STATUS, DAMAGE_CASE_TRANSITIONS, DAMAGE_TAX_TREATMENTS, LIABILITY_STATUS, type DamageCaseStatus, type DamageTaxTreatment } from "@/lib/constants";
 import { balanceOf } from "@/lib/deposits";
 import { DomainError } from "@/lib/integrity";
 import { createDamageInvoiceDraft } from "@/lib/invoices";
@@ -310,7 +310,7 @@ export async function chargeCustomer(tenantId: string, caseId: string, actor: Ac
       if (existingInvoice) return { invoiceId: existingInvoice.id, created: false };
       if (c.liabilityStatus !== "CUSTOMER_RESPONSIBILITY_CONFIRMED") throw new DomainError("Eine Kundenbelastung ist erst möglich, wenn die Haftung ausdrücklich auf „Kunde verantwortlich“ gesetzt wurde.");
       if (!c.bookingId) throw new DomainError("Diese Schadenakte gehört zu keiner Vermietung; ohne Mietvertrag gibt es keinen Rechnungsempfänger.");
-      const invoice = await createDamageInvoiceDraft(tx, tenantId, actor, { bookingId: c.bookingId, damageCaseId: c.id, damageId: c.damageId, caseNumber: c.caseNumber, amountCents, basis, taxTreatment: treatment, taxNote: DAMAGE_TAX_NOTES[treatment] });
+      const invoice = await createDamageInvoiceDraft(tx, tenantId, actor, { bookingId: c.bookingId, damageCaseId: c.id, damageId: c.damageId, caseNumber: c.caseNumber, amountCents, basis, taxTreatment: treatment });
       const now = new Date();
       await tx.damageCase.update({ where: { id: c.id }, data: { customerChargeCents: amountCents, customerChargeBasis: basis, customerChargeTaxTreatment: treatment, customerChargeAt: now, customerChargeByName: actor.name, ...(c.status === "OPEN" ? { status: "UNDER_REVIEW" } : {}) } });
       await event(tx, tenantId, c.id, actor, { type: "CUSTOMER_CHARGE_CREATED", toValue: String(amountCents), reason: basis, note: DAMAGE_TAX_TREATMENTS[treatment] });
@@ -373,7 +373,7 @@ export async function caseView(tenantId: string, caseId: string) {
       photos: { orderBy: { uploadedAt: "asc" } },
       documents: { orderBy: { createdAt: "desc" } },
       events: { orderBy: { createdAt: "desc" } },
-      invoices: { where: { status: { in: ["DRAFT", "FINALIZED"] } }, include: { currentVersion: { select: { id: true, versionNo: true, grossTotal: true } } } },
+      invoices: { where: { status: { in: ["DRAFT", "FINALIZED"] } }, include: { currentVersion: { select: { id: true, versionNo: true, grossTotal: true, taxTreatment: true } } } },
     },
   });
   if (!c) throw new DomainError("Schadenakte nicht gefunden.");

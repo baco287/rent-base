@@ -76,10 +76,14 @@ export function InvoiceDocumentView({ doc }: { doc: InvoiceDocumentData }) {
         </div>
       )}
       <InvoiceHeadCards doc={doc} />
-      <Card title="Positionen" right={<Chip>{doc.pricesIncludeTax ? "Einzelpreise brutto" : "Einzelpreise netto"}</Chip>}>
+      <Card title="Positionen" right={doc.nonTaxable ? <Chip tone="info">nicht steuerbar</Chip> : <Chip>{doc.pricesIncludeTax ? "Einzelpreise brutto" : "Einzelpreise netto"}</Chip>}>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[720px]">
-            <thead><tr className="text-left text-xs text-ink-3 border-b border-line-soft"><th className="px-4 py-2 font-medium w-10">Pos.</th><th className="px-2 py-2 font-medium">Beschreibung</th><th className="px-2 py-2 font-medium text-right">Menge</th><th className="px-2 py-2 font-medium text-right">Einzelpreis</th><th className="px-2 py-2 font-medium text-right">USt.</th><th className="px-2 py-2 font-medium text-right">Netto</th><th className="px-2 py-2 font-medium text-right">Steuer</th><th className="px-4 py-2 font-medium text-right">Brutto</th></tr></thead>
+          <table className={`w-full text-sm ${doc.nonTaxable ? "min-w-[520px]" : "min-w-[720px]"}`}>
+            {doc.nonTaxable ? (
+              <thead><tr className="text-left text-xs text-ink-3 border-b border-line-soft"><th className="px-4 py-2 font-medium w-10">Pos.</th><th className="px-2 py-2 font-medium">Beschreibung</th><th className="px-2 py-2 font-medium text-right">Menge</th><th className="px-2 py-2 font-medium text-right">Einzelbetrag</th><th className="px-4 py-2 font-medium text-right">Betrag</th></tr></thead>
+            ) : (
+              <thead><tr className="text-left text-xs text-ink-3 border-b border-line-soft"><th className="px-4 py-2 font-medium w-10">Pos.</th><th className="px-2 py-2 font-medium">Beschreibung</th><th className="px-2 py-2 font-medium text-right">Menge</th><th className="px-2 py-2 font-medium text-right">Einzelpreis</th><th className="px-2 py-2 font-medium text-right">USt.</th><th className="px-2 py-2 font-medium text-right">Netto</th><th className="px-2 py-2 font-medium text-right">Steuer</th><th className="px-4 py-2 font-medium text-right">Brutto</th></tr></thead>
+            )}
             <tbody>
               {doc.items.map((i) => (
                 <tr key={i.index} className="border-b border-line-soft align-top">
@@ -87,9 +91,9 @@ export function InvoiceDocumentView({ doc }: { doc: InvoiceDocumentData }) {
                   <td className="px-2 py-2 whitespace-pre-line">{i.description}</td>
                   <td className="px-2 py-2 text-right font-mono tnum">{i.quantity} {i.unit}</td>
                   <td className="px-2 py-2 text-right font-mono tnum">{i.unitPrice}</td>
-                  <td className="px-2 py-2 text-right font-mono tnum">{i.taxRate}</td>
-                  <td className="px-2 py-2 text-right font-mono tnum">{i.net}</td>
-                  <td className="px-2 py-2 text-right font-mono tnum">{i.tax}</td>
+                  {!doc.nonTaxable && <td className="px-2 py-2 text-right font-mono tnum">{i.taxRate}</td>}
+                  {!doc.nonTaxable && <td className="px-2 py-2 text-right font-mono tnum">{i.net}</td>}
+                  {!doc.nonTaxable && <td className="px-2 py-2 text-right font-mono tnum">{i.tax}</td>}
                   <td className="px-4 py-2 text-right font-mono tnum font-semibold">{i.gross}</td>
                 </tr>
               ))}
@@ -101,17 +105,21 @@ export function InvoiceDocumentView({ doc }: { doc: InvoiceDocumentData }) {
         <Card title="Texte auf der Rechnung">
           <div className="p-4 text-sm flex flex-col gap-2">
             {doc.paymentDueDate ? <p>Zahlbar bis {doc.paymentDueDate}{doc.paymentTermDays != null ? ` (${doc.paymentTermDays} Tage nach Rechnungsdatum)` : ""} ohne Abzug.</p> : <p className="text-ink-3">Kein Zahlungsziel hinterlegt.</p>}
+            {doc.taxTreatmentNote ? <p><span className="label-xs">Steuerliche Behandlung</span><br />{doc.taxTreatmentNote}</p> : doc.taxTreatmentLabel ? <p><span className="label-xs">Steuerliche Behandlung</span><br />{doc.taxTreatmentLabel}.</p> : null}
             {doc.hasZeroRate && doc.taxNote && <p><span className="label-xs">Steuerhinweis</span><br />{doc.taxNote}</p>}
             {doc.customerNote && <p className="whitespace-pre-line">{doc.customerNote}</p>}
             {doc.company.invoiceFooter && <p className="text-xs text-ink-3 whitespace-pre-line">{doc.company.invoiceFooter}</p>}
           </div>
         </Card>
-        <Card title="Steuerzusammenfassung">
+        <Card title={doc.nonTaxable ? "Forderung" : "Steuerzusammenfassung"}>
           <div className="p-4 text-sm flex flex-col gap-1.5">
-            {doc.taxSummary.map((t) => <div key={t.rate} className="flex justify-between"><span className="text-ink-3">{t.rate} USt. auf {t.net}</span><span className="font-mono tnum">{t.tax}</span></div>)}
-            <div className="flex justify-between border-t border-line-soft pt-2"><span className="text-ink-3">Nettobetrag</span><span className="font-mono tnum">{doc.totals.net}</span></div>
-            <div className="flex justify-between"><span className="text-ink-3">Steuer</span><span className="font-mono tnum">{doc.totals.tax}</span></div>
-            <div className="flex justify-between text-base font-semibold border-t-2 border-ink pt-2"><span>Rechnungsbetrag</span><span className="font-mono tnum">{doc.totals.gross}</span></div>
+            {doc.nonTaxable && <div className="flex justify-between"><span className="text-ink-3">Nicht steuerbarer Schadensersatz</span><span className="font-mono tnum">{doc.totals.gross}</span></div>}
+            {doc.nonTaxable && <div className="flex justify-between text-base font-semibold border-t-2 border-ink pt-2"><span>Gesamtforderung</span><span className="font-mono tnum">{doc.totals.gross}</span></div>}
+            {doc.nonTaxable && <p className="text-xs text-ink-3">Keine Umsatzsteuer ausgewiesen (echter Schadensersatz, nicht steuerbar).</p>}
+            {!doc.nonTaxable && doc.taxSummary.map((t) => <div key={t.rate} className="flex justify-between"><span className="text-ink-3">{t.rate} USt. auf {t.net}</span><span className="font-mono tnum">{t.tax}</span></div>)}
+            {!doc.nonTaxable && <div className="flex justify-between border-t border-line-soft pt-2"><span className="text-ink-3">Nettobetrag</span><span className="font-mono tnum">{doc.totals.net}</span></div>}
+            {!doc.nonTaxable && <div className="flex justify-between"><span className="text-ink-3">Steuer</span><span className="font-mono tnum">{doc.totals.tax}</span></div>}
+            {!doc.nonTaxable && <div className="flex justify-between text-base font-semibold border-t-2 border-ink pt-2"><span>Rechnungsbetrag</span><span className="font-mono tnum">{doc.totals.gross}</span></div>}
           </div>
         </Card>
       </div>

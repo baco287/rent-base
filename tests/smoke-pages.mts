@@ -337,9 +337,9 @@ report(foreignCaseUp.status === 404, `${foreignCaseUp.status} Upload in fremde S
 await setLiability(w.tenantId, dc.id, w.actor, "CUSTOMER_RESPONSIBILITY_CONFIRMED", "Mieter hat den Kratzer bei Rückgabe eingeräumt");
 const casePage1 = await plain(await fetch(`${base}/schaeden/${dc.id}`, { headers: { cookie } }));
 report(casePage1.includes("Kunde verantwortlich (bestätigt)") && casePage1.includes("Schaden dem Kunden berechnen") && casePage1.includes("Werkstattaufnahme") && casePage1.includes("KV-4711.pdf"), "Schadenakte: Haftung bestätigt, Belastung möglich, Foto und Dokument sichtbar");
-const charge = await chargeCustomer(w.tenantId, dc.id, w.actor, { amount: "350", basis: "Lackierung Schiebetür laut Kostenvoranschlag KV-4711", taxTreatment: "NON_TAXABLE_DAMAGES" });
+const charge = await chargeCustomer(w.tenantId, dc.id, w.actor, { amount: "350", basis: "Lackierung Schiebetür laut Kostenvoranschlag KV-4711", taxTreatment: "NON_TAXABLE_DAMAGE_COMPENSATION" });
 const dmgDraft = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung?nr=${charge.invoiceId}`, { headers: { cookie } }));
-report(dmgDraft.includes("Schadenabrechnung (Entwurf)") && dmgDraft.includes("Zur Schadenakte") && dmgDraft.includes(dc.caseNumber) && dmgDraft.includes("nicht umsatzsteuerbar") && !dmgDraft.includes("Quellen des Entwurfs"), "Schadenabrechnung: Entwurf über ?nr= mit Aktenbezug und Steuerhinweis");
+report(dmgDraft.includes("Schadenabrechnung (Entwurf)") && dmgDraft.includes("Zur Schadenakte") && dmgDraft.includes(dc.caseNumber) && dmgDraft.includes("nicht steuerbar") && !dmgDraft.includes("Quellen des Entwurfs"), "Schadenabrechnung: Entwurf über ?nr= mit Aktenbezug und Steuerhinweis");
 const rentalStill = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } }));
 report(rentalStill.includes(`Rechnung ${finalInvoice.number}`) && rentalStill.includes("Aktuelle Fassung 2"), "Mietrechnung ohne ?nr= unverändert erreichbar");
 const dmgVersion = await finalizeInvoice(w.tenantId, charge.invoiceId, w.actor);

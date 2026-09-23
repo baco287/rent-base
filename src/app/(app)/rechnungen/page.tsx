@@ -2,7 +2,7 @@ import Link from "next/link";
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { Card, Chip, Content, Empty, PageHeader } from "@/components/ui";
-import { INVOICE_KINDS, INVOICE_PAYMENT_STATUS, type InvoicePaymentStatus } from "@/lib/constants";
+import { DAMAGE_TAX_TREATMENTS, INVOICE_KINDS, INVOICE_PAYMENT_STATUS, type DamageTaxTreatment, type InvoicePaymentStatus } from "@/lib/constants";
 import { fmtDate } from "@/lib/format";
 import { fmtCents } from "@/lib/money";
 import { paymentSummaries } from "@/lib/payments";
@@ -38,10 +38,10 @@ export default async function InvoicesPage({ searchParams }: PageProps<"/rechnun
   const rows0 = await db.invoice.findMany({
     where: { tenantId: tenant.id, status: "FINALIZED", currentVersionId: { not: null }, ...(kindF.kind ? { kind: kindF.kind } : {}) },
     orderBy: [{ finalizedAt: "desc" }, { number: "desc" }],
-    select: { id: true, number: true, kind: true, damageCase: { select: { id: true, caseNumber: true } }, bookingId: true, booking: { select: { number: true } }, currentVersion: { select: { id: true, versionNo: true, kind: true, issueDate: true, paymentDueDate: true, grossTotal: true, customerSnapshot: true, deliveredAt: true } }, _count: { select: { versions: true } } },
+    select: { id: true, number: true, kind: true, damageCase: { select: { id: true, caseNumber: true } }, bookingId: true, booking: { select: { number: true } }, currentVersion: { select: { id: true, versionNo: true, kind: true, issueDate: true, paymentDueDate: true, grossTotal: true, customerSnapshot: true, deliveredAt: true, taxTreatment: true } }, _count: { select: { versions: true } } },
   });
   const sentIds = new Set((await db.emailLog.findMany({ where: { tenantId: tenant.id, status: "SENT", invoiceVersionId: { in: rows0.map((r) => r.currentVersion!.id) } }, select: { invoiceVersionId: true } })).map((e) => e.invoiceVersionId));
-  const all = rows0.map((r) => ({ id: r.id, number: r.number, invoiceKind: r.kind, damageCase: r.damageCase, bookingId: r.bookingId, booking: r.booking, issueDate: r.currentVersion!.issueDate, paymentDueDate: r.currentVersion!.paymentDueDate, grossTotal: r.currentVersion!.grossTotal, customerSnapshot: r.currentVersion!.customerSnapshot, versionNo: r.currentVersion!.versionNo, versionCount: r._count.versions, kind: r.currentVersion!.kind, delivered: sentIds.has(r.currentVersion!.id) || !!r.currentVersion!.deliveredAt }));
+  const all = rows0.map((r) => ({ id: r.id, number: r.number, invoiceKind: r.kind, taxTreatment: r.currentVersion!.taxTreatment, damageCase: r.damageCase, bookingId: r.bookingId, booking: r.booking, issueDate: r.currentVersion!.issueDate, paymentDueDate: r.currentVersion!.paymentDueDate, grossTotal: r.currentVersion!.grossTotal, customerSnapshot: r.currentVersion!.customerSnapshot, versionNo: r.currentVersion!.versionNo, versionCount: r._count.versions, kind: r.currentVersion!.kind, delivered: sentIds.has(r.currentVersion!.id) || !!r.currentVersion!.deliveredAt }));
   const sums = await paymentSummaries(tenant.id, all);
   const rows = all.filter((i) => !filter.status || sums.get(i.id)!.status === filter.status);
   const pages = Math.max(1, Math.ceil(rows.length / PAGE));
@@ -115,7 +115,7 @@ export default async function InvoicesPage({ searchParams }: PageProps<"/rechnun
                       return (
                         <tr key={i.id} className="border-b border-line-soft last:border-0 hover:bg-panel-2/60">
                           <td className="px-3 py-2.5 font-mono tnum"><Link href={`/buchungen/${i.bookingId}/rechnung?nr=${i.id}`} className="hover:underline font-medium">{i.number}</Link></td>
-                          <td className="px-3 py-2.5 text-xs"><KindChip kind={i.invoiceKind} />{i.damageCase ? <> <Link href={`/schaeden/${i.damageCase.id}`} className="font-mono tnum hover:underline">{i.damageCase.caseNumber}</Link></> : null}</td>
+                          <td className="px-3 py-2.5 text-xs"><KindChip kind={i.invoiceKind} />{i.damageCase ? <> <Link href={`/schaeden/${i.damageCase.id}`} className="font-mono tnum hover:underline">{i.damageCase.caseNumber}</Link></> : null}{i.taxTreatment && <div className="text-ink-3 mt-0.5">{DAMAGE_TAX_TREATMENTS[i.taxTreatment as DamageTaxTreatment] ?? i.taxTreatment}</div>}</td>
                           <td className="px-3 py-2.5 text-right tnum">{i.versionNo}{i.versionCount > 1 ? <span className="text-ink-3 text-xs"> / {i.versionCount}</span> : null}</td>
                           <td className="px-3 py-2.5 font-mono tnum">{fmtDate(i.issueDate)}</td>
                           <td className="px-3 py-2.5">{customerOf(i.customerSnapshot)}</td>

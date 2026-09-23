@@ -122,7 +122,7 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
           {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
           {inv.kind === "DAMAGE" && damageCase && (
             <div className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm">
-              <span className="font-semibold">Schadenabrechnung zur Schadenakte {damageCase.caseNumber}.</span> Steuerliche Behandlung: {DAMAGE_TAX_TREATMENTS[inv.taxTreatment as DamageTaxTreatment] ?? inv.taxTreatment ?? "–"}. Grundlage: {damageCase.customerChargeBasis ?? "–"}. Diese Rechnung ist von der Mietrechnung getrennt; Kaution und Forderung wurden nicht miteinander verrechnet.
+              <span className="font-semibold">Schadenabrechnung zur Schadenakte {damageCase.caseNumber}.</span> Steuerliche Behandlung dieser Fassung: {DAMAGE_TAX_TREATMENTS[draft.taxTreatment as DamageTaxTreatment] ?? "noch nicht festgelegt"}. Grundlage: {damageCase.customerChargeBasis ?? "–"}. Diese Rechnung ist von der Mietrechnung getrennt; Kaution und Forderung wurden nicht miteinander verrechnet.
             </div>
           )}
           {draft.versionNo > 1 && mode && (
@@ -156,11 +156,12 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
             version={draft.updatedAt.getTime()}
             versionNo={draft.versionNo}
             kind={kind}
+            invoiceKind={inv.kind === "DAMAGE" ? "DAMAGE" : "RENTAL"}
             doc={doc}
             items={items}
             allowedRates={allowedRates}
             draft={{
-              customerNote: s(draft.customerNote), taxNote: s(draft.taxNote), notes: s(inv.notes), reason: s(draft.reason), paymentTermDays: draft.paymentTermDays ?? (draft.versionNo === 1 ? tenant.paymentTermDays : null) ?? null,
+              customerNote: s(draft.customerNote), taxNote: s(draft.taxNote), taxTreatment: draft.taxTreatment, notes: s(inv.notes), reason: s(draft.reason), paymentTermDays: draft.paymentTermDays ?? (draft.versionNo === 1 ? tenant.paymentTermDays : null) ?? null,
               servicePeriodStart: toDateTimeInputValue(draft.servicePeriodStart), servicePeriodEnd: toDateTimeInputValue(draft.servicePeriodEnd),
               customer: { type: c.type ?? "PRIVATE", companyName: s(c.companyName), firstName: s(c.firstName), lastName: s(c.lastName), street: s(c.street), zip: s(c.zip), city: s(c.city), country: s(c.country) || "DE", email: s(c.email), number: s(c.number) },
               company: { name: s(co.name), legalForm: s(co.legalForm), street: s(co.street), zip: s(co.zip), city: s(co.city), country: s(co.country) || "DE", email: s(co.email), phone: s(co.phone), vatId: s(co.vatId), taxNumber: s(co.taxNumber), bankName: s(co.bankName), iban: s(co.iban), bic: s(co.bic), invoiceFooter: s(co.invoiceFooter) },
@@ -207,7 +208,7 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
         {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
         {inv.kind === "DAMAGE" && damageCase && (
           <div className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm">
-            <span className="font-semibold">Schadenabrechnung zur Schadenakte {damageCase.caseNumber}.</span> Steuerliche Behandlung: {DAMAGE_TAX_TREATMENTS[inv.taxTreatment as DamageTaxTreatment] ?? inv.taxTreatment ?? "–"}. Diese Rechnung ist von der Mietrechnung getrennt; Kaution und Forderung wurden nicht miteinander verrechnet.
+            <span className="font-semibold">Schadenabrechnung zur Schadenakte {damageCase.caseNumber}.</span> Steuerliche Behandlung (Fassung {shown.versionNo}): {DAMAGE_TAX_TREATMENTS[shown.taxTreatment as DamageTaxTreatment] ?? "–"}. Diese Rechnung ist von der Mietrechnung getrennt; Kaution und Forderung wurden nicht miteinander verrechnet.
           </div>
         )}
         {Number.isFinite(finishedNo) && finishedNo === current.versionNo && (

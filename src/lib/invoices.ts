@@ -15,6 +15,7 @@
 
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
+import { DAMAGE_TAX_NOTES, DAMAGE_TAX_TREATMENTS, type DamageTaxTreatment } from "@/lib/constants";
 import { recordAudit } from "@/lib/audit";
 import { EXTRA_CHARGE_TYPES, INVOICE_ITEM_SOURCES, INVOICE_STATUS, INVOICE_UNITS, type ExtraChargeType } from "@/lib/constants";
 import type { CustomerSnapshot, VehicleSnapshot } from "@/lib/contracts";
@@ -277,7 +278,7 @@ export async function ensureInvoiceDraft(tenantId: string, bookingId: string, ac
  * Behandlung (echter Schadensersatz → 0 % mit Hinweistext, steuerpflichtiges Entgelt → Standardsatz). Wird von der
  * Schadenakte aufgerufen; die Eindeutigkeit je Akte sichert der Datenbank-Index.
  */
-export async function createDamageInvoiceDraft(tx: Tx, tenantId: string, actor: Actor, input: { bookingId: string; damageCaseId: string; damageId: string; caseNumber: string; amountCents: Cents; basis: string; taxTreatment: "NON_TAXABLE_DAMAGES" | "TAXABLE_SERVICE"; taxNote: string }): Promise<InvoiceRow> {
+export async function createDamageInvoiceDraft(tx: Tx, tenantId: string, actor: Actor, input: { bookingId: string; damageCaseId: string; damageId: string; caseNumber: string; amountCents: Cents; basis: string; taxTreatment: DamageTaxTreatment }): Promise<InvoiceRow> {
   const booking = await tx.booking.findFirst({ where: { id: input.bookingId, tenantId }, include: { contract: true, tenant: true } });
   if (!booking) throw new DomainError("Buchung nicht gefunden.");
   if (!booking.contract || booking.contract.status !== "SIGNED") throw new DomainError("Zu dieser Buchung gibt es keinen abgeschlossenen Mietvertrag; ohne Vertragskopie gibt es keinen Rechnungsempfänger.");
@@ -286,7 +287,11 @@ export async function createDamageInvoiceDraft(tx: Tx, tenantId: string, actor: 
   if (missing.length > 0) throw new DomainError(`Bevor Rechnungen erstellt werden können, muss der Inhaber in den Einstellungen ergänzen: ${missing.join("; ")}.`);
   if (input.amountCents <= 0) throw new DomainError("Der Belastungsbetrag muss größer als 0,00 € sein.");
   const mode = tenant.pricesIncludeTax ? "GROSS" : "NET";
-  const rate = input.taxTreatment === "TAXABLE_SERVICE" ? Number(tenant.defaultTaxRate) : 0;
+  if (!(input.taxTreatment in DAMAGE_TAX_TREATMENTS)) throw new DomainError("Bitte die steuerliche Behandlung der Kundenbelastung auswählen.");
+  // Echter Schadensersatz ist nicht steuerbar: die Position trägt keinen Steuersatz (intern 0 Basispunkte, aber kein „0 %“-Ausweis).
+  // Steuerpflichtiges Entgelt folgt der normalen Umsatzsteuerlogik mit dem Standardsatz aus den Einstellungen.
+  const nonTaxable = input.taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION";
+  const rate = nonTaxable ? 0 : Number(tenant.defaultTaxRate);
   const c = booking.contract.customerSnapshot as Partial<CustomerSnapshot>;
   const item = computeItem(mode, { description: `Schadenabrechnung zur Vermietung ${booking.number} (Schadenakte ${input.caseNumber}): ${input.basis.trim()}`, quantity: 1, unit: "pauschal", unitPrice: centsToDecimalString(input.amountCents), taxRate: rate, source: "MANUAL", reference: `Schadenakte ${input.caseNumber}` });
   const totals = summarize([{ taxRateBp: item.taxRateBp, amounts: item.amounts }]);
@@ -308,7 +313,7 @@ export async function createDamageInvoiceDraft(tx: Tx, tenantId: string, actor: 
       servicePeriodStart: start, servicePeriodEnd: end, pricesIncludeTax: mode === "GROSS",
       customerSnapshot: customerSnapshotFromContract(c), companySnapshot: companySnapshotOf(tenant),
       netTotal: centsToDecimalString(totals.total.net), taxTotal: centsToDecimalString(totals.total.tax), grossTotal: centsToDecimalString(totals.total.gross),
-      paymentTermDays: tenant.paymentTermDays, taxNote: input.taxNote || null,
+      paymentTermDays: tenant.paymentTermDays, taxNote: nonTaxable ? DAMAGE_TAX_NOTES.NON_TAXABLE_DAMAGE_COMPENSATION : tenant.taxNote, taxTreatment: input.taxTreatment,
       createdById: actor.id, createdByName: actor.name,
     },
   });
@@ -394,6 +399,7 @@ export async function startInvoiceEdit(tenantId: string, invoiceId: string, acto
           paymentTermDays: current.paymentTermDays,
           customerNote: current.customerNote,
           taxNote: current.taxNote,
+          taxTreatment: current.taxTreatment,
           createdById: actor.id,
           createdByName: actor.name,
         },
@@ -441,6 +447,8 @@ export type DraftInput = {
   items: ItemInput[];
   customerNote?: string | null;
   taxNote?: string | null;
+  /** nur Schadenabrechnung: steuerliche Behandlung der Fassung, bewusst geändert */
+  taxTreatment?: string | null;
   notes?: string | null;
   paymentTermDays?: number | null;
   reason?: string | null;
@@ -469,15 +477,25 @@ export async function updateInvoiceDraft(tenantId: string, invoiceId: string, ac
   if (input.servicePeriodStart && input.servicePeriodEnd && input.servicePeriodEnd.getTime() < input.servicePeriodStart.getTime()) throw new DomainError("Das Ende des Leistungszeitraums liegt vor dem Beginn.");
   return db.$transaction(async (tx) => {
     const { draft } = await lockDraft(tx, tenantId, invoiceId);
+    const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+    // Steuerliche Behandlung (nur Schadenabrechnung): bleibt wie in der Fassung, bis sie bewusst geändert wird
+    let taxTreatment = draft.taxTreatment;
+    if (input.taxTreatment !== undefined && (input.taxTreatment ?? null) !== (draft.taxTreatment ?? null)) {
+      if (invoice.kind !== "DAMAGE") throw new DomainError("Die steuerliche Behandlung wird nur bei Schadenabrechnungen festgelegt.");
+      if (!input.taxTreatment || !(input.taxTreatment in DAMAGE_TAX_TREATMENTS)) throw new DomainError("Bitte die steuerliche Behandlung der Schadenabrechnung auswählen.");
+      taxTreatment = input.taxTreatment;
+    }
+    const nonTaxable = taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION";
     // Erlaubte Sätze: konfigurierter Standardsatz, 0 % und alle Sätze, die die Fassung bereits enthält (Korrektur ändert keine Steuerlogik)
     const allowedRates = new Set([toBasisPoints(tenant.defaultTaxRate ?? 0), 0, ...draft.items.map((i) => toBasisPoints(i.taxRate))]);
     const mode = draft.pricesIncludeTax ? "GROSS" : "NET";
     const before = new Map(draft.items.map((i) => [i.id, i]));
     const computed = input.items.map((it) => {
       const prev = it.id ? before.get(it.id) : undefined;
-      const ci = computeItem(mode, { ...it, source: prev?.source as ItemInput["source"] | undefined ?? "MANUAL", extraChargeId: prev?.extraChargeId ?? null, reference: prev?.reference ?? it.reference ?? null });
-      if (!allowedRates.has(ci.taxRateBp)) throw new DomainError(`Position „${ci.description}“: Der Steuersatz ${fmtRate(ci.taxRateBp)} ist nicht konfiguriert. Erlaubt sind ${[...allowedRates].map(fmtRate).join(" und ")}.`);
+      // Echter Schadensersatz: keine Position trägt einen Steuersatz – unabhängig von der Eingabe
+      const ci = computeItem(mode, { ...it, taxRate: nonTaxable ? "0" : it.taxRate, source: prev?.source as ItemInput["source"] | undefined ?? "MANUAL", extraChargeId: prev?.extraChargeId ?? null, reference: prev?.reference ?? it.reference ?? null });
+      if (!nonTaxable && !allowedRates.has(ci.taxRateBp)) throw new DomainError(`Position „${ci.description}“: Der Steuersatz ${fmtRate(ci.taxRateBp)} ist nicht konfiguriert. Erlaubt sind ${[...allowedRates].map(fmtRate).join(" und ")}.`);
       return ci;
     });
     const totals = summarize(computed.map((ci) => ({ taxRateBp: ci.taxRateBp, amounts: ci.amounts })));
@@ -492,7 +510,9 @@ export async function updateInvoiceDraft(tenantId: string, invoiceId: string, ac
       else if (old.description !== ci.description || toCents(old.grossAmount) !== ci.amounts.gross || toBasisPoints(old.taxRate) !== ci.taxRateBp || toHundredths(old.quantity) !== ci.quantityH) changes.push(`Position geändert: ${old.description} (${fmtCents(toCents(old.grossAmount))}) zu ${ci.description} (${fmtCents(ci.amounts.gross)}, ${fmtRate(ci.taxRateBp)})`);
     });
     const customerNote = input.customerNote === undefined ? draft.customerNote : input.customerNote?.trim() || null;
-    const taxNote = input.taxNote === undefined ? draft.taxNote : input.taxNote?.trim() || null;
+    // Bei echtem Schadensersatz ist der Hinweistext fest; sonst freier Steuerhinweis für 0-%-Positionen
+    const taxNote = nonTaxable ? DAMAGE_TAX_NOTES.NON_TAXABLE_DAMAGE_COMPENSATION : input.taxNote === undefined ? draft.taxNote : input.taxNote?.trim() || null;
+    if ((taxTreatment ?? null) !== (draft.taxTreatment ?? null)) changes.push(`Steuerliche Behandlung: ${DAMAGE_TAX_TREATMENTS[taxTreatment as DamageTaxTreatment]}`);
     const reason = input.reason === undefined ? draft.reason : input.reason?.trim() || null;
     const paymentTermDays = input.paymentTermDays === undefined ? draft.paymentTermDays : input.paymentTermDays;
     const servicePeriodStart = input.servicePeriodStart ?? draft.servicePeriodStart;
@@ -528,7 +548,6 @@ export async function updateInvoiceDraft(tenantId: string, invoiceId: string, ac
 
     await tx.invoiceVersionItem.deleteMany({ where: { tenantId, versionId: draft.id } });
     await tx.invoiceVersionItem.createMany({ data: computed.map((ci, i) => itemData(tenantId, draft.id, i, ci)) });
-    const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
     const log = Array.isArray(invoice.changeLog) ? (invoice.changeLog as Prisma.JsonArray) : [];
     await tx.invoice.update({ where: { id: invoiceId }, data: { ...(notes === undefined ? {} : { notes }), changeLog: changes.length > 0 ? [...log, { at: new Date().toISOString(), by: actor.name, versionNo: draft.versionNo, summary: changes.join("; ") }] : log } });
     return tx.invoiceVersion.update({
@@ -539,6 +558,7 @@ export async function updateInvoiceDraft(tenantId: string, invoiceId: string, ac
         grossTotal: centsToDecimalString(totals.total.gross),
         customerNote,
         taxNote,
+        taxTreatment,
         reason,
         paymentTermDays,
         servicePeriodStart,
@@ -568,7 +588,7 @@ async function collectIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, draf
     const dc = invoice.damageCaseId ? await tx.damageCase.findFirst({ where: { id: invoice.damageCaseId, tenantId } }) : null;
     if (!dc) err("DAMAGE_CASE", "Zu dieser Abrechnung gibt es keine Schadenakte.");
     else if (dc.liabilityStatus !== "CUSTOMER_RESPONSIBILITY_CONFIRMED") err("LIABILITY", "Die Haftung des Kunden ist in der Schadenakte nicht (mehr) bestätigt.");
-    if (!invoice.taxTreatment) err("TAX_TREATMENT", "Die steuerliche Behandlung der Kundenbelastung ist nicht festgelegt.");
+    if (!draft.taxTreatment) err("TAX_TREATMENT", "Die steuerliche Behandlung der Kundenbelastung ist nicht festgelegt.");
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
     for (const m of invoiceSettingsMissing(tenant)) err("COMPANY", `Firmendaten unvollständig: ${m}.`);
   } else if (draft.versionNo === 1) {
@@ -604,7 +624,12 @@ async function collectIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, draf
       if (!ec || ec.handoverId !== invoice.returnHandoverId) err("EXTRA_CHARGE", `Position „${it.description}“ verweist auf keine bestätigte Zusatzkostenposition dieser Rückgabe.`);
     }
   }
-  if (draft.items.some((it) => toBasisPoints(it.taxRate) === 0) && !draft.taxNote?.trim()) err("TAX_NOTE", "Es gibt Positionen mit 0 % Steuer. Bitte den Steuerhinweis für die Rechnung angeben.");
+  if (invoice.kind === "DAMAGE") {
+    // Steuersemantik der Schadenabrechnung: nicht steuerbar ≠ 0 % ≠ steuerfrei. Die Behandlung ist Teil jeder Fassung.
+    if (!draft.taxTreatment || !(draft.taxTreatment in DAMAGE_TAX_TREATMENTS)) err("TAX_TREATMENT", "Die steuerliche Behandlung dieser Fassung ist nicht festgelegt.");
+    else if (draft.taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION" && draft.items.some((it) => toBasisPoints(it.taxRate) !== 0)) err("TAX_TREATMENT_ITEMS", "Echter Schadensersatz ist nicht steuerbar; die Positionen dürfen keinen Steuersatz tragen.");
+  }
+  if (draft.taxTreatment !== "NON_TAXABLE_DAMAGE_COMPENSATION" && draft.items.some((it) => toBasisPoints(it.taxRate) === 0) && !draft.taxNote?.trim()) err("TAX_NOTE", "Es gibt Positionen mit 0 % Steuer. Bitte den Steuerhinweis für die Rechnung angeben.");
   if (totals.total.gross === 0) warn("ZERO", "Der Rechnungsbetrag ist 0,00 €.");
   if (mode && mode.paidCents > totals.total.gross) warn("OVERPAID", `Für diese Rechnung wurden bereits ${fmtCents(mode.paidCents)} Zahlungen dokumentiert. Der neue Rechnungsbetrag beträgt ${fmtCents(totals.total.gross)}. Dadurch entsteht eine Überzahlung von ${fmtCents(mode.paidCents - totals.total.gross)}. Rent-Base führt keine automatische Erstattung durch.`);
   return issues;
@@ -663,6 +688,7 @@ function sealedContent(invoice: { number: string | null; bookingId: string; cont
     paymentDueDate: v.paymentDueDate,
     customerNote: v.customerNote,
     taxNote: v.taxNote,
+    ...(v.taxTreatment ? { taxTreatment: v.taxTreatment } : {}),
     items: [...v.items].sort((a, b) => a.sortOrder - b.sortOrder).map((i) => ({ description: i.description, quantity: String(i.quantity), unit: i.unit, unitPrice: String(i.unitPrice), netAmount: String(i.netAmount), taxRate: String(i.taxRate), taxAmount: String(i.taxAmount), grossAmount: String(i.grossAmount), source: i.source, extraChargeId: i.extraChargeId })),
   };
 }
@@ -703,6 +729,7 @@ export function diffVersions(prev: VersionWithItems, next: VersionWithItems): Ve
   push("paymentTermDays", "Zahlungsziel (Tage)", prev.paymentTermDays == null ? null : String(prev.paymentTermDays), next.paymentTermDays == null ? null : String(next.paymentTermDays));
   push("customerNote", "Rechnungstext", prev.customerNote, next.customerNote);
   push("taxNote", "Steuerhinweis", prev.taxNote, next.taxNote);
+  push("taxTreatment", "Steuerliche Behandlung", prev.taxTreatment ? DAMAGE_TAX_TREATMENTS[prev.taxTreatment as DamageTaxTreatment] ?? prev.taxTreatment : null, next.taxTreatment ? DAMAGE_TAX_TREATMENTS[next.taxTreatment as DamageTaxTreatment] ?? next.taxTreatment : null);
   push("pricesIncludeTax", "Preisbasis", prev.pricesIncludeTax ? "brutto" : "netto", next.pricesIncludeTax ? "brutto" : "netto");
   // Positionen: nach Reihenfolge verglichen (Beschreibung, Menge, Einzelpreis, Steuersatz, Beträge)
   const pi = [...prev.items].sort((a, b) => a.sortOrder - b.sortOrder), ni = [...next.items].sort((a, b) => a.sortOrder - b.sortOrder);

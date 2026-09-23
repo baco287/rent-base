@@ -63,11 +63,20 @@ export async function renderInvoicePdf(data: InvoiceDocumentData): Promise<{ byt
   }
 
   const priceHeader = data.pricesIncludeTax ? "Einzelpreis (brutto)" : "Einzelpreis (netto)";
-  pdf.table(
-    [{ header: "Pos.", width: 5 }, { header: "Beschreibung", width: 36 }, { header: "Menge", width: 12, align: "right" }, { header: priceHeader, width: 13, align: "right" }, { header: "USt.", width: 10, align: "right" }, { header: "Netto", width: 12, align: "right" }, { header: "Brutto", width: 12, align: "right" }],
-    data.items.map((i): Cell[] => [String(i.index), i.description, `${i.quantity} ${i.unit}`, i.unitPrice, i.taxRate, i.net, { text: i.gross, bold: true }]),
-    { zebra: true },
-  );
+  if (data.nonTaxable) {
+    // Echter Schadensersatz: keine Steuerspalten, keine Steuerzeile – der Betrag ist nicht steuerbar, nicht „mit 0 %“
+    pdf.table(
+      [{ header: "Pos.", width: 5 }, { header: "Beschreibung", width: 55 }, { header: "Menge", width: 12, align: "right" }, { header: "Einzelbetrag", width: 14, align: "right" }, { header: "Betrag", width: 14, align: "right" }],
+      data.items.map((i): Cell[] => [String(i.index), i.description, `${i.quantity} ${i.unit}`, i.unitPrice, { text: i.gross, bold: true }]),
+      { zebra: true },
+    );
+  } else {
+    pdf.table(
+      [{ header: "Pos.", width: 5 }, { header: "Beschreibung", width: 36 }, { header: "Menge", width: 12, align: "right" }, { header: priceHeader, width: 13, align: "right" }, { header: "USt.", width: 10, align: "right" }, { header: "Netto", width: 12, align: "right" }, { header: "Brutto", width: 12, align: "right" }],
+      data.items.map((i): Cell[] => [String(i.index), i.description, `${i.quantity} ${i.unit}`, i.unitPrice, i.taxRate, i.net, { text: i.gross, bold: true }]),
+      { zebra: true },
+    );
+  }
 
   // Steuerzusammenfassung und Gesamt rechts
   const sx = pdf.left + pdf.width * 0.45;
@@ -79,14 +88,24 @@ export async function renderInvoicePdf(data: InvoiceDocumentData): Promise<{ byt
     pdf.textAt(value, sx + sw * 0.6, sy, sw * 0.4, { size: opts.size ?? 9, bold: opts.bold, align: "right" });
     sy += (opts.size ?? 9) + 5;
   };
-  row("Nettobetrag", data.totals.net);
-  for (const t of data.taxSummary) row(t.rate.startsWith("0,00") ? `${t.rate} USt. auf ${t.net} (siehe Hinweis)` : `zzgl. ${t.rate} USt. auf ${t.net}`, t.tax);
-  pdf.doc.moveTo(sx, sy - 1).lineTo(sx + sw, sy - 1).lineWidth(0.8).strokeColor(COLORS.ink).stroke();
-  sy += 3;
-  row("Rechnungsbetrag", data.totals.gross, { bold: true, size: 11 });
+  if (data.nonTaxable) {
+    row("Nicht steuerbarer Schadensersatz", data.totals.gross);
+    pdf.doc.moveTo(sx, sy - 1).lineTo(sx + sw, sy - 1).lineWidth(0.8).strokeColor(COLORS.ink).stroke();
+    sy += 3;
+    row("Gesamtforderung", data.totals.gross, { bold: true, size: 11 });
+  } else {
+    row("Nettobetrag", data.totals.net);
+    for (const t of data.taxSummary) row(t.rate.startsWith("0,00") ? `${t.rate} USt. auf ${t.net} (siehe Hinweis)` : `zzgl. ${t.rate} USt. auf ${t.net}`, t.tax);
+    pdf.doc.moveTo(sx, sy - 1).lineTo(sx + sw, sy - 1).lineWidth(0.8).strokeColor(COLORS.ink).stroke();
+    sy += 3;
+    row("Rechnungsbetrag", data.totals.gross, { bold: true, size: 11 });
+  }
   pdf.y = sy + 6;
 
   const lines: string[] = [];
+  // Steuerliche Behandlung der Schadenabrechnung: bei echtem Schadensersatz der feste Hinweis, sonst die gewählte Einordnung
+  if (data.taxTreatmentNote) lines.push(data.taxTreatmentNote);
+  else if (data.taxTreatmentLabel) lines.push(`Steuerliche Behandlung: ${data.taxTreatmentLabel}.`);
   if (data.paymentDueDate) lines.push(`Zahlbar bis ${data.paymentDueDate}${data.paymentTermDays != null ? ` (${data.paymentTermDays} Tage nach Rechnungsdatum)` : ""} ohne Abzug.`);
   else if (data.company.bankLines.length > 0) lines.push("Bitte überweisen Sie den Rechnungsbetrag unter Angabe der Rechnungsnummer.");
   if (data.taxNote && data.hasZeroRate) lines.push(data.taxNote);

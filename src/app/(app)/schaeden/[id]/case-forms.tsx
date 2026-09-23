@@ -6,7 +6,7 @@
 import { useActionState, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { submitWithoutReset } from "@/components/submit-without-reset";
-import { DAMAGE_CASE_DOCUMENT_TYPES, DAMAGE_CASE_PRIORITY, DAMAGE_CASE_STATUS, DAMAGE_TAX_TREATMENTS, LIABILITY_STATUS, type DamageCaseStatus } from "@/lib/constants";
+import { DAMAGE_CASE_DOCUMENT_TYPES, DAMAGE_CASE_PRIORITY, DAMAGE_CASE_STATUS, DAMAGE_TAX_TREATMENT_HELP, DAMAGE_TAX_TREATMENTS, LIABILITY_STATUS, type DamageCaseStatus, type DamageTaxTreatment } from "@/lib/constants";
 import type { CaseState } from "./actions";
 
 type Action = (prev: CaseState, formData: FormData) => Promise<CaseState>;
@@ -210,6 +210,7 @@ export function ChargeForm({ action, nonce, hints }: { action: Action; nonce: st
   const { state, formAction, pending } = useCaseAction(action);
   const [open, setOpen] = useState(false);
   const [confirm, setConfirm] = useState<{ amount: string; basis: string; tax: string } | null>(null);
+  const [tax, setTax] = useState("");
   const form = useRef<HTMLFormElement>(null);
   if (!open) return <div className="inline-flex flex-col gap-1"><button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>Schaden dem Kunden berechnen</button><Feedback state={state} /></div>;
   const toConfirm = () => {
@@ -230,10 +231,11 @@ export function ChargeForm({ action, nonce, hints }: { action: Action; nonce: st
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className="flex flex-col gap-1"><span className="label-xs">Betrag in € (Pflicht)</span><input name="amount" inputMode="decimal" required placeholder="0,00" className="input text-xl tnum" onChange={() => setConfirm(null)} /></label>
         <label className="flex flex-col gap-1"><span className="label-xs">Steuerliche Behandlung (Pflicht)</span>
-          <select name="taxTreatment" required defaultValue="" className="input" onChange={() => setConfirm(null)}>
+          <select name="taxTreatment" required value={tax} className="input" onChange={(e) => { setTax(e.target.value); setConfirm(null); }}>
             <option value="" disabled>Bitte auswählen</option>
             {Object.entries(DAMAGE_TAX_TREATMENTS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
+          {tax in DAMAGE_TAX_TREATMENT_HELP && <span className="text-xs text-ink-3">{DAMAGE_TAX_TREATMENT_HELP[tax as DamageTaxTreatment]}</span>}
         </label>
         <label className="flex flex-col gap-1 sm:col-span-2"><span className="label-xs">Grundlage der Kundenbelastung (Pflicht, erscheint auf der Abrechnung)</span><input name="basis" required minLength={5} maxLength={500} className="input" placeholder="z. B. Reparaturkosten laut Werkstattrechnung Nr. 4711 vom 12.09.2026" onChange={() => setConfirm(null)} /></label>
       </div>
