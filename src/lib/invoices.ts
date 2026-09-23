@@ -203,16 +203,30 @@ export async function ensureInvoiceDraft(tenantId: string, bookingId: string, ac
     const end = booking.actualReturnAt ?? ret.finalizedAt ?? contract.endAt;
     const days = rentalDays(contract.startAt, contract.endAt);
 
+    // Eigene Vertragspositionen (z. B. Zusatzfahrer) erscheinen getrennt; der Mietpreis ist der Vertragsbetrag ohne diese Positionen.
+    const priceSnap = contract.priceSnapshot as { extras?: { label: string; quantity: number; unitPrice: number; amount: number }[]; extrasTotal?: number } | null;
+    const extras = priceSnap?.extras ?? [];
+    const extrasTotal = extras.reduce((a, e) => a + Math.round(e.amount * 100), 0);
+    const rentalCents = Math.round(Number(contract.totalAmount) * 100) - extrasTotal;
     const items: ItemInput[] = [
       {
         description: `Fahrzeugmiete ${[v.make, v.model].filter(Boolean).join(" ")}${v.plate ? ` (${v.plate})` : ""}, ${dateFmt(contract.startAt)} bis ${dateFmt(contract.endAt)}, ${days} ${days === 1 ? "Tag" : "Tage"}, laut Mietvertrag ${contract.number}`,
         quantity: 1,
         unit: "pauschal",
-        unitPrice: String(contract.totalAmount),
+        unitPrice: extras.length ? (rentalCents / 100).toFixed(2) : String(contract.totalAmount),
         taxRate: rate,
         source: "RENTAL",
         reference: `Mietvertrag ${contract.number}`,
       },
+      ...extras.map((e): ItemInput => ({
+        description: `${e.label}, laut Mietvertrag ${contract.number}`,
+        quantity: 1,
+        unit: "pauschal",
+        unitPrice: e.amount.toFixed(2),
+        taxRate: rate,
+        source: "RENTAL",
+        reference: `Mietvertrag ${contract.number}`,
+      })),
       ...ret.extraCharges.map((e): ItemInput => ({
         description: `${EXTRA_CHARGE_TYPES[e.type as ExtraChargeType] ?? e.type}: ${e.description}`,
         quantity: String(e.quantity),

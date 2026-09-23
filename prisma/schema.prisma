@@ -12,16 +12,19 @@ datasource db {
 }
 
 model Tenant {
-  id                 String  @id @default(cuid())
-  name               String
-  slug               String  @unique
-  street             String?
-  zip                String?
-  city               String?
-  phone              String?
-  email              String?
-  rentalTermsVersion String? // z. B. "2026-09"
-  rentalTermsText    String? // Mietbedingungen, werden beim Vertrag kopiert
+  id                     String  @id @default(cuid())
+  name                   String
+  slug                   String  @unique
+  street                 String?
+  zip                    String?
+  city                   String?
+  phone                  String?
+  email                  String?
+  rentalTermsVersion     String? // z. B. "2026-09"
+  rentalTermsText        String? // Mietbedingungen vor der Versionierung (Altbestand); neue Verträge nutzen RentalTermsVersion
+  businessRules          Json? // Geschäftsregeln des Mandanten (Phase 15), null = Standardwerte; Struktur in src/lib/business-rules.ts
+  privacyNoticeReference String? // Verweis (Text oder Adresse) auf die Datenschutzinformationen, getrennt von den Mietbedingungen
+  rentalTermsSequence    Int     @default(0) // fortlaufender Zähler der Fassungsnummern; verworfene Entwürfe geben ihre Nummer nicht zurück
 
   // Rechnungsdaten (Phase 8). "street" enthält Straße und Hausnummer, keine doppelte Speicherung.
   legalForm        String? // z. B. GmbH, e. K., Einzelunternehmen; Teil des vollständigen Unternehmensnamens
@@ -80,6 +83,7 @@ model Tenant {
   authorityResponses       AuthorityResponse[]
   authorityReceipts        AuthoritySubmissionReceipt[]
   authorityCaseEvents      AuthorityCaseEvent[]
+  rentalTermsVersions      RentalTermsVersion[]
 }
 
 model User {
@@ -125,6 +129,7 @@ model VehicleGroup {
   kmIncludedPerDay Int      @default(200)
   extraKmRate      Decimal  @default(0.25)
   deposit          Decimal  @default(0)
+  businessRules    Json? // abweichende Geschäftsregeln der Gruppe (nur gesetzte Schlüssel), null = Mandantenstandard
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -162,6 +167,7 @@ model Vehicle {
   extraKmRate        Decimal   @default(0.25)
   deposit            Decimal   @default(0)
   tankCapacityLiters Int? // für die Berechnung von Tankfehlbeträgen
+  businessRules      Json? // abweichende Geschäftsregeln des Fahrzeugs (nur gesetzte Schlüssel), null = Gruppe/Mandant
   notes              String?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
@@ -335,10 +341,19 @@ model RentalContract {
   conditions        Json? // weitere Konditionen, erweiterbar ohne Migration
   landlordSnapshot  Json? // Vermieterdaten (Name, Anschrift, Kontakt) zum Zeitpunkt des Abschlusses, für Dokumente
 
-  termsVersion String? // AGB-Version
-  termsHash    String? // sha256 des AGB-Textes
-  termsText    String? // Kopie der Mietbedingungen zum Vertragszeitpunkt
+  termsVersion String? // Bezeichnung der Mietbedingungen-Fassung (Label der Version, bei Altverträgen freier Text)
+  termsHash    String? // sha256 des Bedingungstextes (= Prüfsumme der Version)
+  termsText    String? // eingefrorene Kopie der Mietbedingungen zum Vertragszeitpunkt
   contentHash  String? // sha256 über den unterschriebenen Vertragsinhalt
+
+  // Phase 15: versionierte Mietbedingungen, Kenntnisnahme, individuelle Vereinbarungen. conditions = eingefrorene Geschäftsregeln.
+  rentalTermsVersionId    String? // gewählte veröffentlichte Fassung; Altverträge ohne Versionierung: null
+  termsFormat             String? // MARKDOWN | PLAIN (Altbestand); null bei Verträgen ohne Bedingungstext
+  termsAcknowledgedAt     DateTime? // Kenntnisnahme der Fassung vor der Unterschrift
+  termsAcknowledgedById   String?
+  termsAcknowledgedByName String?
+  termsAcknowledgedHash   String? // Fassung + Prüfsumme, auf die sich die Kenntnisnahme bezieht
+  individualAgreements    String? // individuelle Vereinbarungen, Teil des unterschriebenen Inhalts
 
   createdById String?
   createdAt   DateTime  @default(now())
@@ -357,10 +372,12 @@ model RentalContract {
   invoices   Invoice[]
   deposits   SecurityDeposit[]
 
-  authorityCases AuthorityCase[]
+  authorityCases     AuthorityCase[]
+  rentalTermsVersion RentalTermsVersion? @relation(fields: [rentalTermsVersionId], references: [id], onDelete: Restrict)
 
   @@unique([tenantId, number])
   @@index([tenantId, status])
+  @@index([tenantId, rentalTermsVersionId])
 }
 
 // Fahrer und Zusatzfahrer am Vertrag. Eigene Kopie der Daten, optionale Verbindung zu einem Kunden.
@@ -1475,4 +1492,41 @@ model AuthorityCaseEvent {
   case   AuthorityCase @relation(fields: [caseId], references: [id])
 
   @@index([tenantId, caseId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 15: Mietbedingungen als versionierter Text. Nur Entwürfe sind änderbar; veröffentlichte und archivierte
+// Fassungen sind unveränderlich (DB-Trigger). Verträge frieren die verwendete Fassung ein (RentalContract.termsText/Hash).
+// ---------------------------------------------------------------------------
+
+model RentalTermsVersion {
+  id              String    @id @default(cuid())
+  tenantId        String
+  versionNumber   Int // fortlaufend je Mandant, wird nie wiederverwendet
+  label           String // Anzeige, z. B. 1.0, 1.1, 2.0 – je Mandant eindeutig
+  title           String
+  status          String    @default("DRAFT") // DRAFT | PUBLISHED | ARCHIVED
+  effectiveFrom   DateTime? // optional: ab wann die Fassung für neue Verträge gilt
+  content         String // Markdown-Teilmenge (Überschriften, Absätze, Listen, fett), siehe src/lib/terms-markdown.ts
+  contentFormat   String    @default("MARKDOWN")
+  changeNote      String?
+  checksum        String? // sha256 des Inhalts, bei Veröffentlichung gesetzt, danach fest
+  sourceVersionId String? // Fassung, aus der dieser Entwurf kopiert wurde
+  createdAt       DateTime  @default(now())
+  createdById     String?
+  createdByName   String?
+  updatedAt       DateTime  @updatedAt
+  publishedAt     DateTime?
+  publishedById   String?
+  publishedByName String?
+  archivedAt      DateTime?
+  archivedById    String?
+  archivedByName  String?
+
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contracts RentalContract[]
+
+  @@unique([tenantId, versionNumber])
+  @@unique([tenantId, label])
+  @@index([tenantId, status])
 }

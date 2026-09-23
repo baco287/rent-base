@@ -7,7 +7,10 @@ import { BookingStatusChip, Card, Chip, Content, PageHeader, Plate, VehicleStatu
 import { VEHICLE_EVENT_TYPES, type VehicleEventType } from "@/lib/constants";
 import { vehicleMaintenanceOverview } from "@/lib/maintenance";
 import { listVehicleEvents } from "@/lib/vehicle-events";
-import { deleteVehicleAction, updateVehicleAction } from "../actions";
+import { resolveRules } from "@/lib/business-rules";
+import { overrideValues } from "@/lib/business-rules-form";
+import { deleteVehicleAction, updateVehicleAction, updateVehicleRulesAction } from "../actions";
+import { OverrideForm } from "../../einstellungen/geschaeftsregeln/rules-forms";
 import { loadGroupOptions } from "../groups";
 import { VehicleForm } from "../vehicle-form";
 import { VehicleFile } from "./vehicle-file";
@@ -37,7 +40,7 @@ export default async function VehiclePage({ params, searchParams }: PageProps<"/
 
   const vehicle = await db.vehicle.findFirst({
     where: { id, tenantId: tenant.id },
-    include: { bookings: { include: { customer: true }, orderBy: { startAt: "desc" }, take: tab === "vermietungen" ? 100 : 5 } },
+    include: { group: true, bookings: { include: { customer: true }, orderBy: { startAt: "desc" }, take: tab === "vermietungen" ? 100 : 5 } },
   });
   if (!vehicle) notFound();
   const canManage = user.role !== "YARD";
@@ -131,6 +134,11 @@ export default async function VehiclePage({ params, searchParams }: PageProps<"/
           </div>
         )}
 
+        {tab === "stammdaten" && user.role === "OWNER" && (
+          <Card title="Abweichende Geschäftsregeln dieses Fahrzeugs" className="max-w-4xl">
+            <OverrideForm action={updateVehicleRulesAction.bind(null, vehicle.id)} values={overrideValues(vehicle.businessRules)} inherited={resolveRules(tenant.businessRules, vehicle.group, null).values} scopeLabel={`Fahrzeug „${vehicle.plate}“`} />
+          </Card>
+        )}
         {tab === "stammdaten" && (
           <Card className="p-5 max-w-4xl">
             <VehicleForm action={update} values={values} groups={groups} submitLabel="Speichern" cancelHref={`/fahrzeuge/${vehicle.id}`} />

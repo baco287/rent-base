@@ -3,6 +3,7 @@ import type { ContractDocument, DocSection } from "@/lib/contract-view";
 import type { Issue } from "@/lib/contract-checks";
 import { COUNTRIES } from "@/lib/constants";
 import { Card, Chip, Field } from "@/components/ui";
+import { ContractTermsText } from "@/components/terms-view";
 
 /** Prüfergebnis: Fehler verhindern den Abschluss, Hinweise nicht. */
 export function IssueList({ issues, areas, okText }: { issues: Issue[]; areas?: Issue["area"][]; okText?: string }) {
@@ -124,19 +125,25 @@ export function ContractDocumentView({ doc, showSignatures = true }: { doc: Cont
                 <div className="flex justify-between gap-3 py-1.5 border-b border-line-soft"><span>{doc.price.agreed.text}</span><span className="font-mono tnum">{doc.price.agreed.amount}</span></div>
               </>
             )}
+            {doc.price.extras.map((e, i) => <div key={`x${i}`} className="flex justify-between gap-3 py-1.5 border-b border-line-soft"><span>+ {e.text}</span><span className="font-mono tnum">{e.amount}</span></div>)}
             <div className="flex justify-between gap-3 py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>Gesamtmietpreis (brutto)</span><span className="font-mono tnum">{doc.price.total}</span></div>
             <div className="flex justify-between gap-3 py-1.5 text-ink-2"><span>Kaution, wird zurückgezahlt</span><span className="font-mono tnum">{doc.price.deposit}</span></div>
           </div>
         </Card>
 
-        <Card title="Mietbedingungen" right={doc.terms.version ? <Chip>Fassung {doc.terms.version}</Chip> : undefined}>
+        {doc.rules && <SectionCard s={doc.rules} />}
+        <Card title="Individuelle Vereinbarungen">
+          {doc.individualAgreements ? <p className="px-4 py-3 text-sm whitespace-pre-wrap">{doc.individualAgreements}</p> : <p className="px-4 py-3 text-sm text-ink-3">Keine individuellen Vereinbarungen.</p>}
+        </Card>
+        <Card title={doc.terms.title} right={doc.terms.version ? <Chip tone={doc.terms.legacy ? "grey" : "info"}>{doc.terms.legacy ? `Altbestand ${doc.terms.version}` : `Version ${doc.terms.version}`}</Chip> : undefined}>
           {doc.terms.text ? (
             <details className="px-4 py-3 text-sm">
               <summary className="cursor-pointer font-medium">Bedingungen anzeigen</summary>
-              <p className="mt-2 whitespace-pre-wrap text-ink-2 max-h-80 overflow-y-auto">{doc.terms.text}</p>
+              <div className="mt-2 max-h-96 overflow-y-auto pr-1"><ContractTermsText blocks={doc.terms.blocks} text={doc.terms.text} compact /></div>
+              {doc.terms.acknowledgedAt && <p className="mt-2 text-xs text-ink-3">Zur Kenntnisnahme bereitgestellt am {doc.terms.acknowledgedAt}.</p>}
             </details>
           ) : (
-            <p className="px-4 py-3 text-sm text-ink-3">Keine Mietbedingungen hinterlegt. Der Text lässt sich unter Einstellungen eintragen.</p>
+            <p className="px-4 py-3 text-sm text-ink-3">Keine Mietbedingungen hinterlegt. Der Inhaber veröffentlicht sie unter Einstellungen → Mietbedingungen.</p>
           )}
         </Card>
       </div>

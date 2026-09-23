@@ -67,7 +67,7 @@ export type BodyType = keyof typeof BODY_TYPES;
 export const CONTRACT_STATUS = { DRAFT: "Entwurf", SIGNED: "Unterschrieben", CANCELLED: "Storniert" } as const;
 export type ContractStatus = keyof typeof CONTRACT_STATUS;
 
-export const FUEL_POLICIES = { FULL_TO_FULL: "Voll/Voll", SAME_LEVEL: "Gleicher Füllstand", INCLUDED: "Kraftstoff inklusive", OTHER: "Individuelle Regelung" } as const;
+export const FUEL_POLICIES = { FULL_TO_FULL: "Voll/Voll", SAME_LEVEL: "Gleicher Füllstand", MINIMUM_LEVEL: "Mindestfüllstand bei Rückgabe", INCLUDED: "Kraftstoff inklusive", OTHER: "Individuelle Regelung" } as const;
 export type FuelPolicy = keyof typeof FUEL_POLICIES;
 
 export const DRIVER_ROLES = { PRIMARY_DRIVER: "Fahrer", ADDITIONAL_DRIVER: "Zusatzfahrer" } as const;
@@ -237,6 +237,17 @@ export const AUDIT_ACTIONS = {
   AUTHORITY_CASE_CANCELLED: "Behördenvorgang storniert",
   DAMAGE_CASE_CLOSED: "Schadenakte geschlossen",
   DAMAGE_CASE_REOPENED: "Schadenakte wieder geöffnet",
+  RENTAL_TERMS_DRAFT_CREATED: "Mietbedingungen: Entwurf angelegt",
+  RENTAL_TERMS_UPDATED: "Mietbedingungen: Entwurf geändert",
+  RENTAL_TERMS_PUBLISHED: "Mietbedingungen: Fassung veröffentlicht",
+  RENTAL_TERMS_ARCHIVED: "Mietbedingungen: Fassung archiviert",
+  RENTAL_TERMS_NEW_VERSION_CREATED: "Mietbedingungen: neue Fassung aus veröffentlichter erstellt",
+  RENTAL_TERMS_DRAFT_DISCARDED: "Mietbedingungen: Entwurf verworfen",
+  BUSINESS_RULES_UPDATED: "Geschäftsregeln geändert",
+  CONTRACT_TERMS_SELECTED: "Vertrag: Mietbedingungen-Fassung zugeordnet",
+  CONTRACT_TERMS_ACKNOWLEDGED: "Vertrag: Mietbedingungen zur Kenntnis genommen",
+  CONTRACT_BUSINESS_RULE_OVERRIDDEN: "Vertrag: Geschäftsregel individuell angepasst",
+  CONTRACT_DEFAULTS_ADOPTED: "Vertrag: aktuelle Standardwerte übernommen",
 } as const;
 export type AuditAction = keyof typeof AUDIT_ACTIONS;
 
@@ -443,3 +454,24 @@ export function driveClassOf(driveType: string): DriveClass {
   if (driveType === "PLUGIN_HYBRID") return "PHEV";
   return "COMBUSTION";
 }
+
+// ---------------------------------------------------------------------------
+// Phase 15: Mietbedingungen (versioniert) und Geschäftsregeln
+// ---------------------------------------------------------------------------
+export const TERMS_STATUS = { DRAFT: "Entwurf", PUBLISHED: "Veröffentlicht", ARCHIVED: "Archiviert" } as const;
+export type TermsStatus = keyof typeof TERMS_STATUS;
+export const KM_POLICIES = { UNLIMITED: "Unbegrenzte Kilometer", FREE_KILOMETERS: "Freikilometer je Tag, Mehrkilometer nach Preis", INDIVIDUAL: "Individuelle Kilometerregel" } as const;
+export type KmPolicy = keyof typeof KM_POLICIES;
+export const PETS_POLICIES = { ALLOWED: "Erlaubt", NOT_ALLOWED: "Nicht erlaubt", BY_APPROVAL: "Nur nach Absprache" } as const;
+export type PetsPolicy = keyof typeof PETS_POLICIES;
+export const LATE_RETURN_RULES = { MANUAL: "Manuelle Bearbeitung durch Mitarbeiter", ADDITIONAL_RENTAL_TIME: "Zusätzliche Mietzeit nach Vertragspreis (manuell bestätigt)", CONFIGURED_FEE: "Hinterlegter Richtwert (manuell bestätigt)", INDIVIDUAL: "Individuelle Regelung" } as const;
+export type LateReturnRule = keyof typeof LATE_RETURN_RULES;
+export const OUT_OF_HOURS_RETURN = { ALLOWED: "Erlaubt", NOT_ALLOWED: "Nicht erlaubt", BY_AGREEMENT: "Nach Vereinbarung" } as const;
+export type OutOfHoursReturn = keyof typeof OUT_OF_HOURS_RETURN;
+export const ADDITIONAL_DRIVER_FEE_TYPES = { FREE: "Kostenlos", FLAT: "Pauschal je Zusatzfahrer", PER_DAY: "Je Zusatzfahrer und Miettag" } as const;
+export type AdditionalDriverFeeType = keyof typeof ADDITIONAL_DRIVER_FEE_TYPES;
+export const RULE_SOURCES = { DEFAULT: "Systemvorgabe", TENANT: "Standard des Vermieters", GROUP: "Fahrzeuggruppe", VEHICLE: "Fahrzeug", BOOKING: "Buchung", CONTRACT: "Individuell angepasst" } as const;
+export type RuleSource = keyof typeof RULE_SOURCES;
+/** Pflichtformulierung der Kenntnisnahme; {version} wird durch die Fassung ersetzt. */
+export const TERMS_ACKNOWLEDGEMENT_TEXT = "Die Mietbedingungen Version {version} wurden zur Kenntnisnahme bereitgestellt und sind Bestandteil dieses Mietvertrags.";
+export const TERMS_TEMPLATE_NOTICE = "Mustertext – vor Verwendung rechtlich prüfen";

@@ -20,6 +20,8 @@ import { chargeCustomer, openDamageCase, setLiability } from "../src/lib/damage-
 import { reportDamage } from "../src/lib/damages";
 import { completeMaintenance, createMaintenance, createPlan, setMaintenanceCosts } from "../src/lib/maintenance";
 import { approveResponse, createAuthorityCase, prepareResponse, setDriver, submitResponse } from "../src/lib/authority";
+import { acknowledgeTerms } from "../src/lib/contracts";
+import { createTermsDraft, publishTermsVersion } from "../src/lib/rental-terms";
 import { toDateInputValue, zonedParts } from "../src/lib/time";
 
 const args = process.argv.slice(2);
@@ -528,6 +530,52 @@ const yardBhNew = await fetch(base + "/behoerden/neu", { headers: { cookie: `rb_
 report(yardBhNew.status === 307, `${yardBhNew.status} Hofmitarbeiter: keine Erfassung von Behördenschreiben`);
 const yardBhList = await fetch(base + "/behoerden", { headers: { cookie: `rb_session=${yardSession}` } });
 report(yardBhList.status === 200 && !(await yardBhList.text()).includes("Schreiben erfassen"), `${yardBhList.status} Hofmitarbeiter: Behördenliste lesbar ohne Erfassen-Knopf`);
+// Mietbedingungen & Geschäftsregeln (Phase 15): Einrichtung, Fassung, Vertragsassistent mit Kenntnisnahme, Rollen
+const setup0 = await plain(await fetch(base + "/einstellungen/mietbedingungen", { headers: { cookie } }));
+report(setup0.includes("Noch keine Mietbedingungen veröffentlicht") && setup0.includes("Entwurf anlegen") && setup0.includes("Bisheriger Text"), "Mietbedingungen: Einrichtungshinweis, Entwurf anlegen, bisheriger Text sichtbar");
+const rulesPage = await plain(await fetch(base + "/einstellungen/geschaeftsregeln", { headers: { cookie } }));
+report(rulesPage.includes("Mindestalter Fahrer") && rulesPage.includes("Auslandsfahrten erlaubt") && rulesPage.includes("Richtwerte") && rulesPage.includes("Bearbeitungsentgelt") && rulesPage.includes("Keine Regel erzeugt automatisch"), "Geschäftsregeln: Bereiche und Schutzhinweis");
+const termsDraft = await createTermsDraft(w.tenantId, w.actor, { content: "# Allgemeine Mietbedingungen\n\n## 1. Geltungsbereich\nDiese Bedingungen gelten für alle Mietverträge (Beispieltext für den Rauchtest).\n\n## 2. Fahrer\n- Nur eingetragene Fahrer\n- **Gültige** Fahrerlaubnis\n" });
+const draftPage = await plain(await fetch(`${base}/einstellungen/mietbedingungen/${termsDraft.id}`, { headers: { cookie } }));
+report(draftPage.includes("Entwurf bearbeiten") && draftPage.includes("Veröffentlichen") && draftPage.includes("Vorschau") && draftPage.includes("Diese Fassung als Mietbedingungen veröffentlichen") && draftPage.includes("Version 1.0"), "Mietbedingungen: Entwurf mit Editor, Vorschau und bewusster Veröffentlichung");
+const termsPub = await publishTermsVersion(w.tenantId, termsDraft.id, w.actor, { confirmed: true });
+const pubPage = await plain(await fetch(`${base}/einstellungen/mietbedingungen/${termsPub.id}`, { headers: { cookie } }));
+report(pubPage.includes("Veröffentlicht") && pubPage.includes("Inhalt der Fassung (unveränderlich)") && pubPage.includes("Neue Fassung erstellen") && pubPage.includes("Archivieren") && !pubPage.includes("Entwurf bearbeiten") && pubPage.includes(termsPub.checksum!), "Mietbedingungen: veröffentlichte Fassung nicht editierbar, Prüfsumme sichtbar");
+const termsList = await plain(await fetch(base + "/einstellungen/mietbedingungen", { headers: { cookie } }));
+report(termsList.includes("aktiv") && termsList.includes("Verwendet in") && !termsList.includes("Noch keine Mietbedingungen veröffentlicht"), "Mietbedingungen: Übersicht mit aktiver Fassung");
+const settingsTerms = await plain(await fetch(base + "/einstellungen", { headers: { cookie } }));
+report(settingsTerms.includes("Version 1.0 aktiv"), "Einstellungen: aktive Mietbedingungen ausgewiesen");
+// neuer Vertrag nach Veröffentlichung: Fassung eingefroren, Kenntnisnahme vor Unterschrift
+const start5 = new Date(Date.now() + 12 * 86400_000);
+const termsBooking = await db.booking.create({ data: { tenantId: w.tenantId, number: "AGB-1", vehicleId: v2.id, customerId: w.customerId, startAt: start5, endAt: new Date(start5.getTime() + 2 * 86400_000), dailyRate: 49, deposit: 300 } });
+const termsContract = await ensureContractDraft(w.tenantId, termsBooking.id, w.actor);
+report(termsContract.rentalTermsVersionId === termsPub.id && termsContract.termsHash === termsPub.checksum, "Vertrag: aktive Fassung beim Anlegen eingefroren");
+const step4 = await plain(await fetch(`${base}/buchungen/${termsBooking.id}/vertrag?schritt=4`, { headers: { cookie } }));
+report(step4.includes("Kilometerregel") && step4.includes("Quelle:") && step4.includes("Individuelle Vereinbarungen") && step4.includes("Auslandsfahrten gestattet") && step4.includes("Zusatzfahrer-Preisregel"), "Vertragsassistent: Geschäftsregeln mit Herkunft und individuelle Vereinbarungen");
+const step7a = await plain(await fetch(`${base}/buchungen/${termsBooking.id}/vertrag?schritt=7`, { headers: { cookie } }));
+report(step7a.includes("Kenntnisnahme fehlt") && step7a.includes("Die Mietbedingungen Version 1.0 wurden zur Kenntnisnahme bereitgestellt") && step7a.includes("erst nach der Kenntnisnahme") && step7a.includes("Kenntnisnahme bestätigen"), "Vertragsassistent: Kenntnisnahme vor der Mieterunterschrift verlangt");
+await acknowledgeTerms(w.tenantId, termsContract.id, w.actor, { confirmed: true });
+const step7b = await plain(await fetch(`${base}/buchungen/${termsBooking.id}/vertrag?schritt=7`, { headers: { cookie } }));
+report(step7b.includes("Kenntnisnahme bestätigt") && step7b.includes("Unterschrift Mieter") && !step7b.includes("erst nach der Kenntnisnahme"), "Vertragsassistent: nach Kenntnisnahme ist die Mieterunterschrift möglich");
+await saveContractSignature(w.tenantId, w.actor, termsContract.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getContractContentHash(w.tenantId, termsContract.id) });
+await finalizeContract(w.tenantId, termsContract.id);
+const termsView = await plain(await fetch(`${base}/buchungen/${termsBooking.id}/vertrag`, { headers: { cookie } }));
+report(termsView.includes("Allgemeine Mietbedingungen – Version 1.0") && termsView.includes("Geschäftsregeln dieses Vertrags") && termsView.includes("Individuelle Vereinbarungen") && termsView.includes("Zur Kenntnisnahme bereitgestellt am"), "Vertrag: Fassung, Geschäftsregeln und Kenntnisnahme im abgeschlossenen Vertrag");
+const termsDoc = await ensureContractDocument(w.tenantId, termsContract.id, w.actor.id);
+const termsPdf = await fetch(`${base}/api/documents/${termsDoc.document.id}`, { headers: { cookie } });
+report(termsPdf.status === 200 && termsPdf.headers.get("content-type") === "application/pdf", `${termsPdf.status} Vertrags-PDF mit Mietbedingungen abrufbar`);
+const usage = await plain(await fetch(`${base}/einstellungen/mietbedingungen/${termsPub.id}`, { headers: { cookie } }));
+report(usage.includes(termsContract.number) && usage.includes("1 Mietvertrag"), "Mietbedingungen: Verwendung zeigt den Vertrag");
+const groupsRules = await plain(await fetch(base + "/fahrzeuge/gruppen", { headers: { cookie } }));
+report(groupsRules.includes("Abweichende Geschäftsregeln dieser Gruppe"), "Fahrzeuggruppen: Abweichungen für den Inhaber");
+const vehicleRules = await plain(await fetch(`${base}/fahrzeuge/${v2.id}?tab=stammdaten`, { headers: { cookie } }));
+report(vehicleRules.includes("Abweichende Geschäftsregeln dieses Fahrzeugs"), "Fahrzeugakte: Abweichungen für den Inhaber");
+const yardTerms = await plain(await fetch(base + "/einstellungen/mietbedingungen", { headers: { cookie: `rb_session=${yardSession}` } }));
+report(yardTerms.includes("Version 1.0") && !yardTerms.includes("Entwurf anlegen") && !yardTerms.includes("Neue Fassung erstellen"), "Hofmitarbeiter: Mietbedingungen ansehen, nicht anlegen");
+const yardTermsDetail = await plain(await fetch(`${base}/einstellungen/mietbedingungen/${termsPub.id}`, { headers: { cookie: `rb_session=${yardSession}` } }));
+report(yardTermsDetail.includes("Inhalt der Fassung") && !yardTermsDetail.includes("Archivieren") && !yardTermsDetail.includes("Neue Fassung erstellen"), "Hofmitarbeiter: Fassung lesen, keine Aktionen");
+const yardRules = await plain(await fetch(base + "/einstellungen/geschaeftsregeln", { headers: { cookie: `rb_session=${yardSession}` } }));
+report(yardRules.includes("Ändern kann diese Werte nur der Inhaber") && !yardRules.includes("Speichern"), "Hofmitarbeiter: Geschäftsregeln nur lesen");
 // Disponent: Vertrag bearbeiten, Buchung anlegen, keine Einstellungen
 const dispo = await db.user.create({ data: { tenantId: w.tenantId, email: `dispo-${Date.now()}@example.test`, name: "Dispo", passwordHash: "x", role: "DISPO" } });
 const dispoSession = randomBytes(32).toString("base64url");
@@ -536,6 +584,10 @@ const dispoDraft = await fetch(`${base}/buchungen/${w.bookingId}/vertrag?schritt
 report(dispoDraft.status === 200 && (await dispoDraft.text()).includes("Konditionen"), `${dispoDraft.status} Disponent: Vertragsentwurf bearbeiten`);
 const dispoNew = await fetch(base + "/buchungen/neu", { headers: { cookie: `rb_session=${dispoSession}` } });
 report(dispoNew.status === 200, `${dispoNew.status} Disponent: neue Buchung`);
+const dispoTerms = await plain(await fetch(`${base}/einstellungen/mietbedingungen/${termsPub.id}`, { headers: { cookie: `rb_session=${dispoSession}` } }));
+report(dispoTerms.includes("Inhalt der Fassung") && !dispoTerms.includes("Archivieren") && !dispoTerms.includes("Neue Fassung erstellen"), "Disponent: Fassungen ansehen, nicht veröffentlichen oder archivieren");
+const dispoRules = await plain(await fetch(base + "/einstellungen/geschaeftsregeln", { headers: { cookie: `rb_session=${dispoSession}` } }));
+report(dispoRules.includes("Ändern kann diese Werte nur der Inhaber"), "Disponent: Geschäftsregeln nur lesen");
 // Inhaber (Testsitzung ist OWNER): Vertragsentwurf und Einstellungen
 const ownerDraft = await fetch(`${base}/buchungen/${w.bookingId}/vertrag?schritt=7`, { headers: { cookie } });
 report(ownerDraft.status === 200 && (await ownerDraft.text()).includes("Mietvertrag verbindlich abschließen"), `${ownerDraft.status} Inhaber: Vertrag abschließen sichtbar`);

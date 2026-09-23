@@ -6,16 +6,25 @@
 //            der Vertrag gesperrt. Danach wirken Änderungen an Kunde, Fahrzeug oder Preisen nicht mehr.
 // Unterschrift: gehört zu genau einem Inhalts-Hash. Ändert sich der Inhalt, wird sie verworfen.
 //
+// Mietbedingungen (Phase 15): Beim Anlegen wird die aktive veröffentlichte Fassung gewählt und ihr Text eingefroren.
+//            Ein Entwurf wechselt nie von selbst auf eine neuere Fassung; das ist eine bewusste Aktion (adoptTermsVersion).
+//            Die Kenntnisnahme bezieht sich auf genau eine Fassung und ist vor der Mieterunterschrift Pflicht.
+// Geschäftsregeln: konkrete Werte samt Herkunft liegen in conditions (Snapshot). Geänderte Standardwerte wirken auf
+//            einen Entwurf nur nach „Aktuelle Standardwerte übernehmen“, auf abgeschlossene Verträge nie.
 // Jede Funktion verlangt die tenantId und filtert damit jede Abfrage.
 
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
+import { recordAudit } from "@/lib/audit";
 import { findConflicts } from "@/lib/bookings";
+import { additionalDriverFee, adoptDefaults, applyContractOverrides, contractRuleIssues, initialContractRules, readContractRules, resolveRules, rulesFingerprint, type BusinessRules, type ContractRuleKey, type ContractRules, type ResolvedRules } from "@/lib/business-rules";
 import { checkCustomer, checkDriver, errorsOf, type Issue } from "@/lib/contract-checks";
+import { driveClassOf } from "@/lib/constants";
 import { DomainError, assertContractDraft, contentHash, sha256 } from "@/lib/integrity";
 import { landlordFromTenant } from "@/lib/contract-view";
 import { isUniqueViolation, nextContractNumber, withNumberRetry } from "@/lib/numbering";
 import { calculateRentalPrice, rateCardFrom, toNumber, type PriceBreakdown } from "@/lib/pricing";
+import { activeTermsVersion, termsFeatureActive, type TermsRow } from "@/lib/rental-terms";
 import { buildStorageKey } from "@/lib/storage";
 
 type Tx = Prisma.TransactionClient;
@@ -76,21 +85,45 @@ export function snapshotVehicle(v: Prisma.VehicleGetPayload<{ include: { group: 
 }
 export type VehicleSnapshot = ReturnType<typeof snapshotVehicle>;
 
-export type ContractPriceSnapshot = PriceBreakdown & { agreedTotal: number | null; agreedTotalNote: string | null; finalTotal: number };
+/** Eigene Preisposition neben dem Mietpreis, z. B. Zusatzfahrer. Nie im Basispreis versteckt. */
+export type PriceExtra = { key: "ADDITIONAL_DRIVER"; label: string; quantity: number; unitPrice: number; amount: number };
+export type ContractPriceSnapshot = PriceBreakdown & { agreedTotal: number | null; agreedTotalNote: string | null; extras?: PriceExtra[]; extrasTotal?: number; finalTotal: number };
 
 /**
  * Die eine Stelle, an der der Vertragspreis entsteht: zentrale Preisfunktion plus optional abweichend
- * vereinbarter Gesamtpreis. Eine geänderte Tariflogik wird nur in lib/pricing.ts angepasst.
+ * vereinbarter Gesamtpreis, plus eigene Zusatzpositionen (Zusatzfahrer laut Geschäftsregel). Die Kernpreislogik
+ * (günstigste Kombination Tag/Woche/Monat) bleibt unverändert in lib/pricing.ts.
  */
 export function contractPrice(
   booking: { startAt: Date; endAt: Date; dailyRate: unknown; workWeekRate?: unknown; weeklyRate?: unknown; monthlyRate?: unknown },
   discountPercent: number,
   agreedTotal: number | null,
   agreedTotalNote: string | null,
+  extrasInput?: { additionalDrivers: number; rules: Pick<BusinessRules, "additionalDriverFeeType" | "additionalDriverFeeCents"> | null },
 ): ContractPriceSnapshot {
   const price = calculateRentalPrice({ start: booking.startAt, end: booking.endAt, rates: rateCardFrom(booking), discountPercent });
-  return { ...price, agreedTotal, agreedTotalNote: agreedTotal != null ? agreedTotalNote : null, finalTotal: agreedTotal ?? price.total };
+  const extras: PriceExtra[] = [];
+  if (extrasInput?.rules) {
+    const fee = additionalDriverFee(extrasInput.rules, extrasInput.additionalDrivers, price.days);
+    if (fee) extras.push({ key: "ADDITIONAL_DRIVER", label: fee.label, quantity: fee.quantity, unitPrice: fee.unitCents / 100, amount: fee.amountCents / 100 });
+  }
+  const extrasTotal = Math.round(extras.reduce((a, e) => a + e.amount * 100, 0)) / 100;
+  const base = agreedTotal ?? price.total;
+  return { ...price, agreedTotal, agreedTotalNote: agreedTotal != null ? agreedTotalNote : null, ...(extras.length ? { extras, extrasTotal } : {}), finalTotal: Math.round((base + extrasTotal) * 100) / 100 };
 }
+
+/** Eingefrorene Mietbedingungen für einen neuen Entwurf: aktive Fassung, sonst (Altbestand) der Mandantentext. */
+function termsForNewDraft(tenant: { rentalTermsVersion: string | null; rentalTermsText: string | null }, active: TermsRow | null) {
+  if (active) return { rentalTermsVersionId: active.id, termsVersion: active.label, termsText: active.content, termsHash: active.checksum, termsFormat: "MARKDOWN" as const };
+  return { rentalTermsVersionId: null, termsVersion: tenant.rentalTermsVersion, termsText: tenant.rentalTermsText, termsHash: tenant.rentalTermsText ? sha256(tenant.rentalTermsText) : null, termsFormat: tenant.rentalTermsText ? ("PLAIN" as const) : null };
+}
+
+type BookingWithContext = Prisma.BookingGetPayload<{ include: { customer: true; vehicle: { include: { group: true } }; tenant: true } }>;
+
+function resolveFor(booking: BookingWithContext): ResolvedRules {
+  return resolveRules(booking.tenant.businessRules, booking.vehicle.group, booking.vehicle);
+}
+const feeRules = (rules: ContractRules | null) => (rules ? { additionalDriverFeeType: rules.values.additionalDriverFeeType, additionalDriverFeeCents: rules.values.additionalDriverFeeCents } : null);
 
 // ---------------------------------------------------------------------------
 // Entwurf anlegen und aktuell halten
@@ -110,7 +143,10 @@ export async function ensureContractDraft(tenantId: string, bookingId: string, a
         const booking = await tx.booking.findFirst({ where: { id: bookingId, tenantId }, include: { customer: true, vehicle: { include: { group: true } }, tenant: true } });
         if (!booking) throw new DomainError("Buchung nicht gefunden.");
         if (booking.status !== "RESERVED") throw new DomainError("Ein Mietvertrag wird nur für reservierte Buchungen angelegt.");
-        const price = contractPrice(booking, booking.customer.discountPercent, null, null);
+        const resolved = resolveFor(booking);
+        const rules = initialContractRules(resolved);
+        const price = contractPrice(booking, booking.customer.discountPercent, null, null, { additionalDrivers: 0, rules: feeRules(rules) });
+        const terms = termsForNewDraft(booking.tenant, await activeTermsVersion(tx, tenantId));
         const number = await nextContractNumber(tx, tenantId, booking.startAt);
         const contract = await tx.rentalContract.create({
           data: {
@@ -129,13 +165,15 @@ export async function ensureContractDraft(tenantId: string, bookingId: string, a
             deposit: booking.deposit,
             kmIncludedPerDay: booking.vehicle.kmIncludedPerDay,
             extraKmRate: booking.vehicle.extraKmRate,
-            termsVersion: booking.tenant.rentalTermsVersion,
-            termsText: booking.tenant.rentalTermsText,
-            termsHash: booking.tenant.rentalTermsText ? sha256(booking.tenant.rentalTermsText) : null,
+            deductible: (resolved.values.deductibleCents ?? 0) / 100,
+            fuelPolicy: resolved.values.fuelRule,
+            conditions: rules as unknown as Prisma.InputJsonValue,
+            ...terms,
             createdById: actor?.id ?? null,
           },
         });
         await syncPrimaryDriver(tx, tenantId, contract.id, "RENTER", booking.customer);
+        if (terms.rentalTermsVersionId) await recordAudit(tx, tenantId, actor, { action: "CONTRACT_TERMS_SELECTED", bookingId: booking.id, details: { contractNumber: number, versionId: terms.rentalTermsVersionId, label: terms.termsVersion, checksum: terms.termsHash, automatic: true } });
         return contract;
       }, TX),
     );
@@ -191,7 +229,23 @@ export async function refreshContractDraft(tx: Tx, tenantId: string, contractId:
   const booking = await tx.booking.findFirst({ where: { id: contract.bookingId, tenantId }, include: { customer: true, vehicle: { include: { group: true } }, tenant: true } });
   if (!booking) throw new DomainError("Buchung nicht gefunden.");
   const vehicleChanged = booking.vehicleId !== contract.vehicleId;
-  const price = contractPrice(booking, booking.customer.discountPercent, toNumber(contract.agreedTotal), contract.agreedTotalNote);
+  // Geschäftsregeln: der Schnappschuss bleibt; nur ein Fahrzeugwechsel löst die Vorgaben neu auf (wie die Kilometerkonditionen)
+  let rules = readContractRules(contract.conditions);
+  if (!rules || vehicleChanged) rules = initialContractRules(resolveFor(booking));
+  const additionalDrivers = await tx.contractDriver.count({ where: { tenantId, contractId, role: "ADDITIONAL_DRIVER" } });
+  const price = contractPrice(booking, booking.customer.discountPercent, toNumber(contract.agreedTotal), contract.agreedTotalNote, { additionalDrivers, rules: feeRules(rules) });
+  // Mietbedingungen: ein versionierter Entwurf wechselt nie von selbst. Ohne Fassung (Altbestand, noch nicht bestätigt)
+  // wird die aktive Fassung übernommen; ohne veröffentlichte Fassung gilt weiter der bisherige Mandantentext.
+  const featureActive = await termsFeatureActive(tx, tenantId);
+  let terms: Partial<ReturnType<typeof termsForNewDraft>> = {};
+  if (!featureActive) terms = termsForNewDraft(booking.tenant, null);
+  else if (!contract.rentalTermsVersionId && !contract.termsAcknowledgedAt) {
+    const active = await activeTermsVersion(tx, tenantId);
+    if (active) {
+      terms = termsForNewDraft(booking.tenant, active);
+      await recordAudit(tx, tenantId, null, { action: "CONTRACT_TERMS_SELECTED", bookingId: booking.id, details: { contractNumber: contract.number, versionId: active.id, label: active.label, checksum: active.checksum, automatic: true } });
+    }
+  }
 
   const updated = await tx.rentalContract.update({
     where: { id: contract.id },
@@ -206,10 +260,9 @@ export async function refreshContractDraft(tx: Tx, tenantId: string, contractId:
       totalAmount: price.finalTotal,
       discountPercent: price.discountPercent,
       // Kilometer-Konditionen gehören zum Fahrzeug: bei Fahrzeugwechsel neu übernehmen
-      ...(vehicleChanged ? { kmIncludedPerDay: booking.vehicle.kmIncludedPerDay, extraKmRate: booking.vehicle.extraKmRate } : {}),
-      termsVersion: booking.tenant.rentalTermsVersion,
-      termsText: booking.tenant.rentalTermsText,
-      termsHash: booking.tenant.rentalTermsText ? sha256(booking.tenant.rentalTermsText) : null,
+      ...(vehicleChanged ? { kmIncludedPerDay: booking.vehicle.kmIncludedPerDay, extraKmRate: booking.vehicle.extraKmRate, deductible: (rules.values.deductibleCents ?? 0) / 100, fuelPolicy: rules.values.fuelRule } : {}),
+      conditions: rules as unknown as Prisma.InputJsonValue,
+      ...terms,
     },
   });
   await syncPrimaryDriver(tx, tenantId, contract.id, contract.driverMode, booking.customer);
@@ -252,6 +305,9 @@ function signedContent(c: Awaited<ReturnType<typeof loadContract>>) {
     conditions: c.conditions,
     termsVersion: c.termsVersion,
     termsHash: c.termsHash,
+    ...(c.rentalTermsVersionId ? { rentalTermsVersionId: c.rentalTermsVersionId } : {}),
+    ...(c.termsFormat ? { termsFormat: c.termsFormat } : {}),
+    ...(c.individualAgreements ? { individualAgreements: c.individualAgreements } : {}),
     driverMode: c.driverMode,
     drivers: c.drivers.map((d) => ({
       role: d.role,
@@ -315,6 +371,7 @@ export async function saveContractSignature(tenantId: string, actor: Actor | nul
     assertContractDraft(contract);
     const hash = await currentHash(tx, tenantId, contractId);
     if (hash !== input.seenHash) throw new DomainError("Der Vertrag wurde seit der Anzeige geändert. Bitte die Zusammenfassung erneut prüfen und dann unterschreiben.");
+    if (input.role === "RENTER" && contract.rentalTermsVersionId && !acknowledgementValid(contract)) throw new DomainError("Vor der Unterschrift des Mieters muss die Kenntnisnahme der Mietbedingungen bestätigt werden.");
     await tx.signature.deleteMany({ where: { tenantId, contractId, role: input.role } });
     return tx.signature.create({
       data: {
@@ -437,7 +494,7 @@ export type ConditionsInput = {
   kmIncludedPerDay: number;
   extraKmRate: number;
   deductible: number;
-  fuelPolicy: "FULL_TO_FULL" | "SAME_LEVEL" | "INCLUDED" | "OTHER";
+  fuelPolicy: "FULL_TO_FULL" | "SAME_LEVEL" | "MINIMUM_LEVEL" | "INCLUDED" | "OTHER";
   fuelPolicyNote?: string | null;
   fuelPricePerLiter?: number | null;
   agreedTotal?: number | null;
@@ -445,15 +502,19 @@ export type ConditionsInput = {
   pickupLocation?: string | null;
   returnLocation?: string | null;
   internalNote?: string | null;
+  /** Phase 15: Geschäftsregeln des Vertrags (nur erlaubte Schlüssel) und individuelle Vereinbarungen */
+  rules?: Partial<Pick<BusinessRules, ContractRuleKey>> & { kmPolicyNote?: string | null };
+  individualAgreements?: string | null;
 };
 
 /**
  * Speichert die Konditionen. Zeitraum und Kaution gehören zur Buchung und werden dort geändert,
  * mit derselben Konfliktprüfung wie beim Bearbeiten einer Buchung.
  */
-export async function saveConditions(tenantId: string, contractId: string, input: ConditionsInput) {
+export async function saveConditions(tenantId: string, contractId: string, input: ConditionsInput, actor: Actor | null = null) {
   if (!(input.endAt > input.startAt)) throw new DomainError("Die Rückgabe muss nach dem Mietbeginn liegen.");
   if (input.fuelPolicy === "OTHER" && !input.fuelPolicyNote?.trim()) throw new DomainError("Bitte die individuelle Tankregelung beschreiben.");
+  if (input.individualAgreements && input.individualAgreements.length > 6000) throw new DomainError("Individuelle Vereinbarungen: maximal 6.000 Zeichen.");
   for (const [label, v] of [["Kaution", input.deposit], ["Freikilometer", input.kmIncludedPerDay], ["Mehrkilometerpreis", input.extraKmRate], ["Selbstbeteiligung", input.deductible]] as const) {
     if (!(v >= 0)) throw new DomainError(`${label}: bitte einen Wert ab 0 eingeben.`);
   }
@@ -472,9 +533,22 @@ export async function saveConditions(tenantId: string, contractId: string, input
       if (conflicts.length > 0) throw new DomainError(`Der neue Zeitraum überschneidet sich mit Buchung ${conflicts[0].number}. ${booking.vehicle.plate} ist dann bereits vergeben.`);
     }
     await tx.booking.update({ where: { id: booking.id }, data: { startAt: input.startAt, endAt: input.endAt, deposit: input.deposit } });
+    // Geschäftsregeln des Vertrags: erlaubte Schlüssel anpassen, Herkunft „Individuell angepasst“ bei Abweichung, Audit je Änderung
+    const withContext = await tx.booking.findFirstOrThrow({ where: { id: c.bookingId, tenantId }, include: { customer: true, vehicle: { include: { group: true } }, tenant: true } });
+    const resolved = resolveFor(withContext);
+    let rules = readContractRules(c.conditions) ?? initialContractRules(resolved);
+    const changes: { key: string; from: unknown; to: unknown }[] = [];
+    const applied = applyContractOverrides(rules, resolved, { ...(input.rules ?? {}), fuelRule: input.fuelPolicy });
+    rules = applied.rules;
+    changes.push(...applied.changes);
+    rules = { ...rules, values: { ...rules.values, deductibleCents: Math.round(input.deductible * 100) }, sources: { ...rules.sources, deductibleCents: Math.round(input.deductible * 100) === (resolved.values.deductibleCents ?? 0) ? resolved.sources.deductibleCents : "CONTRACT" } };
+    if (Math.round(Number(c.deductible) * 100) !== Math.round(input.deductible * 100)) changes.push({ key: "deductibleCents", from: Math.round(Number(c.deductible) * 100), to: Math.round(input.deductible * 100) });
+    for (const ch of changes) await recordAudit(tx, tenantId, actor, { action: "CONTRACT_BUSINESS_RULE_OVERRIDDEN", bookingId: c.bookingId, details: { contractNumber: c.number, field: ch.key, from: ch.from == null ? null : typeof ch.from === "object" ? JSON.stringify(ch.from) : (ch.from as string | number | boolean), to: ch.to == null ? null : typeof ch.to === "object" ? JSON.stringify(ch.to) : (ch.to as string | number | boolean) } });
     await tx.rentalContract.update({
       where: { id: c.id },
       data: {
+        conditions: rules as unknown as Prisma.InputJsonValue,
+        individualAgreements: input.individualAgreements?.trim() || null,
         deposit: input.deposit,
         kmIncludedPerDay: Math.round(input.kmIncludedPerDay),
         extraKmRate: input.extraKmRate,
@@ -509,7 +583,8 @@ async function collectIssues(tx: Tx, tenantId: string, contractId: string, opts:
 
   const booking = await tx.booking.findFirst({ where: { id: c.bookingId, tenantId } });
   const customer = await tx.customer.findFirst({ where: { id: c.customerId, tenantId } });
-  const vehicle = await tx.vehicle.findFirst({ where: { id: c.vehicleId, tenantId } });
+  const vehicle = await tx.vehicle.findFirst({ where: { id: c.vehicleId, tenantId }, include: { group: true } });
+  const tenantRow = await tx.tenant.findUnique({ where: { id: tenantId }, select: { businessRules: true } });
   if (!booking) err("PERIOD", "BOOKING_MISSING", "Die Buchung gehört nicht zu diesem Mandanten.");
   if (!customer) err("CUSTOMER", "CUSTOMER_MISSING", "Der Kunde gehört nicht zu diesem Mandanten.");
   if (!vehicle) err("VEHICLE", "VEHICLE_MISSING", "Das Fahrzeug gehört nicht zu diesem Mandanten.");
@@ -521,15 +596,20 @@ async function collectIssues(tx: Tx, tenantId: string, contractId: string, opts:
   // Mieter: geprüft wird, was tatsächlich auf dem Vertrag steht
   issues.push(...checkCustomer({ ...(c.customerSnapshot as CustomerSnapshot), blocked: customer.blocked, blockReason: customer.blockReason }, c.startAt));
 
+  // Geschäftsregeln des Vertrags (Schnappschuss) und aktuelle Vorgaben
+  const rules = readContractRules(c.conditions);
+  const driverRules = { minimumAge: rules?.values.minimumDriverAge ?? 18, minimumLicenseMonths: rules?.values.minimumLicenseHoldingMonths ?? 0 };
+
   // Fahrer
   const primary = c.drivers.find((d) => d.role === "PRIMARY_DRIVER");
   if (!primary) {
-    if (c.driverMode === "RENTER") issues.push(...checkDriver({ ...(c.customerSnapshot as CustomerSnapshot), licenseCountry: customer.country }, c.startAt, "Fahrer (Mieter)"));
+    if (c.driverMode === "RENTER") issues.push(...checkDriver({ ...(c.customerSnapshot as CustomerSnapshot), licenseCountry: customer.country }, c.startAt, "Fahrer (Mieter)", "DRIVER", driverRules));
     else err("DRIVER", "DRIVER_MISSING", "Es ist noch kein Fahrer erfasst.");
   } else {
-    issues.push(...checkDriver(primary, c.startAt, c.driverMode === "RENTER" ? "Fahrer (Mieter)" : `Fahrer ${primary.firstName} ${primary.lastName}`));
+    issues.push(...checkDriver(primary, c.startAt, c.driverMode === "RENTER" ? "Fahrer (Mieter)" : `Fahrer ${primary.firstName} ${primary.lastName}`, "DRIVER", driverRules));
   }
-  for (const d of c.drivers.filter((x) => x.role === "ADDITIONAL_DRIVER")) issues.push(...checkDriver(d, c.startAt, `Zusatzfahrer ${d.firstName} ${d.lastName}`, "ADDITIONAL_DRIVER"));
+  const additional = c.drivers.filter((x) => x.role === "ADDITIONAL_DRIVER");
+  for (const d of additional) issues.push(...checkDriver(d, c.startAt, `Zusatzfahrer ${d.firstName} ${d.lastName}`, "ADDITIONAL_DRIVER", driverRules));
 
   // Fahrzeug: Status und die bestehende Verfügbarkeitsprüfung, keine zweite Logik
   if (vehicle.status !== "AVAILABLE") err("VEHICLE", "VEHICLE_STATUS", `${vehicle.plate} ist derzeit nicht vermietbar (Status: ${vehicle.status === "WORKSHOP" ? "Werkstatt" : vehicle.status === "BLOCKED" ? "Gesperrt" : "Inaktiv"}).`);
@@ -545,8 +625,30 @@ async function collectIssues(tx: Tx, tenantId: string, contractId: string, opts:
   // Konditionen
   if (!c.number) err("CONDITIONS", "NUMBER_MISSING", "Die Vertragsnummer fehlt.");
   if (c.fuelPolicy === "OTHER" && !c.fuelPolicyNote) err("CONDITIONS", "FUEL_NOTE", "Die individuelle Tankregelung ist nicht beschrieben.");
-  if (!c.termsText) issues.push({ area: "CONDITIONS", code: "TERMS_MISSING", severity: "warning", message: "Es sind keine Mietbedingungen hinterlegt (Einstellungen). Der Vertrag enthält dann keinen Bedingungstext." });
   if (!c.pickupLocation) issues.push({ area: "CONDITIONS", code: "PICKUP_LOCATION", severity: "warning", message: "Kein Abholort angegeben." });
+  for (const [label, v] of [["Kaution", Number(c.deposit)], ["Selbstbeteiligung", Number(c.deductible)], ["Mehrkilometerpreis", Number(c.extraKmRate)]] as const) if (!(v >= 0)) err("CONDITIONS", "NEGATIVE_VALUE", `${label} darf nicht negativ sein.`);
+  if (!rules) err("CONDITIONS", "RULES_MISSING", "Die Geschäftsregeln des Vertrags sind nicht vollständig eingefroren.");
+  else {
+    const vehicleSnap = c.vehicleSnapshot as VehicleSnapshot;
+    const resolved = resolveRules(tenantRow?.businessRules, vehicle.group, vehicle);
+    for (const m of contractRuleIssues(rules, resolved, { driveClass: driveClassOf(vehicleSnap.fuel ?? vehicle.fuel), additionalDrivers: additional.length })) err("CONDITIONS", "RULES_INCONSISTENT", m);
+    if (rules.defaultsFingerprint !== rulesFingerprint(resolved.values)) issues.push({ area: "CONDITIONS", code: "RULES_NEWER", severity: "warning", message: "Für diesen Vertragsentwurf sind neuere Standardwerte verfügbar. Sie werden nur auf Wunsch übernommen (Schritt Konditionen)." });
+  }
+
+  // Mietbedingungen: nach Aktivierung Pflicht; ein Entwurf wechselt nie von selbst auf eine neuere Fassung
+  const featureActive = await termsFeatureActive(tx, tenantId);
+  if (featureActive) {
+    const active = await activeTermsVersion(tx, tenantId);
+    if (!c.rentalTermsVersionId) err("CONDITIONS", "TERMS_REQUIRED", "Es ist keine veröffentlichte Mietbedingungen-Fassung zugeordnet. Bitte die aktuelle Fassung übernehmen.");
+    else {
+      const selected = await tx.rentalTermsVersion.findFirst({ where: { id: c.rentalTermsVersionId, tenantId }, select: { status: true, label: true, checksum: true } });
+      if (!selected) err("CONDITIONS", "TERMS_UNKNOWN", "Die zugeordnete Mietbedingungen-Fassung wurde nicht gefunden.");
+      else if (selected.status !== "PUBLISHED") err("CONDITIONS", "TERMS_ARCHIVED", `Die Mietbedingungen-Fassung ${selected.label} wurde archiviert. Bitte ${active ? `Fassung ${active.label}` : "eine veröffentlichte Fassung"} übernehmen.`);
+      else if (selected.checksum !== c.termsHash) err("CONDITIONS", "TERMS_HASH", "Der eingefrorene Bedingungstext passt nicht zur Fassung. Bitte die Fassung erneut übernehmen.");
+      else if (active && active.id !== c.rentalTermsVersionId) issues.push({ area: "CONDITIONS", code: "TERMS_NEWER", severity: "warning", message: `Eine neuere Mietbedingungen-Fassung ist verfügbar (Version ${active.label}). Der Entwurf behält Version ${c.termsVersion}, bis sie bewusst übernommen wird.` });
+      if (!acknowledgementValid(c)) err("SIGNATURE", "TERMS_ACK_MISSING", `Die Kenntnisnahme der Mietbedingungen (Version ${c.termsVersion}) fehlt. Sie wird im Schritt Unterschrift bestätigt.`);
+    }
+  } else if (!c.termsText) issues.push({ area: "CONDITIONS", code: "TERMS_MISSING", severity: "warning", message: "Noch keine Mietbedingungen veröffentlicht (Einstellungen → Mietbedingungen). Der Vertrag enthält dann keinen Bedingungstext." });
 
   if (opts.requireSignature) {
     const hash = contentHash(signedContent(c));
@@ -567,8 +669,93 @@ export async function getContractState(tenantId: string, contractId: string) {
     const signatures = await tx.signature.findMany({ where: { tenantId, contractId }, select: { id: true, role: true, signerName: true, signedAt: true, contentHash: true }, orderBy: { signedAt: "asc" } });
     const issues = contract.status === "DRAFT" ? await collectIssues(tx, tenantId, contractId, { requireSignature: false }) : [];
     const hash = contract.status === "DRAFT" ? contentHash(signedContent(contract)) : contract.contentHash ?? "";
-    return { contract, signatures, issues, hash };
+    const terms = await termsStateOf(tx, tenantId, contract);
+    const rules = await rulesStateOf(tx, tenantId, contract);
+    return { contract, signatures, issues, hash, terms, rules };
   }, TX);
+}
+
+// ---------------------------------------------------------------------------
+// Mietbedingungen und Geschäftsregeln am Vertrag (Phase 15)
+// ---------------------------------------------------------------------------
+
+export const acknowledgementHash = (c: { rentalTermsVersionId: string | null; termsHash: string | null }) => (c.rentalTermsVersionId && c.termsHash ? `${c.rentalTermsVersionId}:${c.termsHash}` : null);
+/** Kenntnisnahme gilt nur für genau die zugeordnete Fassung. */
+export function acknowledgementValid(c: { rentalTermsVersionId: string | null; termsHash: string | null; termsAcknowledgedAt: Date | null; termsAcknowledgedHash: string | null }) {
+  const h = acknowledgementHash(c);
+  return !!h && !!c.termsAcknowledgedAt && c.termsAcknowledgedHash === h;
+}
+
+export type ContractTermsState = { featureActive: boolean; selected: { id: string; label: string; status: string; title: string } | null; active: { id: string; label: string } | null; newerAvailable: boolean; acknowledged: boolean; acknowledgedAt: Date | null; acknowledgedByName: string | null; legacy: boolean };
+async function termsStateOf(tx: Tx, tenantId: string, c: Awaited<ReturnType<typeof loadContract>>): Promise<ContractTermsState> {
+  const featureActive = await termsFeatureActive(tx, tenantId);
+  const selected = c.rentalTermsVersionId ? await tx.rentalTermsVersion.findFirst({ where: { id: c.rentalTermsVersionId, tenantId }, select: { id: true, label: true, status: true, title: true } }) : null;
+  const active = c.status === "DRAFT" && featureActive ? await activeTermsVersion(tx, tenantId) : null;
+  return { featureActive, selected, active: active ? { id: active.id, label: active.label } : null, newerAvailable: !!active && active.id !== c.rentalTermsVersionId, acknowledged: acknowledgementValid(c), acknowledgedAt: c.termsAcknowledgedAt, acknowledgedByName: c.termsAcknowledgedByName, legacy: !c.rentalTermsVersionId && !!c.termsText };
+}
+
+export type ContractRulesState = { snapshot: ContractRules | null; resolved: ResolvedRules; newerDefaults: boolean; driveClass: "COMBUSTION" | "ELECTRIC" | "PHEV" };
+async function rulesStateOf(tx: Tx, tenantId: string, c: Awaited<ReturnType<typeof loadContract>>): Promise<ContractRulesState> {
+  const booking = await tx.booking.findFirstOrThrow({ where: { id: c.bookingId, tenantId }, include: { customer: true, vehicle: { include: { group: true } }, tenant: true } });
+  const resolved = resolveFor(booking);
+  const snapshot = readContractRules(c.conditions);
+  return { snapshot, resolved, newerDefaults: c.status === "DRAFT" && !!snapshot && snapshot.defaultsFingerprint !== rulesFingerprint(resolved.values), driveClass: driveClassOf((c.vehicleSnapshot as VehicleSnapshot).fuel ?? booking.vehicle.fuel) };
+}
+
+/** Bewusster Wechsel auf eine (neuere) veröffentlichte Fassung. Setzt die Kenntnisnahme zurück; Unterschriften verfallen. */
+export async function adoptTermsVersion(tenantId: string, contractId: string, actor: Actor, versionId: string | null = null) {
+  return db.$transaction(async (tx) => {
+    const c = await loadContract(tx, tenantId, contractId);
+    assertContractDraft(c);
+    const version = versionId ? await tx.rentalTermsVersion.findFirst({ where: { id: versionId, tenantId } }) : await activeTermsVersion(tx, tenantId);
+    if (!version) throw new DomainError("Es gibt keine veröffentlichte Mietbedingungen-Fassung.");
+    if (version.status !== "PUBLISHED") throw new DomainError(`Die Fassung ${version.label} ist nicht veröffentlicht.`);
+    if (version.effectiveFrom && version.effectiveFrom > new Date()) throw new DomainError(`Die Fassung ${version.label} gilt erst ab einem späteren Zeitpunkt.`);
+    if (version.id === c.rentalTermsVersionId && c.termsHash === version.checksum) return c;
+    await tx.rentalContract.update({ where: { id: c.id }, data: { rentalTermsVersionId: version.id, termsVersion: version.label, termsText: version.content, termsHash: version.checksum, termsFormat: "MARKDOWN", termsAcknowledgedAt: null, termsAcknowledgedById: null, termsAcknowledgedByName: null, termsAcknowledgedHash: null } });
+    await recordAudit(tx, tenantId, actor, { action: "CONTRACT_TERMS_SELECTED", bookingId: c.bookingId, details: { contractNumber: c.number, versionId: version.id, label: version.label, checksum: version.checksum, from: c.termsVersion, automatic: false } });
+    return refreshContractDraft(tx, tenantId, contractId);
+  }, TX).catch(domainFromDb);
+}
+
+/** Kenntnisnahme: bewusst bestätigt, mit Zeitpunkt, Person und Fassung. Nie vorausgewählt, serverseitig geprüft. */
+export async function acknowledgeTerms(tenantId: string, contractId: string, actor: Actor, input: { confirmed: boolean }) {
+  if (!input.confirmed) throw new DomainError("Bitte die Kenntnisnahme der Mietbedingungen ausdrücklich bestätigen.");
+  return db.$transaction(async (tx) => {
+    const c = await loadContract(tx, tenantId, contractId);
+    assertContractDraft(c);
+    const h = acknowledgementHash(c);
+    if (!h) throw new DomainError("Dem Vertrag ist keine Mietbedingungen-Fassung zugeordnet.");
+    const version = await tx.rentalTermsVersion.findFirst({ where: { id: c.rentalTermsVersionId!, tenantId }, select: { status: true, checksum: true, label: true } });
+    if (!version || version.status !== "PUBLISHED" || version.checksum !== c.termsHash) throw new DomainError("Die zugeordnete Fassung ist nicht mehr gültig. Bitte die aktuelle Fassung übernehmen.");
+    if (c.termsAcknowledgedHash === h && c.termsAcknowledgedAt) return c;
+    const updated = await tx.rentalContract.update({ where: { id: c.id }, data: { termsAcknowledgedAt: new Date(), termsAcknowledgedById: actor.id, termsAcknowledgedByName: actor.name, termsAcknowledgedHash: h } });
+    await recordAudit(tx, tenantId, actor, { action: "CONTRACT_TERMS_ACKNOWLEDGED", bookingId: c.bookingId, details: { contractNumber: c.number, versionId: c.rentalTermsVersionId, label: version.label, checksum: c.termsHash } });
+    return updated;
+  }, TX).catch(domainFromDb);
+}
+
+/** „Aktuelle Standardwerte übernehmen“: nur Werte ohne individuelle Anpassung; Unterschriften verfallen (Inhalt ändert sich). */
+export async function adoptContractDefaults(tenantId: string, contractId: string, actor: Actor) {
+  return db.$transaction(async (tx) => {
+    const c = await loadContract(tx, tenantId, contractId);
+    assertContractDraft(c);
+    const booking = await tx.booking.findFirstOrThrow({ where: { id: c.bookingId, tenantId }, include: { customer: true, vehicle: { include: { group: true } }, tenant: true } });
+    const resolved = resolveFor(booking);
+    const current = readContractRules(c.conditions) ?? initialContractRules(resolved);
+    const next = adoptDefaults(current, resolved);
+    const deductibleDefault = (next.values.deductibleCents ?? 0) / 100;
+    await tx.rentalContract.update({ where: { id: c.id }, data: { conditions: next as unknown as Prisma.InputJsonValue, ...(next.sources.deductibleCents !== "CONTRACT" ? { deductible: deductibleDefault } : {}), ...(next.sources.fuelRule !== "CONTRACT" ? { fuelPolicy: next.values.fuelRule } : {}) } });
+    await recordAudit(tx, tenantId, actor, { action: "CONTRACT_DEFAULTS_ADOPTED", bookingId: c.bookingId, details: { contractNumber: c.number, fingerprint: next.defaultsFingerprint } });
+    return refreshContractDraft(tx, tenantId, contractId);
+  }, TX).catch(domainFromDb);
+}
+
+function domainFromDb(e: unknown): never {
+  const msg = String((e as { message?: string })?.message ?? "");
+  const m = /RB_(?:DOMAIN|IMMUTABLE): ([^\n"]+)/.exec(msg);
+  if (m) throw new DomainError(`${m[1].trim()}.`);
+  throw e;
 }
 
 /**
@@ -592,7 +779,7 @@ export async function finalizeContract(tenantId: string, contractId: string) {
     // Vermieterdaten einfrieren: Dokumente zeigen später den Briefkopf von heute, auch wenn sich die Stammdaten ändern
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { name: true, street: true, zip: true, city: true, phone: true, email: true } });
     return tx.rentalContract.update({ where: { id: contract.id }, data: { status: "SIGNED", signedAt: new Date(), contentHash: hash, wizardStep: 7, landlordSnapshot: landlordFromTenant(tenant) } });
-  }, TX);
+  }, TX).catch(domainFromDb);
 }
 
 /** Nachweis: passt der gespeicherte Hash eines unterschriebenen Vertrags noch zum Inhalt? */

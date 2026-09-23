@@ -6,6 +6,9 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
+import { recordAudit } from "@/lib/audit";
+import { RuleError } from "@/lib/business-rules";
+import { overridesFromForm } from "@/lib/business-rules-form";
 import { FUELS, VEHICLE_STATUS } from "@/lib/constants";
 import { normalizePlate } from "@/lib/format";
 
@@ -96,6 +99,28 @@ export async function updateVehicleAction(id: string, _prev: FormState, formData
   revalidatePath("/fahrzeuge");
   revalidatePath(`/fahrzeuge/${id}`);
   redirect(`/fahrzeuge/${id}?gespeichert=1`);
+}
+
+export type RulesFormState = { error?: string; ok?: string } | undefined;
+/** Abweichende Geschäftsregeln des Fahrzeugs – nur der Inhaber; abgeschlossene Verträge bleiben unverändert. */
+export async function updateVehicleRulesAction(id: string, _prev: RulesFormState, formData: FormData): Promise<RulesFormState> {
+  const { tenant, user } = await requireRole("OWNER");
+  let overrides: ReturnType<typeof overridesFromForm>;
+  try {
+    overrides = overridesFromForm(formData);
+    const r = await db.$transaction(async (tx) => {
+      const res = await tx.vehicle.updateMany({ where: { id, tenantId: tenant.id }, data: { businessRules: overrides === null ? Prisma.DbNull : overrides } });
+      if (res.count) await recordAudit(tx, tenant.id, { id: user.id, name: user.name }, { action: "BUSINESS_RULES_UPDATED", details: { scope: "VEHICLE", vehicleId: id, overrides: JSON.stringify(overrides) } });
+      return res;
+    });
+    if (r.count === 0) return { error: "Fahrzeug nicht gefunden." };
+  } catch (e) {
+    if (e instanceof RuleError) return { error: e.message };
+    throw e;
+  }
+  revalidatePath(`/fahrzeuge/${id}`);
+  revalidatePath("/buchungen", "layout");
+  return { ok: overrides ? "Abweichende Regeln gespeichert." : "Abweichungen entfernt – es gelten Gruppe und Standard des Vermieters." };
 }
 
 export async function deleteVehicleAction(id: string) {

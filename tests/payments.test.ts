@@ -79,7 +79,7 @@ test("Vollständige Zahlung, Teilzahlungen, Überzahlung/0 €/negativ blockiert
   assert.equal((await verifyInvoice(w.tenantId, inv.id)).intact, true);
 
   // Protokoll
-  const audit = await db.auditLog.findMany({ where: { tenantId: w.tenantId, bookingId: w.bookingId }, orderBy: { createdAt: "asc" } });
+  const audit = await db.auditLog.findMany({ where: { tenantId: w.tenantId, bookingId: w.bookingId, action: { startsWith: "PAYMENT_" } }, orderBy: { createdAt: "asc" } });
   assert.deepEqual(audit.map((a) => [a.action, a.amountCents, a.userName]), [["PAYMENT_RECORDED", 30_000, "Test Mitarbeiter"], ["PAYMENT_RECORDED", 11, "Test Mitarbeiter"], ["PAYMENT_RECORDED", rest, "Test Mitarbeiter"]]);
   assert.ok(audit.every((a) => a.invoiceId === inv.id && a.paymentId));
   assert.ok(!JSON.stringify(audit).includes("Muster"), "keine Kundendaten im Protokoll");

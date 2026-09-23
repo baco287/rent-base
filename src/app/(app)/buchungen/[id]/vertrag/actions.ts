@@ -9,7 +9,10 @@ import { requireRole } from "@/lib/auth";
 import { customerSchema, customerToData } from "@/lib/customer-schema";
 import { DomainError, isImmutableError } from "@/lib/integrity";
 import {
+  acknowledgeTerms,
   addAdditionalDriver,
+  adoptContractDefaults,
+  adoptTermsVersion,
   ensureContractDraft,
   finalizeContract,
   removeAdditionalDriver,
@@ -23,6 +26,7 @@ import {
 } from "@/lib/contracts";
 
 import { runContractFollowUp } from "@/lib/followup";
+import { COUNTRIES } from "@/lib/constants";
 import { parseLocalDateTime } from "@/lib/time";
 
 export type StepState = { error?: string } | undefined;
@@ -151,7 +155,7 @@ const conditionsSchema = z.object({
   kmIncludedPerDay: money("Freikilometer: bitte eine Zahl ab 0 eingeben."),
   extraKmRate: money("Mehrkilometerpreis: bitte eine Zahl ab 0 eingeben."),
   deductible: money("Selbstbeteiligung: bitte eine Zahl ab 0 eingeben."),
-  fuelPolicy: z.enum(["FULL_TO_FULL", "SAME_LEVEL", "INCLUDED", "OTHER"]),
+  fuelPolicy: z.enum(["FULL_TO_FULL", "SAME_LEVEL", "MINIMUM_LEVEL", "INCLUDED", "OTHER"]),
   fuelPolicyNote: optStr,
   fuelPricePerLiter: optMoney("Preis je Liter: bitte eine Zahl ab 0 eingeben."),
   agreedTotal: optMoney("Vereinbarter Mietpreis: bitte eine Zahl ab 0 eingeben."),
@@ -159,19 +163,43 @@ const conditionsSchema = z.object({
   pickupLocation: optStr,
   returnLocation: optStr,
   internalNote: optStr,
+  // Phase 15: Geschäftsregeln des Vertrags und individuelle Vereinbarungen
+  kmPolicy: z.enum(["UNLIMITED", "FREE_KILOMETERS", "INDIVIDUAL"]).optional(),
+  kmPolicyNote: optStr,
+  fuelMinimumEighths: z.preprocess((v) => (v === "" || v === undefined ? undefined : v), z.coerce.number().int().min(0).max(8).optional()),
+  batteryMinimumPercent: z.preprocess((v) => (v === "" || v === undefined ? undefined : v), z.coerce.number().int().min(0).max(100).optional()),
+  abroadAllowed: z.preprocess((v) => v === "1" || v === "on", z.boolean()).optional(),
+  smokingAllowed: z.preprocess((v) => v === "1" || v === "on", z.boolean()).optional(),
+  petsPolicy: z.enum(["ALLOWED", "NOT_ALLOWED", "BY_APPROVAL"]).optional(),
+  additionalDriverFeeType: z.enum(["FREE", "FLAT", "PER_DAY"]).optional(),
+  additionalDriverFeeCents: optMoney("Zusatzfahrer-Preis: bitte eine Zahl ab 0 eingeben."),
+  individualAgreements: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.string().max(6000, "Individuelle Vereinbarungen: maximal 6.000 Zeichen.").optional()),
 });
 
 // Schritt 4: Konditionen
 export async function saveConditionsStepAction(bookingId: string, _prev: StepState, formData: FormData): Promise<StepState> {
-  const { tenant, contract } = await context(bookingId);
+  const { tenant, contract, actor } = await context(bookingId);
   const back = formData.get("nav") === "back";
   const parsed = conditionsSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) {
     if (back) return go(bookingId, contract.id, tenant.id, 4, formData);
     return { error: parsed.error.issues[0].message };
   }
+  const d = parsed.data;
+  const abroadCountries = formData.getAll("abroadCountries").map(String).filter((c) => c in COUNTRIES && c !== "OTHER");
+  const hasRules = formData.has("rulesPresent");
+  const rules = hasRules
+    ? {
+        kmPolicy: d.kmPolicy ?? "FREE_KILOMETERS", kmPolicyNote: d.kmPolicyNote ?? null,
+        fuelMinimumEighths: d.fuelPolicy === "MINIMUM_LEVEL" ? d.fuelMinimumEighths ?? null : null,
+        batteryMinimumPercent: d.fuelPolicy === "MINIMUM_LEVEL" ? d.batteryMinimumPercent ?? null : null,
+        abroadAllowed: !!d.abroadAllowed, abroadCountries: d.abroadAllowed ? abroadCountries : [],
+        smokingAllowed: !!d.smokingAllowed, petsPolicy: d.petsPolicy ?? "BY_APPROVAL",
+        additionalDriverFeeType: d.additionalDriverFeeType ?? "FREE", additionalDriverFeeCents: d.additionalDriverFeeType && d.additionalDriverFeeType !== "FREE" ? Math.round((d.additionalDriverFeeCents ?? 0) * 100) : 0,
+      }
+    : undefined;
   try {
-    await saveConditions(tenant.id, contract.id, parsed.data);
+    await saveConditions(tenant.id, contract.id, { ...d, rules, individualAgreements: d.individualAgreements ?? null }, actor);
     revalidatePath(`/buchungen/${bookingId}`);
     revalidatePath("/dispo");
   } catch (e) {
@@ -179,6 +207,45 @@ export async function saveConditionsStepAction(bookingId: string, _prev: StepSta
     return asState(e);
   }
   return go(bookingId, contract.id, tenant.id, 4, formData);
+}
+
+/** „Aktuelle Standardwerte übernehmen“ – bewusste Aktion, nur Werte ohne individuelle Anpassung. */
+export async function adoptDefaultsAction(bookingId: string, _prev: StepState, _fd: FormData): Promise<StepState> {
+  void _fd;
+  const { tenant, contract, actor } = await context(bookingId);
+  try {
+    await adoptContractDefaults(tenant.id, contract.id, actor);
+  } catch (e) {
+    return asState(e);
+  }
+  revalidatePath(base(bookingId));
+  redirect(`${base(bookingId)}?schritt=4&standard=1`);
+}
+
+/** „Version X übernehmen“ – bewusster Wechsel auf die aktive Fassung; Kenntnisnahme und Unterschriften verfallen. */
+export async function adoptTermsAction(bookingId: string, step: number, _prev: StepState, _fd: FormData): Promise<StepState> {
+  void _fd;
+  const { tenant, contract, actor } = await context(bookingId);
+  try {
+    await adoptTermsVersion(tenant.id, contract.id, actor, null);
+  } catch (e) {
+    return asState(e);
+  }
+  revalidatePath(base(bookingId));
+  redirect(`${base(bookingId)}?schritt=${step}&fassung=1`);
+}
+
+/** Kenntnisnahme der Mietbedingungen: Häkchen nie vorausgewählt, serverseitig Pflicht vor der Mieterunterschrift. */
+export async function acknowledgeTermsAction(bookingId: string, _prev: StepState, formData: FormData): Promise<StepState> {
+  const { tenant, contract, actor } = await context(bookingId);
+  if (formData.get("acknowledged") !== "1") return { error: "Bitte die Kenntnisnahme der Mietbedingungen bestätigen." };
+  try {
+    await acknowledgeTerms(tenant.id, contract.id, actor, { confirmed: true });
+  } catch (e) {
+    return asState(e);
+  }
+  revalidatePath(base(bookingId));
+  redirect(`${base(bookingId)}?schritt=7`);
 }
 
 // Schritt 5: Zusatzfahrer

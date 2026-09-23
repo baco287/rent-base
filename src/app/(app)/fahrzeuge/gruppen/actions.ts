@@ -6,6 +6,9 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
+import { recordAudit } from "@/lib/audit";
+import { RuleError } from "@/lib/business-rules";
+import { overridesFromForm } from "@/lib/business-rules-form";
 
 export type FormState = { error?: string; ok?: string } | undefined;
 
@@ -65,6 +68,27 @@ export async function updateGroupAction(id: string, _prev: FormState, formData: 
   revalidate();
   return { ok: "Gespeichert." };
 }
+
+/** Abweichende Geschäftsregeln der Gruppe – nur der Inhaber; abgeschlossene Verträge bleiben unverändert. */
+export async function updateGroupRulesAction(id: string, _prev: FormState, formData: FormData): Promise<FormState> {
+  const { tenant, user } = await requireRole("OWNER");
+  try {
+    const overrides = overridesFromForm(formData);
+    const r = await db.$transaction(async (tx) => {
+      const res = await tx.vehicleGroup.updateMany({ where: { id, tenantId: tenant.id }, data: { businessRules: overrides === null ? Prisma.DbNull : overrides } });
+      if (res.count) await recordAudit(tx, tenant.id, { id: user.id, name: user.name }, { action: "BUSINESS_RULES_UPDATED", details: { scope: "GROUP", groupId: id, overrides: JSON.stringify(overrides) } });
+      return res;
+    });
+    if (r.count === 0) return { error: "Gruppe nicht gefunden." };
+  } catch (e) {
+    if (e instanceof RuleError) return { error: e.message };
+    throw e;
+  }
+  revalidate();
+  revalidatePath("/buchungen", "layout");
+  return { ok: overrides(formData) ? "Abweichende Regeln gespeichert." : "Abweichungen entfernt – es gilt der Standard des Vermieters." };
+}
+const overrides = (fd: FormData) => fd.get("clear") !== "1";
 
 export async function deleteGroupAction(id: string) {
   const { tenant } = await requireRole("OWNER");

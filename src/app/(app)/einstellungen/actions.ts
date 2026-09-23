@@ -34,23 +34,6 @@ export async function updateTenantAction(_prev: FormState, formData: FormData): 
   return { ok: "Firmendaten gespeichert." };
 }
 
-const termsSchema = z.object({
-  rentalTermsVersion: optStr,
-  rentalTermsText: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.string().max(60000, "Der Text ist zu lang.").optional()),
-});
-
-/** Mietbedingungen. Jeder neue Vertrag kopiert den dann gültigen Text; abgeschlossene Verträge ändern sich nicht. */
-export async function updateTermsAction(_prev: FormState, formData: FormData): Promise<FormState> {
-  const { tenant } = await requireRole("OWNER");
-  const parsed = termsSchema.safeParse(Object.fromEntries(formData));
-  if (!parsed.success) return { error: parsed.error.issues[0].message };
-  const d = parsed.data;
-  if (d.rentalTermsText && !d.rentalTermsVersion) return { error: "Bitte eine Fassung angeben, z. B. 2026-09." };
-  await db.tenant.update({ where: { id: tenant.id }, data: { rentalTermsVersion: d.rentalTermsVersion ?? null, rentalTermsText: d.rentalTermsText ?? null } });
-  revalidatePath("/einstellungen");
-  return { ok: "Mietbedingungen gespeichert. Sie gelten für alle Verträge, die ab jetzt abgeschlossen werden." };
-}
-
 const userSchema = z.object({
   name: z.string().trim().min(2, "Bitte den Namen eingeben."),
   email: z.string().trim().toLowerCase().email("Bitte eine gültige E-Mail-Adresse eingeben."),

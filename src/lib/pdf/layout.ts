@@ -28,6 +28,8 @@ export type PdfMeta = {
   landlord: { name: string; address: string; contact: string };
   /** Unten links, zwei Zeilen: Bezeichnung und Wert, z. B. die Prüfsumme des versiegelten Inhalts */
   footerNote?: { label: string; value: string };
+  /** Unten rechts unter der Seitenzahl, z. B. „Mietbedingungen Version 1.2“ */
+  footerLine?: string;
 };
 
 export type Column = { header: string; width: number; align?: "left" | "right"; bold?: boolean };
@@ -111,6 +113,31 @@ export class Pdf {
     if (this.doc.y + lineH > this.bottom) this.newPage();
     this.style(opts);
     this.doc.text(text, this.left, this.doc.y, { width: this.width, align: "left" });
+    this.doc.y += opts.gapAfter ?? 4;
+  }
+
+  /** Fließtext aus Läufen (normal/fett) in einer Zeile fortlaufend gesetzt; bricht von selbst um. */
+  richParagraph(runs: { text: string; bold: boolean }[], opts: { size?: number; color?: string; gapAfter?: number; indent?: number; bullet?: string } = {}) {
+    const size = opts.size ?? 9.5;
+    const indent = opts.indent ?? 0;
+    const text = runs.map((r) => r.text).join("");
+    this.trace.texts.push(text);
+    this.style({ size });
+    const lineH = this.doc.currentLineHeight(true);
+    if (this.doc.y + lineH > this.bottom) this.newPage();
+    const y = this.doc.y;
+    if (opts.bullet) { this.style({ size, color: opts.color }); this.doc.text(opts.bullet, this.left + Math.max(0, indent - 14), y, { width: 14, lineBreak: false }); }
+    const x = this.left + indent;
+    const width = this.width - indent;
+    this.doc.x = x;
+    this.doc.y = y;
+    const parts = runs.filter((r) => r.text.length > 0);
+    if (parts.length === 0) { this.doc.text(" ", x, y, { width }); this.doc.y += opts.gapAfter ?? 4; return; }
+    parts.forEach((r, i) => {
+      this.style({ size, bold: r.bold, color: opts.color });
+      this.doc.text(r.text, i === 0 ? x : undefined, i === 0 ? y : undefined, { width, continued: i < parts.length - 1, align: "left" });
+    });
+    this.doc.x = this.left;
     this.doc.y += opts.gapAfter ?? 4;
   }
 
@@ -266,6 +293,7 @@ export class Pdf {
       }
       this.style({ size: 8, color: COLORS.ink2 });
       this.doc.text(`Seite ${i + 1} von ${range.count}`, right - 90, fy, { width: 90, align: "right", lineBreak: false });
+      if (this.meta.footerLine) { this.style({ size: 7, color: COLORS.ink3 }); this.doc.text(this.meta.footerLine, right - 220, fy + 9.5, { width: 220, align: "right", lineBreak: false, ellipsis: true }); }
       m.top = saved.top;
       m.bottom = saved.bottom;
     }

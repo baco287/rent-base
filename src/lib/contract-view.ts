@@ -4,8 +4,10 @@
 // So kann die Oberfläche nie etwas anderes zeigen als das Dokument.
 
 import type { Prisma } from "@prisma/client";
-import { COUNTRIES, CUSTOMER_TYPES, DRIVER_MODES, FUELS, FUEL_POLICIES, ID_TYPES } from "@/lib/constants";
+import { ADDITIONAL_DRIVER_FEE_TYPES, COUNTRIES, CUSTOMER_TYPES, DRIVER_MODES, FUELS, FUEL_POLICIES, ID_TYPES, KM_POLICIES, LATE_RETURN_RULES, OUT_OF_HOURS_RETURN, PETS_POLICIES, driveClassOf } from "@/lib/constants";
+import { readContractRules, type ContractRules } from "@/lib/business-rules";
 import type { ContractPriceSnapshot, CustomerSnapshot, VehicleSnapshot } from "@/lib/contracts";
+import { parseTerms, type TermsBlock } from "@/lib/terms-markdown";
 import { APP_TIME_ZONE } from "@/lib/time";
 
 export type DocRow = { label: string; value: string; missing?: boolean };
@@ -47,8 +49,13 @@ export type ContractDocument = {
   contentHash: string | null;
   sections: DocSection[];
   additionalDrivers: DocSection[];
-  price: { days: number; lines: DocPriceLine[]; subtotal: string; discount: DocPriceLine | null; calculated: string; agreed: DocPriceLine | null; total: string; deposit: string };
-  terms: { version: string | null; text: string | null };
+  price: { days: number; lines: DocPriceLine[]; subtotal: string; discount: DocPriceLine | null; calculated: string; agreed: DocPriceLine | null; extras: DocPriceLine[]; total: string; deposit: string };
+  /** Geschäftsregeln des Vertrags (eingefroren) – konkrete Werte, keine Rechtsaussagen */
+  rules: DocSection | null;
+  /** Individuelle Vereinbarungen, Teil des unterschriebenen Inhalts */
+  individualAgreements: string | null;
+  /** Mietbedingungen: Fassung, Text; blocks nur bei Markdown (versionierte Fassung), legacy = unversionierter Altbestand */
+  terms: { version: string | null; text: string | null; format: "MARKDOWN" | "PLAIN" | null; blocks: TermsBlock[] | null; legacy: boolean; title: string; acknowledgedAt: string | null };
   signatures: { id: string; role: string; roleLabel: string; signerName: string; signedAt: string; imageUrl: string }[];
 };
 
@@ -63,6 +70,46 @@ const row = (l: string, v: unknown, required = false): DocRow => {
   const value = v === null || v === undefined ? "" : String(v).trim();
   return { label: l, value: value || "–", missing: required && !value };
 };
+const cents = (c: number | null | undefined) => (c == null ? null : (c / 100).toLocaleString("de-DE", { style: "currency", currency: "EUR" }));
+const countryList = (codes: string[]) => codes.map((c) => COUNTRIES[c as keyof typeof COUNTRIES] ?? c).join(", ");
+
+/** Geschäftsregeln als Vertragsabschnitt: nur konkrete, eingefrorene Werte. Herkunft steht nicht im Dokument. */
+export function rulesSection(rules: ContractRules | null, contract: { kmIncludedPerDay: number; extraKmRate: unknown; fuelPolicy: string; fuelPolicyNote: string | null; deductible: unknown }, fuel: string | null | undefined, additionalDrivers: number, days: number): DocSection | null {
+  if (!rules) return null;
+  const v = rules.values;
+  const cls = driveClassOf(fuel ?? "DIESEL");
+  const km = v.kmPolicy === "UNLIMITED" ? "Unbegrenzte Kilometer" : v.kmPolicy === "INDIVIDUAL" ? `Individuell: ${v.kmPolicyNote ?? ""}`.trim() : `${contract.kmIncludedPerDay.toLocaleString("de-DE")} km je Tag (gesamt ${(contract.kmIncludedPerDay * days).toLocaleString("de-DE")} km), Mehrkilometer ${eur(contract.extraKmRate)} je km`;
+  const fuelRule = (() => {
+    const base = label(FUEL_POLICIES, contract.fuelPolicy);
+    if (contract.fuelPolicy === "OTHER") return `${base}: ${contract.fuelPolicyNote ?? ""}`;
+    if (contract.fuelPolicy === "MINIMUM_LEVEL") {
+      const parts = [cls !== "ELECTRIC" && v.fuelMinimumEighths != null ? `Tank mindestens ${v.fuelMinimumEighths}/8` : null, cls !== "COMBUSTION" && v.batteryMinimumPercent != null ? `Batterie mindestens ${v.batteryMinimumPercent} %` : null].filter(Boolean);
+      return `${base}: ${parts.join(", ")}`;
+    }
+    return base;
+  })();
+  const fee = v.additionalDriverFeeType === "FREE" ? "kostenlos" : `${cents(v.additionalDriverFeeCents)} ${v.additionalDriverFeeType === "PER_DAY" ? "je Zusatzfahrer und Miettag" : "je Zusatzfahrer"}`;
+  const rows: DocRow[] = [
+    row("Kilometerregel", km),
+    row(cls === "ELECTRIC" ? "Laderegel" : cls === "PHEV" ? "Tank- und Laderegel" : "Tankregelung", fuelRule),
+    row("Selbstbeteiligung", eur(contract.deductible)),
+    row("Auslandsfahrten", v.abroadAllowed ? `Genehmigt für: ${countryList(v.abroadCountries)}` : "Nicht gestattet"),
+    row("Rauchen im Fahrzeug", v.smokingAllowed ? "Gestattet" : "Nicht gestattet"),
+    row("Tiere im Fahrzeug", label(PETS_POLICIES, v.petsPolicy)),
+    row("Zusatzfahrer", v.additionalDriversAllowed ? `${additionalDrivers} eingetragen, ${fee}` : "Nicht vorgesehen"),
+    row("Mindestalter Fahrer", `${v.minimumDriverAge} Jahre${v.minimumLicenseHoldingMonths > 0 ? `, Führerschein seit mindestens ${v.minimumLicenseHoldingMonths} Monaten` : ""}`),
+    row("Verspätete Rückgabe", v.lateReturnRule === "CONFIGURED_FEE" && v.lateReturnFeeCents != null ? `${label(LATE_RETURN_RULES, v.lateReturnRule)}: Richtwert ${cents(v.lateReturnFeeCents)}` : label(LATE_RETURN_RULES, v.lateReturnRule)),
+    row("Rückgabe außerhalb der Öffnungszeiten", `${label(OUT_OF_HOURS_RETURN, v.outOfHoursReturn)}${v.outOfHoursInstructions ? `: ${v.outOfHoursInstructions}` : ""}`),
+  ];
+  const cleaning = [["Außergewöhnliche Verschmutzung", v.cleaningHeavySoilingCents], ["Rauchen", v.cleaningSmokingCents], ["Tierhaare", v.cleaningPetHairCents], ["Sonderreinigung", v.cleaningSpecialCents]].filter(([, c]) => c != null).map(([l, c]) => `${l} ${cents(c as number)}`);
+  if (cleaning.length) rows.push(row("Richtwerte Reinigung (keine automatische Berechnung)", cleaning.join(" · ")));
+  if (v.keysAccessoriesNote) rows.push(row("Schlüssel und Zubehör", v.keysAccessoriesNote));
+  if (v.authorityHandlingFeeEnabled) rows.push(row("Bearbeitungsentgelt Behördenanfragen", `${cents(v.authorityHandlingFeeCents)} (nur nach gesonderter Berechnung)`));
+  const special = [v.trailerAllowed ? "Anhängerbetrieb gestattet" : "Kein Anhängerbetrieb", v.towingAllowed ? "Abschleppen gestattet" : "Kein Abschleppen", v.commercialPassengerTransportAllowed ? "Gewerbliche Personenbeförderung gestattet" : "Keine gewerbliche Personenbeförderung", v.specialUseNote].filter(Boolean);
+  rows.push(row("Sondernutzung", special.join(" · ")));
+  void ADDITIONAL_DRIVER_FEE_TYPES; void KM_POLICIES;
+  return { key: "rules", title: "Geschäftsregeln dieses Vertrags", rows };
+}
 
 type ContractWithDrivers = Prisma.RentalContractGetPayload<{ include: { drivers: true } }>;
 export type TenantLike = { name: string; street: string | null; zip: string | null; city: string | null; phone: string | null; email: string | null };
@@ -92,6 +139,8 @@ export function buildContractDocument(contract: ContractWithDrivers, tenant: Ten
   const primary = contract.drivers.find((d) => d.role === "PRIMARY_DRIVER");
   const additional = contract.drivers.filter((d) => d.role === "ADDITIONAL_DRIVER");
   const days = p?.days ?? 0;
+  const rules = readContractRules(contract.conditions);
+  const termsFormat = contract.termsText ? ((contract.termsFormat === "MARKDOWN" ? "MARKDOWN" : "PLAIN") as "MARKDOWN" | "PLAIN") : null;
 
   const sections: DocSection[] = [
     {
@@ -174,10 +223,21 @@ export function buildContractDocument(contract: ContractWithDrivers, tenant: Ten
       discount: p && p.discountPercent > 0 ? { text: `Rabatt ${p.discountPercent} %`, amount: `−${eur(p.discountAmount)}` } : null,
       calculated: eur(p?.total),
       agreed: p?.agreedTotal != null ? { text: `Abweichend vereinbart${p.agreedTotalNote ? `: ${p.agreedTotalNote}` : ""}`, amount: eur(p.agreedTotal) } : null,
+      extras: (p?.extras ?? []).map((e) => ({ text: `${e.quantity} × ${e.label} zu ${eur(e.unitPrice)}`, amount: eur(e.amount) })),
       total: eur(contract.totalAmount),
       deposit: eur(contract.deposit),
     },
-    terms: { version: contract.termsVersion, text: contract.termsText },
+    rules: rulesSection(rules, contract, v.fuel, additional.length, days),
+    individualAgreements: contract.individualAgreements?.trim() || null,
+    terms: {
+      version: contract.termsVersion,
+      text: contract.termsText,
+      format: termsFormat,
+      blocks: termsFormat === "MARKDOWN" && contract.termsText ? parseTerms(contract.termsText) : null,
+      legacy: !contract.rentalTermsVersionId && !!contract.termsText,
+      title: contract.rentalTermsVersionId ? `Allgemeine Mietbedingungen – Version ${contract.termsVersion}` : contract.termsVersion ? `Mietbedingungen (Fassung ${contract.termsVersion})` : "Mietbedingungen",
+      acknowledgedAt: contract.termsAcknowledgedAt ? dateTime(contract.termsAcknowledgedAt) : null,
+    },
     signatures: signatures.map((s) => ({ id: s.id, role: s.role, roleLabel: s.role === "RENTER" ? "Mieter" : "Vermieter", signerName: s.signerName, signedAt: dateTime(s.signedAt), imageUrl: `/api/signatures/${s.id}` })),
   };
 }

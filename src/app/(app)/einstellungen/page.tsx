@@ -3,8 +3,11 @@ import { db } from "@/lib/db";
 import { ROLES, type Role } from "@/lib/constants";
 import { Card, Chip, Content, PageHeader } from "@/components/ui";
 import { toggleUserActiveAction } from "./actions";
-import { InvoiceSettingsForm, NewUserForm, TenantForm, TermsForm } from "./forms";
+import Link from "next/link";
+import { InvoiceSettingsForm, NewUserForm, TenantForm } from "./forms";
 import { invoiceSettingsMissing } from "@/lib/invoices";
+import { termsOverview } from "@/lib/rental-terms";
+import { fmtDate } from "@/lib/format";
 
 export const metadata = { title: "Einstellungen" };
 
@@ -13,6 +16,7 @@ export default async function SettingsPage({ searchParams }: PageProps<"/einstel
   const sp = await searchParams;
   const isOwner = me.role === "OWNER";
   const users = await db.user.findMany({ where: { tenantId: tenant.id }, orderBy: [{ active: "desc" }, { name: "asc" }] });
+  const terms = await termsOverview(tenant.id);
 
   return (
     <>
@@ -33,11 +37,21 @@ export default async function SettingsPage({ searchParams }: PageProps<"/einstel
             )}
           </Card>
 
-          {isOwner && (
-            <Card title="Mietbedingungen für Verträge" className="xl:row-start-2">
-              <TermsForm version={tenant.rentalTermsVersion} text={tenant.rentalTermsText} />
-            </Card>
-          )}
+          <Card title="Mietbedingungen für Verträge" className="xl:row-start-2" right={terms.active ? <Chip tone="good">Version {terms.active.label} aktiv</Chip> : <Chip tone="amber">nicht veröffentlicht</Chip>}>
+            <div className="p-5 flex flex-col gap-3 text-sm">
+              {terms.active ? (
+                <p>Aktive Mietbedingungen: <span className="font-medium">Version {terms.active.label}</span>{terms.active.effectiveFrom ? `, gültig seit ${fmtDate(terms.active.effectiveFrom)}` : terms.active.publishedAt ? `, veröffentlicht am ${fmtDate(terms.active.publishedAt)}` : ""}. Neue Mietverträge frieren genau diese Fassung ein; ältere Verträge behalten ihre damalige Fassung.</p>
+              ) : (
+                <p className="rounded-md bg-amber-soft text-amber px-3 py-2">Noch keine Mietbedingungen veröffentlicht. {terms.legacy.text ? "Neue Verträge nutzen bis dahin den bisherigen, unversionierten Text." : "Neue Verträge enthalten bis dahin keinen Bedingungstext."}{isOwner ? " Legen Sie unter „Mietbedingungen“ einen Entwurf an und veröffentlichen Sie ihn bewusst." : ""}</p>
+              )}
+              {terms.draft && <p className="text-ink-2">Offener Entwurf: Version {terms.draft.label} (noch nicht veröffentlicht).</p>}
+              <div className="flex flex-wrap gap-2">
+                <Link href="/einstellungen/mietbedingungen" className="btn btn-primary">Mietbedingungen und Fassungen</Link>
+                <Link href="/einstellungen/geschaeftsregeln" className="btn">Geschäftsregeln</Link>
+              </div>
+              <p className="text-xs text-ink-3">Mietbedingungen sind der juristische Text (versioniert, unveränderlich nach Veröffentlichung). Geschäftsregeln sind operative Standardwerte wie Kaution, Kilometer, Tanken, Ausland – sie ersetzen den Text nicht.</p>
+            </div>
+          </Card>
 
           {isOwner && (
             <Card title="Rechnungsdaten und Steuer" className="xl:row-start-3 xl:col-span-2" right={invoiceSettingsMissing(tenant).length > 0 ? <Chip tone="amber">unvollständig</Chip> : <Chip tone="good">vollständig</Chip>}>

@@ -75,9 +75,12 @@ export function contractData(variant: "short" | "long"): ContractDocumentData {
       calculated: "458,10 €",
       agreed: long ? { text: "Abweichend vereinbart: Stammkundenpreis laut Absprache mit der Geschäftsführung", amount: "450,00 €" } : null,
       total: long ? "450,00 €" : "509,00 €",
+      extras: long ? [{ text: "1 × Zusatzfahrer (pauschal) zu 15,00 €", amount: "15,00 €" }] : [],
       deposit: "500,00 €",
     },
-    terms: { version: "2026-09", text: long ? longTerms() : "§ 1 Beispiel\n\nDas Fahrzeug ist pfleglich zu behandeln." },
+    rules: long ? { key: "rules", title: "Geschäftsregeln dieses Vertrags", rows: [{ label: "Kilometerregel", value: "200 km je Tag (gesamt 1.200 km), Mehrkilometer 0,25 € je km" }, { label: "Tankregelung", value: "Voll/Voll" }, { label: "Auslandsfahrten", value: "Genehmigt für: Österreich, Niederlande" }, { label: "Rauchen im Fahrzeug", value: "Nicht gestattet" }, { label: "Tiere im Fahrzeug", value: "Nur nach Absprache" }] } : null,
+    individualAgreements: long ? "Kindersitz wird kostenlos gestellt. Rückgabe am Sonntag nach Absprache bis 20 Uhr." : null,
+    terms: { version: "2026-09", text: long ? longTerms() : "§ 1 Beispiel\n\nDas Fahrzeug ist pfleglich zu behandeln.", format: "PLAIN", blocks: null, legacy: true, title: "Mietbedingungen (Fassung 2026-09)", acknowledgedAt: null },
     signatures: [
       { id: "sig-renter", role: "RENTER", roleLabel: "Mieter", signerName: renterName, signedAt: "20.09.2026, 13:33", imageUrl: "" },
       ...(long ? [{ id: "sig-employee", role: "EMPLOYEE", roleLabel: "Vermieter", signerName: "Sezer Karakuş", signedAt: "20.09.2026, 13:34", imageUrl: "" }] : []),

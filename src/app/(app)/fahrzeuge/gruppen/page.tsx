@@ -2,8 +2,11 @@ import Link from "next/link";
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { Card, Chip, Content, PageHeader } from "@/components/ui";
-import { deleteGroupAction } from "./actions";
+import { resolveRules } from "@/lib/business-rules";
+import { overrideValues } from "@/lib/business-rules-form";
+import { deleteGroupAction, updateGroupRulesAction } from "./actions";
 import { GroupForm } from "./forms";
+import { OverrideForm } from "../../einstellungen/geschaeftsregeln/rules-forms";
 
 export const metadata = { title: "Fahrzeuggruppen" };
 
@@ -16,6 +19,7 @@ export default async function GroupsPage({ searchParams }: PageProps<"/fahrzeuge
     include: { _count: { select: { vehicles: true } } },
   });
   const canEdit = user.role === "OWNER" || user.role === "DISPO";
+  const inherited = resolveRules(tenant.businessRules, null, null).values;
   const dec = (v: { toString(): string } | null) => (v === null ? "" : v.toString().replace(".", ","));
 
   return (
@@ -54,6 +58,12 @@ export default async function GroupsPage({ searchParams }: PageProps<"/fahrzeuge
                 />
               ) : (
                 <p className="p-4 text-sm text-ink-3">{g.description || "Keine Beschreibung."}</p>
+              )}
+              {user.role === "OWNER" && (
+                <div className="border-t border-line-soft">
+                  <div className="px-4 pt-3 label-xs">Abweichende Geschäftsregeln dieser Gruppe</div>
+                  <OverrideForm action={updateGroupRulesAction.bind(null, g.id)} values={overrideValues(g.businessRules)} inherited={inherited} scopeLabel={`Gruppe „${g.name}“`} />
+                </div>
               )}
             </Card>
           ))}

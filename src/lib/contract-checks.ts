@@ -1,4 +1,7 @@
 // Prüfregeln für Mieter, Fahrer und Vertrag. Reine Funktionen ohne Datenbankzugriff.
+// Mindestalter und Führerscheinbesitz kommen aus den Geschäftsregeln (Standard 18 Jahre / 0 Monate) und werden
+// kalendergenau in Europe/Berlin geprüft (siehe business-rules.ts: ageAt, monthsSince).
+import { ageAt, monthsSince } from "@/lib/business-rules";
 // Der Server ruft sie beim Anzeigen jedes Schritts und verbindlich beim Finalisieren auf.
 // Die Oberfläche zeigt dieselben Ergebnisse nur an; sie entscheidet nichts.
 
@@ -78,7 +81,11 @@ export type DriverLike = {
 };
 
 /** Führerschein- und Personendaten eines Fahrers. who steht in der Meldung, z. B. "Fahrer" oder "Zusatzfahrer Max Zusatz". */
-export function checkDriver(d: DriverLike, startAt: Date, who = "Fahrer", area: Issue["area"] = "DRIVER"): Issue[] {
+export type DriverRuleOptions = { minimumAge?: number; minimumLicenseMonths?: number };
+
+export function checkDriver(d: DriverLike, startAt: Date, who = "Fahrer", area: Issue["area"] = "DRIVER", rules: DriverRuleOptions = {}): Issue[] {
+  const minimumAge = rules.minimumAge ?? 18;
+  const minimumLicenseMonths = rules.minimumLicenseMonths ?? 0;
   const issues: Issue[] = [];
   const err = (code: string, message: string) => issues.push({ code, area, severity: "error", message });
 
@@ -96,9 +103,10 @@ export function checkDriver(d: DriverLike, startAt: Date, who = "Fahrer", area: 
   if (issued && issued > startAt) err("LICENSE_NOT_YET_VALID", `${who}: Der Führerschein wurde erst nach dem Mietbeginn ausgestellt.`);
   if (birth && issued && issued < birth) err("LICENSE_BEFORE_BIRTH", `${who}: Ausstellungsdatum liegt vor dem Geburtsdatum.`);
   if (birth) {
-    const age = (startAt.getTime() - birth.getTime()) / (365.25 * 24 * 3600 * 1000);
-    if (age < 18) err("DRIVER_UNDERAGE", `${who} ist am Mietbeginn noch nicht 18 Jahre alt.`);
+    const age = ageAt(birth, startAt);
+    if (age < minimumAge) err("DRIVER_UNDERAGE", `${who} ist am Mietbeginn noch nicht ${minimumAge} Jahre alt (${age} Jahre).`);
   }
+  if (issued && minimumLicenseMonths > 0 && monthsSince(issued, startAt) < minimumLicenseMonths) err("LICENSE_TOO_NEW", `${who}: Der Führerschein muss am Mietbeginn seit mindestens ${minimumLicenseMonths} Monaten bestehen.`);
   if (!has(d.licenseCountry)) err("LICENSE_COUNTRY", `${who}: Ausstellungsland des Führerscheins fehlt.`);
   return issues;
 }
