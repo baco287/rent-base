@@ -7,6 +7,7 @@ import { customerToFormValues } from "@/lib/customer-form-values";
 import { BookingStatusChip, Card, Chip, Content, PageHeader, Plate } from "@/components/ui";
 import { deleteCustomerAction, updateCustomerAction } from "../actions";
 import { CustomerForm } from "../customer-form";
+import { AuthorityCasesPanel } from "../../behoerden/authority-panel";
 
 export default async function CustomerPage({ params, searchParams }: PageProps<"/kunden/[id]">) {
   const { tenant, user } = await requireSession();
@@ -43,6 +44,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps<"
               </form>
             )}
           </Card>
+          <div className="flex flex-col gap-4">
           <Card title="Letzte Buchungen">
             {c.bookings.length === 0 ? (
               <p className="p-4 text-ink-3 text-sm">Noch keine Buchungen.</p>
@@ -61,6 +63,8 @@ export default async function CustomerPage({ params, searchParams }: PageProps<"
               </ul>
             )}
           </Card>
+          <AuthorityCasesPanel tenantId={tenant.id} scope={{ customerId: c.id }} canManage={user.role !== "YARD"} />
+          </div>
         </div>
       </Content>
     </>

@@ -13,6 +13,7 @@ const NAV = [
   { href: "/buchungen", label: "Buchungen", icon: "doc" },
   { href: "/rechnungen", label: "Rechnungen", icon: "euro" },
   { href: "/schaeden", label: "Schäden", icon: "warn" },
+  { href: "/behoerden", label: "Behörden", icon: "stamp" },
   { href: "/einstellungen", label: "Einstellungen", icon: "cog" },
 ] as const;
 
@@ -27,6 +28,7 @@ function Icon({ name }: { name: (typeof NAV)[number]["icon"] }) {
     case "euro": return <svg {...p}><path d="M12 3.5A5 5 0 0 0 4.5 8a5 5 0 0 0 7.5 4.5M2.5 6.5h7M2.5 9.5h7" /></svg>;
     case "wrench": return <svg {...p}><path d="M10.5 2.5a3.5 3.5 0 0 0-3.3 4.6L2.5 11.8l1.7 1.7 4.7-4.7a3.5 3.5 0 0 0 4.6-3.3l-2 2-1.7-.4-.4-1.7z" /></svg>;
     case "warn": return <svg {...p}><path d="M8 2.5 14 13H2z" /><path d="M8 6.5v3M8 11.2v.3" /></svg>;
+    case "stamp": return <svg {...p}><path d="M5 9V5.5a3 3 0 0 1 6 0V9" /><rect x="2.5" y="9" width="11" height="3" rx="1" /><path d="M4 12v2h8v-2" /></svg>;
     case "cog": return <svg {...p}><circle cx="8" cy="8" r="2.5" /><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" /></svg>;
   }
 }

@@ -5,6 +5,8 @@ import { customerName, fmtDate, fmtTime } from "@/lib/format";
 import { Card, Chip, Content, KPI, PageHeader, Plate } from "@/components/ui";
 import { caseCounts } from "@/lib/damage-cases";
 import { maintenanceCounts } from "@/lib/maintenance";
+import { authorityCounts } from "@/lib/authority";
+import { AuthorityTypeChip } from "../behoerden/chips";
 import { openDepositCounts } from "@/lib/deposits";
 import { fmtCents } from "@/lib/money";
 import { paymentSummaries } from "@/lib/payments";
@@ -48,7 +50,7 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
     openDepositCounts(tenant.id),
     caseCounts(tenant.id),
   ]);
-  const maint = await maintenanceCounts(tenant.id);
+  const [maint, authority] = await Promise.all([maintenanceCounts(tenant.id), authorityCounts(tenant.id)]);
   const sums = await paymentSummaries(tenant.id, finalInvoices);
   const damageInvoiceIds = new Set(finalInvoices.filter((i) => i.kind === "DAMAGE").map((i) => i.id));
   const openDamageInvoices = [...sums.entries()].filter(([id, x]) => damageInvoiceIds.has(id) && (x.status === "OPEN" || x.status === "PARTIAL")).length;
@@ -102,6 +104,19 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
           <KPI label="Werkstatttermine 7 Tage" value={maint.appointmentsWeek} detail={maint.appointmentsToday.length > 0 ? `${maint.appointmentsToday.length} heute` : "keine heute"} />
           <KPI label="Fahrzeuge in Werkstatt" value={maint.inWorkshop} detail={<Link href="/fahrzeuge/wartung?filter=in_arbeit" className="underline">{maint.inProgress} Vorgänge in Arbeit</Link>} hot={maint.inWorkshop > 0} />
         </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <KPI label="Neue Behördenanfragen" value={authority.received} detail={<Link href="/behoerden?filter=neu" className="underline">noch nicht geprüft</Link>} hot={authority.received > 0} />
+          <KPI label="Zuordnung erforderlich" value={authority.assignment} detail={<Link href="/behoerden?filter=zuordnung" className="underline">Fahrzeug oder Vermietung offen</Link>} hot={authority.assignment > 0} />
+          <KPI label="Antwortfrist ≤ 3 Tage" value={authority.dueSoon} detail={<Link href="/behoerden?frist=bald" className="underline">Antwort bald fällig</Link>} hot={authority.dueSoon > 0} />
+          <KPI label="Behördenfristen überfällig" value={authority.overdue} detail={<Link href="/behoerden?filter=ueberfaellig" className="underline">Frist verstrichen, nicht übermittelt</Link>} hot={authority.overdue > 0} />
+        </div>
+        {authority.dueToday.length > 0 && (
+          <Card title="Behördenfristen" right={<Chip tone={authority.dueToday.some((c) => c.deadline.level === "OVERDUE") ? "bad" : "amber"}>{authority.dueToday.length}</Chip>}>
+            <ul className="divide-y divide-line-soft text-sm">
+              {authority.dueToday.map((c) => <li key={c.id} className="px-4 py-2 flex flex-wrap items-center gap-2"><Link href={`/behoerden/${c.id}`} className="font-mono tnum font-medium hover:underline">{c.caseNumber}</Link><AuthorityTypeChip type={c.type} /><Plate>{c.licensePlateSnapshot}</Plate><span className="text-xs text-ink-3">{c.authorityName}</span><Chip tone={c.deadline.level === "OVERDUE" ? "bad" : "amber"}>{c.deadline.text}</Chip></li>)}
+            </ul>
+          </Card>
+        )}
         {(maint.appointmentsToday.length > 0 || maint.overdueList.length > 0 || maint.huSoonList.length > 0) && (
           <Card title="Wartung heute" right={<Chip tone="amber">{maint.appointmentsToday.length + maint.overdueList.length}</Chip>}>
             <ul className="divide-y divide-line-soft text-sm">

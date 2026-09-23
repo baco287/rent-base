@@ -75,6 +75,11 @@ model Tenant {
   maintenanceEvents        MaintenanceEvent[]
   vehicleDocuments         VehicleDocument[]
   maintenanceDocumentLinks MaintenanceDocumentLink[]
+  authorityCases           AuthorityCase[]
+  authorityCaseDocuments   AuthorityCaseDocument[]
+  authorityResponses       AuthorityResponse[]
+  authorityReceipts        AuthoritySubmissionReceipt[]
+  authorityCaseEvents      AuthorityCaseEvent[]
 }
 
 model User {
@@ -172,6 +177,7 @@ model Vehicle {
   maintenancePlans   MaintenancePlan[]
   maintenanceRecords MaintenanceRecord[]
   documents          VehicleDocument[]
+  authorityCases     AuthorityCase[]
 
   @@unique([tenantId, plate])
   @@index([tenantId, groupId])
@@ -257,6 +263,8 @@ model Booking {
   payments        Payment[]
   securityDeposit SecurityDeposit?
   damageCases     DamageCase[]
+
+  authorityCases AuthorityCase[]
 
   @@unique([tenantId, number])
   @@index([tenantId, vehicleId, startAt, endAt])
@@ -348,6 +356,8 @@ model RentalContract {
   documents  Document[]
   invoices   Invoice[]
   deposits   SecurityDeposit[]
+
+  authorityCases AuthorityCase[]
 
   @@unique([tenantId, number])
   @@index([tenantId, status])
@@ -1286,4 +1296,183 @@ model MaintenanceDocumentLink {
 
   @@unique([maintenanceId, damageCaseDocumentId])
   @@index([tenantId, maintenanceId])
+}
+
+// ============================================================================
+// Phase 14: Bußgelder, Verkehrsverstöße und Behördenanfragen. Ein AuthorityCase ist ein Behördenvorgang zu einem
+// Kennzeichen/Tatzeitpunkt. Harte Regeln: Vertraglicher Fahrer ≠ nachgewiesener Fahrzeugführer – Rent-Base stellt nur
+// „Tatzeit innerhalb der Mietdauer“ und „vertraglicher Haupt-/Zusatzfahrer“ fest; die Fahrerbestimmung, die Antwort und
+// die Übermittlung sind ausdrückliche Entscheidungen eines berechtigten Mitarbeiters. Freigegebene Antworten sind
+// unveränderliche Fassungen. Kein Bußgeld erzeugt eine Rechnung, Zahlung, Zusatzkosten oder Kautionsbewegung.
+// ============================================================================
+
+model AuthorityCase {
+  id                        String    @id @default(cuid())
+  tenantId                  String
+  caseNumber                String // BH-2026-000001
+  type                      String // SPEEDING | PARKING | RED_LIGHT | TOLL | TRAFFIC_VIOLATION | DRIVER_IDENTIFICATION | AUTHORITY_REQUEST | OTHER
+  status                    String    @default("RECEIVED") // RECEIVED | ASSIGNMENT_REQUIRED | REVIEW_REQUIRED | RESPONSE_PREPARED | READY_TO_SEND | SUBMITTED | CLOSED | CANCELLED
+  authorityName             String
+  authorityDepartment       String?
+  authorityReference        String // behördliches Aktenzeichen, bleibt getrennt von caseNumber
+  authorityAddress          String? // Postanschrift laut Schreiben (Freitext)
+  authorityEmail            String? // nur wenn im Schreiben ausdrücklich genannt oder bewusst erfasst
+  authorityPortalUrl        String? // Portaladresse laut Schreiben; Zugangsdaten werden nicht gespeichert
+  offenseType               String?
+  offenseDescription        String?
+  offenseAt                 DateTime // bei unbekannter Uhrzeit: 12:00 Europe/Berlin des Tattags, siehe offenseTimeKnown
+  offenseTimeKnown          Boolean   @default(true)
+  offenseLocation           String?
+  licensePlateSnapshot      String // Kennzeichen exakt wie im Schreiben
+  licensePlateNormalized    String // Vergleichsschlüssel (nur Buchstaben/Ziffern, groß)
+  vehicleId                 String?
+  bookingId                 String?
+  contractId                String?
+  vehicleMatch              String    @default("UNMATCHED") // UNMATCHED | EXACT_MATCH | NO_MATCH | AMBIGUOUS | MANUALLY_ASSIGNED
+  rentalMatch               String    @default("UNMATCHED") // UNMATCHED | ACTUAL_PERIOD | PLANNED_PERIOD | AMBIGUOUS | NONE | MANUALLY_ASSIGNED
+  rentalMatchDayOnly        Boolean   @default(false) // Zuordnung nur tagesgenau (Tatzeit unbekannt)
+  assignmentStatus          String    @default("UNASSIGNED") // UNASSIGNED | VEHICLE_ONLY | ASSIGNED | NO_MATCH
+  driverDeterminationStatus String    @default("UNDETERMINED") // UNDETERMINED | CONTRACT_DRIVER_SELECTED | OTHER_DRIVER_ENTERED | NOT_IDENTIFIABLE | NO_DRIVER_INFORMATION
+  driverContractDriverId    String?
+  driverCustomerId          String? // nur wenn die bewusst bestimmte Person ein Kunde ist (Kundenakte)
+  driverSnapshot            Json? // bewusst bestimmte Person: firstName, lastName, birthDate?, street?, zip?, city?, country?, source
+  driverNote                String?
+  responseDeadline          DateTime? // aus dem Schreiben übernommen oder manuell; nie automatisch berechnet
+  noticeAmountCents         Int? // nur Information
+  notes                     String?
+  internalNote              String?
+  closedAt                  DateTime?
+  closedById                String?
+  closedByName              String?
+  closeReason               String?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+  createdById               String?
+  createdByName             String?
+
+  tenant    Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  vehicle   Vehicle?                     @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  booking   Booking?                     @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  contract  RentalContract?              @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  documents AuthorityCaseDocument[]
+  responses AuthorityResponse[]
+  receipts  AuthoritySubmissionReceipt[]
+  events    AuthorityCaseEvent[]
+
+  @@unique([tenantId, caseNumber])
+  @@index([tenantId, status])
+  @@index([tenantId, vehicleId])
+  @@index([tenantId, bookingId])
+  @@index([tenantId, responseDeadline])
+  @@index([tenantId, licensePlateNormalized])
+}
+
+// Originalschreiben, Nachweise, erzeugte Antwort-PDFs: privat gespeichert, nur anfügen; Korrektur = Archivierung mit Grund.
+model AuthorityCaseDocument {
+  id             String    @id @default(cuid())
+  tenantId       String
+  caseId         String
+  responseId     String?
+  type           String // INCOMING_NOTICE | EVIDENCE | RESPONSE_DRAFT | RESPONSE_PDF | SUBMISSION_RECEIPT | CORRESPONDENCE | OTHER
+  fileName       String
+  storageKey     String    @unique
+  contentType    String
+  sizeBytes      Int
+  checksum       String
+  note           String?
+  createdById    String?
+  createdByName  String?
+  createdAt      DateTime  @default(now())
+  archivedAt     DateTime?
+  archivedByName String?
+  archiveReason  String?
+
+  tenant   Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case     AuthorityCase      @relation(fields: [caseId], references: [id])
+  response AuthorityResponse? @relation(fields: [responseId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, caseId])
+}
+
+// Antwortfassung: Snapshot aller übermittelten Angaben. DRAFT ist bearbeitbar; ab APPROVED unveränderlich.
+// Korrekturen erzeugen eine neue Fassung (höhere version); ältere Fassungen bleiben erhalten.
+model AuthorityResponse {
+  id                  String    @id @default(cuid())
+  tenantId            String
+  caseId              String
+  version             Int
+  status              String    @default("DRAFT") // DRAFT | APPROVED | SUBMITTED | FAILED | SUPERSEDED
+  responseType        String // DRIVER_IDENTIFIED | MULTIPLE_POSSIBLE_DRIVERS | DRIVER_NOT_IDENTIFIABLE | NO_MATCHING_RENTAL | VEHICLE_NOT_IN_FLEET | CUSTOM_RESPONSE
+  submissionMethod    String // MANUAL_PORTAL | POST | EMAIL | VERIFIED_API | OTHER
+  recipientSnapshot   Json // Behörde, Abteilung, Anschrift, E-Mail/Portal wie zum Zeitpunkt der Antwort
+  authorityReference  String
+  senderSnapshot      Json // Vermieterdaten (Name, Anschrift, Kontakt)
+  vehicleSnapshot     Json // Kennzeichen laut Schreiben, ggf. Fahrzeug
+  offenseSnapshot     Json // Art, Tatzeit (mit/ohne Uhrzeit), Tatort
+  rentalSnapshot      Json? // Buchung/Vertrag/Mietzeitraum, falls übermittelt
+  personSnapshot      Json? // ausschließlich die bewusst ausgewählten Personendaten
+  freeText            String?
+  contentHash         String?
+  createdById         String?
+  createdByName       String?
+  createdAt           DateTime  @default(now())
+  approvedAt          DateTime?
+  approvedById        String?
+  approvedByName      String?
+  submittedAt         DateTime?
+  submittedById       String?
+  submittedByName     String?
+  submissionReference String?
+  emailLogId          String?
+  pdfDocumentId       String?
+  failureReason       String?
+
+  tenant    Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case      AuthorityCase                @relation(fields: [caseId], references: [id])
+  documents AuthorityCaseDocument[]
+  receipts  AuthoritySubmissionReceipt[]
+
+  @@unique([caseId, version])
+  @@index([tenantId, caseId])
+}
+
+// Übermittlungsnachweis: nur anfügen.
+model AuthoritySubmissionReceipt {
+  id            String   @id @default(cuid())
+  tenantId      String
+  caseId        String
+  responseId    String
+  method        String
+  submittedAt   DateTime
+  reference     String?
+  note          String?
+  documentId    String? // Nachweisdokument (AuthorityCaseDocument SUBMISSION_RECEIPT)
+  createdById   String?
+  createdByName String?
+  createdAt     DateTime @default(now())
+
+  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case     AuthorityCase     @relation(fields: [caseId], references: [id])
+  response AuthorityResponse @relation(fields: [responseId], references: [id])
+
+  @@index([tenantId, caseId])
+}
+
+// Historie des Vorgangs, nur anfügen; keine Personendaten außer Namen der bewusst bestimmten Person.
+model AuthorityCaseEvent {
+  id        String   @id @default(cuid())
+  tenantId  String
+  caseId    String
+  type      String
+  fromValue String?
+  toValue   String?
+  note      String?
+  userId    String?
+  userName  String?
+  createdAt DateTime @default(now())
+
+  tenant Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case   AuthorityCase @relation(fields: [caseId], references: [id])
+
+  @@index([tenantId, caseId, createdAt])
 }

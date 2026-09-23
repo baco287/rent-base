@@ -77,3 +77,11 @@ export async function nextMaintenanceNumber(tx: Tx, tenantId: string, date = new
   const n = last?.maintenanceNumber ? parseInt(last.maintenanceNumber.slice(prefix.length), 10) + 1 : 1;
   return `${prefix}${String(n).padStart(6, "0")}`;
 }
+
+/** Behördenvorgang: BH-JJJJ-NNNNNN, mandantenweit eindeutig; mit withNumberRetry verwenden. */
+export async function nextAuthorityCaseNumber(tx: Tx, tenantId: string, date = new Date()) {
+  const prefix = `BH-${date.getFullYear()}-`;
+  const last = await tx.authorityCase.findFirst({ where: { tenantId, caseNumber: { startsWith: prefix } }, orderBy: { caseNumber: "desc" }, select: { caseNumber: true } });
+  const n = last?.caseNumber ? parseInt(last.caseNumber.slice(prefix.length), 10) + 1 : 1;
+  return `${prefix}${String(n).padStart(6, "0")}`;
+}

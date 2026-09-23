@@ -76,4 +76,16 @@ test("Jede Server-Action-Datei und jede Prozessseite prüft die Rolle serverseit
   for (const fn of ["documentMileageAction", "addNoteAction"]) assert.match(maintBody(fn), /ctx\(maintenanceId, "DISPO", "YARD"\)/, `${fn}: auch Hofmitarbeiter`);
   assert.match(maintBody("changeStatusAction"), /p\.data\.to === "IN_PROGRESS" \? await ctx\(maintenanceId, "DISPO", "YARD"\) : await ctx\(maintenanceId\)/, "Status: nur „In Arbeit“ für den Hof");
   assert.match(maint, /const \{ tenant, user \} = roles\.length \? await requireRole\(\.\.\.roles\) : await requireRole\("DISPO"\);/, "Wartung: ctx ohne Rollen = nur DISPO");
+  // Behördenvorgänge: alle Vorgangsschritte (Erfassen, Zuordnen, Fahrerbestimmung, Antwort vorbereiten/freigeben/übermitteln, Nachweise,
+  // Abschluss, Dokumente) nur DISPO (und OWNER); YARD sieht nur. Auch der Dokument-Upload verlangt DISPO.
+  const auth = readFileSync(path.join(process.cwd(), "src/app/(app)/behoerden/actions.ts"), "utf8");
+  assert.ok(!/"YARD"/.test(auth), "Behördenaktionen dürfen YARD nicht zulassen");
+  const authActions = auth.match(/export async function (\w+)/g)!.map((m) => m.replace("export async function ", ""));
+  assert.ok(authActions.length >= 14);
+  const authBody = (name: string) => new RegExp(`export async function ${name}[\\s\\S]*?\\n}`).exec(auth)?.[0] ?? "";
+  for (const fn of authActions) assert.ok(/await ctx\(caseId\)/.test(authBody(fn)) || /requireRole\("DISPO"\)/.test(authBody(fn)), `${fn}: nur Inhaber und Disponent`);
+  for (const fn of ["setDriverAction", "approveResponseAction", "submitResponseAction", "closeCaseAction", "reopenCaseAction"]) assert.match(authBody(fn), /await ctx\(caseId\)/, `${fn}: Fahrerfreigabe, Antwortfreigabe, Übermittlung, Abschluss nur Disposition`);
+  assert.match(auth, /const \{ tenant, user \} = await requireRole\("DISPO"\);\n  const c = await db\.authorityCase\.findFirst/, "ctx: nur DISPO und eigener Mandant");
+  const upload = readFileSync(path.join(process.cwd(), "src/app/api/authority-cases/[id]/documents/route.ts"), "utf8");
+  assert.match(upload, /roleAllows\(session\.user\.role, \["DISPO"\]\)/, "Upload zu Behördenvorgängen nur DISPO");
 });

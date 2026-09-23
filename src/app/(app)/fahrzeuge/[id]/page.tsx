@@ -12,6 +12,7 @@ import { loadGroupOptions } from "../groups";
 import { VehicleForm } from "../vehicle-form";
 import { VehicleFile } from "./vehicle-file";
 import { CostsCard, DocumentsSection, DueSection, DueSummary, MaintenanceSection } from "./vehicle-maintenance";
+import { AuthorityCasesPanel } from "../../behoerden/authority-panel";
 
 const TABS = [
   { key: "uebersicht", label: "Übersicht" },
@@ -21,6 +22,7 @@ const TABS = [
   { key: "wartung", label: "Wartung & Werkstatt" },
   { key: "faelligkeiten", label: "Fälligkeiten" },
   { key: "dokumente", label: "Dokumente" },
+  { key: "behoerden", label: "Behörden" },
   { key: "historie", label: "Historie" },
   { key: "stammdaten", label: "Stammdaten" },
 ] as const;
@@ -117,6 +119,7 @@ export default async function VehiclePage({ params, searchParams }: PageProps<"/
         {tab === "wartung" && <MaintenanceSection o={overview} vehicleId={vehicle.id} canManage={canManage} />}
         {tab === "faelligkeiten" && <DueSection o={overview} vehicleId={vehicle.id} canManage={canManage} />}
         {tab === "dokumente" && <DocumentsSection o={overview} vehicleId={vehicle.id} canManage={canManage} isOwner={user.role === "OWNER"} />}
+        {tab === "behoerden" && <AuthorityCasesPanel tenantId={tenant.id} scope={{ vehicleId: vehicle.id }} canManage={canManage} />}
         {tab === "historie" && (
           <div className="flex flex-col gap-4">
             <Card title="Historie" right={<Chip>{events.length}</Chip>}>

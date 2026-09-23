@@ -219,6 +219,22 @@ export const AUDIT_ACTIONS = {
   VEHICLE_DOCUMENT_ADDED: "Fahrzeugdokument hinzugefügt",
   VEHICLE_DOCUMENT_ARCHIVED: "Fahrzeugdokument archiviert",
   MAINTENANCE_COSTS_ADOPTED: "Reparaturkosten in Schadenakte übernommen",
+  AUTHORITY_CASE_CREATED: "Behördenvorgang angelegt",
+  AUTHORITY_CASE_UPDATED: "Behördenvorgang geändert",
+  AUTHORITY_DOCUMENT_ADDED: "Behördendokument hinzugefügt",
+  AUTHORITY_DOCUMENT_ARCHIVED: "Behördendokument archiviert",
+  AUTHORITY_CASE_ASSIGNED_TO_VEHICLE: "Behördenvorgang Fahrzeug zugeordnet",
+  AUTHORITY_CASE_ASSIGNED_TO_BOOKING: "Behördenvorgang Vermietung zugeordnet",
+  AUTHORITY_DRIVER_SELECTED: "Behördenvorgang Fahrer bestimmt",
+  AUTHORITY_DRIVER_CHANGED: "Behördenvorgang Fahrerbestimmung geändert",
+  AUTHORITY_RESPONSE_CREATED: "Behördenantwort erstellt",
+  AUTHORITY_RESPONSE_APPROVED: "Behördenantwort freigegeben",
+  AUTHORITY_RESPONSE_SUBMITTED: "Behördenantwort übermittelt",
+  AUTHORITY_SUBMISSION_FAILED: "Behördenübermittlung fehlgeschlagen",
+  AUTHORITY_SUBMISSION_RECEIPT_ADDED: "Übermittlungsnachweis hinzugefügt",
+  AUTHORITY_CASE_CLOSED: "Behördenvorgang abgeschlossen",
+  AUTHORITY_CASE_REOPENED: "Behördenvorgang wieder geöffnet",
+  AUTHORITY_CASE_CANCELLED: "Behördenvorgang storniert",
   DAMAGE_CASE_CLOSED: "Schadenakte geschlossen",
   DAMAGE_CASE_REOPENED: "Schadenakte wieder geöffnet",
 } as const;
@@ -344,6 +360,61 @@ export const VEHICLE_DOCUMENT_TYPES = {
   OTHER: "Sonstiges",
 } as const;
 export type VehicleDocumentType = keyof typeof VEHICLE_DOCUMENT_TYPES;
+// Phase 14: Behördenvorgänge. Vertraglicher Fahrer ≠ nachgewiesener Fahrzeugführer; Antworten nur nach ausdrücklicher Freigabe.
+export const AUTHORITY_CASE_TYPES = {
+  SPEEDING: "Geschwindigkeitsverstoß",
+  PARKING: "Parkverstoß",
+  RED_LIGHT: "Rotlichtverstoß",
+  TOLL: "Maut",
+  TRAFFIC_VIOLATION: "Sonstiger Verkehrsverstoß",
+  DRIVER_IDENTIFICATION: "Fahrerermittlung",
+  AUTHORITY_REQUEST: "Behördenanfrage",
+  OTHER: "Sonstiges",
+} as const;
+export type AuthorityCaseType = keyof typeof AUTHORITY_CASE_TYPES;
+export const AUTHORITY_CASE_STATUS = {
+  RECEIVED: "Neu",
+  ASSIGNMENT_REQUIRED: "Zuordnung erforderlich",
+  REVIEW_REQUIRED: "Prüfung erforderlich",
+  RESPONSE_PREPARED: "Antwort vorbereitet",
+  READY_TO_SEND: "Versandbereit",
+  SUBMITTED: "Übermittelt",
+  CLOSED: "Abgeschlossen",
+  CANCELLED: "Storniert",
+} as const;
+export type AuthorityCaseStatus = keyof typeof AUTHORITY_CASE_STATUS;
+export const VEHICLE_MATCH = { UNMATCHED: "Noch nicht geprüft", EXACT_MATCH: "Eindeutig zugeordnet", NO_MATCH: "Kein Fahrzeug in der Flotte", AMBIGUOUS: "Mehrere Fahrzeuge möglich", MANUALLY_ASSIGNED: "Manuell zugeordnet" } as const;
+export const RENTAL_MATCH = { UNMATCHED: "Noch nicht geprüft", ACTUAL_PERIOD: "Tatzeit innerhalb der tatsächlichen Mietdauer", PLANNED_PERIOD: "Nur anhand geplanter Buchungszeit zugeordnet", AMBIGUOUS: "Mehrere Vermietungen möglich", NONE: "Keine eindeutige Vermietung gefunden", MANUALLY_ASSIGNED: "Manuell zugeordnet" } as const;
+export const ASSIGNMENT_STATUS = { UNASSIGNED: "Nicht zugeordnet", VEHICLE_ONLY: "Nur Fahrzeug zugeordnet", ASSIGNED: "Vermietung zugeordnet", NO_MATCH: "Keine Zuordnung möglich" } as const;
+export const DRIVER_DETERMINATION = {
+  UNDETERMINED: "Noch nicht bestimmt",
+  CONTRACT_DRIVER_SELECTED: "Vertragsfahrer bestimmt",
+  OTHER_DRIVER_ENTERED: "Andere Person erfasst",
+  NOT_IDENTIFIABLE: "Fahrer nicht eindeutig feststellbar",
+  NO_DRIVER_INFORMATION: "Keine Fahrerinformation",
+} as const;
+export type DriverDetermination = keyof typeof DRIVER_DETERMINATION;
+export const AUTHORITY_RESPONSE_TYPES = {
+  DRIVER_IDENTIFIED: "Fahrer benannt",
+  MULTIPLE_POSSIBLE_DRIVERS: "Mehrere mögliche Fahrer",
+  DRIVER_NOT_IDENTIFIABLE: "Fahrer nicht eindeutig feststellbar",
+  NO_MATCHING_RENTAL: "Keine passende Vermietung",
+  VEHICLE_NOT_IN_FLEET: "Fahrzeug nicht in der Flotte",
+  CUSTOM_RESPONSE: "Individuelle Antwort",
+} as const;
+export type AuthorityResponseType = keyof typeof AUTHORITY_RESPONSE_TYPES;
+export const AUTHORITY_RESPONSE_STATUS = { DRAFT: "Entwurf", APPROVED: "Freigegeben", SUBMITTED: "Übermittelt", FAILED: "Übermittlung fehlgeschlagen", SUPERSEDED: "Ersetzt" } as const;
+export const SUBMISSION_METHODS = { MANUAL_PORTAL: "Behördenportal (manuell)", POST: "Post", EMAIL: "E-Mail", VERIFIED_API: "Verifizierte Schnittstelle", OTHER: "Sonstiger Weg" } as const;
+export type SubmissionMethod = keyof typeof SUBMISSION_METHODS;
+export const AUTHORITY_DOCUMENT_TYPES = { INCOMING_NOTICE: "Behördenschreiben", EVIDENCE: "Nachweis/Beweismittel", RESPONSE_DRAFT: "Antwortentwurf", RESPONSE_PDF: "Antwort (PDF)", SUBMISSION_RECEIPT: "Übermittlungsnachweis", CORRESPONDENCE: "Schriftwechsel", OTHER: "Sonstiges" } as const;
+export type AuthorityDocumentType = keyof typeof AUTHORITY_DOCUMENT_TYPES;
+export const AUTHORITY_EVENT_TYPES = {
+  CREATED: "Vorgang angelegt", UPDATED: "Daten geändert", DOCUMENT_ADDED: "Dokument hinzugefügt", DOCUMENT_ARCHIVED: "Dokument archiviert", VEHICLE_MATCHED: "Fahrzeug zugeordnet", RENTAL_MATCHED: "Vermietung zugeordnet",
+  DRIVER_SELECTED: "Fahrer bestimmt", DRIVER_CHANGED: "Fahrerbestimmung geändert", RESPONSE_CREATED: "Antwortfassung erstellt", RESPONSE_APPROVED: "Antwort freigegeben", RESPONSE_SUBMITTED: "Antwort übermittelt", SUBMISSION_FAILED: "Übermittlung fehlgeschlagen",
+  RECEIPT_ADDED: "Übermittlungsnachweis hinzugefügt", CLOSED: "Vorgang abgeschlossen", REOPENED: "Vorgang wieder geöffnet", CANCELLED: "Vorgang storniert", NOTE_ADDED: "Notiz ergänzt", STATUS_CHANGED: "Status geändert",
+} as const;
+export const AUTHORITY_DRIVER_NOTICE = "Bitte bestätigen Sie nur eine Person als Fahrer, wenn Ihnen hierfür eine ausreichende Grundlage vorliegt. Die Zuordnung einer Vermietung allein weist nicht nach, wer das Fahrzeug zum Tatzeitpunkt geführt hat.";
+
 /** Berechneter Warnstand einer Fälligkeit – nie gespeichert. */
 export const DUE_LEVELS = { OK: "In Ordnung", SOON: "Bald fällig", DUE: "Fällig", OVERDUE: "Überfällig" } as const;
 export type DueLevel = keyof typeof DUE_LEVELS;

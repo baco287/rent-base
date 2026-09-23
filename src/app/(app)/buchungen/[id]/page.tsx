@@ -14,6 +14,7 @@ import { loadBookingOptions } from "../options";
 import { DocumentsPanel } from "./dokumente/documents-panel";
 import { DepositPanel, PaymentsPanel } from "./finanzen/panels";
 import { DamageCasesPanel } from "../../schaeden/damages-panel";
+import { AuthorityCasesPanel } from "../../behoerden/authority-panel";
 
 export default async function BookingPage({ params, searchParams }: PageProps<"/buchungen/[id]">) {
   const { tenant, user } = await requireSession();
@@ -102,6 +103,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
 
         <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
         {(b.status === "RETURNED" || b.status === "ACTIVE") && <DamageCasesPanel tenantId={tenant.id} where={{ OR: [{ bookingId: b.id }, { discoveredIn: { bookingId: b.id, type: "RETURN" } }] }} title="Schäden dieser Vermietung" empty="Zu dieser Vermietung wurde kein Schaden festgestellt." />}
+        <AuthorityCasesPanel tenantId={tenant.id} scope={{ bookingId: b.id }} canManage={user.role !== "YARD"} />
         {contractSigned && (
           <div id="kaution" className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
             <PaymentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} compact />
