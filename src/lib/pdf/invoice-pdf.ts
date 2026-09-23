@@ -7,7 +7,13 @@ export async function renderInvoicePdf(data: InvoiceDocumentData): Promise<{ byt
   const v = data.version;
   const correction = v.kind === "CORRECTION";
   const damage = data.kind === "DAMAGE";
-  const baseTitle = damage ? "Schadenabrechnung" : "Rechnung";
+  // Gegenbelege (Gutschrift, Stornobeleg): eigener Titel, eigene Nummer, Bezug auf die Originalrechnung, kein Zahlungsziel,
+  // keine Aussage über eine Erstattung – aus dem Beleg kann sich ein Kundenguthaben ergeben.
+  const counter = data.documentType !== "INVOICE";
+  const credit = data.documentType === "CREDIT_NOTE";
+  const baseTitle = counter ? (credit ? "Gutschrift" : "Stornobeleg") : damage ? "Schadenabrechnung" : "Rechnung";
+  const numberLabel = counter ? (credit ? "Gutschriftnummer" : "Belegnummer") : "Rechnungsnummer";
+  const amountLabel = counter ? (credit ? "Gutschriftbetrag" : "Stornobetrag") : "Rechnungsbetrag";
   const pdf = new Pdf({
     title: correction ? `Berichtigte ${baseTitle}` : baseTitle,
     number: v.versionNo > 1 ? `${data.number} · Fassung ${v.versionNo}` : data.number,
@@ -26,8 +32,9 @@ export async function renderInvoicePdf(data: InvoiceDocumentData): Promise<{ byt
   const rx = pdf.left + pdf.width * 0.6;
   const rw = pdf.width * 0.4;
   const meta: [string, string | null][] = [
-    ["Rechnungsnummer", data.number],
-    ["Rechnungsdatum", data.issueDate],
+    [numberLabel, data.number],
+    [counter ? "Belegdatum" : "Rechnungsdatum", data.issueDate],
+    ["Zu Rechnung", counter && data.original ? `${data.original.number}${data.original.date ? ` vom ${data.original.date}` : ""}` : null],
     ["Kundennummer", data.customer.number],
     [damage ? "Mietzeitraum" : "Leistungszeitraum", data.servicePeriod],
     ["Mietvertrag", data.reference.contractNumber],
@@ -38,17 +45,26 @@ export async function renderInvoicePdf(data: InvoiceDocumentData): Promise<{ byt
   for (const [label, value] of meta) {
     if (!value) continue;
     pdf.textAt(label, rx, ry, rw * 0.45, { size: 8, color: COLORS.ink3 });
-    ry += pdf.textAt(value, rx + rw * 0.45, ry, rw * 0.55, { size: 9, bold: label === "Rechnungsnummer" }) + 1;
+    ry += pdf.textAt(value, rx + rw * 0.45, ry, rw * 0.55, { size: 9, bold: label === numberLabel }) + 1;
   }
   pdf.y = Math.max(y, ry) + 14;
 
   pdf.textAt(`${correction ? `Berichtigte ${baseTitle}` : baseTitle} ${data.number}`, pdf.left, pdf.y, pdf.width, { size: 16, bold: true, color: COLORS.brand });
   pdf.y += 4;
-  const subtitle = damage
+  const subtitle = counter && data.original
+    ? `${credit ? "Gutschrift" : "Storno"} zu ${damage ? "Schadenabrechnung" : "Rechnung"} ${data.original.number}${data.original.date ? ` vom ${data.original.date}` : ""}${data.original.versionNo > 1 ? ` (Fassung ${data.original.versionNo})` : ""}, ${damage ? "Mietzeitraum" : "Leistungszeitraum"} ${data.servicePeriod}`
+    : damage
     ? `Schadenabrechnung zur Vermietung${data.reference.bookingNumber ? ` ${data.reference.bookingNumber}` : ""}${data.reference.contractNumber ? `, Mietvertrag ${data.reference.contractNumber}` : ""}, Mietzeitraum ${data.servicePeriod}`
     : `Fahrzeugmiete${data.reference.contractNumber ? ` gemäß Mietvertrag ${data.reference.contractNumber}` : ""}, Leistungszeitraum ${data.servicePeriod}`;
   pdf.textAt(subtitle, pdf.left, pdf.y, pdf.width, { size: 9, color: COLORS.ink2 });
   pdf.y += 10;
+  if (counter) {
+    pdf.paragraph(credit
+      ? `Mit diesem Beleg schreiben wir Ihnen die unten aufgeführten Beträge zur Rechnung ${data.original?.number ?? ""} gut. Die Rechnung selbst bleibt unverändert bestehen; dieser Beleg mindert die Forderung aus der Rechnung.`
+      : `Mit diesem Beleg heben wir die Forderung aus der Rechnung ${data.original?.number ?? ""} in Höhe des unten aufgeführten Betrags auf. Die Rechnung selbst bleibt als Beleg unverändert bestehen.`, { size: 9, gapAfter: 3 });
+    if (data.reason) pdf.paragraph(`Grund: ${data.reason}`, { size: 9, gapAfter: 8 });
+    else pdf.gap(5);
+  }
   // Fassungsinformation: Neufassung unaufdringlich, Berichtigung deutlich (Bezug auf die ersetzte Fassung, § 31 Abs. 5 UStDV)
   if (v.versionNo > 1) {
     const supersedes = v.supersedes ? `Diese Fassung ersetzt Fassung ${v.supersedes.versionNo}${v.supersedes.finalizedAt ? ` vom ${v.supersedes.finalizedAt}` : ""} der Rechnung ${data.number}.` : "";
@@ -89,16 +105,16 @@ export async function renderInvoicePdf(data: InvoiceDocumentData): Promise<{ byt
     sy += (opts.size ?? 9) + 5;
   };
   if (data.nonTaxable) {
-    row("Nicht steuerbarer Schadensersatz", data.totals.gross);
+    row(counter ? "Nicht steuerbarer Betrag (Schadensersatz)" : "Nicht steuerbarer Schadensersatz", data.totals.gross);
     pdf.doc.moveTo(sx, sy - 1).lineTo(sx + sw, sy - 1).lineWidth(0.8).strokeColor(COLORS.ink).stroke();
     sy += 3;
-    row("Gesamtforderung", data.totals.gross, { bold: true, size: 11 });
+    row(counter ? amountLabel : "Gesamtforderung", data.totals.gross, { bold: true, size: 11 });
   } else {
     row("Nettobetrag", data.totals.net);
     for (const t of data.taxSummary) row(t.rate.startsWith("0,00") ? `${t.rate} USt. auf ${t.net} (siehe Hinweis)` : `zzgl. ${t.rate} USt. auf ${t.net}`, t.tax);
     pdf.doc.moveTo(sx, sy - 1).lineTo(sx + sw, sy - 1).lineWidth(0.8).strokeColor(COLORS.ink).stroke();
     sy += 3;
-    row("Rechnungsbetrag", data.totals.gross, { bold: true, size: 11 });
+    row(amountLabel, data.totals.gross, { bold: true, size: 11 });
   }
   pdf.y = sy + 6;
 
@@ -106,12 +122,13 @@ export async function renderInvoicePdf(data: InvoiceDocumentData): Promise<{ byt
   // Steuerliche Behandlung der Schadenabrechnung: bei echtem Schadensersatz der feste Hinweis, sonst die gewählte Einordnung
   if (data.taxTreatmentNote) lines.push(data.taxTreatmentNote);
   else if (data.taxTreatmentLabel) lines.push(`Steuerliche Behandlung: ${data.taxTreatmentLabel}.`);
-  if (data.paymentDueDate) lines.push(`Zahlbar bis ${data.paymentDueDate}${data.paymentTermDays != null ? ` (${data.paymentTermDays} Tage nach Rechnungsdatum)` : ""} ohne Abzug.`);
+  if (counter) lines.push("Aus diesem Beleg kann sich ein Guthaben zu Ihren Gunsten ergeben, soweit die Rechnung bereits bezahlt wurde. Eine Erstattung ist mit diesem Beleg nicht verbunden; sie wird gesondert abgestimmt.");
+  else if (data.paymentDueDate) lines.push(`Zahlbar bis ${data.paymentDueDate}${data.paymentTermDays != null ? ` (${data.paymentTermDays} Tage nach Rechnungsdatum)` : ""} ohne Abzug.`);
   else if (data.company.bankLines.length > 0) lines.push("Bitte überweisen Sie den Rechnungsbetrag unter Angabe der Rechnungsnummer.");
   if (data.taxNote && data.hasZeroRate) lines.push(data.taxNote);
   if (data.customerNote) lines.push(data.customerNote);
   for (const l of lines) pdf.paragraph(l, { size: 9, gapAfter: 5 });
-  if (data.company.bankLines.length > 0) {
+  if (data.company.bankLines.length > 0 && !counter) {
     pdf.gap(2);
     pdf.keyValues(data.company.bankLines.map((l) => { const [label, ...rest] = l.split(": "); return { label, value: rest.join(": ") }; }), 1);
   }

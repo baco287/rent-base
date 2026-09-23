@@ -306,7 +306,7 @@ export default async function DamageCasePage({ params, searchParams }: PageProps
                   {c.invoice.currentVersion?.taxTreatment && <Chip tone="info">{DAMAGE_TAX_TREATMENTS[c.invoice.currentVersion.taxTreatment as DamageTaxTreatment] ?? c.invoice.currentVersion.taxTreatment}</Chip>}
                   {c.payment && <PaymentStatusChip status={c.payment.status} />}
                 </div>
-                {c.payment && <div className="text-xs text-ink-2 flex flex-wrap gap-x-3"><span>Betrag {fmtCents(c.payment.grossCents)}</span><span>bezahlt {fmtCents(c.payment.paidCents)}</span><span>{c.payment.status === "OVERPAID" ? `überzahlt ${fmtCents(c.payment.overpaidCents)}` : `offen ${fmtCents(c.payment.openCents)}`}</span></div>}
+                {c.payment && <div className="text-xs text-ink-2 flex flex-wrap gap-x-3"><span>Betrag {fmtCents(c.payment.grossCents)}</span><span>bezahlt {fmtCents(c.payment.paidCents)}</span><span>{c.payment.status === "OVERPAID" ? `Guthaben ${fmtCents(c.payment.overpaidCents)} – Erstattung erforderlich` : `offen ${fmtCents(c.payment.openCents)}`}</span>{c.payment.chain !== "NONE" && <span>{c.payment.chain === "CANCELLED" ? "storniert" : c.payment.chain === "CREDITED" ? "vollständig gutgeschrieben" : `teilweise gutgeschrieben (${fmtCents(c.payment.creditedCents)})`}</span>}</div>}
                 {invoiceHref && <div><Link href={invoiceHref} className="btn btn-primary !py-1.5">{c.invoice.status === "FINALIZED" ? "Schadenabrechnung und Zahlungen" : "Entwurf der Schadenabrechnung öffnen"}</Link></div>}
                 <p className="text-xs text-ink-3">Eigene Rechnung, getrennt von der Mietrechnung. Änderungen laufen über Fassungen (Neufassung oder Berichtigung).</p>
               </div>

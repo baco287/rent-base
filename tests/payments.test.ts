@@ -38,7 +38,7 @@ test("Zahlungsstatus wird abgeleitet: offen, teilbezahlt, bezahlt; Cent-genau", 
 
 test("Vollständige Zahlung, Teilzahlungen, Überzahlung/0 €/negativ blockiert, Rechnung bleibt unverändert, Vorschau serverseitig", async () => {
   const { w, inv, gross, hashBefore } = await invoicedWorld("pay-basic");
-  assert.deepEqual(await invoicePaymentSummary(w.tenantId, inv.id), { grossCents: gross, paidCents: 0, openCents: gross, overpaidCents: 0, status: "OPEN" });
+  assert.deepEqual(await invoicePaymentSummary(w.tenantId, inv.id), { grossCents: gross, paidCents: 0, openCents: gross, overpaidCents: 0, status: "OPEN", invoiceCents: gross, creditedCents: 0, cancelledCents: 0, chain: "NONE" });
 
   // ungültige Beträge
   await assert.rejects(() => recordInvoicePayment(w.tenantId, w.actor, { invoiceId: inv.id, amount: "0", method: "CASH", paidAt: at }), /größer als 0,00/);

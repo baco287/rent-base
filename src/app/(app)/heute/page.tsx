@@ -45,7 +45,7 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
 
   // Operative Geldübersicht (keine Buchhaltung): offene Rechnungen, heute erfasste Zahlungen, offene Kautionen
   const [finalInvoices, todayPayments, deposits, damage] = await Promise.all([
-    db.invoice.findMany({ where: { tenantId: tenant.id, status: "FINALIZED", currentVersionId: { not: null } }, select: { id: true, kind: true, currentVersion: { select: { grossTotal: true } } } }).then((rows) => rows.map((r) => ({ id: r.id, kind: r.kind, grossTotal: r.currentVersion!.grossTotal }))),
+    db.invoice.findMany({ where: { tenantId: tenant.id, status: "FINALIZED", documentType: "INVOICE", currentVersionId: { not: null } }, select: { id: true, kind: true, currentVersion: { select: { grossTotal: true } } } }).then((rows) => rows.map((r) => ({ id: r.id, kind: r.kind, grossTotal: r.currentVersion!.grossTotal }))),
     db.payment.aggregate({ where: { tenantId: tenant.id, status: "CONFIRMED", createdAt: { gte: start, lt: end } }, _sum: { amountCents: true }, _count: true }),
     openDepositCounts(tenant.id),
     caseCounts(tenant.id),
@@ -128,7 +128,7 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
         )}
         {overpaid.length > 0 && (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <KPI label="Erstattungen zu klären" value={overpaid.length} detail={<Link href="/rechnungen?filter=ueberzahlt" className="underline">{fmtCents(overpaidCents)} überzahlt – keine automatische Erstattung</Link>} hot />
+            <KPI label="Erstattungen zu klären" value={overpaid.length} detail={<Link href="/rechnungen?filter=erstattung" className="underline">{fmtCents(overpaidCents)} Kundenguthaben – keine automatische Erstattung</Link>} hot />
           </div>
         )}
 

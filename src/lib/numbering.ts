@@ -1,6 +1,7 @@
 // Fortlaufende Nummern je Mandant und Jahr: Präfix-JJJJ-NNNN.
 // Gleiche Logik wie die Buchungsnummer, für Verträge und Protokolle wiederverwendet.
 import type { Prisma } from "@prisma/client";
+import { nextInRange, numberRangesOf, rangePrefix, type InvoiceDocumentType, type NumberRanges } from "@/lib/number-ranges";
 
 type Tx = Prisma.TransactionClient;
 
@@ -54,12 +55,32 @@ export async function withNumberRetry<T>(fn: () => Promise<T>, attempts = 6): Pr
   throw lastError;
 }
 
-/** Rechnungsnummer RE-JJJJ-NNNNNN. Wird erst beim Abschluss vergeben; der eindeutige Index verhindert Doppelte, der Aufrufer wiederholt. */
-export async function nextInvoiceNumber(tx: Tx, tenantId: string, date = new Date()) {
-  const prefix = `RE-${date.getFullYear()}-`;
+/**
+ * Belegnummer PREFIX-JJJJ-NNNNNN je Nummernkreis (Rechnung / Gutschrift / Stornobeleg, Präfix je Mandant konfigurierbar,
+ * Standard RE / GS / ST). Wird erst beim Abschluss vergeben; der eindeutige Index (tenantId, number) verhindert Doppelte,
+ * der Aufrufer wiederholt (withNumberRetry). Nummern werden nie wiederverwendet: Grundlage ist die höchste vergebene Nummer.
+ */
+export async function nextDocumentNumber(tx: Tx, tenantId: string, type: InvoiceDocumentType, date = new Date()) {
+  const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { numberRanges: true } });
+  const prefix = rangePrefix(numberRangesOf(tenant.numberRanges), type, date.getFullYear());
   const last = await tx.invoice.findFirst({ where: { tenantId, number: { startsWith: prefix } }, orderBy: { number: "desc" }, select: { number: true } });
-  const n = last?.number ? parseInt(last.number.slice(prefix.length), 10) + 1 : 1;
-  return `${prefix}${String(n).padStart(6, "0")}`;
+  return nextInRange(prefix, last?.number);
+}
+
+/** Rechnungsnummer (Kreis „Rechnungen“, Standard RE-JJJJ-NNNNNN). */
+export async function nextInvoiceNumber(tx: Tx, tenantId: string, date = new Date()) {
+  return nextDocumentNumber(tx, tenantId, "INVOICE", date);
+}
+
+/** Vorschau der nächsten Nummer je Kreis (Einstellungen); vergibt nichts. */
+export async function previewNextNumbers(client: Tx, tenantId: string, ranges: NumberRanges, date = new Date()) {
+  const out: Record<InvoiceDocumentType, string> = { INVOICE: "", CREDIT_NOTE: "", CANCELLATION: "" };
+  for (const type of Object.keys(out) as InvoiceDocumentType[]) {
+    const prefix = rangePrefix(ranges, type, date.getFullYear());
+    const last = await client.invoice.findFirst({ where: { tenantId, number: { startsWith: prefix } }, orderBy: { number: "desc" }, select: { number: true } });
+    out[type] = nextInRange(prefix, last?.number);
+  }
+  return out;
 }
 
 /** Schadenaktennummer SCH-JJJJ-NNNNNN, je Mandant fortlaufend; Eindeutigkeit über den Index, Kollision → withNumberRetry. */

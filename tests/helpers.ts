@@ -41,6 +41,8 @@ export async function purgeTenants(tenantIds: string[]) {
         await tx.extraCharge.deleteMany(w);
         await tx.document.deleteMany(w);
         await tx.invoiceVersionItem.deleteMany(w);
+        await tx.invoiceVersion.deleteMany({ where: { tenantId: t, invoice: { documentType: { not: "INVOICE" } } } });
+        await tx.invoice.deleteMany({ where: { tenantId: t, documentType: { not: "INVOICE" } } });
         await tx.invoiceVersion.deleteMany(w);
         await tx.invoiceItem.deleteMany(w);
         await tx.invoice.deleteMany(w);

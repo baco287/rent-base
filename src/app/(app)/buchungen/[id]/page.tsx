@@ -36,9 +36,10 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const pickupDone = b.handovers.find((h) => h.type === "PICKUP" && h.status === "FINALIZED");
   const returnDraft = b.handovers.find((h) => h.type === "RETURN" && h.status === "DRAFT");
   const returnDone = b.handovers.find((h) => h.type === "RETURN" && h.status === "FINALIZED");
-  const invoice = b.status === "RETURNED" ? await db.invoice.findFirst({ where: { tenantId: tenant.id, bookingId: b.id, kind: "RENTAL", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: [{ status: "asc" }, { createdAt: "desc" }], select: { id: true, number: true, status: true, currentVersion: { select: { grossTotal: true, versionNo: true } }, _count: { select: { versions: true } } } }) : null;
+  const invoice = b.status === "RETURNED" ? await db.invoice.findFirst({ where: { tenantId: tenant.id, bookingId: b.id, kind: "RENTAL", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: [{ status: "asc" }, { createdAt: "desc" }], select: { id: true, number: true, status: true, currentVersion: { select: { grossTotal: true, versionNo: true } }, _count: { select: { versions: true } } } }) : null;
   // Schadenabrechnungen sind eigene Rechnungen (kind DAMAGE) mit Bezug zur Schadenakte
-  const damageInvoices = await db.invoice.findMany({ where: { tenantId: tenant.id, bookingId: b.id, kind: "DAMAGE", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "asc" }, select: { id: true, number: true, status: true, currentVersion: { select: { grossTotal: true } }, damageCase: { select: { id: true, caseNumber: true } } } });
+  const damageInvoices = await db.invoice.findMany({ where: { tenantId: tenant.id, bookingId: b.id, kind: "DAMAGE", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "asc" }, select: { id: true, number: true, status: true, currentVersion: { select: { grossTotal: true } }, damageCase: { select: { id: true, caseNumber: true } } } });
+  const counterDocs = await db.invoice.findMany({ where: { tenantId: tenant.id, bookingId: b.id, documentType: { in: ["CREDIT_NOTE", "CANCELLATION"] }, status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "asc" }, select: { id: true, number: true, status: true, documentType: true, currentVersion: { select: { grossTotal: true } }, original: { select: { number: true } } } });
   const charges = b.status === "RETURNED" || returnDraft ? await db.extraCharge.findMany({ where: { tenantId: tenant.id, bookingId: b.id }, orderBy: { createdAt: "asc" } }) : [];
   const chargesTotal = charges.reduce((s, c) => s + Number(c.amount), 0);
   const update = updateBookingAction.bind(null, b.id);
@@ -93,6 +94,16 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
             {damageInvoices.map((i) => (
               <Link key={i.id} href={`/buchungen/${b.id}/rechnung?nr=${i.id}`} className={`chip ${i.status === "FINALIZED" ? "bg-good-soft text-good" : "bg-amber-soft text-amber"} hover:underline`}>
                 {i.status === "FINALIZED" ? `${i.number} · ${fmtEur(Number(i.currentVersion?.grossTotal ?? 0))}` : "Entwurf"}{i.damageCase ? ` · ${i.damageCase.caseNumber}` : ""}
+              </Link>
+            ))}
+          </div>
+        )}
+        {counterDocs.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="label-xs">Gutschriften / Storno</span>
+            {counterDocs.map((i) => (
+              <Link key={i.id} href={`/buchungen/${b.id}/rechnung?nr=${i.id}`} className={`chip ${i.status === "FINALIZED" ? "bg-info-soft text-info" : "bg-amber-soft text-amber"} hover:underline`}>
+                {i.documentType === "CANCELLATION" ? "Storno" : "Gutschrift"} {i.status === "FINALIZED" ? `${i.number} · ${fmtEur(Number(i.currentVersion?.grossTotal ?? 0))}` : "(Entwurf)"} zu {i.original?.number ?? "–"}
               </Link>
             ))}
           </div>

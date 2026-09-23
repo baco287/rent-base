@@ -65,6 +65,9 @@ export function InvoiceHeadCards({ doc }: { doc: InvoiceDocumentData }) {
 /** Abgeschlossene Rechnung: Positionen, Steuer, Summen und Texte, nur lesend. */
 export function InvoiceDocumentView({ doc }: { doc: InvoiceDocumentData }) {
   const v = doc.version;
+  // Gegenbelege: eigene Betragsbezeichnung und Bezug auf die Rechnung; keine Zahlungsaufforderung
+  const counter = doc.documentType !== "INVOICE";
+  const amountLabel = doc.documentType === "CREDIT_NOTE" ? "Gutschriftbetrag" : doc.documentType === "CANCELLATION" ? "Stornobetrag" : doc.nonTaxable ? "Gesamtforderung" : "Rechnungsbetrag";
   return (
     <div className="flex flex-col gap-4">
       {v.versionNo > 1 && (
@@ -102,9 +105,12 @@ export function InvoiceDocumentView({ doc }: { doc: InvoiceDocumentData }) {
         </div>
       </Card>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-        <Card title="Texte auf der Rechnung">
+        <Card title={counter ? "Texte auf dem Beleg" : "Texte auf der Rechnung"}>
           <div className="p-4 text-sm flex flex-col gap-2">
-            {doc.paymentDueDate ? <p>Zahlbar bis {doc.paymentDueDate}{doc.paymentTermDays != null ? ` (${doc.paymentTermDays} Tage nach Rechnungsdatum)` : ""} ohne Abzug.</p> : <p className="text-ink-3">Kein Zahlungsziel hinterlegt.</p>}
+            {counter && doc.original && <p><span className="label-xs">Bezug</span><br />Zu Rechnung {doc.original.number}{doc.original.date ? ` vom ${doc.original.date}` : ""}{doc.original.versionNo > 1 ? ` (Fassung ${doc.original.versionNo})` : ""}</p>}
+            {counter && doc.reason && <p><span className="label-xs">Grund</span><br />{doc.reason}</p>}
+            {counter && <p className="text-ink-2">Aus diesem Beleg kann sich ein Guthaben zu Ihren Gunsten ergeben, soweit die Rechnung bereits bezahlt wurde. Eine Erstattung ist mit diesem Beleg nicht verbunden; sie wird gesondert abgestimmt.</p>}
+            {!counter && (doc.paymentDueDate ? <p>Zahlbar bis {doc.paymentDueDate}{doc.paymentTermDays != null ? ` (${doc.paymentTermDays} Tage nach Rechnungsdatum)` : ""} ohne Abzug.</p> : <p className="text-ink-3">Kein Zahlungsziel hinterlegt.</p>)}
             {doc.taxTreatmentNote ? <p><span className="label-xs">Steuerliche Behandlung</span><br />{doc.taxTreatmentNote}</p> : doc.taxTreatmentLabel ? <p><span className="label-xs">Steuerliche Behandlung</span><br />{doc.taxTreatmentLabel}.</p> : null}
             {doc.hasZeroRate && doc.taxNote && <p><span className="label-xs">Steuerhinweis</span><br />{doc.taxNote}</p>}
             {doc.customerNote && <p className="whitespace-pre-line">{doc.customerNote}</p>}
@@ -114,12 +120,12 @@ export function InvoiceDocumentView({ doc }: { doc: InvoiceDocumentData }) {
         <Card title={doc.nonTaxable ? "Forderung" : "Steuerzusammenfassung"}>
           <div className="p-4 text-sm flex flex-col gap-1.5">
             {doc.nonTaxable && <div className="flex justify-between"><span className="text-ink-3">Nicht steuerbarer Schadensersatz</span><span className="font-mono tnum">{doc.totals.gross}</span></div>}
-            {doc.nonTaxable && <div className="flex justify-between text-base font-semibold border-t-2 border-ink pt-2"><span>Gesamtforderung</span><span className="font-mono tnum">{doc.totals.gross}</span></div>}
+            {doc.nonTaxable && <div className="flex justify-between text-base font-semibold border-t-2 border-ink pt-2"><span>{amountLabel}</span><span className="font-mono tnum">{doc.totals.gross}</span></div>}
             {doc.nonTaxable && <p className="text-xs text-ink-3">Keine Umsatzsteuer ausgewiesen (echter Schadensersatz, nicht steuerbar).</p>}
             {!doc.nonTaxable && doc.taxSummary.map((t) => <div key={t.rate} className="flex justify-between"><span className="text-ink-3">{t.rate} USt. auf {t.net}</span><span className="font-mono tnum">{t.tax}</span></div>)}
             {!doc.nonTaxable && <div className="flex justify-between border-t border-line-soft pt-2"><span className="text-ink-3">Nettobetrag</span><span className="font-mono tnum">{doc.totals.net}</span></div>}
             {!doc.nonTaxable && <div className="flex justify-between"><span className="text-ink-3">Steuer</span><span className="font-mono tnum">{doc.totals.tax}</span></div>}
-            {!doc.nonTaxable && <div className="flex justify-between text-base font-semibold border-t-2 border-ink pt-2"><span>Rechnungsbetrag</span><span className="font-mono tnum">{doc.totals.gross}</span></div>}
+            {!doc.nonTaxable && <div className="flex justify-between text-base font-semibold border-t-2 border-ink pt-2"><span>{amountLabel}</span><span className="font-mono tnum">{doc.totals.gross}</span></div>}
           </div>
         </Card>
       </div>

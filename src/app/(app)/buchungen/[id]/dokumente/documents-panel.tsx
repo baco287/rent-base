@@ -20,7 +20,7 @@ export async function DocumentsPanel({ tenantId, bookingId, role, invoiceId = nu
   const [contract, handovers, invoice, documents, emails] = await Promise.all([
     db.rentalContract.findFirst({ where: { bookingId, tenantId }, select: { id: true, number: true, status: true, customerSnapshot: true } }),
     db.handover.findMany({ where: { bookingId, tenantId, status: "FINALIZED", correctsId: null }, orderBy: { finalizedAt: "desc" }, select: { id: true, number: true, type: true } }),
-    db.invoice.findFirst({ where: { bookingId, tenantId, status: "FINALIZED", ...(invoiceId ? { id: invoiceId } : { kind: "RENTAL" }) }, select: { id: true, number: true, kind: true, currentVersionId: true, currentVersion: { select: { id: true, versionNo: true, customerSnapshot: true } } } }),
+    db.invoice.findFirst({ where: { bookingId, tenantId, status: "FINALIZED", ...(invoiceId ? { id: invoiceId } : { kind: "RENTAL", documentType: "INVOICE" }) }, select: { id: true, number: true, kind: true, documentType: true, currentVersionId: true, currentVersion: { select: { id: true, versionNo: true, customerSnapshot: true } } } }),
     listBookingDocuments(tenantId, bookingId),
     listBookingEmails(tenantId, bookingId, 16),
   ]);
@@ -32,27 +32,29 @@ export async function DocumentsPanel({ tenantId, bookingId, role, invoiceId = nu
   const recipient = (contract.customerSnapshot as { email?: string | null } | null)?.email?.trim() || null;
   const invoiceRecipient = (invoice?.currentVersion?.customerSnapshot as { email?: string | null } | null)?.email?.trim() || null;
   const currentVersionId = invoice?.currentVersion?.id ?? null;
-  const invoiceKey = invoice?.kind === "DAMAGE" ? invoice.id : null;
-  const invoiceWord = invoice?.kind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung";
+  // Gegenbelege (Gutschrift, Stornobeleg) haben ihren eigenen Dokumenttyp und immer einen eigenen Schlüssel
+  const invoiceDocType: DocumentType = invoice?.documentType === "CREDIT_NOTE" ? "CREDIT_NOTE" : invoice?.documentType === "CANCELLATION" ? "CANCELLATION" : "INVOICE";
+  const invoiceKey = invoice && (invoice.kind === "DAMAGE" || invoiceDocType !== "INVOICE") ? invoice.id : null;
+  const invoiceWord = invoiceDocType === "CREDIT_NOTE" ? "Gutschrift" : invoiceDocType === "CANCELLATION" ? "Stornobeleg" : invoice?.kind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung";
   const canSendInvoice = role !== "YARD";
   const pickup = handovers.find((h) => h.type === "PICKUP");
   const ret = handovers.find((h) => h.type === "RETURN");
   // Rechnung: nur das PDF der aktuellen Fassung zählt hier; ältere Fassungen sind auf der Rechnungsseite im Fassungsverlauf
-  const latest = (type: DocumentType) => documents.find((d) => d.type === type && (type !== "INVOICE" || d.invoiceVersionId === currentVersionId));
+  const latest = (type: DocumentType) => documents.find((d) => d.type === type && (type !== invoiceDocType || d.invoiceVersionId === currentVersionId));
 
   type DocAction = (prev: import("./actions").DocState, fd: FormData) => Promise<import("./actions").DocState>;
   const rows: { type: DocumentType; available: boolean; action: DocAction; regenerate?: DocAction; generateLabel: string; waitText: string }[] = [
     { type: "RENTAL_CONTRACT", available: true, action: generateContractPdfAction.bind(null, bookingId), generateLabel: "Mietvertrag-PDF erzeugen", waitText: "" },
     { type: "PICKUP_PROTOCOL", available: !!pickup, action: generateHandoverPdfAction.bind(null, bookingId, "PICKUP"), regenerate: regenerateHandoverPdfAction.bind(null, bookingId, "PICKUP"), generateLabel: "Übergabeprotokoll-PDF erzeugen", waitText: "nach der Übergabe" },
     { type: "RETURN_PROTOCOL", available: !!ret, action: generateHandoverPdfAction.bind(null, bookingId, "RETURN"), regenerate: regenerateHandoverPdfAction.bind(null, bookingId, "RETURN"), generateLabel: "Rückgabeprotokoll-PDF erzeugen", waitText: "nach der Rückgabe" },
-    { type: "INVOICE", available: !!currentVersionId, action: generateInvoicePdfAction.bind(null, bookingId, invoiceKey), generateLabel: `${invoiceWord}s-PDF erzeugen`, waitText: "nach Abschluss der Rechnung" },
+    { type: invoiceDocType, available: !!currentVersionId, action: generateInvoicePdfAction.bind(null, bookingId, invoiceKey), generateLabel: `${invoiceWord}-PDF erzeugen`, waitText: "nach Abschluss der Rechnung" },
   ];
 
   const mailBlocks = [
     pickup ? { kind: "PICKUP" as const, title: "E-Mail nach der Übergabe", handover: pickup, ready: !!latest("RENTAL_CONTRACT") && !!latest("PICKUP_PROTOCOL"), readyText: "Versendet werden kann, sobald Mietvertrag und Übergabeprotokoll als PDF vorliegen." } : null,
     ret ? { kind: "RETURN" as const, title: "E-Mail nach der Rückgabe", handover: ret, ready: !!latest("RETURN_PROTOCOL"), readyText: "Versendet werden kann, sobald das Rückgabeprotokoll als PDF vorliegt." } : null,
   ].filter((x): x is NonNullable<typeof x> => x !== null);
-  const invoiceBlock = invoice && currentVersionId ? { title: `E-Mail mit ${invoiceWord} ${invoice.number}${(invoice.currentVersion?.versionNo ?? 1) > 1 ? ` (Fassung ${invoice.currentVersion!.versionNo})` : ""}`, ready: !!latest("INVOICE"), readyText: "Versendet werden kann, sobald die aktuelle Fassung als PDF vorliegt.", emails: emails.filter((e) => e.invoiceVersionId === currentVersionId) } : null;
+  const invoiceBlock = invoice && currentVersionId ? { title: `E-Mail mit ${invoiceWord} ${invoice.number}${(invoice.currentVersion?.versionNo ?? 1) > 1 ? ` (Fassung ${invoice.currentVersion!.versionNo})` : ""}`, ready: !!latest(invoiceDocType), readyText: "Versendet werden kann, sobald der Beleg als PDF vorliegt.", emails: emails.filter((e) => e.invoiceVersionId === currentVersionId) } : null;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
@@ -66,11 +68,11 @@ export async function DocumentsPanel({ tenantId, bookingId, role, invoiceId = nu
         <ul className="divide-y divide-line-soft">
           {rows.map((r) => {
             const doc = latest(r.type);
-            const older = documents.filter((d) => d.type === r.type && d.id !== doc?.id && (r.type !== "INVOICE" || d.invoiceVersionId === currentVersionId));
+            const older = documents.filter((d) => d.type === r.type && d.id !== doc?.id && (r.type !== invoiceDocType || d.invoiceVersionId === currentVersionId));
             return (
               <li key={r.type} className="px-4 py-3 flex flex-col gap-2">
                 <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-                  <span className="font-medium">{r.type === "INVOICE" && invoice?.kind === "DAMAGE" ? `Schadenabrechnung ${invoice.number}` : DOCUMENT_TYPES[r.type]}</span>
+                  <span className="font-medium">{r.type === invoiceDocType && invoice && (invoice.kind === "DAMAGE" || invoiceDocType !== "INVOICE") ? `${invoiceWord} ${invoice.number}` : DOCUMENT_TYPES[r.type]}</span>
                   {doc ? <Chip tone="good">✓ erstellt</Chip> : r.available ? <Chip tone="amber">noch nicht erzeugt</Chip> : <Chip>{r.waitText}</Chip>}
                 </div>
                 {doc && (
@@ -135,7 +137,7 @@ export async function DocumentsPanel({ tenantId, bookingId, role, invoiceId = nu
             <Card title={invoiceBlock.title}>
               <div className="px-4 py-3 flex flex-col gap-3">
                 <MailStatus last={invoiceBlock.emails[0]} />
-                {!isValidEmail(invoiceRecipient) && <p className="text-sm text-bad">In der Rechnung ist keine gültige E-Mail-Adresse hinterlegt. Die Rechnung kann heruntergeladen und persönlich übergeben werden.</p>}
+                {!isValidEmail(invoiceRecipient) && <p className="text-sm text-bad">Im Beleg ist keine gültige E-Mail-Adresse hinterlegt. Der Beleg kann heruntergeladen und persönlich übergeben werden.</p>}
                 {canSendInvoice ? (
                   <ResendForm
                     action={resendInvoiceAction.bind(null, bookingId, invoiceKey)}
@@ -145,7 +147,7 @@ export async function DocumentsPanel({ tenantId, bookingId, role, invoiceId = nu
                     disabledReason={!invoiceBlock.ready ? invoiceBlock.readyText : null}
                   />
                 ) : (
-                  <p className="text-sm text-ink-3">Der Versand der Rechnung erfolgt durch die Disposition.</p>
+                  <p className="text-sm text-ink-3">Der Versand erfolgt durch die Disposition.</p>
                 )}
                 <MailHistory rows={invoiceBlock.emails} />
               </div>

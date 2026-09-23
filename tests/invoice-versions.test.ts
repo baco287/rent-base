@@ -248,7 +248,7 @@ test("Bereits übermittelt: nach E-Mail-Versand oder Übergabemarkierung wird di
 test("Zahlungen bei neuer Fassung: 1000/0→800, 1000/500→800 (300 offen), →500 (bezahlt), →400 (überzahlt 100, Bestätigung Pflicht), 1000/1000→800 (überzahlt 200), überzahlt nimmt nichts an, Storno, Zahlungen unverändert", async () => {
   const a = await invoicedWorld("ver-pay-a", 1000);
   await refinalize(a.w.tenantId, a.invoiceId, a.w.actor, 800);
-  assert.deepEqual(await invoicePaymentSummary(a.w.tenantId, a.invoiceId), { grossCents: 80_000, paidCents: 0, openCents: 80_000, overpaidCents: 0, status: "OPEN" });
+  assert.deepEqual(await invoicePaymentSummary(a.w.tenantId, a.invoiceId), { grossCents: 80_000, paidCents: 0, openCents: 80_000, overpaidCents: 0, status: "OPEN", invoiceCents: 80_000, creditedCents: 0, cancelledCents: 0, chain: "NONE" });
 
   const b = await invoicedWorld("ver-pay-b", 1000);
   const p = await recordInvoicePayment(b.w.tenantId, b.w.actor, { invoiceId: b.invoiceId, amount: "500", method: "CASH", paidAt: at });

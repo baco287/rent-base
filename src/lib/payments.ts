@@ -14,12 +14,17 @@ import { PAYMENT_METHODS, type InvoicePaymentStatus, type PaymentMethod } from "
 import { DomainError } from "@/lib/integrity";
 import { fmtCents, toCents, type Cents } from "@/lib/money";
 import { isUniqueViolation } from "@/lib/numbering";
+import { financialsFor, type InvoiceFinancials } from "@/lib/counter-documents";
 
 type Tx = Prisma.TransactionClient;
 const TX = { timeout: 20_000, maxWait: 10_000 };
 export type PaymentRow = Prisma.PaymentGetPayload<object>;
 
-export type PaymentSummary = { grossCents: Cents; paidCents: Cents; openCents: Cents; overpaidCents: Cents; status: InvoicePaymentStatus };
+/**
+ * grossCents = wirksame Forderung (Rechnungsbetrag − abgeschlossene Gutschriften − Storno). overpaidCents = Kundenguthaben:
+ * Zahlungen über der wirksamen Forderung → Erstattung erforderlich, nie ein negativer offener Betrag (Phase 17).
+ */
+export type PaymentSummary = { grossCents: Cents; paidCents: Cents; openCents: Cents; overpaidCents: Cents; status: InvoicePaymentStatus; invoiceCents: Cents; creditedCents: Cents; cancelledCents: Cents; chain: InvoiceFinancials["chain"] };
 
 /** Offen / teilbezahlt / bezahlt / überzahlt – immer aus Bruttobetrag der aktuellen Fassung und bestätigten Zahlungen. */
 export function paymentStatusOf(grossCents: Cents, paidCents: Cents): InvoicePaymentStatus {
@@ -28,36 +33,24 @@ export function paymentStatusOf(grossCents: Cents, paidCents: Cents): InvoicePay
   return paidCents >= grossCents ? "PAID" : "PARTIAL";
 }
 
-export function summarizePayment(grossCents: Cents, paidCents: Cents): PaymentSummary {
-  return { grossCents, paidCents, openCents: Math.max(0, grossCents - paidCents), overpaidCents: Math.max(0, paidCents - grossCents), status: paymentStatusOf(grossCents, paidCents) };
+export function summarizePayment(grossCents: Cents, paidCents: Cents, extra: { invoiceCents?: Cents; creditedCents?: Cents; cancelledCents?: Cents; chain?: InvoiceFinancials["chain"] } = {}): PaymentSummary {
+  return { grossCents, paidCents, openCents: Math.max(0, grossCents - paidCents), overpaidCents: Math.max(0, paidCents - grossCents), status: paymentStatusOf(grossCents, paidCents), invoiceCents: extra.invoiceCents ?? grossCents, creditedCents: extra.creditedCents ?? 0, cancelledCents: extra.cancelledCents ?? 0, chain: extra.chain ?? "NONE" };
 }
 
-/** Bruttobetrag der aktuellen Fassung (Altbestand ohne Fassung: der Rechnungswert selbst). */
-async function currentGrossCents(tx: Tx | typeof db, tenantId: string, invoiceId: string): Promise<Cents> {
-  const inv = await tx.invoice.findFirst({ where: { id: invoiceId, tenantId }, select: { grossTotal: true, currentVersion: { select: { grossTotal: true } } } });
-  if (!inv) throw new DomainError("Rechnung nicht gefunden.");
-  return toCents(inv.currentVersion?.grossTotal ?? inv.grossTotal);
-}
+const fromFinancials = (f: InvoiceFinancials): PaymentSummary => summarizePayment(f.effectiveCents, f.paidCents, { invoiceCents: f.invoiceCents, creditedCents: f.creditedCents, cancelledCents: f.cancelledCents, chain: f.chain });
 
-async function paidCentsOf(tx: Tx | typeof db, tenantId: string, invoiceId: string): Promise<Cents> {
-  const agg = await tx.payment.aggregate({ where: { tenantId, invoiceId, status: "CONFIRMED" }, _sum: { amountCents: true } });
-  return agg._sum.amountCents ?? 0;
-}
-
-/** Rechnungsbetrag, bezahlt, offen und Status, ausschließlich aus bestätigten Zahlungen. */
+/** Wirksame Forderung, bezahlt, offen, Guthaben und Status – zentral aus Fassung, Gegenbelegen und bestätigten Zahlungen. */
 export async function invoicePaymentSummary(tenantId: string, invoiceId: string, tx: Tx | typeof db = db): Promise<PaymentSummary> {
-  const grossCents = await currentGrossCents(tx, tenantId, invoiceId);
-  const paidCents = await paidCentsOf(tx, tenantId, invoiceId);
-  return summarizePayment(grossCents, paidCents);
+  const inv = await tx.invoice.findFirst({ where: { id: invoiceId, tenantId }, select: { id: true, grossTotal: true, currentVersion: { select: { grossTotal: true } } } });
+  if (!inv) throw new DomainError("Rechnung nicht gefunden.");
+  const m = await financialsFor(tenantId, [{ id: inv.id, grossTotal: inv.currentVersion?.grossTotal ?? inv.grossTotal }], tx);
+  return fromFinancials(m.get(inv.id)!);
 }
 
-/** Summen für mehrere Rechnungen auf einmal (Listen, Kennzahlen). */
-/** Erwartet je Rechnung den Bruttobetrag der aktuellen Fassung (grossTotal = currentVersion.grossTotal). */
+/** Summen für mehrere Rechnungen auf einmal (Listen, Kennzahlen). Erwartet je Rechnung den Bruttobetrag der aktuellen Fassung. */
 export async function paymentSummaries(tenantId: string, invoices: { id: string; grossTotal: unknown }[]): Promise<Map<string, PaymentSummary>> {
-  const ids = invoices.map((i) => i.id);
-  const groups = ids.length > 0 ? await db.payment.groupBy({ by: ["invoiceId"], where: { tenantId, invoiceId: { in: ids }, status: "CONFIRMED" }, _sum: { amountCents: true } }) : [];
-  const paid = new Map(groups.map((g) => [g.invoiceId, g._sum.amountCents ?? 0]));
-  return new Map(invoices.map((i) => [i.id, summarizePayment(toCents(i.grossTotal), paid.get(i.id) ?? 0)]));
+  const m = await financialsFor(tenantId, invoices);
+  return new Map(invoices.map((i) => [i.id, fromFinancials(m.get(i.id)!)]));
 }
 
 export function listInvoicePayments(tenantId: string, invoiceId: string) {
@@ -136,7 +129,7 @@ export async function recordInvoicePayment(tenantId: string, actor: Actor, input
   }
   try {
     const outcome = await db.$transaction(async (tx) => {
-      const locked = await tx.$queryRaw<{ id: string; status: string; bookingId: string; number: string | null }[]>`SELECT "id", "status", "bookingId", "number" FROM "Invoice" WHERE "id" = ${input.invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+      const locked = await tx.$queryRaw<{ id: string; status: string; bookingId: string; number: string | null; documentType: string }[]>`SELECT "id", "status", "bookingId", "number", "documentType" FROM "Invoice" WHERE "id" = ${input.invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
       if (locked.length === 0) throw new DomainError("Rechnung nicht gefunden.");
       const inv = locked[0];
       if (key) {
@@ -145,9 +138,9 @@ export async function recordInvoicePayment(tenantId: string, actor: Actor, input
         if (dup) return { payment: dup, created: false };
       }
       if (inv.status !== "FINALIZED") throw new DomainError("Zahlungen können nur auf abgeschlossene Rechnungen erfasst werden.");
-      const grossCents = await currentGrossCents(tx, tenantId, inv.id);
-      const paidCents = await paidCentsOf(tx, tenantId, inv.id);
-      const openCents = Math.max(0, grossCents - paidCents);
+      if (inv.documentType !== "INVOICE") throw new DomainError("Zahlungen werden nur zu Rechnungen erfasst, nicht zu Gutschriften oder Stornobelegen.");
+      // wirksame Forderung unter der Sperre: Rechnungsbetrag abzüglich abgeschlossener Gutschriften und Storno
+      const { grossCents, paidCents, openCents } = await invoicePaymentSummary(tenantId, inv.id, tx);
       if (openCents === 0) throw new DomainError(paidCents > grossCents ? `Diese Rechnung ist überzahlt (${fmtCents(paidCents - grossCents)} zu viel). Weitere Zahlungen werden nicht erfasst; die Erstattung ist zu klären.` : "Diese Rechnung ist vollständig bezahlt. Weitere Zahlungen werden nicht erfasst.");
       if (amountCents > openCents) throw new DomainError(`Überzahlung: Offen sind ${fmtCents(openCents)}, eingegeben wurden ${fmtCents(amountCents)}. Eine Zahlung über den offenen Betrag hinaus wird nicht erfasst.`);
       const payment = await tx.payment.create({

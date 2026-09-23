@@ -8,6 +8,7 @@ import { InvoiceSettingsForm, NewUserForm, TenantForm } from "./forms";
 import { invoiceSettingsMissing } from "@/lib/invoices";
 import { termsOverview } from "@/lib/rental-terms";
 import { fmtDate } from "@/lib/format";
+import { numberRangesOf } from "@/lib/number-ranges";
 
 export const metadata = { title: "Einstellungen" };
 
@@ -17,6 +18,7 @@ export default async function SettingsPage({ searchParams }: PageProps<"/einstel
   const isOwner = me.role === "OWNER";
   const users = await db.user.findMany({ where: { tenantId: tenant.id }, orderBy: [{ active: "desc" }, { name: "asc" }] });
   const terms = await termsOverview(tenant.id);
+  const ranges = numberRangesOf(tenant.numberRanges);
 
   return (
     <>
@@ -50,6 +52,13 @@ export default async function SettingsPage({ searchParams }: PageProps<"/einstel
                 <Link href="/einstellungen/geschaeftsregeln" className="btn">Geschäftsregeln</Link>
               </div>
               <p className="text-xs text-ink-3">Mietbedingungen sind der juristische Text (versioniert, unveränderlich nach Veröffentlichung). Geschäftsregeln sind operative Standardwerte wie Kaution, Kilometer, Tanken, Ausland – sie ersetzen den Text nicht.</p>
+            </div>
+          </Card>
+
+          <Card title="Nummernkreise der Belege" right={<Chip>{ranges.invoice.prefix} · {ranges.creditNote.prefix} · {ranges.cancellation.prefix}</Chip>}>
+            <div className="p-5 flex flex-col gap-3 text-sm">
+              <p>Rechnungen <span className="font-mono">{ranges.invoice.prefix}-JJJJ-NNNNNN</span>, Gutschriften <span className="font-mono">{ranges.creditNote.prefix}-JJJJ-NNNNNN</span>, Stornobelege <span className="font-mono">{ranges.cancellation.prefix}-JJJJ-NNNNNN</span>. Jeder Kreis zählt für sich; Nummern werden beim Abschluss vergeben und nie wiederverwendet.</p>
+              <div><Link href="/einstellungen/nummernkreise" className="btn">{isOwner ? "Nummernkreise verwalten" : "Nummernkreise ansehen"}</Link></div>
             </div>
           </Card>
 

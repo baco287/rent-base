@@ -158,6 +158,8 @@ export const DOCUMENT_TYPES = {
   PICKUP_PROTOCOL: "Übergabeprotokoll",
   RETURN_PROTOCOL: "Rückgabeprotokoll",
   INVOICE: "Rechnung",
+  CREDIT_NOTE: "Gutschrift",
+  CANCELLATION: "Stornobeleg",
 } as const;
 export type DocumentType = keyof typeof DOCUMENT_TYPES;
 
@@ -165,6 +167,17 @@ export type DocumentType = keyof typeof DOCUMENT_TYPES;
 export const RETURN_ATTENTION_ON_YES = new Set(["unusually_dirty"]);
 
 export const INVOICE_STATUS = { DRAFT: "Entwurf", FINALIZED: "Abgeschlossen", CANCELLED: "Storniert", CREDITED: "Gutgeschrieben" } as const;
+// Phase 17: Belegarten. Gutschrift und Stornobeleg sind eigene Belege mit eigener Nummer und Wirkung „Minderung“ auf eine Rechnung.
+export const INVOICE_DOCUMENT_TYPES = { INVOICE: "Rechnung", CREDIT_NOTE: "Gutschrift", CANCELLATION: "Stornobeleg" } as const;
+export type InvoiceDocumentTypeKey = keyof typeof INVOICE_DOCUMENT_TYPES;
+// Stand einer Rechnung aus ihrer Belegkette (abgeleitet, nie gespeichert)
+export const INVOICE_CHAIN_STATUS = { NONE: "Keine Gegenbelege", PARTIALLY_CREDITED: "Teilweise gutgeschrieben", CREDITED: "Gutgeschrieben", CANCELLED: "Storniert" } as const;
+export type InvoiceChainStatus = keyof typeof INVOICE_CHAIN_STATUS;
+export const COUNTER_DOCUMENT_HELP = {
+  REVISION: "Berichtigen: Die Rechnung war inhaltlich falsch (Empfänger, Text, Beträge) und bekommt unter derselben Nummer eine neue Fassung. Nur möglich, solange es noch keine Gutschrift und keinen Stornobeleg gibt.",
+  CREDIT_NOTE: "Gutschrift: Ein Teil der Forderung oder die ganze Forderung wird dem Kunden erlassen. Eigener Beleg mit eigener Nummer; die Rechnung bleibt unverändert. Mehrere Teilgutschriften sind möglich.",
+  CANCELLATION: "Stornieren: Die Rechnung soll insgesamt nicht mehr gelten. Ein Stornobeleg mit eigener Nummer hebt den noch offenen Rest vollständig auf; die Rechnung und ihr PDF bleiben archiviert.",
+} as const;
 export const INVOICE_ITEM_SOURCES = { RENTAL: "Fahrzeugmiete laut Vertrag", EXTRA_CHARGE: "Bestätigte Zusatzkosten der Rückgabe", MANUAL: "Manuell erfasst" } as const;
 export const INVOICE_UNITS = ["pauschal", "Tag", "km", "l", "kWh", "h", "Stk"] as const;
 
@@ -174,7 +187,7 @@ export type PaymentMethod = keyof typeof PAYMENT_METHODS;
 export const PAYMENT_TYPES = { INVOICE_PAYMENT: "Rechnungszahlung", OTHER_PAYMENT: "Sonstige Zahlung" } as const;
 export const PAYMENT_STATUS = { CONFIRMED: "Bestätigt", CANCELLED: "Storniert" } as const;
 /** Zahlungsstatus einer Rechnung, abgeleitet aus bestätigten Zahlungen; nie gespeichert. */
-export const INVOICE_PAYMENT_STATUS = { OPEN: "Offen", PARTIAL: "Teilbezahlt", PAID: "Bezahlt", OVERPAID: "Überzahlt – Erstattung zu klären" } as const;
+export const INVOICE_PAYMENT_STATUS = { OPEN: "Offen", PARTIAL: "Teilbezahlt", PAID: "Bezahlt", OVERPAID: "Bezahlt – Erstattung erforderlich" } as const;
 export const INVOICE_VERSION_KINDS = { ORIGINAL: "Original", REVISION: "Neufassung", CORRECTION: "Berichtigung" } as const;
 export type InvoicePaymentStatus = keyof typeof INVOICE_PAYMENT_STATUS;
 export const DEPOSIT_STATUS = { EXPECTED: "Noch nicht erhalten", RECEIVED: "Erhalten", PARTIALLY_RELEASED: "Teilweise freigegeben", RELEASED: "Freigegeben", RETAINED: "Einbehalten" } as const;
@@ -248,6 +261,15 @@ export const AUDIT_ACTIONS = {
   CONTRACT_TERMS_ACKNOWLEDGED: "Vertrag: Mietbedingungen zur Kenntnis genommen",
   CONTRACT_BUSINESS_RULE_OVERRIDDEN: "Vertrag: Geschäftsregel individuell angepasst",
   CONTRACT_DEFAULTS_ADOPTED: "Vertrag: aktuelle Standardwerte übernommen",
+  CREDIT_NOTE_DRAFT_CREATED: "Gutschrift: Entwurf angelegt",
+  CREDIT_NOTE_DRAFT_DISCARDED: "Gutschrift: Entwurf verworfen",
+  CREDIT_NOTE_FINALIZED: "Gutschrift abgeschlossen",
+  CREDIT_NOTE_SENT: "Gutschrift versendet",
+  CANCELLATION_DRAFT_CREATED: "Stornobeleg: Entwurf angelegt",
+  CANCELLATION_DRAFT_DISCARDED: "Stornobeleg: Entwurf verworfen",
+  CANCELLATION_FINALIZED: "Stornobeleg abgeschlossen",
+  CANCELLATION_SENT: "Stornobeleg versendet",
+  NUMBER_RANGES_UPDATED: "Nummernkreise geändert",
 } as const;
 export type AuditAction = keyof typeof AUDIT_ACTIONS;
 

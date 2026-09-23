@@ -12,6 +12,7 @@ import { DomainError, isImmutableError } from "@/lib/integrity";
 import { INVOICE_UNITS } from "@/lib/constants";
 import { discardInvoiceDraft, ensureInvoiceDraft, finalizeInvoice, markVersionDelivered, startInvoiceEdit, updateInvoiceDraft } from "@/lib/invoices";
 import { runInvoiceFollowUp } from "@/lib/followup";
+import { discardCounterAction } from "./counter-actions";
 import { parseLocalDateTime } from "@/lib/time";
 
 export type InvoiceState = { error?: string; ok?: string } | undefined;
@@ -25,9 +26,9 @@ async function context(bookingId: string, invoiceId: string | null) {
   const { tenant, user } = await requireRole("DISPO");
   const invoice = invoiceId
     ? await db.invoice.findFirst({ where: { id: invoiceId, bookingId, tenantId: tenant.id, status: { in: ["DRAFT", "FINALIZED"] } } })
-    : await db.invoice.findFirst({ where: { bookingId, tenantId: tenant.id, kind: "RENTAL", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "desc" } });
+    : await db.invoice.findFirst({ where: { bookingId, tenantId: tenant.id, kind: "RENTAL", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "desc" } });
   if (!invoice) redirect(base(bookingId));
-  const key = invoice.kind === "DAMAGE" ? invoice.id : null;
+  const key = invoice.kind === "DAMAGE" || invoice.documentType !== "INVOICE" ? invoice.id : null;
   const caseId = invoice.damageCaseId;
   return { tenant, user, invoice, key, caseId, actor: { id: user.id, name: user.name } };
 }
@@ -108,6 +109,7 @@ export async function saveInvoiceDraftAction(bookingId: string, invoiceId: strin
 
 export async function discardInvoiceDraftAction(bookingId: string, invoiceId: string | null) {
   const { tenant, invoice, key, caseId, actor } = await context(bookingId, invoiceId);
+  if (invoice.documentType !== "INVOICE") return discardCounterAction(bookingId, invoice.id);
   let deleted = false;
   try {
     deleted = (await discardInvoiceDraft(tenant.id, invoice.id, actor)).invoiceDeleted;

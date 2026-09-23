@@ -2,12 +2,13 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { DAMAGE_TAX_TREATMENTS, EXTRA_CHARGE_TYPES, INVOICE_ITEM_SOURCES, INVOICE_VERSION_KINDS, type DamageTaxTreatment, type ExtraChargeType } from "@/lib/constants";
+import { DAMAGE_TAX_TREATMENTS, EXTRA_CHARGE_TYPES, INVOICE_CHAIN_STATUS, INVOICE_ITEM_SOURCES, INVOICE_VERSION_KINDS, type DamageTaxTreatment, type ExtraChargeType } from "@/lib/constants";
 import { loadInvoiceDocumentData } from "@/lib/document-data";
 import { customerName, fmtDateTime, fmtEur } from "@/lib/format";
 import { getInvoiceState, invoiceSettingsMissing, listVersions, type CompanySnapshot, type InvoiceCustomerSnapshot, type VersionDiff } from "@/lib/invoices";
 import { fmtCents, toCents } from "@/lib/money";
 import { invoicePaymentSummary } from "@/lib/payments";
+import { invoiceFinancials } from "@/lib/counter-documents";
 import { toDateTimeInputValue } from "@/lib/time";
 import { Card, Chip, Content, PageHeader, Plate } from "@/components/ui";
 import { DocumentsPanel } from "../dokumente/documents-panel";
@@ -17,6 +18,7 @@ import { createInvoiceAction, discardInvoiceDraftAction, finalizeInvoiceAction, 
 import { InvoiceEditor, type EditableItem } from "./invoice-editor";
 import { InvoiceDocumentView, InvoiceIssueList } from "./invoice-parts";
 import { MarkDeliveredForm } from "./version-forms";
+import { ChainCard, CounterDocumentPage, FinancialSummary } from "./counter-document";
 
 export const metadata = { title: "Rechnung" };
 
@@ -37,9 +39,9 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
   const requestedId = typeof sp.nr === "string" ? sp.nr : null;
   const invoice = requestedId
     ? await db.invoice.findFirst({ where: { id: requestedId, bookingId: b.id, tenantId: tenant.id, status: { in: ["DRAFT", "FINALIZED"] } } })
-    : await db.invoice.findFirst({ where: { bookingId: b.id, tenantId: tenant.id, kind: "RENTAL", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: [{ status: "asc" }, { createdAt: "desc" }] });
+    : await db.invoice.findFirst({ where: { bookingId: b.id, tenantId: tenant.id, kind: "RENTAL", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: [{ status: "asc" }, { createdAt: "desc" }] });
   if (requestedId && !invoice) notFound();
-  const key = invoice?.kind === "DAMAGE" ? invoice.id : null;
+  const key = invoice?.kind === "DAMAGE" || (invoice && invoice.documentType !== "INVOICE") ? invoice!.id : null;
   const self = `/buchungen/${b.id}/rechnung${key ? `?nr=${key}` : ""}`;
   const selfWith = (q: string) => `${self}${self.includes("?") ? "&" : "?"}${q}`;
   const damageCase = invoice?.damageCaseId ? await db.damageCase.findFirst({ where: { id: invoice.damageCaseId, tenantId: tenant.id }, select: { id: true, caseNumber: true, customerChargeBasis: true } }) : null;
@@ -47,6 +49,8 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
 
   // Hofmitarbeiter: nur abgeschlossene Rechnungen, kein Entwurf und keine Neuanlage (serverseitig auch in den Actions)
   if (!canEdit && invoice?.status !== "FINALIZED") redirect(`/buchungen/${b.id}`);
+  // Gutschrift oder Stornobeleg: eigene Seite (Entwurf mit Abschluss oder abgeschlossener Beleg)
+  if (invoice && invoice.documentType !== "INVOICE") return <CounterDocumentPage tenantId={tenant.id} role={user.role} booking={{ id: b.id, number: b.number, vehicle: { plate: b.vehicle.plate } }} invoiceId={invoice.id} sp={sp} />;
 
   if (!invoice) {
     const ret = b.handovers[0];
@@ -187,6 +191,7 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
   const shown = versions.find((v) => v.versionNo === requestedNo && v.status === "FINALIZED") ?? versions.find((v) => v.id === current.id)!;
   const { doc } = await loadInvoiceDocumentData(tenant.id, shown.id);
   const pay = await invoicePaymentSummary(tenant.id, inv.id);
+  const finance = await invoiceFinancials(tenant.id, inv.id);
   const currentInfo = versions.find((v) => v.id === current.id)!;
   const transmission = currentInfo.sentAt ? `Versendet ${fmtDateTime(currentInfo.sentAt)}` : currentInfo.deliveredAt ? `Übergeben ${fmtDateTime(currentInfo.deliveredAt)}` : "Noch nicht übermittelt";
   const docs = await db.document.findMany({ where: { tenantId: tenant.id, type: "INVOICE", invoiceId: inv.id }, orderBy: { version: "desc" }, select: { id: true, invoiceVersionId: true, fileName: true } });
@@ -199,10 +204,11 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
         <Chip tone="good">Finalisiert</Chip>
         <Chip>Aktuelle Fassung {current.versionNo}</Chip>
         <Chip tone={currentInfo.delivered ? "info" : "amber"}>{transmission}</Chip>
-        <PaymentStatusChip status={pay.status} />
+        {(finance.effectiveCents > 0 || finance.paidCents > 0) && <PaymentStatusChip status={pay.status} />}
+        {finance.chain !== "NONE" && <Chip tone={finance.chain === "CANCELLED" ? "bad" : "info"}>{INVOICE_CHAIN_STATUS[finance.chain]}</Chip>}
         {damageCase && <Link href={`/schaeden/${damageCase.id}`} className="btn">Zur Schadenakte</Link>}
         <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
-        {canEdit && !mode?.exported && <form action={startInvoiceEditAction.bind(null, b.id, key)}><button className="btn btn-primary">Rechnung bearbeiten</button></form>}
+        {canEdit && mode?.editable && <form action={startInvoiceEditAction.bind(null, b.id, key)}><button className="btn btn-primary">Rechnung bearbeiten</button></form>}
       </PageHeader>
       <Content>
         {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
@@ -217,8 +223,10 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
           </p>
         )}
         {Number.isFinite(finishedNo) && finishedNo === current.versionNo && <FollowUpNotice tenantId={tenant.id} bookingId={b.id} invoiceId={inv.id} invoiceVersionId={current.id} kind="INVOICE" />}
-        {mode?.exported && <p className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm font-medium">Diese Rechnung wurde bereits buchhalterisch exportiert. Eine Änderung unter derselben Rechnungsnummer ist nicht mehr möglich; Korrekturen laufen später über den Storno-/Korrekturbeleg-Prozess.</p>}
-        {pay.status === "OVERPAID" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm font-medium">Überzahlt: Rechnungsbetrag {fmtCents(pay.grossCents)}, bezahlt {fmtCents(pay.paidCents)}, Überzahlung {fmtCents(pay.overpaidCents)} – Erstattung zu klären. Rent-Base führt keine automatische Erstattung durch.</p>}
+        {mode && !mode.editable && mode.blockedReason && <p className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm font-medium">{mode.blockedReason}</p>}
+        {pay.status === "OVERPAID" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm font-medium">Erstattung erforderlich: wirksame Forderung {fmtCents(pay.grossCents)}, bezahlt {fmtCents(pay.paidCents)}, Kundenguthaben {fmtCents(pay.overpaidCents)}. Offen ist 0,00 €. Rent-Base führt keine automatische Erstattung und keine Verrechnung durch.</p>}
+        {(pay.chain !== "NONE" || finance.hasDraftCounter) && <FinancialSummary f={finance} numberLabel={inv.number ?? ""} />}
+        <ChainCard tenantId={tenant.id} invoiceId={inv.id} currentId={inv.id} canEdit={canEdit} mode={mode} bookingId={b.id} />
         {shown.id !== current.id && <p className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm font-medium">Sie sehen die ersetzte Fassung {shown.versionNo}. <Link href={self} className="underline">Zur aktuellen Fassung {current.versionNo}</Link>.</p>}
 
         <Card title="Fassungsverlauf" right={<Chip>{versions.length === 1 ? "1 Fassung" : `${versions.length} Fassungen`}</Chip>}>

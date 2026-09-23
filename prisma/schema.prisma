@@ -25,6 +25,7 @@ model Tenant {
   businessRules          Json? // Geschäftsregeln des Mandanten (Phase 15), null = Standardwerte; Struktur in src/lib/business-rules.ts
   privacyNoticeReference String? // Verweis (Text oder Adresse) auf die Datenschutzinformationen, getrennt von den Mietbedingungen
   rentalTermsSequence    Int     @default(0) // fortlaufender Zähler der Fassungsnummern; verworfene Entwürfe geben ihre Nummer nicht zurück
+  numberRanges           Json? // Nummernkreise der Belege (Phase 17): { invoice: { prefix }, creditNote: { prefix }, cancellation: { prefix } }; null = RE / GS / ST
 
   // Rechnungsdaten (Phase 8). "street" enthält Straße und Hausnummer, keine doppelte Speicherung.
   legalForm        String? // z. B. GmbH, e. K., Einzelunternehmen; Teil des vollständigen Unternehmensnamens
@@ -756,19 +757,26 @@ model VehicleEvent {
 // Rechnung. Beträge, Empfänger und Firmendaten sind ab dem Abschluss versiegelte Kopien; nichts wird beim
 // Anzeigen aus Buchung, Vertrag oder Zusatzkosten neu berechnet. Die Nummer wird erst beim Abschluss vergeben.
 model Invoice {
-  id               String  @id @default(cuid())
-  tenantId         String
-  bookingId        String
-  customerId       String? // nur Referenz, maßgeblich ist customerSnapshot
-  contractId       String? // Vertrag, aus dem der Mietpreis stammt
-  returnHandoverId String? // Rückgabe, aus der die bestätigten Zusatzkosten stammen
-  number           String? // z. B. RE-2026-000001, erst beim Abschluss vergeben
-  status           String  @default("DRAFT") // DRAFT | FINALIZED | (vorbereitet: CANCELLED, CREDITED)
+  id                String  @id @default(cuid())
+  tenantId          String
+  bookingId         String
+  customerId        String? // nur Referenz, maßgeblich ist customerSnapshot
+  contractId        String? // Vertrag, aus dem der Mietpreis stammt
+  returnHandoverId  String? // Rückgabe, aus der die bestätigten Zusatzkosten stammen
+  number            String? // z. B. RE-2026-000001, erst beim Abschluss vergeben
+  status            String  @default("DRAFT") // DRAFT | FINALIZED (CANCELLED / CREDITED werden nicht gespeichert, sondern aus der Belegkette abgeleitet)
   // Phase 12: Rechnungsart. RENTAL = Mietrechnung (höchstens eine abgeschlossene je Buchung), DAMAGE = Schadenabrechnung zu einer Schadenakte
-  kind             String  @default("RENTAL")
-  damageCaseId     String? // nur DAMAGE: die Schadenakte, deren Kundenbelastung abgerechnet wird
-  damageId         String? // nur DAMAGE: der zugrunde liegende Fahrzeugschaden (Referenz)
-  taxTreatment     String? // nur DAMAGE: bei Anlage gewählte Behandlung NON_TAXABLE_DAMAGE_COMPENSATION | TAXABLE_SUPPLY; maßgeblich ist der Wert der jeweiligen Fassung (InvoiceVersion.taxTreatment)
+  kind              String  @default("RENTAL")
+  // Phase 17: Belegart. INVOICE = Rechnung; CREDIT_NOTE = Gutschrift (Teil oder voll) und CANCELLATION = Stornobeleg sind eigene
+  // Gegenbelege mit eigener Nummer, positiven Beträgen und Wirkung CREDIT (Minderung) auf genau eine abgeschlossene Originalrechnung.
+  // "kind" bleibt die Herkunft (RENTAL/DAMAGE) und wird vom Original übernommen.
+  documentType      String  @default("INVOICE")
+  originalInvoiceId String? // nur Gegenbeleg: die Originalrechnung (nie ein anderer Gegenbeleg)
+  originalVersionId String? // nur Gegenbeleg: die Fassung des Originals, auf der der Beleg beruht (muss beim Abschluss die aktuelle sein)
+  originalSnapshot  Json? // nur Gegenbeleg: Nummer, Datum, Fassung, Empfänger, Leistungszeitraum, Betrag des Originals (unveränderlich)
+  damageCaseId      String? // nur DAMAGE: die Schadenakte, deren Kundenbelastung abgerechnet wird
+  damageId          String? // nur DAMAGE: der zugrunde liegende Fahrzeugschaden (Referenz)
+  taxTreatment      String? // nur DAMAGE: bei Anlage gewählte Behandlung NON_TAXABLE_DAMAGE_COMPENSATION | TAXABLE_SUPPLY; maßgeblich ist der Wert der jeweiligen Fassung (InvoiceVersion.taxTreatment)
 
   // Phase 10: Die Rechnungsdaten liegen in unveränderlichen Fassungen (InvoiceVersion). Invoice ist nur noch die
   // logische Rechnung: Nummer, Bezug, Zeiger auf die aktuelle Fassung, interne Notiz, Änderungsprotokoll, Exportmarke.
@@ -803,22 +811,26 @@ model Invoice {
   updatedAt   DateTime  @updatedAt
   finalizedAt DateTime? // Abschluss der Fassung 1
 
-  tenant         Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  booking        Booking          @relation(fields: [bookingId], references: [id])
-  customer       Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  contract       RentalContract?  @relation(fields: [contractId], references: [id], onDelete: SetNull)
-  returnHandover Handover?        @relation(fields: [returnHandoverId], references: [id], onDelete: SetNull)
-  items          InvoiceItem[] // Altbestand (Positionen der Fassung 1 vor Phase 10)
-  documents      Document[]
-  payments       Payment[]
-  versions       InvoiceVersion[] @relation("InvoiceVersions")
-  currentVersion InvoiceVersion?  @relation("InvoiceCurrentVersion", fields: [currentVersionId], references: [id])
-  damageCase     DamageCase?      @relation(fields: [damageCaseId], references: [id])
+  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking          Booking          @relation(fields: [bookingId], references: [id])
+  customer         Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  contract         RentalContract?  @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  returnHandover   Handover?        @relation(fields: [returnHandoverId], references: [id], onDelete: SetNull)
+  items            InvoiceItem[] // Altbestand (Positionen der Fassung 1 vor Phase 10)
+  documents        Document[]
+  payments         Payment[]
+  versions         InvoiceVersion[] @relation("InvoiceVersions")
+  currentVersion   InvoiceVersion?  @relation("InvoiceCurrentVersion", fields: [currentVersionId], references: [id])
+  damageCase       DamageCase?      @relation(fields: [damageCaseId], references: [id])
+  original         Invoice?         @relation("InvoiceCounterDocuments", fields: [originalInvoiceId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  counterDocuments Invoice[]        @relation("InvoiceCounterDocuments")
+  originalVersion  InvoiceVersion?  @relation("InvoiceOriginalVersion", fields: [originalVersionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([tenantId, number])
   @@index([tenantId, bookingId])
   @@index([tenantId, status])
   @@index([tenantId, kind])
+  @@index([tenantId, originalInvoiceId])
 }
 
 model InvoiceItem {
@@ -1020,39 +1032,45 @@ model InvoiceVersion {
   finalizedById   String?
   finalizedByName String?
 
-  tenant    Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  invoice   Invoice              @relation("InvoiceVersions", fields: [invoiceId], references: [id])
-  currentOf Invoice?             @relation("InvoiceCurrentVersion")
-  items     InvoiceVersionItem[]
-  documents Document[]
-  emailLogs EmailLog[]
+  tenant           Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoice          Invoice              @relation("InvoiceVersions", fields: [invoiceId], references: [id])
+  currentOf        Invoice?             @relation("InvoiceCurrentVersion")
+  items            InvoiceVersionItem[]
+  documents        Document[]
+  emailLogs        EmailLog[]
+  counterDocuments Invoice[]            @relation("InvoiceOriginalVersion")
 
   @@unique([invoiceId, versionNo])
   @@index([tenantId, invoiceId, status])
 }
 
 model InvoiceVersionItem {
-  id            String   @id @default(cuid())
-  tenantId      String
-  versionId     String
-  sortOrder     Int      @default(0)
-  description   String
-  quantity      Decimal
-  unit          String
-  unitPrice     Decimal
-  netAmount     Decimal
-  taxRate       Decimal
-  taxAmount     Decimal
-  grossAmount   Decimal
-  source        String // RENTAL | EXTRA_CHARGE | MANUAL
-  extraChargeId String? // nur Referenz auf die Quelle der Fassung 1
-  reference     String?
-  createdAt     DateTime @default(now())
+  id                         String   @id @default(cuid())
+  tenantId                   String
+  versionId                  String
+  sortOrder                  Int      @default(0)
+  description                String
+  quantity                   Decimal
+  unit                       String
+  unitPrice                  Decimal
+  netAmount                  Decimal
+  taxRate                    Decimal
+  taxAmount                  Decimal
+  grossAmount                Decimal
+  source                     String // RENTAL | EXTRA_CHARGE | MANUAL
+  extraChargeId              String? // nur Referenz auf die Quelle der Fassung 1
+  reference                  String? // Bezug; bei manuellen Gutschriftpositionen der Grund
+  // Phase 17: nur Positionen eines Gegenbelegs: die Position der Originalfassung, die (teilweise) gutgeschrieben oder storniert wird
+  sourceInvoiceVersionItemId String?
+  createdAt                  DateTime @default(now())
 
-  tenant  Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  version InvoiceVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  tenant     Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  version    InvoiceVersion       @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  sourceItem InvoiceVersionItem?  @relation("CreditedItem", fields: [sourceInvoiceVersionItemId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  creditedBy InvoiceVersionItem[] @relation("CreditedItem")
 
   @@index([tenantId, versionId])
+  @@index([sourceInvoiceVersionItemId])
 }
 
 // ============================================================================

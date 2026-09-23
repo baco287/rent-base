@@ -18,8 +18,17 @@ export type VersionInfo = {
   isCurrent: boolean;
 };
 
+/** Bezug eines Gegenbelegs auf seine Originalrechnung (aus dem unveränderlichen Snapshot) */
+export type OriginalRef = { number: string; date: string | null; versionNo: number; gross: string; customerName: string };
+
 export type InvoiceDocumentData = {
   title: string;
+  /** INVOICE = Rechnung, CREDIT_NOTE = Gutschrift, CANCELLATION = Stornobeleg (Phase 17) */
+  documentType: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION";
+  /** nur Gegenbelege: „Zu Rechnung RE-… vom …“ */
+  original: OriginalRef | null;
+  /** nur Gegenbelege: Grund der Gutschrift / des Stornos (erscheint auf dem Beleg) */
+  reason: string | null;
   /** RENTAL = Mietrechnung, DAMAGE = Schadenabrechnung */
   kind: "RENTAL" | "DAMAGE";
   number: string;
@@ -52,7 +61,9 @@ const dateTime = (d: Date) => d.toLocaleString("de-DE", { timeZone: APP_TIME_ZON
 const qty = (v: unknown) => Number(String(v)).toLocaleString("de-DE", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
 type VersionFull = Prisma.InvoiceVersionGetPayload<{ include: { items: true } }>;
-export type DocumentRefs = { number: string | null; kind: string; contractNumber: string | null; bookingNumber: string | null; returnNumber: string | null; caseNumber: string | null; isCurrent: boolean; supersedes: { versionNo: number; finalizedAt: Date | null } | null };
+export type DocumentRefs = { number: string | null; kind: string; contractNumber: string | null; bookingNumber: string | null; returnNumber: string | null; caseNumber: string | null; isCurrent: boolean; supersedes: { versionNo: number; finalizedAt: Date | null } | null; documentType?: string; original?: { number: string; issueDate: string | null; versionNo: number; grossTotal: string; customerName: string } | null };
+
+export const DOCUMENT_TITLES = { INVOICE: "Rechnung", CREDIT_NOTE: "Gutschrift", CANCELLATION: "Stornobeleg" } as const;
 
 export function buildInvoiceDocument(inv: VersionFull, refs: DocumentRefs): InvoiceDocumentData {
   const company = inv.companySnapshot as CompanySnapshot;
@@ -64,9 +75,14 @@ export function buildInvoiceDocument(inv: VersionFull, refs: DocumentRefs): Invo
   const invoiceKind = refs.kind === "DAMAGE" ? "DAMAGE" : "RENTAL";
   const taxTreatment = inv.taxTreatment && inv.taxTreatment in DAMAGE_TAX_TREATMENTS ? (inv.taxTreatment as DamageTaxTreatment) : null;
   const nonTaxable = taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION";
-  const baseTitle = invoiceKind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung";
+  const documentType = refs.documentType === "CREDIT_NOTE" || refs.documentType === "CANCELLATION" ? refs.documentType : "INVOICE";
+  const baseTitle = documentType !== "INVOICE" ? DOCUMENT_TITLES[documentType] : invoiceKind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung";
+  const o = refs.original ?? null;
   return {
     title: kind === "CORRECTION" ? `Berichtigte ${baseTitle}` : baseTitle,
+    documentType,
+    original: o ? { number: o.number, date: date(o.issueDate ? new Date(o.issueDate) : null), versionNo: o.versionNo, gross: fmtCents(toCents(o.grossTotal)), customerName: o.customerName } : null,
+    reason: documentType !== "INVOICE" ? inv.reason : null,
     kind: invoiceKind,
     number: refs.number ?? "Entwurf",
     status: inv.status,

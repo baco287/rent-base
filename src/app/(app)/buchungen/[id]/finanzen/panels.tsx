@@ -25,7 +25,7 @@ export function PaymentStatusChip({ status }: { status: PaymentSummary["status"]
  * invoiceId: eine bestimmte Rechnung (z. B. Schadenabrechnung); ohne Angabe die Mietrechnung der Buchung.
  */
 export async function PaymentsPanel({ tenantId, bookingId, role, compact = false, invoiceId = null, title }: { tenantId: string; bookingId: string; role: string; compact?: boolean; invoiceId?: string | null; title?: string }) {
-  const invoice = await db.invoice.findFirst({ where: { tenantId, bookingId, status: "FINALIZED", ...(invoiceId ? { id: invoiceId } : { kind: "RENTAL" }) }, select: { id: true, number: true, kind: true, grossTotal: true } });
+  const invoice = await db.invoice.findFirst({ where: { tenantId, bookingId, status: "FINALIZED", documentType: "INVOICE", ...(invoiceId ? { id: invoiceId } : { kind: "RENTAL" }) }, select: { id: true, number: true, kind: true, grossTotal: true } });
   const canManage = role !== "YARD";
   const heading = title ?? (invoice?.kind === "DAMAGE" ? "Zahlungen zur Schadenabrechnung" : "Zahlungen");
   if (!invoice) {
@@ -38,21 +38,29 @@ export async function PaymentsPanel({ tenantId, bookingId, role, compact = false
   const [summary, payments] = await Promise.all([invoicePaymentSummary(tenantId, invoice.id), listInvoicePayments(tenantId, invoice.id)]);
   const invoiceHref = `/buchungen/${bookingId}/rechnung${invoice.kind === "DAMAGE" ? `?nr=${invoice.id}` : ""}`;
   return (
-    <Card title={heading} right={<PaymentStatusChip status={summary.status} />}>
+    <Card title={heading} right={summary.grossCents > 0 || summary.paidCents > 0 ? <PaymentStatusChip status={summary.status} /> : <Chip tone={summary.chain === "CANCELLED" ? "bad" : "info"}>{summary.chain === "CANCELLED" ? "Storniert" : "Gutgeschrieben"}</Chip>}>
       <div className="p-4 flex flex-col gap-4">
+        {summary.chain !== "NONE" && (
+          <div className="grid grid-cols-3 gap-2 text-sm">
+            <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Rechnungsbetrag</div><div className="font-mono tnum font-semibold">{fmtCents(summary.invoiceCents)}</div></div>
+            <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Gutgeschrieben</div><div className="font-mono tnum font-semibold">− {fmtCents(summary.creditedCents)}</div></div>
+            <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Storniert</div><div className="font-mono tnum font-semibold">− {fmtCents(summary.cancelledCents)}</div></div>
+          </div>
+        )}
         <div className="grid grid-cols-3 gap-2 text-sm">
-          <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Rechnungsbetrag</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(summary.grossCents)}</div></div>
+          <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">{summary.chain === "NONE" ? "Rechnungsbetrag" : "Forderung nach Gegenbelegen"}</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(summary.grossCents)}</div></div>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Bezahlt</div><div className="font-mono tnum text-lg font-semibold text-good">{fmtCents(summary.paidCents)}</div></div>
           {summary.status === "OVERPAID" ? (
-            <div className="rounded-md bg-bad-soft p-3"><div className="label-xs">Überzahlt</div><div className="font-mono tnum text-lg font-semibold text-bad">{fmtCents(summary.overpaidCents)}</div></div>
+            <div className="rounded-md bg-bad-soft p-3"><div className="label-xs">Kundenguthaben</div><div className="font-mono tnum text-lg font-semibold text-bad">{fmtCents(summary.overpaidCents)}</div></div>
           ) : (
             <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Offen</div><div className={`font-mono tnum text-lg font-semibold ${summary.openCents > 0 ? "text-bad" : ""}`}>{fmtCents(summary.openCents)}</div></div>
           )}
         </div>
-        {summary.status === "OVERPAID" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3 py-2 text-sm">Überzahlt – Erstattung zu klären: Der Rechnungsbetrag der aktuellen Fassung liegt unter den dokumentierten Zahlungen. Rent-Base führt keine automatische Erstattung durch; Zahlungen bleiben unverändert.</p>}
+        {summary.status === "OVERPAID" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3 py-2 text-sm">Erstattung erforderlich: Die dokumentierten Zahlungen ({fmtCents(summary.paidCents)}) übersteigen die wirksame Forderung ({fmtCents(summary.grossCents)}). Offen ist 0,00 €; das Kundenguthaben beträgt {fmtCents(summary.overpaidCents)}. Rent-Base führt keine automatische Erstattung und keine Verrechnung durch; Zahlungen bleiben unverändert.</p>}
         {compact && <div className="text-xs text-ink-3">{invoice.kind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung"} <Link href={invoiceHref} className="underline">{invoice.number}</Link></div>}
         {canManage && summary.openCents > 0 && <PaymentForm action={recordPaymentAction.bind(null, bookingId)} preview={previewPaymentAction} invoiceId={invoice.id} nonce={randomUUID()} defaultWhen={toDateTimeInputValue(new Date())} />}
-        {canManage && summary.openCents === 0 && summary.status === "PAID" && <p className="text-sm text-good">Die Rechnung ist vollständig bezahlt.</p>}
+        {canManage && summary.openCents === 0 && summary.status === "PAID" && summary.grossCents > 0 && <p className="text-sm text-good">Die Forderung ist vollständig bezahlt.</p>}
+        {summary.openCents === 0 && summary.grossCents === 0 && summary.chain !== "NONE" && <p className="text-sm text-ink-2">Die Forderung wurde durch {summary.chain === "CANCELLED" ? "einen Stornobeleg" : "Gutschriften"} vollständig aufgehoben; es ist nichts mehr offen.{summary.paidCents > 0 ? " Die dokumentierten Zahlungen bleiben bestehen und ergeben ein Kundenguthaben." : ""}</p>}
         {!canManage && <p className="text-xs text-ink-3">Zahlungen erfasst und korrigiert die Disposition.</p>}
         <div>
           <div className="label-xs mb-1">Zahlungshistorie</div>
@@ -96,7 +104,7 @@ export async function DepositPanel({ tenantId, bookingId, role, charges }: { ten
       </Card>
     );
   }
-  const invoices = await db.invoice.findMany({ where: { tenantId, bookingId, status: "FINALIZED" }, orderBy: { createdAt: "asc" }, select: { id: true, number: true, kind: true, currentVersion: { select: { grossTotal: true } }, grossTotal: true } });
+  const invoices = await db.invoice.findMany({ where: { tenantId, bookingId, status: "FINALIZED", documentType: "INVOICE" }, orderBy: { createdAt: "asc" }, select: { id: true, number: true, kind: true, currentVersion: { select: { grossTotal: true } }, grossTotal: true } });
   const invoice = invoices[0] ?? null;
   const afterReturn = v.bookingStatus === "RETURNED" || v.bookingStatus === "CANCELLED";
   const nonce = randomUUID();

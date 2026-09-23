@@ -14,7 +14,7 @@ import { DomainError } from "@/lib/integrity";
 import { createDamageInvoiceDraft } from "@/lib/invoices";
 import { fmtCents, toCents, type Cents } from "@/lib/money";
 import { isUniqueViolation, nextDamageCaseNumber, withNumberRetry } from "@/lib/numbering";
-import { summarizePayment } from "@/lib/payments";
+import { paymentSummaries, type PaymentSummary } from "@/lib/payments";
 import { recordVehicleEvent } from "@/lib/vehicle-events";
 
 type Tx = Prisma.TransactionClient;
@@ -306,7 +306,7 @@ export async function chargeCustomer(tenantId: string, caseId: string, actor: Ac
     return await db.$transaction(async (tx) => {
       const c = await lockCase(tx, tenantId, caseId);
       assertOpen(c);
-      const existingInvoice = await tx.invoice.findFirst({ where: { tenantId, damageCaseId: c.id, status: { in: ["DRAFT", "FINALIZED"] } } });
+      const existingInvoice = await tx.invoice.findFirst({ where: { tenantId, damageCaseId: c.id, documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } } });
       if (existingInvoice) return { invoiceId: existingInvoice.id, created: false };
       if (c.liabilityStatus !== "CUSTOMER_RESPONSIBILITY_CONFIRMED") throw new DomainError("Eine Kundenbelastung ist erst möglich, wenn die Haftung ausdrücklich auf „Kunde verantwortlich“ gesetzt wurde.");
       if (!c.bookingId) throw new DomainError("Diese Schadenakte gehört zu keiner Vermietung; ohne Mietvertrag gibt es keinen Rechnungsempfänger.");
@@ -321,7 +321,7 @@ export async function chargeCustomer(tenantId: string, caseId: string, actor: Ac
     }, TX);
   } catch (e) {
     if (isUniqueViolation(e, "damageCaseId")) {
-      const winner = await db.invoice.findFirst({ where: { tenantId, damageCaseId: caseId, status: { in: ["DRAFT", "FINALIZED"] } } });
+      const winner = await db.invoice.findFirst({ where: { tenantId, damageCaseId: caseId, documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } } });
       if (winner) return { invoiceId: winner.id, created: false };
     }
     return domainFromDb(e);
@@ -373,16 +373,16 @@ export async function caseView(tenantId: string, caseId: string) {
       photos: { orderBy: { uploadedAt: "asc" } },
       documents: { orderBy: { createdAt: "desc" } },
       events: { orderBy: { createdAt: "desc" } },
-      invoices: { where: { status: { in: ["DRAFT", "FINALIZED"] } }, include: { currentVersion: { select: { id: true, versionNo: true, grossTotal: true, taxTreatment: true } } } },
+      invoices: { where: { documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, include: { currentVersion: { select: { id: true, versionNo: true, grossTotal: true, taxTreatment: true } } } },
       maintenanceRecords: { orderBy: { createdAt: "desc" }, select: { id: true, maintenanceNumber: true, title: true, type: true, status: true, workshopName: true, scheduledAt: true, completedAt: true, actualCostCents: true, estimatedCostCents: true, documents: { where: { archivedAt: null }, select: { id: true, fileName: true } } } },
     },
   });
   if (!c) throw new DomainError("Schadenakte nicht gefunden.");
   const invoice = c.invoices[0] ?? null;
-  let payment: ReturnType<typeof summarizePayment> | null = null;
+  let payment: PaymentSummary | null = null;
   if (invoice && invoice.status === "FINALIZED" && invoice.currentVersion) {
-    const paid = await db.payment.aggregate({ where: { tenantId, invoiceId: invoice.id, status: "CONFIRMED" }, _sum: { amountCents: true } });
-    payment = summarizePayment(toCents(invoice.currentVersion.grossTotal), paid._sum.amountCents ?? 0);
+    // zentrale Summierung: Forderung nach Gutschriften/Storno, Zahlungen, Guthaben
+    payment = (await paymentSummaries(tenantId, [{ id: invoice.id, grossTotal: invoice.currentVersion.grossTotal }])).get(invoice.id) ?? null;
   }
   let deposit: ReturnType<typeof balanceOf> | null = null;
   if (c.bookingId) {
@@ -428,7 +428,7 @@ function filterWhere(filter: CaseFilter): Prisma.DamageCaseWhereInput {
     case "keine_kundenverantwortung": return { liabilityStatus: { in: ["NOT_CUSTOMER_RESPONSIBILITY", "THIRD_PARTY", "INTERNAL"] } };
     case "gesperrt": return { vehicle: { status: "BLOCKED" }, status: { not: "CLOSED" } };
     case "belastung": return { customerChargeCents: { not: null } };
-    case "rechnung_offen": return { invoices: { some: { kind: "DAMAGE", status: "FINALIZED" } } };
+    case "rechnung_offen": return { invoices: { some: { kind: "DAMAGE", documentType: "INVOICE", status: "FINALIZED" } } };
     default: return {};
   }
 }
@@ -458,16 +458,15 @@ export async function listCases(tenantId: string, opts: { filter?: CaseFilter; q
         vehicle: { select: { id: true, plate: true, make: true, model: true, status: true } },
         damage: { select: { kind: true, view: true, description: true, discoveredIn: { select: { type: true, number: true } } } },
         booking: { select: { id: true, number: true } },
-        invoices: { where: { kind: "DAMAGE", status: { in: ["DRAFT", "FINALIZED"] } }, select: { id: true, number: true, status: true, currentVersion: { select: { grossTotal: true } } } },
+        invoices: { where: { kind: "DAMAGE", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, select: { id: true, number: true, status: true, currentVersion: { select: { grossTotal: true } } } },
       },
     }),
   ]);
-  const invoiceIds = rows.flatMap((r) => r.invoices.filter((i) => i.status === "FINALIZED").map((i) => i.id));
-  const paid = invoiceIds.length ? await db.payment.groupBy({ by: ["invoiceId"], where: { tenantId, invoiceId: { in: invoiceIds }, status: "CONFIRMED" }, _sum: { amountCents: true } }) : [];
-  const paidMap = new Map(paid.map((p) => [p.invoiceId, p._sum.amountCents ?? 0]));
+  const finals = rows.flatMap((r) => r.invoices.filter((i) => i.status === "FINALIZED" && i.currentVersion).map((i) => ({ id: i.id, grossTotal: i.currentVersion!.grossTotal })));
+  const sums = await paymentSummaries(tenantId, finals);
   const items = rows.map((r) => {
     const inv = r.invoices[0] ?? null;
-    const pay = inv && inv.status === "FINALIZED" && inv.currentVersion ? summarizePayment(toCents(inv.currentVersion.grossTotal), paidMap.get(inv.id) ?? 0) : null;
+    const pay = inv && inv.status === "FINALIZED" && inv.currentVersion ? sums.get(inv.id) ?? null : null;
     return { ...r, invoice: inv, payment: pay };
   });
   return { items, total, page, pageSize, pages: Math.max(1, Math.ceil(total / pageSize)), filter, q };
@@ -479,12 +478,12 @@ export async function caseCounts(tenantId: string) {
     db.damageCase.count({ where: { tenantId, status: "IN_REPAIR" } }),
     db.vehicle.count({ where: { tenantId, status: "BLOCKED", damageCases: { some: { status: { not: "CLOSED" } } } } }),
     db.damageCase.count({ where: { tenantId, status: { not: "CLOSED" }, liabilityStatus: { in: ["UNASSESSED", "UNCLEAR"] } } }),
-    db.invoice.count({ where: { tenantId, kind: "DAMAGE", status: "FINALIZED" } }),
+    db.invoice.count({ where: { tenantId, kind: "DAMAGE", documentType: "INVOICE", status: "FINALIZED" } }),
   ]);
   return { open, inRepair, blocked, liability, openInvoices };
 }
 
 /** Schäden einer Buchung mit dem Stand ihrer Akte (für Buchungs-, Rückgabe- und Fahrzeugseite). */
 export async function damagesWithCases(tenantId: string, where: Prisma.DamageWhereInput) {
-  return db.damage.findMany({ where: { tenantId, ...where }, orderBy: { discoveredAt: "desc" }, include: { discoveredIn: { select: { id: true, type: true, number: true, bookingId: true } }, damageCase: { select: { id: true, caseNumber: true, status: true, liabilityStatus: true, customerChargeCents: true, invoices: { where: { kind: "DAMAGE", status: { in: ["DRAFT", "FINALIZED"] } }, select: { id: true, number: true, status: true, bookingId: true } } } } } });
+  return db.damage.findMany({ where: { tenantId, ...where }, orderBy: { discoveredAt: "desc" }, include: { discoveredIn: { select: { id: true, type: true, number: true, bookingId: true } }, damageCase: { select: { id: true, caseNumber: true, status: true, liabilityStatus: true, customerChargeCents: true, invoices: { where: { kind: "DAMAGE", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, select: { id: true, number: true, status: true, bookingId: true } } } } } });
 }

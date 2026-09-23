@@ -185,12 +185,12 @@ async function loadSources(tx: Tx, tenantId: string, bookingId: string) {
  * Ein festgestellter Schaden erscheint nur, wenn ein Mitarbeiter dort ausdrücklich eine Position vom Typ DAMAGE angelegt hat.
  */
 export async function ensureInvoiceDraft(tenantId: string, bookingId: string, actor: Actor): Promise<InvoiceRow> {
-  const existing = await db.invoice.findFirst({ where: { tenantId, bookingId, kind: "RENTAL", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "desc" } });
+  const existing = await db.invoice.findFirst({ where: { tenantId, bookingId, kind: "RENTAL", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "desc" } });
   if (existing) return existing;
   return db.$transaction(async (tx) => {
     const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Booking" WHERE "id" = ${bookingId} AND "tenantId" = ${tenantId} FOR UPDATE`;
     if (locked.length === 0) throw new DomainError("Buchung nicht gefunden.");
-    const again = await tx.invoice.findFirst({ where: { tenantId, bookingId, kind: "RENTAL", status: { in: ["DRAFT", "FINALIZED"] } } });
+    const again = await tx.invoice.findFirst({ where: { tenantId, bookingId, kind: "RENTAL", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } } });
     if (again) return again;
     const { booking, contract, tenant, ret, pickup } = await loadSources(tx, tenantId, bookingId);
     const missing = invoiceSettingsMissing(tenant);
@@ -348,12 +348,13 @@ export async function deliveryStateOf(tenantId: string, version: { id: string; d
 }
 
 export type EditMode = "A" | "B" | "C" | "D";
-export type EditModeInfo = { mode: EditMode; nextKind: "REVISION" | "CORRECTION"; delivered: boolean; exported: boolean; paidCents: Cents; currentGrossCents: Cents; reasons: string[] };
+export type EditModeInfo = { mode: EditMode; nextKind: "REVISION" | "CORRECTION"; delivered: boolean; exported: boolean; paidCents: Cents; currentGrossCents: Cents; reasons: string[]; /** abgeschlossene Gutschriften/Stornobelege: danach keine Berichtigung mehr */ counterFinalized: number; counterDraft: boolean; editable: boolean; blockedReason: string | null };
 
 async function editModeOf(client: Tx | typeof db, tenantId: string, invoice: InvoiceRow, current: VersionRow): Promise<EditModeInfo> {
-  const [delivery, paid] = await Promise.all([
+  const [delivery, paid, counters] = await Promise.all([
     deliveryStateOf(tenantId, current, client),
     client.payment.aggregate({ where: { tenantId, invoiceId: invoice.id, status: "CONFIRMED" }, _sum: { amountCents: true } }),
+    client.invoice.findMany({ where: { tenantId, originalInvoiceId: invoice.id, status: { in: ["DRAFT", "FINALIZED"] } }, select: { status: true } }),
   ]);
   const exported = !!invoice.exportedAt || !!current.exportedAt;
   const paidCents = paid._sum.amountCents ?? 0;
@@ -361,7 +362,15 @@ async function editModeOf(client: Tx | typeof db, tenantId: string, invoice: Inv
   const reasons: string[] = [];
   if (delivery.sentAt) reasons.push(`per E-Mail versendet am ${dateFmt(delivery.sentAt)}${delivery.sentTo ? ` an ${delivery.sentTo}` : ""}`);
   if (delivery.deliveredAt) reasons.push(`manuell als übergeben markiert am ${dateFmt(delivery.deliveredAt)}${delivery.deliveredByName ? ` von ${delivery.deliveredByName}` : ""}`);
-  return { mode, nextKind: delivery.delivered ? "CORRECTION" : "REVISION", delivered: delivery.delivered, exported, paidCents, currentGrossCents: toCents(current.grossTotal), reasons };
+  const counterFinalized = counters.filter((c) => c.status === "FINALIZED").length;
+  const counterDraft = counters.some((c) => c.status === "DRAFT");
+  const blockedReason = invoice.documentType !== "INVOICE"
+    ? "Gutschriften und Stornobelege erhalten keine weitere Fassung. Ein fehlerhafter Beleg wird durch einen weiteren Beleg korrigiert."
+    : exported ? "Diese Rechnung wurde bereits buchhalterisch exportiert. Eine Änderung unter derselben Rechnungsnummer ist nicht mehr möglich; Korrekturen laufen über Gutschrift oder Stornobeleg."
+    : counterFinalized > 0 ? `Zu dieser Rechnung gibt es bereits ${counterFinalized === 1 ? "einen abgeschlossenen Gegenbeleg" : `${counterFinalized} abgeschlossene Gegenbelege`} (Gutschrift oder Storno). Sie wird nicht mehr berichtigt; weitere Änderungen nur über einen weiteren Gegenbeleg.`
+    : counterDraft ? "Zu dieser Rechnung ist ein Entwurf einer Gutschrift oder eines Stornobelegs offen. Bitte zuerst abschließen oder verwerfen."
+    : null;
+  return { mode, nextKind: delivery.delivered ? "CORRECTION" : "REVISION", delivered: delivery.delivered, exported, paidCents, currentGrossCents: toCents(current.grossTotal), reasons, counterFinalized, counterDraft, editable: blockedReason === null, blockedReason };
 }
 
 /** Bearbeitungsmodus einer abgeschlossenen Rechnung (A nicht übermittelt, B übermittelt, C mit Zahlungen, D exportiert). */
@@ -390,7 +399,7 @@ export async function startInvoiceEdit(tenantId: string, invoiceId: string, acto
       if (again) return again;
       const current = await tx.invoiceVersion.findFirstOrThrow({ where: { id: invoice.currentVersionId, tenantId }, include: withItems });
       const info = await editModeOf(tx, tenantId, invoice, current);
-      if (info.exported) throw new DomainError("Diese Rechnung wurde bereits buchhalterisch exportiert. Eine Änderung unter derselben Rechnungsnummer ist nicht mehr möglich.");
+      if (info.blockedReason) throw new DomainError(info.blockedReason);
       const max = await tx.invoiceVersion.aggregate({ where: { invoiceId }, _max: { versionNo: true } });
       const versionNo = (max._max.versionNo ?? 0) + 1;
       const draft = await tx.invoiceVersion.create({
@@ -474,7 +483,7 @@ export type DraftInput = {
 
 /** Der offene Entwurf einer Rechnung (Fassung 1 oder eine spätere), gesperrt. */
 async function lockDraft(tx: Tx, tenantId: string, invoiceId: string) {
-  const locked = await tx.$queryRaw<{ id: string; status: string; number: string | null; exportedAt: Date | null }[]>`SELECT "id", "status", "number", "exportedAt" FROM "Invoice" WHERE "id" = ${invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+  const locked = await tx.$queryRaw<{ id: string; status: string; number: string | null; exportedAt: Date | null; documentType: string }[]>`SELECT "id", "status", "number", "exportedAt", "documentType" FROM "Invoice" WHERE "id" = ${invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
   if (locked.length === 0) throw new DomainError("Rechnung nicht gefunden.");
   const draft = await tx.invoiceVersion.findFirst({ where: { tenantId, invoiceId, status: "DRAFT" }, include: withItems });
   if (!draft) throw new DomainError(`Die Rechnung ${locked[0].number ?? ""} hat keinen offenen Entwurf; sie ist abgeschlossen und kann nur über „Rechnung bearbeiten“ neu gefasst werden.`.replace("  ", " "));
@@ -487,6 +496,8 @@ const trimOrNull = (v: string | null | undefined) => (v === undefined ? undefine
 /** Entwurf speichern: Positionen ersetzen, Summen neu rechnen, Kopien bewusst ändern, Änderung protokollieren. Quellen bleiben unberührt. */
 export async function updateInvoiceDraft(tenantId: string, invoiceId: string, actor: Actor, input: DraftInput): Promise<VersionRow> {
   if (input.items.length === 0) throw new DomainError("Eine Rechnung braucht mindestens eine Position.");
+  const kindOf = await db.invoice.findFirst({ where: { id: invoiceId, tenantId }, select: { documentType: true } });
+  if (kindOf && kindOf.documentType !== "INVOICE") throw new DomainError("Gutschriften und Stornobelege werden über ihren eigenen Entwurf bearbeitet.");
   if (input.paymentTermDays != null && !(Number.isInteger(input.paymentTermDays) && input.paymentTermDays >= 0 && input.paymentTermDays <= 365)) throw new DomainError("Das Zahlungsziel liegt zwischen 0 und 365 Tagen.");
   if (input.servicePeriodStart && input.servicePeriodEnd && input.servicePeriodEnd.getTime() < input.servicePeriodStart.getTime()) throw new DomainError("Das Ende des Leistungszeitraums liegt vor dem Beginn.");
   return db.$transaction(async (tx) => {
@@ -610,7 +621,7 @@ async function collectIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, draf
     if (booking && booking.contract?.status !== "SIGNED") err("CONTRACT", "Zu dieser Buchung gibt es keinen abgeschlossenen Mietvertrag.");
     const ret = invoice.returnHandoverId ? await tx.handover.findFirst({ where: { id: invoice.returnHandoverId, tenantId, status: "FINALIZED" } }) : null;
     if (!ret) err("RETURN", "Zu dieser Rechnung gibt es keine abgeschlossene Rückgabe.");
-    const other = await tx.invoice.count({ where: { tenantId, bookingId: invoice.bookingId, kind: "RENTAL", status: "FINALIZED", id: { not: invoice.id } } });
+    const other = await tx.invoice.count({ where: { tenantId, bookingId: invoice.bookingId, kind: "RENTAL", documentType: "INVOICE", status: "FINALIZED", id: { not: invoice.id } } });
     if (other > 0) err("INVOICE_EXISTS", "Zu dieser Buchung gibt es bereits eine abgeschlossene Mietrechnung.");
     // Fassung 1 friert die Firmendaten beim Abschluss aus den Einstellungen ein: dort müssen sie vollständig sein
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
@@ -619,6 +630,7 @@ async function collectIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, draf
     // spätere Fassungen prüfen ihre eigene Kopie der Firmendaten
     for (const m of companySnapshotMissing(draft.companySnapshot as CompanySnapshot)) err("COMPANY", `Rechnungsstellerdaten unvollständig: ${m}.`);
     if (invoice.exportedAt || mode?.exported) err("EXPORTED", "Diese Rechnung wurde bereits buchhalterisch exportiert. Eine Änderung unter derselben Rechnungsnummer ist nicht mehr möglich.");
+    if (mode && mode.counterFinalized > 0) err("COUNTER_DOCUMENT", "Zu dieser Rechnung gibt es bereits eine Gutschrift oder einen Stornobeleg. Sie wird nicht mehr berichtigt; weitere Änderungen nur über einen weiteren Gegenbeleg.");
     if (mode?.delivered && !(draft.reason && draft.reason.trim().length >= 3)) err("REASON", "Der Kunde hat bereits eine frühere Fassung dieser Rechnung erhalten. Bitte den Grund der Berichtigung angeben.");
   }
   const c = draft.customerSnapshot as InvoiceCustomerSnapshot;
@@ -772,6 +784,7 @@ export async function finalizeInvoice(tenantId: string, invoiceId: string, actor
   return withNumberRetry(() =>
     db.$transaction(async (tx) => {
       const { invoice: lockedInv, draft: draft0 } = await lockDraft(tx, tenantId, invoiceId);
+      if (lockedInv.documentType !== "INVOICE") throw new DomainError("Gutschriften und Stornobelege werden über ihren eigenen Abschluss finalisiert.");
       const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: lockedInv.id } });
       let draft = draft0;
       if (opts.reason !== undefined && (opts.reason?.trim() || "") !== (draft.reason ?? "")) {
@@ -847,6 +860,11 @@ export async function verifyVersion(tenantId: string, versionId: string) {
   const v = await db.invoiceVersion.findFirst({ where: { id: versionId, tenantId }, include: withItems });
   if (!v) throw new DomainError("Rechnungsfassung nicht gefunden.");
   const invoice = await db.invoice.findUniqueOrThrow({ where: { id: v.invoiceId } });
+  if (invoice.documentType !== "INVOICE") {
+    const { sealedCounterContent } = await import("@/lib/counter-documents");
+    const own = contentHash(sealedCounterContent(invoice, v));
+    return { finalized: v.status === "FINALIZED", storedHash: v.contentHash, currentHash: own, intact: v.status === "FINALIZED" && v.contentHash === own, legacyHash: own };
+  }
   const current = contentHash(sealedContent(invoice, v));
   const legacy = contentHash(legacySealedContent(invoice, v));
   const intact = v.status === "FINALIZED" && (v.contentHash === current || v.contentHash === legacy);
@@ -871,7 +889,7 @@ export async function discardInvoiceDraft(tenantId: string, invoiceId: string, a
       const inv = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
       await tx.invoiceItem.deleteMany({ where: { tenantId, invoiceId } });
       await tx.invoice.delete({ where: { id: invoiceId } });
-      if (inv.kind === "DAMAGE" && inv.damageCaseId) {
+      if (inv.kind === "DAMAGE" && inv.damageCaseId && inv.documentType === "INVOICE") {
         // Schadenabrechnung verworfen: die Kundenbelastung an der Akte wird wieder frei, damit sie neu festgelegt werden kann
         const c = await tx.damageCase.findFirst({ where: { id: inv.damageCaseId, tenantId } });
         if (c && c.customerChargeCents != null) {

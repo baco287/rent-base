@@ -129,7 +129,7 @@ async function photoFilesOf(tenantId: string, h: { photos: { id: string; storage
   return [...files.values()];
 }
 
-export type InvoiceData = { doc: InvoiceDocumentData; bookingId: string; invoiceId: string; versionId: string; versionNo: number; sourceHash: string; renterEmail: string | null };
+export type InvoiceData = { doc: InvoiceDocumentData; bookingId: string; invoiceId: string; versionId: string; versionNo: number; sourceHash: string; renterEmail: string | null; documentType: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION" };
 
 /** Rechnungsfassung für Ansicht und PDF. Nur die versiegelte Fassung selbst; Nummer, Vertrags- und Buchungsnummer sind reine Verweise. */
 export async function loadInvoiceDocumentData(tenantId: string, versionId: string, opts: { allowDraft?: boolean } = {}): Promise<InvoiceData> {
@@ -145,13 +145,15 @@ export async function loadInvoiceDocumentData(tenantId: string, versionId: strin
     inv.damageCaseId ? db.damageCase.findFirst({ where: { id: inv.damageCaseId, tenantId }, select: { caseNumber: true } }) : null,
   ]);
   const c = v.customerSnapshot as { email?: string | null };
+  const snap = inv.originalSnapshot as { number: string; issueDate: string | null; versionNo: number; grossTotal: string; customerName: string } | null;
   return {
-    doc: buildInvoiceDocument(v, { number: inv.number, kind: inv.kind, contractNumber: contract?.number ?? null, bookingNumber: booking?.number ?? null, returnNumber: ret?.number ?? null, caseNumber: damageCase?.caseNumber ?? null, isCurrent: inv.currentVersionId === v.id, supersedes: prev }),
+    doc: buildInvoiceDocument(v, { number: inv.number, kind: inv.kind, contractNumber: contract?.number ?? null, bookingNumber: booking?.number ?? null, returnNumber: ret?.number ?? null, caseNumber: damageCase?.caseNumber ?? null, isCurrent: inv.currentVersionId === v.id, supersedes: prev, documentType: inv.documentType, original: inv.documentType !== "INVOICE" && snap ? { number: snap.number, issueDate: snap.issueDate, versionNo: snap.versionNo, grossTotal: snap.grossTotal, customerName: snap.customerName } : null }),
     bookingId: inv.bookingId,
     invoiceId: inv.id,
     versionId: v.id,
     versionNo: v.versionNo,
     sourceHash: v.contentHash ?? "",
     renterEmail: typeof c.email === "string" && c.email.trim() ? c.email.trim() : null,
+    documentType: inv.documentType === "CREDIT_NOTE" || inv.documentType === "CANCELLATION" ? inv.documentType : "INVOICE",
   };
 }

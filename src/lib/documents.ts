@@ -232,20 +232,22 @@ export async function ensureReturnDocument(tenantId: string, handoverId: string,
 /** Rechnungs-PDF einer abgeschlossenen Rechnungsfassung: einmalig je Fassung, ausschließlich aus InvoiceVersion und ihren Positionen. Alte Dateien bleiben. */
 export async function ensureInvoiceDocument(tenantId: string, versionId: string, actorId: string | null, opts: EnsureOptions = {}): Promise<EnsureResult> {
   const data = await loadInvoiceDocumentData(tenantId, versionId);
+  // Gegenbelege (Gutschrift, Stornobeleg) sind eigene Dokumenttypen mit eigenem Dateinamen; dieselbe private, unveränderliche Archivierung
   return archive(
     tenantId,
     actorId,
-    { type: "INVOICE", bookingId: data.bookingId, contractId: null, handoverId: null, invoiceId: data.invoiceId, invoiceVersionId: data.versionId },
+    { type: data.documentType, bookingId: data.bookingId, contractId: null, handoverId: null, invoiceId: data.invoiceId, invoiceVersionId: data.versionId },
     opts,
     data.sourceHash,
-    (v) => invoiceFileName(data.doc.number, data.versionNo, v),
+    (v) => invoiceFileName(data.doc.number, data.versionNo, v, data.documentType),
     async () => (await renderInvoicePdf(data.doc)).bytes,
   );
 }
 
-/** Rechnung_RE-2026-000123_Fassung2.pdf (bei mehreren Archivfassungen desselben PDFs zusätzlich _v2). */
-export function invoiceFileName(number: string, versionNo: number, archiveVersion = 1): string {
-  const parts = ["Rechnung", safeFilePart(number) || "ohne-Nummer", `Fassung${versionNo}`];
+/** Rechnung_RE-2026-000123_Fassung2.pdf, Gutschrift_GS-2026-000001.pdf, Stornobeleg_ST-2026-000001.pdf (bei mehreren Archivfassungen zusätzlich _v2). */
+export function invoiceFileName(number: string, versionNo: number, archiveVersion = 1, documentType: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION" = "INVOICE"): string {
+  const word = documentType === "CREDIT_NOTE" ? "Gutschrift" : documentType === "CANCELLATION" ? "Stornobeleg" : "Rechnung";
+  const parts = [word, safeFilePart(number) || "ohne-Nummer", ...(documentType === "INVOICE" ? [`Fassung${versionNo}`] : [])];
   if (archiveVersion > 1) parts.push(`v${archiveVersion}`);
   return `${parts.join("_")}.pdf`;
 }

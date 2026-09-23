@@ -22,6 +22,7 @@ import { completeMaintenance, createMaintenance, createPlan, setMaintenanceCosts
 import { approveResponse, createAuthorityCase, prepareResponse, setDriver, submitResponse } from "../src/lib/authority";
 import { acknowledgeTerms } from "../src/lib/contracts";
 import { createTermsDraft, publishTermsVersion } from "../src/lib/rental-terms";
+import { createCancellationDraft, createCreditNoteDraft, finalizeCounterDocument, updateCounterDocumentDraft } from "../src/lib/counter-documents";
 import { toDateInputValue, zonedParts } from "../src/lib/time";
 
 const args = process.argv.slice(2);
@@ -294,7 +295,7 @@ report(["Teilweise freigegeben", "350,00", "150,00", "Prüfung eines bei Rückga
 const invList = await plain(await fetch(base + "/rechnungen?filter=teilbezahlt", { headers: { cookie } }));
 report(invList.includes(finalInvoice.number) && invList.includes("Teilbezahlt") && invList.includes("100,00") && invList.includes("nicht übermittelt"), "Rechnungsliste: Filter Teilbezahlt mit Beträgen und Übermittlungsstatus");
 const invListPaid = await plain(await fetch(base + "/rechnungen?filter=bezahlt", { headers: { cookie } }));
-report(!invListPaid.includes(finalInvoice.number) && invListPaid.includes("Keine Rechnungen"), "Rechnungsliste: Filter Bezahlt leer");
+report(!invListPaid.includes(finalInvoice.number) && invListPaid.includes("Keine Belege"), "Rechnungsliste: Filter Bezahlt leer");
 // Rechnungsfassungen: Bearbeiten (Modus A, nicht übermittelt), Fassung 2 finalisieren, Verlauf, PDF je Fassung, Hof sieht nur
 const fassung2Draft = await startInvoiceEdit(w.tenantId, invoice.id, w.actor);
 const editPage = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } }));
@@ -440,7 +441,7 @@ const yardDoc = await fetch(`${base}/api/documents/${returnPdf.document.id}?down
 report(yardDoc.status === 200, `${yardDoc.status} Hofmitarbeiter: Dokument herunterladen`);
 const yardInvoice = await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie: `rb_session=${yardSession}` } });
 const yardInvoiceHtml = await yardInvoice.text();
-report(yardInvoice.status === 200 && yardInvoiceHtml.includes("Herunterladen") && yardInvoiceHtml.includes("Fassungsverlauf") && !yardInvoiceHtml.includes("Rechnung bearbeiten") && !yardInvoiceHtml.includes("Als an Kunden übergeben markieren") && yardInvoiceHtml.includes("Der Versand der Rechnung erfolgt durch die Disposition") && !yardInvoiceHtml.includes("Interne Notiz"), `${yardInvoice.status} Hofmitarbeiter: Fassungen ansehen, kein Bearbeiten, keine Übergabemarkierung, kein Versand, keine interne Notiz`);
+report(yardInvoice.status === 200 && yardInvoiceHtml.includes("Herunterladen") && yardInvoiceHtml.includes("Fassungsverlauf") && !yardInvoiceHtml.includes("Rechnung bearbeiten") && !yardInvoiceHtml.includes("Als an Kunden übergeben markieren") && yardInvoiceHtml.includes("Der Versand erfolgt durch die Disposition") && !yardInvoiceHtml.includes("Interne Notiz"), `${yardInvoice.status} Hofmitarbeiter: Fassungen ansehen, kein Bearbeiten, keine Übergabemarkierung, kein Versand, keine interne Notiz`);
 const yardInvoiceDoc = await fetch(`${base}/api/documents/${invoicePdf.document.id}?download=1`, { headers: { cookie: `rb_session=${yardSession}` } });
 report(yardInvoiceDoc.status === 200, `${yardInvoiceDoc.status} Hofmitarbeiter: Rechnungs-PDF herunterladen`);
 const yardNoInvoice = await fetch(`${base}/buchungen/${doneBooking.id}/rechnung`, { headers: { cookie: `rb_session=${yardSession}` }, redirect: "manual" });
@@ -599,6 +600,57 @@ const stale = { cookie: "rb_session=gibt-es-nicht-mehr" };
 const staleHome = await fetch(base + "/heute", { headers: stale, redirect: "manual" });
 const staleLogin = await fetch(base + "/login?abgelaufen=1", { headers: stale, redirect: "manual" });
 report(staleHome.status === 307 && (staleHome.headers.get("location") ?? "").includes("/login?abgelaufen=1") && staleLogin.status === 200 && (staleLogin.headers.get("set-cookie") ?? "").includes("rb_session=;"), `${staleHome.status}/${staleLogin.status} abgelaufene Sitzung landet sauber beim Login`);
+
+// Gutschriften, Stornobelege & Kundenguthaben (Phase 17): Belegkette, Assistenten, Nummernkreise, Liste, Dashboard, Rollen, Mandantentrennung
+const chainPage = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } }));
+report(["Belegkette", "Gutschrift erstellen", "Rechnung stornieren", "Berichtigen, Gutschrift oder Storno", "Verbleibende Forderung"].every((t) => chainPage.includes(t)), "Rechnung: Belegkette mit Aktionen und Erklärung");
+const creditDraft = await createCreditNoteDraft(w.tenantId, invoice.id, w.actor);
+const creditPage = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung?nr=${creditDraft.id}`, { headers: { cookie } }));
+report(["Gutschrift (Entwurf)", "Zu Rechnung", "Positionen der Rechnung", "Restbetrag vollständig gutschreiben", "Manuelle Gutschriftpositionen", "Grund der Gutschrift", "Wirkung auf die Rechnung", "Gutschrift finalisieren", "Entwurf verwerfen", "Vorschau des Belegs"].every((t) => creditPage.includes(t)), "Gutschrift: Entwurfsseite mit Positionen, Grund, Vorschau und Abschluss");
+const blockedPage = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } }));
+report(!blockedPage.includes("Rechnung bearbeiten") && blockedPage.includes("Entwurf einer Gutschrift") && blockedPage.includes("Entwurf eines Gegenbelegs ist offen"), "Rechnung: mit offenem Gutschrift-Entwurf keine Berichtigung");
+const creditItems = await db.invoiceVersionItem.findMany({ where: { versionId: fassung2.id }, orderBy: { sortOrder: "asc" } });
+await updateCounterDocumentDraft(w.tenantId, creditDraft.id, w.actor, { items: [{ sourceItemId: creditItems[0].id, mode: "AMOUNT", grossAmount: "10" }], reason: "Kulanz nach Rücksprache" });
+const creditVersion = await finalizeCounterDocument(w.tenantId, creditDraft.id, w.actor, { confirmed: true });
+const creditNumber = (await db.invoice.findUniqueOrThrow({ where: { id: creditDraft.id } })).number!;
+const creditPdf = await ensureInvoiceDocument(w.tenantId, creditVersion.id, w.actor.id);
+const creditFinal = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung?nr=${creditDraft.id}&abgeschlossen=1`, { headers: { cookie } }));
+report(creditNumber.startsWith("GS-") && [`Gutschrift ${creditNumber}`, "Finalisiert", "Wirkung: Minderung", "Belegkette", `Gutschrift_${creditNumber}.pdf`, "E-Mail mit Gutschrift", "Gutschrift jetzt senden", "Kulanz nach Rücksprache", "abgeschlossen und versiegelt"].every((t) => creditFinal.includes(t)) && !creditFinal.includes("Zahlung erfassen"), `Gutschrift ${creditNumber}: abgeschlossene Ansicht mit PDF, Versand und Kette, ohne Zahlungen`);
+const creditDoc = await fetch(`${base}/api/documents/${creditPdf.document.id}?download=1`, { headers: { cookie } });
+report(creditDoc.status === 200 && (creditDoc.headers.get("content-disposition") ?? "").includes(`Gutschrift_${creditNumber}.pdf`), `${creditDoc.status} Gutschrift-PDF herunterladen`);
+const afterCredit = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } }));
+report(["Teilweise gutgeschrieben", "Wirksame Forderung", creditNumber, "nicht mehr berichtigt"].every((t) => afterCredit.includes(t)) && !afterCredit.includes("Rechnung bearbeiten"), "Rechnung: teilweise gutgeschrieben, Kette zeigt Gutschrift, keine Berichtigung mehr");
+const listCredited = await plain(await fetch(base + "/rechnungen?filter=gutgeschrieben", { headers: { cookie } }));
+report(listCredited.includes(finalInvoice.number) && listCredited.includes("Teilweise gutgeschrieben"), "Rechnungsliste: Filter Gutgeschrieben");
+const listDocs = await plain(await fetch(base + "/rechnungen?beleg=gutschriften&filter=alle", { headers: { cookie } }));
+report(listDocs.includes(creditNumber) && listDocs.includes("Gutschrift") && listDocs.includes(finalInvoice.number), "Rechnungsliste: Gutschriften als eigene Zeilen mit Bezug");
+const stornoDraft = await createCancellationDraft(w.tenantId, invoice.id, w.actor);
+const stornoPage = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung?nr=${stornoDraft.id}`, { headers: { cookie } }));
+report(["Stornobeleg (Entwurf)", "Storno der Rechnung", "Bereits gutgeschrieben", "Stornobetrag (verbleibender Rest)", "Grund des Stornos", "Stornobeleg finalisieren", "Kundenguthaben danach"].every((t) => stornoPage.includes(t)), "Storno: Entwurfsseite mit Wirkung, Zahlungen und Erstattungsbedarf");
+const stornoVersion = await finalizeCounterDocument(w.tenantId, stornoDraft.id, w.actor, { confirmed: true, reason: "Rechnung insgesamt zurückgenommen" });
+await ensureInvoiceDocument(w.tenantId, stornoVersion.id, w.actor.id);
+const afterStorno = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } }));
+report(afterStorno.includes("Storniert") && afterStorno.includes("Kundenguthaben") && afterStorno.includes("Erstattung erforderlich") && !afterStorno.includes("Gutschrift erstellen") && afterStorno.includes("weitere Gegenbelege sind nicht möglich"), "Rechnung: storniert, Guthaben aus der Zahlung ausgewiesen, keine weiteren Belege");
+const listRefund = await plain(await fetch(base + "/rechnungen?filter=erstattung", { headers: { cookie } }));
+report(listRefund.includes(finalInvoice.number) && listRefund.includes("Erstattung") && listRefund.includes("Storniert"), "Rechnungsliste: Filter Erstattung erforderlich mit Storno-Kennzeichen");
+const todayRefund = await plain(await fetch(base + "/heute", { headers: { cookie } }));
+report(todayRefund.includes("Erstattungen zu klären") && todayRefund.includes("Kundenguthaben"), "Dashboard: Erstattungen zu klären aus der zentralen Summierung");
+const bookingChain = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
+report(bookingChain.includes("Gutschriften / Storno") && bookingChain.includes(creditNumber), "Buchung: Gegenbelege sichtbar");
+const settingsRanges = await plain(await fetch(base + "/einstellungen", { headers: { cookie } }));
+report(settingsRanges.includes("Nummernkreise der Belege") && settingsRanges.includes("RE · GS · ST"), "Einstellungen: Nummernkreise-Karte");
+const rangesPage = await plain(await fetch(base + "/einstellungen/nummernkreise", { headers: { cookie } }));
+report(["Präfix Rechnungen", "Präfix Gutschriften", "Präfix Stornobelege", "Nummernkreise speichern", "Nächste Nummer", "Abgeschlossene Gutschriften"].every((t) => rangesPage.includes(t)), "Nummernkreise: Formular mit nächsten Nummern");
+const foreignCredit = await fetch(`${base}/buchungen/${retBooking.id}/rechnung?nr=${creditDraft.id}`, { headers: { cookie: `rb_session=${foreignSession}` } });
+report(foreignCredit.status === 404, `${foreignCredit.status} Gutschrift für fremden Mandanten nicht auffindbar`);
+await db.user.update({ where: { id: w.userId }, data: { role: "YARD" } });
+const yardCredit = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung?nr=${creditDraft.id}`, { headers: { cookie } }));
+report(yardCredit.includes(`Gutschrift ${creditNumber}`) && !yardCredit.includes("Gutschrift jetzt senden") && !yardCredit.includes("Interne Notiz"), "Hofmitarbeiter: Gutschrift lesbar, kein Versand, keine interne Notiz");
+const yardChain = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } }));
+report(yardChain.includes("Belegkette") && !yardChain.includes("Gutschrift erstellen") && !yardChain.includes("Rechnung stornieren"), "Hofmitarbeiter: Belegkette lesbar, keine Aktionen");
+const yardRanges = await plain(await fetch(base + "/einstellungen/nummernkreise", { headers: { cookie } }));
+report(yardRanges.includes("nur lesend") && !yardRanges.includes("Nummernkreise speichern"), "Hofmitarbeiter: Nummernkreise nur lesend");
+await db.user.update({ where: { id: w.userId }, data: { role: "OWNER" } });
 
 if (keep) {
   console.log(`\nTestdaten bleiben stehen.\nSITZUNG=${sessionId}\nBUCHUNG=${w.bookingId}\nRUECKGABE_ENTWURF=${doneBooking.id}\nRUECKGABE_FERTIG=${retBooking.id}\nRET_DAMAGE=${retDamage.id} UEBERGEBEN=${doneBooking.id} BEREIT=${signedBooking.id}\nVERTRAG=${draft.number}\nMANDANTEN=${w.tenantId},${foreign.tenantId}`);

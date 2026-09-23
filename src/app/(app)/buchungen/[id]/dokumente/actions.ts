@@ -77,7 +77,7 @@ export async function regenerateHandoverPdfAction(bookingId: string, kind: Hando
 /** Aktuelle abgeschlossene Fassung der Rechnung dieser Buchung (PDF und Versand hängen an der Fassung). */
 /** Ohne invoiceId die Mietrechnung der Buchung; mit invoiceId eine bestimmte Rechnung (z. B. Schadenabrechnung), stets an Buchung und Mandant gebunden. */
 async function finalizedInvoice(tenantId: string, bookingId: string, invoiceId: string | null) {
-  const inv = await db.invoice.findFirst({ where: { bookingId, tenantId, status: "FINALIZED", ...(invoiceId ? { id: invoiceId } : { kind: "RENTAL" }) }, select: { id: true, currentVersionId: true } });
+  const inv = await db.invoice.findFirst({ where: { bookingId, tenantId, status: "FINALIZED", ...(invoiceId ? { id: invoiceId } : { kind: "RENTAL", documentType: "INVOICE" }) }, select: { id: true, currentVersionId: true } });
   return inv?.currentVersionId ? { id: inv.currentVersionId, invoiceId: inv.id } : null;
 }
 

@@ -43,6 +43,13 @@ test("Jede Server-Action-Datei und jede Prozessseite prüft die Rolle serverseit
   const invoiceActions = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/rechnung/actions.ts"), "utf8");
   assert.ok(!/"YARD"/.test(invoiceActions), "Rechnungsaktionen dürfen YARD nicht zulassen");
   for (const fn of ["startInvoiceEditAction", "finalizeInvoiceAction", "markDeliveredAction", "saveInvoiceDraftAction", "discardInvoiceDraftAction"]) assert.ok(new RegExp(`export async function ${fn}`).test(invoiceActions), `${fn} vorhanden`);
+  // Gutschriften und Stornobelege: anlegen, speichern, abschließen, verwerfen nur DISPO (und OWNER); Nummernkreise nur OWNER
+  const counterActions = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/rechnung/counter-actions.ts"), "utf8");
+  assert.ok(!/"YARD"/.test(counterActions), "Gegenbeleg-Aktionen dürfen YARD nicht zulassen");
+  for (const fn of ["createCreditNoteAction", "createCancellationAction", "saveCounterDraftAction", "finalizeCounterAction", "discardCounterAction"]) assert.ok(new RegExp(`export async function ${fn}`).test(counterActions), `${fn} vorhanden`);
+  assert.match(counterActions, /const \{ tenant, user \} = await requireRole\("DISPO"\);\n  const invoice = await db\.invoice\.findFirst\(\{ where: \{ id: invoiceId, bookingId, tenantId: tenant\.id/, "Gegenbeleg-Kontext: nur DISPO und eigener Mandant");
+  const rangesActions = readFileSync(path.join(process.cwd(), "src/app/(app)/einstellungen/nummernkreise/actions.ts"), "utf8");
+  assert.match(rangesActions, /export async function updateNumberRangesAction[\s\S]*?requireRole\("OWNER"\)/, "Nummernkreise nur Inhaber");
   const docActions = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/dokumente/actions.ts"), "utf8");
   assert.match(docActions, /export async function resendInvoiceAction[\s\S]*?requireRole\("DISPO"\)/, "Rechnungsversand nur DISPO");
   // Zahlungen und Kaution: Zahlung erfassen/stornieren, Kaution freigeben/einbehalten/korrigieren nur DISPO (und OWNER);
