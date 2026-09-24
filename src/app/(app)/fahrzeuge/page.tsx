@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { vehicleIdsByPlate } from "@/lib/search";
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { FUELS, type Fuel } from "@/lib/constants";
@@ -20,6 +21,7 @@ export default async function VehiclesPage({ searchParams }: PageProps<"/fahrzeu
   const params = await searchParams;
   const q = typeof params.q === "string" ? params.q.trim() : "";
   const showInactive = params.inaktiv === "1";
+  const plateIds = q ? await vehicleIdsByPlate(tenant.id, q) : [];
 
   const [groups, vehicles] = await Promise.all([
     db.vehicleGroup.findMany({ where: { tenantId: tenant.id }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
@@ -27,7 +29,8 @@ export default async function VehiclesPage({ searchParams }: PageProps<"/fahrzeu
       where: {
         tenantId: tenant.id,
         ...(showInactive ? {} : { status: { not: "INACTIVE" } }),
-        ...(q ? { OR: [{ plate: { contains: q } }, { make: { contains: q } }, { model: { contains: q } }] } : {}),
+        // case-insensitiv; Kennzeichen zusätzlich ohne Leerzeichen/Bindestriche vergleichbar
+        ...(q ? { OR: [{ plate: { contains: q, mode: "insensitive" } }, { make: { contains: q, mode: "insensitive" } }, { model: { contains: q, mode: "insensitive" } }, ...(plateIds.length ? [{ id: { in: plateIds } }] : [])] } : {}),
       },
       orderBy: [{ plate: "asc" }],
     }),

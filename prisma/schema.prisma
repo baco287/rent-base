@@ -235,6 +235,7 @@ model Customer {
 
   @@unique([tenantId, number])
   @@index([tenantId, lastName])
+  @@index([tenantId, email])
 }
 
 model Booking {
@@ -279,6 +280,7 @@ model Booking {
   @@unique([tenantId, number])
   @@index([tenantId, vehicleId, startAt, endAt])
   @@index([tenantId, status])
+  @@index([tenantId, customerId, startAt])
 }
 
 // ============================================================================
@@ -414,6 +416,7 @@ model ContractDriver {
   customer Customer?      @relation(fields: [customerId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, contractId])
+  @@index([tenantId, customerId])
 }
 
 // Übergabe (PICKUP) und Rückgabe (RETURN) in einem Modell.
@@ -735,6 +738,7 @@ model EmailLog {
   @@index([tenantId, status])
   @@index([tenantId, bookingId, createdAt])
   @@index([tenantId, invoiceVersionId])
+  @@index([tenantId, payoutId])
 }
 
 // Fahrzeughistorie, nur anfügen.
@@ -840,6 +844,7 @@ model Invoice {
   @@index([tenantId, status])
   @@index([tenantId, kind])
   @@index([tenantId, originalInvoiceId])
+  @@index([tenantId, customerId])
 }
 
 model InvoiceItem {
@@ -1477,6 +1482,7 @@ model AuthorityCase {
   @@index([tenantId, bookingId])
   @@index([tenantId, responseDeadline])
   @@index([tenantId, licensePlateNormalized])
+  @@index([tenantId, driverCustomerId])
 }
 
 // Originalschreiben, Nachweise, erzeugte Antwort-PDFs: privat gespeichert, nur anfügen; Korrektur = Archivierung mit Grund.

@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
+import { SearchDialog, useGlobalSearchShortcut } from "@/components/global-search";
 
 const NAV = [
   { href: "/heute", label: "Heute", icon: "grid" },
@@ -18,7 +19,7 @@ const NAV = [
   { href: "/einstellungen", label: "Einstellungen", icon: "cog" },
 ] as const;
 
-function Icon({ name }: { name: (typeof NAV)[number]["icon"] }) {
+function Icon({ name }: { name: (typeof NAV)[number]["icon"] | "search" }) {
   const p = { width: 16, height: 16, viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
   switch (name) {
     case "grid": return <svg {...p}><rect x="2" y="2" width="5" height="5" rx="1" /><rect x="9" y="2" width="5" height="5" rx="1" /><rect x="2" y="9" width="5" height="5" rx="1" /><rect x="9" y="9" width="5" height="5" rx="1" /></svg>;
@@ -30,6 +31,7 @@ function Icon({ name }: { name: (typeof NAV)[number]["icon"] }) {
     case "wrench": return <svg {...p}><path d="M10.5 2.5a3.5 3.5 0 0 0-3.3 4.6L2.5 11.8l1.7 1.7 4.7-4.7a3.5 3.5 0 0 0 4.6-3.3l-2 2-1.7-.4-.4-1.7z" /></svg>;
     case "warn": return <svg {...p}><path d="M8 2.5 14 13H2z" /><path d="M8 6.5v3M8 11.2v.3" /></svg>;
     case "stamp": return <svg {...p}><path d="M5 9V5.5a3 3 0 0 1 6 0V9" /><rect x="2.5" y="9" width="11" height="3" rx="1" /><path d="M4 12v2h8v-2" /></svg>;
+    case "search": return <svg {...p}><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg>;
     case "cog": return <svg {...p}><circle cx="8" cy="8" r="2.5" /><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" /></svg>;
   }
 }
@@ -43,6 +45,11 @@ export function Sidebar(props: {
 }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchTrigger = useRef<HTMLButtonElement>(null);
+  const openSearch = useCallback(() => { setOpen(false); setSearchOpen(true); }, []);
+  const closeSearch = useCallback(() => setSearchOpen(false), []);
+  useGlobalSearchShortcut(openSearch);
 
   const nav = (
     <nav className="flex flex-col gap-0.5">
@@ -71,15 +78,23 @@ export function Sidebar(props: {
       {/* Mobile-Kopfzeile */}
       <div className="md:hidden bg-brand text-brand-ink flex items-center justify-between px-4 py-3">
         <div className="font-display font-semibold text-lg">{props.tenantName}</div>
-        <button onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-label="Menü" className="px-2 py-1 rounded border border-white/30">
-          ☰
-        </button>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={openSearch} aria-label="Suche öffnen" className="px-2.5 py-1.5 rounded border border-white/30 inline-flex items-center gap-1.5"><Icon name="search" /><span className="text-sm">Suche</span></button>
+          <button onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-label="Menü" className="px-2 py-1 rounded border border-white/30">
+            ☰
+          </button>
+        </div>
       </div>
       <aside className={`${open ? "block" : "hidden"} md:flex bg-brand text-brand-ink p-3.5 md:min-h-screen flex-col gap-1`}>
         <div className="hidden md:block px-2.5 pt-1.5 pb-4 mb-2.5 border-b border-white/20">
           <div className="font-display text-lg font-semibold leading-tight">{props.tenantName}</div>
           {props.tenantCity && <div className="text-xs opacity-75">{props.tenantCity}</div>}
         </div>
+        <button ref={searchTrigger} type="button" onClick={openSearch} className="hidden md:flex items-center gap-2.5 px-2.5 py-2 mb-1.5 rounded-md text-[13.5px] bg-white/10 hover:bg-white/15 border border-white/15 text-left" aria-label="Suche öffnen (Strg+K)">
+          <Icon name="search" />
+          <span className="flex-1 opacity-85">Suchen …</span>
+          <kbd className="text-[11px] opacity-60 font-mono">Strg K</kbd>
+        </button>
         {nav}
         <div className="mt-auto pt-4 px-2.5 text-xs opacity-75 flex items-center justify-between gap-2">
           <span className="truncate">{props.userName} · {props.userRole}</span>
@@ -88,6 +103,7 @@ export function Sidebar(props: {
           </form>
         </div>
       </aside>
+      <SearchDialog open={searchOpen} onClose={closeSearch} returnFocusTo={searchTrigger} />
     </>
   );
 }

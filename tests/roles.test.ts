@@ -104,3 +104,32 @@ test("Jede Server-Action-Datei und jede Prozessseite prüft die Rolle serverseit
   const upload = readFileSync(path.join(process.cwd(), "src/app/api/authority-cases/[id]/documents/route.ts"), "utf8");
   assert.match(upload, /roleAllows\(session\.user\.role, \["DISPO"\]\)/, "Upload zu Behördenvorgängen nur DISPO");
 });
+
+/** Phase 19: Suche, Kundenakte, Dashboard – Sitzung und Rolle serverseitig, Sicherheitskopfzeilen, Anmeldebremse, keine öffentlichen Dokumentadressen. */
+test("Phase 19: Suche nur mit Sitzung und Rolle, Kopfzeilen additiv, Anmeldebremse, Dokumentzugriff nur über geschützte Adressen", () => {
+  const searchActions = readFileSync(path.join(process.cwd(), "src/app/(app)/suche/actions.ts"), "utf8");
+  assert.match(searchActions, /export async function globalSearchAction[\s\S]*?requireRole\("DISPO", "YARD"\)/, "Suche: alle Mitarbeiterrollen, aber nur mit Sitzung");
+  assert.match(searchActions, /searchQuerySchema\.safeParse/, "Suche: Eingabe mit zod begrenzt");
+  assert.match(searchActions, /consume\(`search:\$\{user\.id\}`/, "Suche: Lastbremse je Benutzer");
+  assert.ok(!/recordAudit/.test(searchActions), "Suche: keine Protokollierung des Suchbegriffs");
+  const search = readFileSync(path.join(process.cwd(), "src/lib/search.ts"), "utf8");
+  assert.ok(!/\$queryRawUnsafe|\$executeRawUnsafe/.test(search), "Suche: kein ungeschütztes Roh-SQL");
+  assert.ok((search.match(/where: \{ tenantId/g) ?? []).length >= 9, "Suche: jede Abfrage mandantengebunden");
+  assert.match(search, /canSeeVin = role === "OWNER" \|\| role === "DISPO"/, "FIN nur Inhaber und Disposition");
+  assert.ok(!/iban(?!Masked)/i.test(search.replace(/\/\/.*$/gm, "")), "Suche: keine IBAN als Suchfeld oder Treffer");
+  const config = readFileSync(path.join(process.cwd(), "next.config.ts"), "utf8");
+  for (const h of ["X-Content-Type-Options", "Referrer-Policy", "X-Frame-Options", "frame-ancestors 'none'", "Strict-Transport-Security"]) assert.ok(config.includes(h), `Kopfzeile ${h}`);
+  assert.ok(!/script-src|default-src/.test(config), "keine blinde CSP für Skripte");
+  const login = readFileSync(path.join(process.cwd(), "src/app/(auth)/actions.ts"), "utf8");
+  assert.match(login, /export async function loginAction[\s\S]*?consume\(accountKey, LOGIN_LIMIT_PER_ACCOUNT\)[\s\S]*?consume\(addressKey, LOGIN_LIMIT_PER_ADDRESS\)[\s\S]*?verifyPassword/, "Anmeldebremse vor der Passwortprüfung");
+  assert.match(login, /hashKeyPart\(email\)/, "Anmeldebremse: E-Mail nur gehasht im Speicher");
+  const customerFile = readFileSync(path.join(process.cwd(), "src/lib/customer-file.ts"), "utf8");
+  assert.ok(!/https?:\/\//.test(customerFile), "Kundenakte: keine öffentlichen Dokumentadressen");
+  assert.match(customerFile, /canAuthority = role !== "YARD"/, "Kundenakte: Behördendokumente nicht für Hofmitarbeiter");
+  assert.match(customerFile, /driverCustomerId: customerId/, "Kundenakte: Behördenvorgänge nur über echte Fahrerreferenz");
+  for (const route of ["documents", "authority-documents", "damage-documents", "vehicle-documents", "photos", "signatures"]) {
+    const src = readFileSync(path.join(process.cwd(), `src/app/api/${route}/[id]/route.ts`), "utf8");
+    assert.match(src, /getSession\(\)/, `${route}: Sitzung`);
+    assert.match(src, /session\.tenant\.id/, `${route}: Mandant`);
+  }
+});

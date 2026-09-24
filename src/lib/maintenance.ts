@@ -14,6 +14,7 @@ import { DomainError } from "@/lib/integrity";
 import { dueStatus, proposeNextDue, type DueResult } from "@/lib/maintenance-due";
 import { fmtCents, toCents, type Cents } from "@/lib/money";
 import { isUniqueViolation, nextMaintenanceNumber, withNumberRetry } from "@/lib/numbering";
+import { zonedDayRange, zonedDayStartPlus } from "@/lib/time";
 import { recordVehicleEvent } from "@/lib/vehicle-events";
 
 type Tx = Prisma.TransactionClient;
@@ -704,9 +705,9 @@ export async function listMaintenance(tenantId: string, opts: { filter?: FleetFi
 /** Kennzahlen für Dashboard und Heute-Seite. */
 export async function maintenanceCounts(tenantId: string, now = new Date()) {
   const dues = await fleetDues(tenantId, now);
-  const startOfDay = new Date(now); startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(startOfDay.getTime() + 86_400_000);
-  const weekEnd = new Date(startOfDay.getTime() + 7 * 86_400_000);
+  // Kalendertage in der Anwendungszeitzone (Europe/Berlin), nicht in der Zeitzone des Servers
+  const { start: startOfDay, end: endOfDay } = zonedDayRange(now);
+  const weekEnd = zonedDayStartPlus(now, 7);
   const [appointmentsWeek, appointmentsToday, inWorkshop, inProgress] = await Promise.all([
     db.maintenanceRecord.count({ where: { tenantId, status: { in: ["SCHEDULED", "IN_PROGRESS"] }, scheduledAt: { gte: startOfDay, lt: weekEnd } } }),
     db.maintenanceRecord.findMany({ where: { tenantId, status: { in: ["SCHEDULED", "IN_PROGRESS"] }, scheduledAt: { gte: startOfDay, lt: endOfDay } }, orderBy: { scheduledAt: "asc" }, include: { vehicle: { select: { id: true, plate: true, make: true, model: true } } } }),
@@ -717,6 +718,7 @@ export async function maintenanceCounts(tenantId: string, now = new Date()) {
     overdue: dues.filter((d) => d.due.level === "OVERDUE" || d.due.level === "DUE").length,
     soon: dues.filter((d) => d.due.level === "SOON").length,
     overdueList: dues.filter((d) => d.due.level === "OVERDUE" || d.due.level === "DUE"),
+    soonList: dues.filter((d) => d.due.level === "SOON"),
     huSoonList: dues.filter((d) => d.type === "HU_AU" && d.due.level !== "OK" && d.due.level !== "NONE"),
     appointmentsWeek,
     appointmentsToday,

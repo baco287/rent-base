@@ -4,10 +4,12 @@ import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { customerName, fmtDateTime, fmtEur } from "@/lib/format";
 import { calculateRentalPrice, rateCardFrom } from "@/lib/pricing";
-import { BookingStageChip, Card, Content, Empty, PageHeader, Plate } from "@/components/ui";
+import { BookingStageChip, Card, Chip, Content, Empty, PageHeader, Plate } from "@/components/ui";
 import { bookingStage } from "@/lib/booking-status";
+import { bookingSearchWhere, SEARCH_MAX } from "@/lib/search";
 
 export const metadata = { title: "Buchungen" };
+const PAGE = 50;
 
 const FILTERS: { key: string; label: string; where: Prisma.BookingWhereInput }[] = [
   { key: "offen", label: "Offen", where: { status: { in: ["RESERVED", "ACTIVE"] } } },
@@ -22,30 +24,48 @@ export default async function BookingsPage({ searchParams }: PageProps<"/buchung
   const params = await searchParams;
   const filterKey = typeof params.filter === "string" ? params.filter : "offen";
   const filter = FILTERS.find((f) => f.key === filterKey) ?? FILTERS[0];
+  const q = typeof params.q === "string" ? params.q.trim().slice(0, SEARCH_MAX) : "";
+  const page = Math.max(1, parseInt(typeof params.seite === "string" ? params.seite : "1", 10) || 1);
+  const qs = (over: Record<string, string | number>) => `/buchungen?${new URLSearchParams({ filter: filter.key, ...(q ? { q } : {}), ...Object.fromEntries(Object.entries(over).map(([k, v]) => [k, String(v)])) }).toString()}`;
 
-  const bookings = await db.booking.findMany({
-    where: { tenantId: tenant.id, ...filter.where },
-    include: { vehicle: true, customer: true, contract: { select: { status: true } } },
-    orderBy: { startAt: filter.key === "abgeschlossen" || filter.key === "alle" ? "desc" : "asc" },
-    take: 300,
-  });
+  // Suche statt fester Obergrenze: Nummer, Kunde, Kennzeichen (auch ohne Leerzeichen), Fahrzeug, Vertragsnummer; Serverseiten
+  const search = q ? await bookingSearchWhere(tenant.id, q) : {};
+  const where: Prisma.BookingWhereInput = { tenantId: tenant.id, ...filter.where, ...(q ? { AND: [search] } : {}) };
+  const [total, bookings] = await Promise.all([
+    db.booking.count({ where }),
+    db.booking.findMany({
+      where,
+      include: { vehicle: true, customer: true, contract: { select: { status: true } } },
+      orderBy: { startAt: filter.key === "abgeschlossen" || filter.key === "alle" ? "desc" : "asc" },
+      skip: (page - 1) * PAGE,
+      take: PAGE,
+    }),
+  ]);
+  const pages = Math.max(1, Math.ceil(total / PAGE));
 
   return (
     <>
-      <PageHeader title="Buchungen" sub={`${bookings.length} ${filter.label.toLowerCase()}`}>
+      <PageHeader title="Buchungen" sub={`${total} ${filter.label.toLowerCase()}${q ? ` · Suche „${q}“` : ""}`}>
+        <form className="flex gap-2" role="search">
+          <input type="hidden" name="filter" value={filter.key} />
+          <label htmlFor="buchungen-q" className="sr-only">Buchungen suchen</label>
+          <input id="buchungen-q" name="q" defaultValue={q} maxLength={SEARCH_MAX} placeholder="Nummer, Kunde, Kennzeichen, Fahrzeug" className="input !w-64 !min-h-[36px]" />
+          <button className="btn">Suchen</button>
+          {q && <Link href={`/buchungen?filter=${filter.key}`} className="btn">Zurücksetzen</Link>}
+        </form>
         <Link href="/buchungen/neu" className="btn btn-primary">+ Neue Buchung</Link>
       </PageHeader>
       <Content>
         <div className="flex gap-1.5 flex-wrap">
           {FILTERS.map((f) => (
-            <Link key={f.key} href={`/buchungen?filter=${f.key}`} className={`btn !py-1.5 ${f.key === filter.key ? "!bg-brand !text-brand-ink !border-brand" : ""}`}>
+            <Link key={f.key} href={`/buchungen?${new URLSearchParams({ filter: f.key, ...(q ? { q } : {}) }).toString()}`} className={`btn !py-1.5 ${f.key === filter.key ? "!bg-brand !text-brand-ink !border-brand" : ""}`}>
               {f.label}
             </Link>
           ))}
         </div>
         <Card>
           {bookings.length === 0 ? (
-            <Empty action={{ href: "/buchungen/neu", label: "Buchung anlegen" }}>Keine Buchungen in dieser Ansicht.</Empty>
+            <Empty action={q ? undefined : { href: "/buchungen/neu", label: "Buchung anlegen" }}>{q ? `Nichts gefunden für „${q}“ in „${filter.label}“.` : "Keine Buchungen in dieser Ansicht."}</Empty>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-[13.5px]">
@@ -83,6 +103,13 @@ export default async function BookingsPage({ searchParams }: PageProps<"/buchung
                 </tbody>
               </table>
             </div>
+          )}
+          {pages > 1 && (
+            <nav aria-label="Seiten" className="px-4 py-3 border-t border-line-soft flex items-center gap-2">
+              {page > 1 && <Link href={qs({ seite: page - 1 })} className="btn !py-1.5">Zurück</Link>}
+              <Chip>Seite {page} von {pages}</Chip>
+              {page < pages && <Link href={qs({ seite: page + 1 })} className="btn !py-1.5">Weiter</Link>}
+            </nav>
           )}
         </Card>
         <p className="text-xs text-ink-3">Ablauf: Buchung, Mietvertrag, Übergabe, Rückgabe. „Unterwegs“ entsteht nur durch Mietvertrag und Übergabeprotokoll.</p>

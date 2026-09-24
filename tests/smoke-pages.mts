@@ -123,6 +123,31 @@ const pages: [string, string][] = [
   ["/kunden", "Muster"],
   ["/kunden/neu", "Ausweisnummer"],
   [`/kunden/${w.customerId}`, "K-00001"],
+  // Phase 19: Kundenakte 360°, Suche, Dashboard
+  [`/kunden/${w.customerId}`, "Letzte Aktivität"],
+  [`/kunden/${w.customerId}?tab=buchungen`, "Buchungen als Mieter"],
+  [`/kunden/${w.customerId}?tab=buchungen`, "Als Fahrer eingetragen"],
+  [`/kunden/${w.customerId}?tab=finanzen`, "Wirksames Rechnungsvolumen"],
+  [`/kunden/${w.customerId}?tab=kautionen`, "Kautionen je Buchung"],
+  [`/kunden/${w.customerId}?tab=schaeden`, "Schadenakten zu Vermietungen dieser Person"],
+  [`/kunden/${w.customerId}?tab=dokumente`, "Dokumente"],
+  [`/kunden/${w.customerId}?tab=kommunikation`, "E-Mail-Verlauf"],
+  [`/kunden/${w.customerId}?tab=behoerden`, "als Fahrer bestimmt"],
+  [`/kunden/${w.customerId}?tab=historie`, "Kunde angelegt"],
+  [`/kunden/${w.customerId}?tab=stammdaten`, "Ausweisnummer"],
+  ["/kunden?q=k-00001", "Muster"],
+  ["/kunden?q=0421%2012345", "Muster"],
+  ["/buchungen?filter=alle&q=hbrt200", "SIGN-1"],
+  ["/buchungen?filter=alle&q=muster", "ALT-1"],
+  ["/fahrzeuge?q=hbrt300", "HB-RT 300"],
+  ["/suche", "Suchbegriff eingeben"],
+  ["/suche?q=K-00001", "Muster"],
+  ["/suche?q=hbrt200", "HB-RT 200"],
+  ["/suche?q=SIGN-1", "Buchung SIGN-1"],
+  ["/suche?q=a", "mindestens 2 Zeichen"],
+  ["/heute", "Was braucht Aufmerksamkeit?"],
+  ["/heute?zeitraum=7", "Bald"],
+  ["/heute?zeitraum=30", "30 Tage"],
   ["/buchungen", "Bereit zur Übergabe"],
   ["/buchungen?filter=alle", "ALT-1"],
   ["/buchungen/neu", "Neuer Kunde"],
@@ -315,7 +340,7 @@ void v2pdf;
 const retBookingV = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
 report(retBookingV.includes("2 Fassungen") && retBookingV.includes("aktuell 2"), "Buchung: Fassungshinweis");
 const today = await plain(await fetch(base + "/heute", { headers: { cookie } }));
-report(today.includes("Offene Rechnungen") && today.includes("Zahlungen heute") && today.includes("Offene Kautionen") && today.includes("Offener Rechnungsbetrag"), "Dashboard: Kennzahlen Zahlungen und Kaution");
+report(today.includes("Offene Rechnungen") && today.includes("Überfällige Rechnungen") && today.includes("Offene Kautionen") && today.includes("Rechnungserstattungen offen"), "Dashboard: Kennzahlen Rechnungen und Kaution");
 void pay1;
 
 // Phase 12: Schadenmanagement. Schaden → Akte → Uploads → Haftung → Kundenbelastung → Schadenabrechnung neben der Mietrechnung.
@@ -367,7 +392,7 @@ report(bookingDmg.includes("Schadenabrechnung") && bookingDmg.includes(dc.caseNu
 const vehicleDmg = await plain(await fetch(`${base}/fahrzeuge/${v4.id}?tab=schaeden`, { headers: { cookie } }));
 report(vehicleDmg.includes(dc.caseNumber) && vehicleDmg.includes("Kunde verantwortlich (bestätigt)"), "Fahrzeugakte: Schaden mit Aktenbezug und Haftungsstand");
 const todayDmg = await plain(await fetch(base + "/heute", { headers: { cookie } }));
-report(todayDmg.includes("Offene Schadenakten") && todayDmg.includes("Wegen Schaden gesperrt") && todayDmg.includes("Haftung ungeklärt") && todayDmg.includes("In Reparatur"), "Dashboard: Schaden-Kennzahlen");
+report(todayDmg.includes("Offene Schadenakten") && todayDmg.includes("wegen Schaden gesperrt") && todayDmg.includes("Haftung ungeklärt") && todayDmg.includes("in Reparatur"), "Dashboard: Schaden-Kennzahlen");
 const hofOnly = await reportDamage(w.tenantId, w.actor, { vehicleId: v3.id, view: "FRONT", posX: 0.2, posY: 0.4, kind: "CHIP", description: "Steinschlag ohne Miete" });
 const { damageCase: dcHof } = await openDamageCase(w.tenantId, hofOnly.id, w.actor);
 const hofCase = await plain(await fetch(`${base}/schaeden/${dcHof.id}`, { headers: { cookie } }));
@@ -415,7 +440,7 @@ report(maintNew.includes("Wartung / Werkstatt hinzufügen") && maintNew.includes
 const casePage3 = await plain(await fetch(`${base}/schaeden/${dc.id}`, { headers: { cookie } }));
 report(casePage3.includes("Kein Reparaturvorgang verknüpft") && casePage3.includes("Reparaturvorgang anlegen"), "Schadenakte: Bereich Reparatur & Werkstatt");
 const todayMaint = await plain(await fetch(base + "/heute", { headers: { cookie } }));
-report(todayMaint.includes("Wartung überfällig") && todayMaint.includes("Wartung bald fällig") && todayMaint.includes("Werkstatttermine 7 Tage") && todayMaint.includes("Fahrzeuge in Werkstatt"), "Dashboard: Wartungskennzahlen");
+report(todayMaint.includes("Wartung") && todayMaint.includes("fällig/überfällig") && todayMaint.includes("Termine heute") && todayMaint.includes("in Werkstatt"), "Dashboard: Wartungskennzahlen");
 void huPlan;
 
 // Audit: Rollen. Hofmitarbeiter dürfen Buchungen weder anlegen noch stornieren, Übergabe und Rückgabe aber durchführen.
@@ -521,10 +546,10 @@ const bhVeh = await plain(await fetch(`${base}/fahrzeuge/${v4.id}?tab=behoerden`
 report(bhVeh.includes(bhCase.caseNumber) && bhVeh.includes("Schreiben erfassen"), "Fahrzeugakte: Reiter Behörden");
 const bhBooking = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
 report(bhBooking.includes("Behördenvorgänge") && bhBooking.includes(bhCase.caseNumber), "Buchung: Behördenvorgänge");
-const bhCustomer = await plain(await fetch(`${base}/kunden/${w.customerId}`, { headers: { cookie } }));
+const bhCustomer = await plain(await fetch(`${base}/kunden/${w.customerId}?tab=behoerden`, { headers: { cookie } }));
 report(bhCustomer.includes("Behördenvorgänge") && bhCustomer.includes(bhCase.caseNumber) && bhCustomer.includes("bewusst als Fahrer bestimmt"), "Kundenakte: nur bewusst bestimmte Fahrer, neutrale Wortwahl");
 const bhToday = await plain(await fetch(base + "/heute", { headers: { cookie } }));
-report(bhToday.includes("Neue Behördenanfragen") && bhToday.includes("Antwortfrist"), "Heute: Behörden-Kennzahlen");
+report(bhToday.includes("Behördenfristen") && bhToday.includes("Behörden: Bearbeitung") && bhToday.includes("versandbereit"), "Heute: Behörden-Kennzahlen");
 const yardBh = await plain(await fetch(`${base}/behoerden/${bhCase.id}`, { headers: { cookie: `rb_session=${yardSession}` } }));
 report(yardBh.includes(bhCase.caseNumber) && yardBh.includes("Lesender Zugriff") && !yardBh.includes("Fahrerbestimmung speichern") && !yardBh.includes("Antwort vorbereiten") && !yardBh.includes("Vorgang abschließen") && !yardBh.includes("Dokument hochladen") && !yardBh.includes("Vorgangsdaten bearbeiten"), "Hofmitarbeiter: Behördenvorgang nur lesen");
 const yardBhUp = await (async () => { const fd = new FormData(); fd.set("file", new Blob([pdfBytes], { type: "application/pdf" }), "x.pdf"); fd.set("type", "EVIDENCE"); return fetch(`${base}/api/authority-cases/${bhCase.id}/documents`, { method: "POST", body: fd, headers: { cookie: `rb_session=${yardSession}` } }); })();
@@ -686,7 +711,7 @@ const bookingDep2 = await plain(await fetch(`${base}/buchungen/${retBooking.id}`
 report(depPayout.sourceType === "SECURITY_DEPOSIT_REFUND" && bookingDep2.includes(depPayout.number!) && bookingDep2.includes("ausgezahlt 350,00") && !bookingDep2.includes("Kaution auszahlen"), "Buchung: Kaution vollständig ausgezahlt, keine weitere Auszahlung");
 const todayPayouts = await plain(await fetch(base + "/heute", { headers: { cookie } }));
 report(todayPayouts.includes("Rechnungserstattungen offen") && todayPayouts.includes("60,00"), "Dashboard: offene Rechnungserstattungen aus der zentralen Summierung");
-const customerPage = await plain(await fetch(`${base}/kunden/${w.customerId}`, { headers: { cookie } }));
+const customerPage = await plain(await fetch(`${base}/kunden/${w.customerId}?tab=finanzen`, { headers: { cookie } }));
 report(customerPage.includes("Auszahlungen") && customerPage.includes(refund.number!), "Kunde: Auszahlungsreferenz");
 const rangesPayout = await plain(await fetch(base + "/einstellungen/nummernkreise", { headers: { cookie } }));
 report(rangesPayout.includes("Präfix Auszahlungen") && rangesPayout.includes("AZ-"), "Nummernkreise: Kreis Auszahlungen");
@@ -702,6 +727,46 @@ report(yardInvRefund.includes("Auszahlungen erfasst die Disposition") && !yardIn
 const yardPayoutUpload = await (async () => { const fd = new FormData(); fd.set("file", new Blob([jpeg], { type: "image/jpeg" }), "x.jpg"); return fetch(`${base}/api/payouts/${refund.id}/documents`, { method: "POST", body: fd, headers: { cookie } }); })();
 report(yardPayoutUpload.status === 403, `${yardPayoutUpload.status} Hofmitarbeiter: kein Nachweis-Upload`);
 await db.user.update({ where: { id: w.userId }, data: { role: "OWNER" } });
+
+// Phase 19: Sicherheitskopfzeilen, Kundenakte nach den Vorgängen, Suche nach allen Nummernarten, Dashboard, Rollen, fremder Mandant
+const headRes = await fetch(base + "/heute", { headers: { cookie } });
+report(headRes.headers.get("x-content-type-options") === "nosniff" && (headRes.headers.get("referrer-policy") ?? "").includes("strict-origin") && headRes.headers.get("x-frame-options") === "DENY" && (headRes.headers.get("content-security-policy") ?? "").includes("frame-ancestors 'none'"), "Sicherheitskopfzeilen gesetzt (nosniff, Referrer, Frame, frame-ancestors)");
+const akteUeb = await plain(await fetch(`${base}/kunden/${w.customerId}`, { headers: { cookie } }));
+report(akteUeb.includes("Offene Forderungen") && akteUeb.includes("Guthaben / Erstattung offen") && akteUeb.includes("Kautionen auszuzahlen") && akteUeb.includes("Offene Akten") && akteUeb.includes("Bearbeiten") && akteUeb.includes("+ Neue Buchung"), "Kundenakte: Übersichtskarten und Aktionen");
+const akteFin = await plain(await fetch(`${base}/kunden/${w.customerId}?tab=finanzen`, { headers: { cookie } }));
+report(akteFin.includes(finalInvoice.number) && akteFin.includes(refund.number!) && akteFin.includes(depPayout.number!) && akteFin.includes("Storniert") && akteFin.includes("Gutschrift"), "Kundenakte Finanzen: Belege, Zahlungen mit Storno, Auszahlungen, Gutschrift");
+const akteKau = await plain(await fetch(`${base}/kunden/${w.customerId}?tab=kautionen`, { headers: { cookie } }));
+report(akteKau.includes("RET-1") && akteKau.includes("Ausgezahlt") && akteKau.includes("350,00"), "Kundenakte Kautionen: Stand je Buchung mit Auszahlung");
+const akteSch = await plain(await fetch(`${base}/kunden/${w.customerId}?tab=schaeden`, { headers: { cookie } }));
+report(akteSch.includes(dc.caseNumber) && !akteSch.includes("Steinschlag ohne Miete"), "Kundenakte Schäden: nur Akten mit Bezug, hofinterner Schaden fehlt");
+const akteDok = await plain(await fetch(`${base}/kunden/${w.customerId}?tab=dokumente`, { headers: { cookie } }));
+report(akteDok.includes("/api/documents/") && akteDok.includes("Mietvertrag") && akteDok.includes("Auszahlungsbeleg") && !/https?:\/\/[^"]*\.(pdf|jpg)/.test(akteDok), "Kundenakte Dokumente: geschützte Adressen, keine öffentlichen Links");
+const akteKom = await plain(await fetch(`${base}/kunden/${w.customerId}?tab=kommunikation`, { headers: { cookie } }));
+report(akteKom.includes("E-Mail-Verlauf") && akteKom.includes("erika@example.test"), "Kundenakte Kommunikation: Versandprotokoll");
+const akteBh = await plain(await fetch(`${base}/kunden/${w.customerId}?tab=behoerden`, { headers: { cookie } }));
+report(akteBh.includes(bhCase.caseNumber), "Kundenakte Behörden: Vorgang mit bestätigtem Fahrer");
+const akteHist = await plain(await fetch(`${base}/kunden/${w.customerId}?tab=historie`, { headers: { cookie } }));
+report(akteHist.includes("Mietvertrag") && akteHist.includes("Rechnung") && akteHist.includes("Zahlung") && akteHist.includes("Auszahlung"), "Kundenakte Historie: Zeitleiste aus gespeicherten Ereignissen");
+for (const [q, expect] of [[finalInvoice.number, "Rechnung " + finalInvoice.number], [refund.number!, "Auszahlung " + refund.number], [dc.caseNumber, "Schadenakte " + dc.caseNumber], [maintRes.record.maintenanceNumber, maintRes.record.maintenanceNumber], [bhCase.caseNumber, bhCase.caseNumber], [retContract.number, "Mietvertrag " + retContract.number], [creditNumber, "Gutschrift " + creditNumber]] as [string, string][]) {
+  const s = await plain(await fetch(`${base}/suche?q=${encodeURIComponent(q)}`, { headers: { cookie } }));
+  report(s.includes(expect), `Suche „${q}“ findet ${expect}`);
+}
+const dash = await plain(await fetch(base + "/heute", { headers: { cookie } }));
+report(dash.includes("Überfällig") && dash.includes("Hinweise") && dash.includes("Heute auf dem Hof") && dash.includes("Rechnungserstattungen offen") && dash.includes("Fehlende Dokumente") && dash.includes("E-Mail-Probleme"), "Dashboard: Gruppen, Kennzahlen, Hinweise");
+await db.user.update({ where: { id: w.userId }, data: { role: "YARD" } });
+const yardAkte = await plain(await fetch(`${base}/kunden/${w.customerId}?tab=finanzen`, { headers: { cookie } }));
+report(yardAkte.includes("Wirksames Rechnungsvolumen") && !/DE02120300000000202051/.test(yardAkte), "Hofmitarbeiter: Kundenakte lesbar, keine volle IBAN");
+const yardDok = await plain(await fetch(`${base}/kunden/${w.customerId}?tab=dokumente`, { headers: { cookie } }));
+report(!yardDok.includes("/api/authority-documents/") && yardDok.includes("Behördendokumente sind der Disposition vorbehalten"), "Hofmitarbeiter: keine Behördendokumente in der Kundenakte");
+const yardSearch = await plain(await fetch(base + "/suche?q=muster", { headers: { cookie } }));
+report(yardSearch.includes("Muster") && !yardSearch.includes("FIN "), "Hofmitarbeiter: Suche ohne FIN");
+await db.user.update({ where: { id: w.userId }, data: { role: "OWNER" } });
+const foreignAkte = await fetch(`${base}/kunden/${w.customerId}`, { headers: { cookie: `rb_session=${foreignSession}` } });
+report(foreignAkte.status === 404, `${foreignAkte.status} Kundenakte für fremden Mandanten nicht auffindbar`);
+const foreignSearch = await plain(await fetch(`${base}/suche?q=${encodeURIComponent(finalInvoice.number)}`, { headers: { cookie: `rb_session=${foreignSession}` } }));
+report(foreignSearch.includes("Nichts gefunden"), "Suche: fremder Mandant findet die Rechnung nicht");
+const anonSearch = await fetch(base + "/suche?q=muster", { redirect: "manual" });
+report(anonSearch.status === 307 || anonSearch.status === 302, `${anonSearch.status} Suche ohne Sitzung leitet zum Login`);
 
 if (keep) {
   console.log(`\nTestdaten bleiben stehen.\nSITZUNG=${sessionId}\nBUCHUNG=${w.bookingId}\nRUECKGABE_ENTWURF=${doneBooking.id}\nRUECKGABE_FERTIG=${retBooking.id}\nRET_DAMAGE=${retDamage.id} UEBERGEBEN=${doneBooking.id} BEREIT=${signedBooking.id}\nVERTRAG=${draft.number}\nMANDANTEN=${w.tenantId},${foreign.tenantId}`);

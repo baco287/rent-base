@@ -2,81 +2,103 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { customerName, fmtDateTime } from "@/lib/format";
 import { customerToFormValues } from "@/lib/customer-form-values";
-import { BookingStatusChip, Card, Chip, Content, PageHeader, Plate } from "@/components/ui";
+import { customerHeader, customerOverview } from "@/lib/customer-file";
+import { fmtDate, fmtDateTime } from "@/lib/format";
+import { Card, Chip, Content, PageHeader } from "@/components/ui";
 import { deleteCustomerAction, updateCustomerAction } from "../actions";
 import { CustomerForm } from "../customer-form";
-import { AuthorityCasesPanel } from "../../behoerden/authority-panel";
-import { fmtCents } from "@/lib/money";
-import { PAYOUT_SOURCE_TYPES, type PayoutSourceType } from "@/lib/constants";
+import { AuthorityTab, BookingsTab, CommunicationTab, DamagesTab, DepositsTab, DocumentsTab, FinanceTab, HistoryTab, OverviewTab } from "./file-tabs";
 
+const TABS = [
+  { key: "uebersicht", label: "Übersicht" },
+  { key: "buchungen", label: "Buchungen & Mieten" },
+  { key: "finanzen", label: "Finanzen" },
+  { key: "kautionen", label: "Kautionen" },
+  { key: "schaeden", label: "Schäden" },
+  { key: "dokumente", label: "Dokumente" },
+  { key: "kommunikation", label: "Kommunikation" },
+  { key: "behoerden", label: "Behördenvorgänge" },
+  { key: "historie", label: "Historie" },
+  { key: "stammdaten", label: "Stammdaten" },
+] as const;
+type Tab = (typeof TABS)[number]["key"];
+
+/** Kundenakte 360°: Kopf, Reiter (?tab=…), alles aus vorhandenen Modulen; keine neuen Geschäftsprozesse. */
 export default async function CustomerPage({ params, searchParams }: PageProps<"/kunden/[id]">) {
   const { tenant, user } = await requireSession();
   const { id } = await params;
   const sp = await searchParams;
+  const tab: Tab = (TABS.find((t) => t.key === sp.tab)?.key ?? "uebersicht") as Tab;
+  const page = Math.max(1, parseInt(typeof sp.seite === "string" ? sp.seite : "1", 10) || 1);
 
-  const c = await db.customer.findFirst({
-    where: { id, tenantId: tenant.id },
-    include: { bookings: { include: { vehicle: true }, orderBy: { startAt: "desc" }, take: 10 } },
-  });
-  if (!c) notFound();
-
-  const values = customerToFormValues(c);
-  const payouts = await db.payout.findMany({ where: { tenantId: tenant.id, customerId: c.id }, orderBy: { createdAt: "desc" }, take: 5, select: { id: true, number: true, status: true, amountCents: true, sourceType: true, executedAt: true } });
-
-  const update = updateCustomerAction.bind(null, c.id);
-  const remove = deleteCustomerAction.bind(null, c.id);
+  const head = await customerHeader(tenant.id, id);
+  if (!head) notFound();
+  const c = head.customer;
+  const overview = tab === "uebersicht" ? await customerOverview(tenant.id, c.id, c) : null;
+  const bookingCount = tab === "stammdaten" ? await db.booking.count({ where: { tenantId: tenant.id, customerId: c.id } }) : 0;
+  const canManage = user.role !== "YARD";
+  const href = (t: Tab) => `/kunden/${c.id}${t === "uebersicht" ? "" : `?tab=${t}`}`;
+  const address = [c.street, `${c.zip ?? ""} ${c.city ?? ""}`.trim(), c.country && c.country !== "DE" ? c.country : null].filter(Boolean).join(", ");
+  const salutation = c.type === "COMPANY" ? "Firmenkunde" : "Privatkunde";
+  const now = new Date();
+  const licenseExpired = !!c.licenseValidUntil && c.licenseValidUntil < now;
 
   return (
     <>
-      <PageHeader title={customerName(c)} sub={`${c.number ?? "ohne Nummer"} · ${c.type === "COMPANY" ? "Firmenkunde" : "Privatkunde"}`}>
+      <PageHeader title={head.name} sub={`${c.number ?? "ohne Nummer"} · ${salutation}${c.type === "COMPANY" && c.companyName ? ` · ${c.firstName} ${c.lastName}`.trimEnd() : ""}`}>
         {c.blocked && <Chip tone="bad">Gesperrt</Chip>}
-        {!c.blocked && <Link href={`/buchungen/neu?kunde=${c.id}`} className="btn btn-primary">+ Buchung</Link>}
+        {c.discountPercent > 0 && <Chip tone="info">{c.discountPercent} % Rabatt</Chip>}
+        <Link href={href("stammdaten")} className="btn">Bearbeiten</Link>
+        {c.email && <a href={`mailto:${encodeURIComponent(c.email)}`} className="btn">E-Mail</a>}
+        {c.phone && <a href={`tel:${c.phone.replace(/[^\d+]/g, "")}`} className="btn md:hidden">Anrufen</a>}
+        {!c.blocked && canManage && <Link href={`/buchungen/neu?kunde=${c.id}`} className="btn btn-primary">+ Neue Buchung</Link>}
       </PageHeader>
       <Content>
         {sp.gespeichert === "1" && <Chip tone="good">Gespeichert</Chip>}
         {sp.fehler === "buchungen" && <Chip tone="bad">Kunde hat Buchungen und kann deshalb nicht gelöscht werden.</Chip>}
-        <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-4 items-start">
+
+        <Card className="p-4">
+          <dl className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2 text-sm">
+            <div><dt className="label-xs">Kundennummer</dt><dd className="font-mono tnum">{c.number ?? "–"}</dd></div>
+            <div><dt className="label-xs">Anschrift</dt><dd>{address || "–"}</dd></div>
+            <div><dt className="label-xs">Telefon</dt><dd>{c.phone ? <a href={`tel:${c.phone.replace(/[^\d+]/g, "")}`} className="hover:underline">{c.phone}</a> : "–"}</dd></div>
+            <div><dt className="label-xs">E-Mail</dt><dd className="break-all">{c.email ? <a href={`mailto:${encodeURIComponent(c.email)}`} className="hover:underline">{c.email}</a> : "–"}</dd></div>
+            <div><dt className="label-xs">Geburtsdatum</dt><dd className="font-mono tnum">{c.birthDate ? fmtDate(c.birthDate) : "–"}</dd></div>
+            <div><dt className="label-xs">Führerschein</dt><dd>{c.licenseNumber ? <>{c.licenseClass ? `Klasse ${c.licenseClass}` : "erfasst"}{c.licenseValidUntil ? ` · bis ${fmtDate(c.licenseValidUntil)}` : ""} {licenseExpired ? <Chip tone="bad">abgelaufen</Chip> : <Chip tone="good">gültig</Chip>}</> : <Chip tone="amber">fehlt</Chip>}</dd></div>
+            <div><dt className="label-xs">Angelegt</dt><dd className="font-mono tnum">{fmtDate(c.createdAt)}</dd></div>
+            <div><dt className="label-xs">Letzte Aktivität</dt><dd className="font-mono tnum">{head.lastActivityAt ? <>{fmtDateTime(head.lastActivityAt)}<span className="block text-[11px] text-ink-3 font-sans">{head.lastActivityWhat}</span></> : "–"}</dd></div>
+          </dl>
+          {c.blocked && c.blockReason && <p className="mt-3 rounded-md bg-bad-soft text-bad px-3 py-2 text-sm">Gesperrt: {c.blockReason}</p>}
+          {c.notes && <p className="mt-3 text-sm text-ink-2 whitespace-pre-line">{c.notes}</p>}
+        </Card>
+
+        <nav aria-label="Bereiche der Kundenakte" className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
+          {TABS.map((t) => <Link key={t.key} href={href(t.key)} aria-current={t.key === tab ? "page" : undefined} className={`btn !py-1.5 shrink-0 ${t.key === tab ? "!bg-brand !text-brand-ink !border-brand" : ""}`}>{t.label}</Link>)}
+        </nav>
+
+        {tab === "uebersicht" && overview && <OverviewTab customerId={c.id} o={overview} />}
+        {tab === "buchungen" && <BookingsTab tenantId={tenant.id} customerId={c.id} page={page} now={now.getTime()} />}
+        {tab === "finanzen" && <FinanceTab tenantId={tenant.id} customerId={c.id} />}
+        {tab === "kautionen" && <DepositsTab tenantId={tenant.id} customerId={c.id} />}
+        {tab === "schaeden" && <DamagesTab tenantId={tenant.id} customerId={c.id} />}
+        {tab === "dokumente" && <DocumentsTab tenantId={tenant.id} customerId={c.id} role={user.role} />}
+        {tab === "kommunikation" && <CommunicationTab tenantId={tenant.id} customerId={c.id} />}
+        {tab === "behoerden" && <AuthorityTab tenantId={tenant.id} customerId={c.id} canManage={canManage} />}
+        {tab === "historie" && <HistoryTab tenantId={tenant.id} customerId={c.id} />}
+        {tab === "stammdaten" && (
           <Card className="p-5">
-            <CustomerForm action={update} values={values} submitLabel="Speichern" cancelHref="/kunden" />
-            {user.role === "OWNER" && c.bookings.length === 0 && (
-              <form action={remove} className="mt-6 pt-4 border-t border-line-soft">
+            <CustomerForm action={updateCustomerAction.bind(null, c.id)} values={customerToFormValues(c)} submitLabel="Speichern" cancelHref={`/kunden/${c.id}`} />
+            {user.role === "OWNER" && bookingCount === 0 && (
+              <form action={deleteCustomerAction.bind(null, c.id)} className="mt-6 pt-4 border-t border-line-soft">
                 <button type="submit" className="btn btn-danger">Kunde löschen</button>
                 <span className="text-xs text-ink-3 ml-3">Endgültig, nur ohne Buchungen möglich.</span>
               </form>
             )}
           </Card>
-          <div className="flex flex-col gap-4">
-          <Card title="Letzte Buchungen">
-            {c.bookings.length === 0 ? (
-              <p className="p-4 text-ink-3 text-sm">Noch keine Buchungen.</p>
-            ) : (
-              <ul className="divide-y divide-line-soft">
-                {c.bookings.map((b) => (
-                  <li key={b.id} className="px-4 py-2.5 flex items-center gap-3">
-                    <div className="flex-1 min-w-0">
-                      <Link href={`/buchungen/${b.id}`} className="font-medium hover:underline">{b.vehicle.make} {b.vehicle.model}</Link>
-                      <div className="text-xs text-ink-3 font-mono tnum">{fmtDateTime(b.startAt)} bis {fmtDateTime(b.endAt)}</div>
-                    </div>
-                    <Plate>{b.vehicle.plate}</Plate>
-                    <BookingStatusChip status={b.status} />
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-          <AuthorityCasesPanel tenantId={tenant.id} scope={{ customerId: c.id }} canManage={user.role !== "YARD"} />
-          {payouts.length > 0 && (
-            <Card title="Auszahlungen" right={<Link href={`/auszahlungen?filter=alle&q=${encodeURIComponent(c.number ?? "")}`} className="text-xs underline">alle</Link>}>
-              <ul className="divide-y divide-line-soft text-sm">
-                {payouts.map((p) => <li key={p.id} className="px-4 py-2 flex flex-wrap items-center gap-x-2"><Link href={`/auszahlungen/${p.id}`} className="font-mono tnum font-medium hover:underline">{p.number ?? "Entwurf"}</Link><span className="text-xs text-ink-3">{PAYOUT_SOURCE_TYPES[p.sourceType as PayoutSourceType]}{p.executedAt ? ` · ${fmtDateTime(p.executedAt)}` : ""}</span><span className={`ml-auto font-mono tnum ${p.status === "CANCELLED" ? "line-through text-ink-3" : ""}`}>{fmtCents(p.amountCents)}</span></li>)}
-              </ul>
-            </Card>
-          )}
-          </div>
-        </div>
+        )}
       </Content>
     </>
   );
 }
+

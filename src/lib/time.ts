@@ -57,3 +57,27 @@ export function toDateTimeInputValue(d: Date) {
   const z = zonedParts(d);
   return `${toDateInputValue(d)}T${two(z.hour)}:${two(z.minute)}`;
 }
+
+/** Beginn des Kalendertags (00:00 in der Anwendungszeitzone), in dem der Zeitpunkt liegt. */
+export function zonedDayStart(d: Date): Date {
+  const z = zonedParts(d);
+  return parseLocalDateTime(`${z.year}-${two(z.month)}-${two(z.day)}T00:00`)!;
+}
+
+/** Kalendertag n Tage nach dem Tagesbeginn von d (in der Anwendungszeitzone; über Zeitumstellungen hinweg korrekt). */
+export function zonedDayStartPlus(d: Date, days: number): Date {
+  const z = zonedParts(zonedDayStart(d));
+  const wall = new Date(Date.UTC(z.year, z.month - 1, z.day + days));
+  return parseLocalDateTime(`${wall.getUTCFullYear()}-${two(wall.getUTCMonth() + 1)}-${two(wall.getUTCDate())}T00:00`)!;
+}
+
+/** Halboffenes Tagesintervall [start, end) des Kalendertags von d in der Anwendungszeitzone. */
+export function zonedDayRange(d: Date): { start: Date; end: Date } {
+  return { start: zonedDayStart(d), end: zonedDayStartPlus(d, 1) };
+}
+
+/** Ganze Kalendertage zwischen zwei Zeitpunkten in der Anwendungszeitzone (Tag von b minus Tag von a). */
+export function zonedDaysBetween(a: Date, b: Date): number {
+  const za = zonedParts(a), zb = zonedParts(b);
+  return Math.round((Date.UTC(zb.year, zb.month - 1, zb.day) - Date.UTC(za.year, za.month - 1, za.day)) / 86_400_000);
+}

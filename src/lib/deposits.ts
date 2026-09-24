@@ -308,11 +308,17 @@ export async function cancelDepositEvent(tenantId: string, actor: Actor, eventId
 }
 
 /** Kennzahl: Kautionen, die erhalten, aber noch nicht vollständig zugeordnet sind, sowie erwartete bei laufenden Mieten. */
-export async function openDepositCounts(tenantId: string) {
+/** Offene Kautionen als Zeilen (Dashboard, Kennzahlen): nach Rückgabe noch nicht entschieden; unterwegs ohne Eingang. */
+export async function openDepositRows(tenantId: string) {
   const [candidates, expectedActive] = await Promise.all([
-    db.securityDeposit.findMany({ where: { tenantId, status: { in: ["RECEIVED", "PARTIALLY_RELEASED"] }, booking: { status: { in: ["RETURNED", "CANCELLED"] } } }, include: { events: { select: { type: true, amountCents: true, status: true } } } }),
-    db.booking.count({ where: { tenantId, status: "ACTIVE", contract: { status: "SIGNED", deposit: { gt: 0 } }, OR: [{ securityDeposit: null }, { securityDeposit: { status: "EXPECTED" } }] } }),
+    db.securityDeposit.findMany({ where: { tenantId, status: { in: ["RECEIVED", "PARTIALLY_RELEASED"] }, booking: { status: { in: ["RETURNED", "CANCELLED"] } } }, include: { events: { select: { type: true, amountCents: true, status: true } }, booking: { select: { id: true, number: true, actualReturnAt: true, endAt: true, customer: { select: { type: true, firstName: true, lastName: true, companyName: true } } } } } }),
+    db.booking.findMany({ where: { tenantId, status: "ACTIVE", contract: { status: "SIGNED", deposit: { gt: 0 } }, OR: [{ securityDeposit: null }, { securityDeposit: { status: "EXPECTED" } }] }, select: { id: true, number: true, startAt: true, endAt: true, contract: { select: { deposit: true } }, customer: { select: { type: true, firstName: true, lastName: true, companyName: true } } }, orderBy: { startAt: "asc" } }),
   ]);
-  const held = candidates.filter((d) => balanceOf(d.expectedAmountCents, d.events).remainingCents > 0).length;
+  const held = candidates.map((d) => ({ ...d, balance: balanceOf(d.expectedAmountCents, d.events) })).filter((d) => d.balance.remainingCents > 0);
   return { held, expectedActive };
+}
+
+export async function openDepositCounts(tenantId: string) {
+  const rows = await openDepositRows(tenantId);
+  return { held: rows.held.length, expectedActive: rows.expectedActive.length };
 }

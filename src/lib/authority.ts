@@ -17,7 +17,7 @@ import { toCents, type Cents } from "@/lib/money";
 import { isUniqueViolation, nextAuthorityCaseNumber, withNumberRetry } from "@/lib/numbering";
 import { renderAuthorityResponsePdf, type AuthorityResponsePdfData } from "@/lib/pdf/authority-pdf";
 import { assertKeyBelongsToTenant, buildStorageKey, getStorage, type StorageDriver } from "@/lib/storage";
-import { APP_TIME_ZONE, parseLocalDateTime } from "@/lib/time";
+import { APP_TIME_ZONE, parseLocalDateTime, zonedDayRange, zonedDayStartPlus } from "@/lib/time";
 
 type Tx = Prisma.TransactionClient;
 const TX = { timeout: 20_000, maxWait: 10_000 };
@@ -703,7 +703,9 @@ export const AUTHORITY_FILTERS: { key: AuthorityFilter; label: string }[] = [
   { key: "neu", label: "Neu" }, { key: "zuordnung", label: "Zuordnung erforderlich" }, { key: "pruefung", label: "Prüfung erforderlich" }, { key: "vorbereitet", label: "Antwort vorbereitet" },
   { key: "versandbereit", label: "Versandbereit" }, { key: "ueberfaellig", label: "Überfällig" }, { key: "uebermittelt", label: "Übermittelt" }, { key: "abgeschlossen", label: "Abgeschlossen" }, { key: "alle", label: "Alle" },
 ];
-const OPEN_STATUS = ["RECEIVED", "ASSIGNMENT_REQUIRED", "REVIEW_REQUIRED", "RESPONSE_PREPARED", "READY_TO_SEND"];
+/** Offene Vorgänge (noch nicht übermittelt, geschlossen oder storniert) – auch für das Dashboard. */
+export const AUTHORITY_OPEN_STATUS = ["RECEIVED", "ASSIGNMENT_REQUIRED", "REVIEW_REQUIRED", "RESPONSE_PREPARED", "READY_TO_SEND"];
+const OPEN_STATUS = AUTHORITY_OPEN_STATUS;
 
 export type ListOptions = { filter?: AuthorityFilter; q?: string; page?: number; pageSize?: number; type?: string | null; vehicleId?: string | null; assigned?: "ja" | "nein" | null; driver?: "ja" | "nein" | null; submitted?: "ja" | "nein" | null; deadline?: "ueberfaellig" | "bald" | "ohne" | null };
 
@@ -748,9 +750,9 @@ export async function listAuthorityCases(tenantId: string, opts: ListOptions = {
 }
 
 export async function authorityCounts(tenantId: string, now = new Date()) {
-  const startOfToday = new Date(now); startOfToday.setHours(0, 0, 0, 0);
-  const endOfToday = new Date(startOfToday.getTime() + 86_400_000);
-  const in3 = new Date(startOfToday.getTime() + 4 * 86_400_000);
+  // Kalendertage in der Anwendungszeitzone (Europe/Berlin), nicht in der Zeitzone des Servers
+  const { start: startOfToday, end: endOfToday } = zonedDayRange(now);
+  const in3 = zonedDayStartPlus(now, 4);
   const [received, assignment, dueSoon, overdue, dueToday] = await Promise.all([
     db.authorityCase.count({ where: { tenantId, status: "RECEIVED" } }),
     db.authorityCase.count({ where: { tenantId, status: "ASSIGNMENT_REQUIRED" } }),

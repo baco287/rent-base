@@ -1,9 +1,11 @@
 "use server";
 
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { createSession, destroySession, hashPassword, verifyPassword } from "@/lib/auth";
+import { consume, hashKeyPart, LOGIN_LIMIT_PER_ACCOUNT, LOGIN_LIMIT_PER_ADDRESS, reset } from "@/lib/rate-limit";
 
 export type AuthState = { error?: string } | undefined;
 
@@ -18,11 +20,21 @@ export async function loginAction(_prev: AuthState, formData: FormData): Promise
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   const { email, password, weiter } = parsed.data;
 
+  // Anmeldebremse ohne Redis (prozesslokal): je Konto und je Absenderadresse; Schlüssel gehasht, keine Klartextadresse im Speicher.
+  const h = await headers();
+  const address = (h.get("x-forwarded-for") ?? h.get("x-real-ip") ?? "unbekannt").split(",")[0].trim();
+  const accountKey = `login:konto:${hashKeyPart(email)}`;
+  const addressKey = `login:adresse:${hashKeyPart(address)}`;
+  const byAccount = consume(accountKey, LOGIN_LIMIT_PER_ACCOUNT);
+  const byAddress = consume(addressKey, LOGIN_LIMIT_PER_ADDRESS);
+  if (!byAccount.allowed || !byAddress.allowed) return { error: "Zu viele Anmeldeversuche. Bitte in einigen Minuten erneut versuchen." };
+
   const user = await db.user.findUnique({ where: { email } });
   // Gleiche Antwort bei unbekannter Adresse und falschem Passwort, damit man Konten nicht erraten kann.
   const ok = user && user.active && (await verifyPassword(password, user.passwordHash));
   if (!ok) return { error: "E-Mail oder Passwort stimmen nicht." };
 
+  reset(accountKey);
   await createSession(user.id);
   redirect(weiter && weiter.startsWith("/") ? weiter : "/heute");
 }
