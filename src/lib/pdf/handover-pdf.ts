@@ -215,6 +215,22 @@ export async function renderHandoverPdf(data: HandoverDocumentData, assets: Hand
   ]);
   if (data.notes) { pdf.gap(2); pdf.keyValues([{ label: "Bemerkung", value: data.notes }], 1); }
 
+  if (data.driverChecks.length > 0) {
+    pdf.sectionTitle("Fahrer- und Führerscheinprüfung");
+    for (const d of data.driverChecks) {
+      pdf.keyValues([
+        { label: `${d.roleLabel}`, value: `${d.name} – ${d.statusLabel}` },
+        { label: "Identität im Original geprüft", value: d.identityOriginalSeen ? "Ja" : "Nein" },
+        { label: "Führerschein im Original geprüft", value: d.licenseOriginalSeen ? "Ja" : "Nein" },
+        ...(d.requiredLicenseClass ? [{ label: "Fahrerlaubnisklasse geprüft", value: `${d.requiredLicenseClass}${d.licenseClassSatisfied === false ? " (nicht erfüllt)" : ""}` }] : []),
+        { label: "Gültigkeit geprüft", value: d.licenseValid === true ? "Ja" : d.licenseValid === false ? "Nein" : "–" },
+        { label: "Geprüft am", value: d.checkedAtLabel ?? "–" },
+        { label: "Geprüft durch", value: d.checkedByName ?? "–" },
+      ]);
+      pdf.gap(6);
+    }
+  }
+
   comparison(pdf, data);
   sketch(pdf, data, assets.sketchSvg);
 

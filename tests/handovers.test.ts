@@ -29,7 +29,7 @@ import { publishChecklistVersion, DEFAULT_CHECKLIST } from "../src/lib/checklist
 import { DomainError, isImmutableError, sha256 } from "../src/lib/integrity";
 import { assertKeyBelongsToTenant, buildStorageKey, getStorage, sniffImageType, storageStatus } from "../src/lib/storage";
 import { REQUIRED_PHOTO_CATEGORIES, energyRequirements } from "../src/lib/constants";
-import { createWorld, fakeSignaturePng, purgeTenants, type World } from "./helpers";
+import { createWorld, fakeSignaturePng, purgeTenants, verifyAllDriversForPickup, type World } from "./helpers";
 
 const tenants: string[] = [];
 after(async () => {
@@ -38,14 +38,14 @@ after(async () => {
 });
 
 /** Mandant mit abgeschlossenem Mietvertrag: die Buchung ist bereit zur Übergabe. */
-async function readyWorld(label: string, vehicle?: Record<string, unknown>): Promise<World> {
+async function readyWorld(label: string, vehicle?: Record<string, unknown>): Promise<World & { contractId: string }> {
   const w = await createWorld(label);
   tenants.push(w.tenantId);
   if (vehicle) await db.vehicle.update({ where: { id: w.vehicleId }, data: vehicle });
   const c = await ensureContractDraft(w.tenantId, w.bookingId, w.actor);
   await saveContractSignature(w.tenantId, w.actor, c.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getContractContentHash(w.tenantId, c.id) });
   await finalizeContract(w.tenantId, c.id);
-  return w;
+  return { ...w, contractId: c.id };
 }
 
 async function photo(w: World, handoverId: string, category: string, handoverDamageId?: string) {
@@ -100,6 +100,7 @@ test("Kilometerstand bleibt im Entwurf und geht erst beim Abschluss ins Fahrzeug
   await complete(w, h.id, 50_123);
   assert.equal((await db.vehicle.findFirstOrThrow({ where: { id: w.vehicleId } })).mileage, 50_000, "immer noch unverändert");
   await sign(w, h.id);
+  await verifyAllDriversForPickup(w.tenantId, w.actor, h.id, w.contractId);
   await finalizeHandover(w.tenantId, h.id, w.actor);
   assert.equal((await db.vehicle.findFirstOrThrow({ where: { id: w.vehicleId } })).mileage, 50_123);
 });
@@ -179,6 +180,7 @@ test("bei der Übergabe entdeckter Schaden ist ein Vorschaden und wird keinem Mi
   const nd = await addNewDamage(w.tenantId, h.id, { view: "RIGHT", posX: 0.6, posY: 0.5, kind: "SCRATCH", description: "Kratzer Beifahrertür" });
   await photo(w, h.id, "DAMAGE", nd.id);
   await sign(w, h.id);
+  await verifyAllDriversForPickup(w.tenantId, w.actor, h.id, w.contractId);
   await finalizeHandover(w.tenantId, h.id, w.actor);
 
   const damage = await db.damage.findFirstOrThrow({ where: { tenantId: w.tenantId, vehicleId: w.vehicleId } });
@@ -328,6 +330,7 @@ test("Abschluss: Buchung geht auf Unterwegs, Protokoll ist versiegelt, doppelter
   const h = await startHandover(w.tenantId, w.bookingId, "PICKUP", w.actor);
   await assert.rejects(() => finalizeHandover(w.tenantId, h.id, w.actor), /Kilometerstand fehlt/);
   await complete(w, h.id);
+  await verifyAllDriversForPickup(w.tenantId, w.actor, h.id, w.contractId);
   await assert.rejects(() => finalizeHandover(w.tenantId, h.id, w.actor), /Unterschrift des Mieters fehlt/);
   assert.equal((await db.booking.findFirstOrThrow({ where: { id: w.bookingId } })).status, "RESERVED");
   await sign(w, h.id);

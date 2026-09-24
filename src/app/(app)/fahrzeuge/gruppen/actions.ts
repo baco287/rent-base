@@ -28,10 +28,11 @@ const groupSchema = z.object({
   kmIncludedPerDay: z.preprocess((v) => (v === "" ? 200 : v), z.coerce.number().int().min(0)),
   extraKmRate: z.preprocess((v) => (v === "" ? 0.25 : v), num("Mehrkilometer-Preis muss eine Zahl sein.")),
   deposit: z.preprocess((v) => (v === "" ? 0 : v), num("Kaution muss eine Zahl sein.")),
+  requiredLicenseClass: optStr,
 });
 
 function toData(d: z.infer<typeof groupSchema>) {
-  return { ...d, description: d.description ?? null, workWeekRate: d.workWeekRate ?? null, weeklyRate: d.weeklyRate ?? null, monthlyRate: d.monthlyRate ?? null };
+  return { ...d, description: d.description ?? null, workWeekRate: d.workWeekRate ?? null, weeklyRate: d.weeklyRate ?? null, monthlyRate: d.monthlyRate ?? null, requiredLicenseClass: d.requiredLicenseClass ?? null };
 }
 
 function revalidate() {

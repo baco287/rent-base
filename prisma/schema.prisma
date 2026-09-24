@@ -86,6 +86,8 @@ model Tenant {
   authorityCaseEvents      AuthorityCaseEvent[]
   rentalTermsVersions      RentalTermsVersion[]
   payouts                  Payout[]
+  driverVerifications      DriverVerification[]
+  driverDocumentCopies     DriverDocumentCopy[]
 }
 
 model User {
@@ -135,8 +137,9 @@ model VehicleGroup {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  bodyType String  @default("PKW") // PKW | TRANSPORTER, bestimmt die Fallback-Skizze
-  sketchId String? // eigene Skizze der Gruppe, sonst Fallback nach bodyType
+  bodyType             String  @default("PKW") // PKW | TRANSPORTER, bestimmt die Fallback-Skizze
+  requiredLicenseClass String? // Phase 19.5: erforderliche Fahrerlaubnisklasse der Gruppe; null bei PKW = B, sonst konfigurieren
+  sketchId             String? // eigene Skizze der Gruppe, sonst Fallback nach bodyType
 
   tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   sketch             VehicleSketch?      @relation(fields: [sketchId], references: [id], onDelete: SetNull)
@@ -148,31 +151,32 @@ model VehicleGroup {
 }
 
 model Vehicle {
-  id                 String    @id @default(cuid())
-  tenantId           String
-  plate              String
-  make               String
-  model              String
-  groupId            String?
-  fuel               String    @default("DIESEL") // DIESEL | BENZIN | ELEKTRO | HYBRID
-  year               Int?
-  vin                String?
-  color              String?
-  mileage            Int       @default(0)
-  huDate             DateTime?
-  status             String    @default("AVAILABLE") // AVAILABLE | WORKSHOP | BLOCKED | INACTIVE
-  dailyRate          Decimal   @default(0) // Tagespreis
-  workWeekRate       Decimal? // Woche, 5 Tage (Mo bis Fr)
-  weeklyRate         Decimal? // Kalenderwoche, 7 Tage
-  monthlyRate        Decimal? // Monat, 30 Tage
-  kmIncludedPerDay   Int       @default(200)
-  extraKmRate        Decimal   @default(0.25)
-  deposit            Decimal   @default(0)
-  tankCapacityLiters Int? // für die Berechnung von Tankfehlbeträgen
-  businessRules      Json? // abweichende Geschäftsregeln des Fahrzeugs (nur gesetzte Schlüssel), null = Gruppe/Mandant
-  notes              String?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
+  id                   String    @id @default(cuid())
+  tenantId             String
+  plate                String
+  make                 String
+  model                String
+  groupId              String?
+  fuel                 String    @default("DIESEL") // DIESEL | BENZIN | ELEKTRO | HYBRID
+  year                 Int?
+  vin                  String?
+  color                String?
+  mileage              Int       @default(0)
+  huDate               DateTime?
+  requiredLicenseClass String? // Phase 19.5: erforderliche Fahrerlaubnisklasse (z. B. B); null = aus der Gruppe, PKW-Gruppe = B
+  status               String    @default("AVAILABLE") // AVAILABLE | WORKSHOP | BLOCKED | INACTIVE
+  dailyRate            Decimal   @default(0) // Tagespreis
+  workWeekRate         Decimal? // Woche, 5 Tage (Mo bis Fr)
+  weeklyRate           Decimal? // Kalenderwoche, 7 Tage
+  monthlyRate          Decimal? // Monat, 30 Tage
+  kmIncludedPerDay     Int       @default(200)
+  extraKmRate          Decimal   @default(0.25)
+  deposit              Decimal   @default(0)
+  tankCapacityLiters   Int? // für die Berechnung von Tankfehlbeträgen
+  businessRules        Json? // abweichende Geschäftsregeln des Fahrzeugs (nur gesetzte Schlüssel), null = Gruppe/Mandant
+  notes                String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   group              VehicleGroup?       @relation(fields: [groupId], references: [id], onDelete: SetNull)
@@ -226,12 +230,13 @@ model Customer {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  bookings        Booking[]
-  contracts       RentalContract[]
-  contractDrivers ContractDriver[]
-  invoices        Invoice[]
-  payouts         Payout[]
+  tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bookings            Booking[]
+  contracts           RentalContract[]
+  contractDrivers     ContractDriver[]
+  invoices            Invoice[]
+  payouts             Payout[]
+  driverVerifications DriverVerification[]
 
   @@unique([tenantId, number])
   @@index([tenantId, lastName])
@@ -275,7 +280,9 @@ model Booking {
   securityDeposit SecurityDeposit?
   damageCases     DamageCase[]
 
-  authorityCases AuthorityCase[]
+  authorityCases       AuthorityCase[]
+  driverVerifications  DriverVerification[]
+  driverDocumentCopies DriverDocumentCopy[]
 
   @@unique([tenantId, number])
   @@index([tenantId, vehicleId, startAt, endAt])
@@ -378,8 +385,9 @@ model RentalContract {
   invoices   Invoice[]
   deposits   SecurityDeposit[]
 
-  authorityCases     AuthorityCase[]
-  rentalTermsVersion RentalTermsVersion? @relation(fields: [rentalTermsVersionId], references: [id], onDelete: Restrict)
+  authorityCases      AuthorityCase[]
+  driverVerifications DriverVerification[]
+  rentalTermsVersion  RentalTermsVersion?  @relation(fields: [rentalTermsVersionId], references: [id], onDelete: Restrict)
 
   @@unique([tenantId, number])
   @@index([tenantId, status])
@@ -411,9 +419,11 @@ model ContractDriver {
 
   createdAt DateTime @default(now())
 
-  tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  contract RentalContract @relation(fields: [contractId], references: [id], onDelete: Cascade)
-  customer Customer?      @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contract       RentalContract       @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  customer       Customer?            @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  verifications  DriverVerification[]
+  documentCopies DriverDocumentCopy[]
 
   @@index([tenantId, contractId])
   @@index([tenantId, customerId])
@@ -463,16 +473,18 @@ model Handover {
   corrects    Handover?       @relation("HandoverCorrection", fields: [correctsId], references: [id], onDelete: SetNull)
   corrections Handover[]      @relation("HandoverCorrection")
 
-  damages        HandoverDamage[]
-  checklistItems HandoverChecklistItem[]
-  photos         Photo[]
-  signatures     Signature[]
-  documents      Document[]
-  extraCharges   ExtraCharge[]
-  discovered     Damage[]
-  vehicleEvents  VehicleEvent[]
-  invoices       Invoice[]
-  damageCases    DamageCase[]
+  damages              HandoverDamage[]
+  checklistItems       HandoverChecklistItem[]
+  photos               Photo[]
+  signatures           Signature[]
+  documents            Document[]
+  extraCharges         ExtraCharge[]
+  discovered           Damage[]
+  vehicleEvents        VehicleEvent[]
+  invoices             Invoice[]
+  damageCases          DamageCase[]
+  driverVerifications  DriverVerification[]
+  driverDocumentCopies DriverDocumentCopy[]
 
   @@unique([tenantId, number])
   @@index([tenantId, bookingId, type])
@@ -1630,4 +1642,126 @@ model RentalTermsVersion {
   @@unique([tenantId, versionNumber])
   @@unique([tenantId, label])
   @@index([tenantId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 19.5: Fahreridentifikation und Führerscheinprüfung bei der Übergabe.
+// DriverVerification = unveränderlicher Prüfvermerk je Fahrer und Übergabe (Original vorgelegt, Daten geprüft, wer, wann).
+// DriverDocumentCopy = optionale, getrennt gespeicherte Dokumentkopie mit Zustimmung, Zweck und Aufbewahrung.
+// Die Kopie ersetzt nie die Prüfung; das Löschen einer Kopie lässt den Prüfvermerk unberührt.
+// ---------------------------------------------------------------------------
+
+model DriverVerification {
+  id               String  @id @default(cuid())
+  tenantId         String
+  bookingId        String
+  contractId       String
+  handoverId       String
+  contractDriverId String
+  customerId       String? // nur Referenz (Kundenakte); maßgeblich sind die Snapshots
+  version          Int     @default(1) // Korrektur = neue Fassung, die alte bleibt (supersededById)
+  supersededById   String?
+
+  driverRole              String // PRIMARY_DRIVER | ADDITIONAL_DRIVER (aus dem Vertrag)
+  driverFirstNameSnapshot String
+  driverLastNameSnapshot  String
+  driverBirthDateSnapshot DateTime
+
+  status String @default("IN_PROGRESS") // IN_PROGRESS | CONFIRMED | BLOCKED
+
+  // Identität (Originaldokument vorgelegt, Abgleich – keine Kopie, keine Seriennummer)
+  identityDocumentType     String? // PERSONALAUSWEIS | REISEPASS | SONSTIGER_AMTLICHER_LICHTBILDAUSWEIS
+  identityOriginalSeen     Boolean   @default(false)
+  identityNameMatched      Boolean?
+  identityBirthDateMatched Boolean?
+  identityCheckedAt        DateTime?
+  identityCheckedById      String?
+  identityCheckedByName    String?
+
+  // Führerschein (Originaldokument vorgelegt, Daten wie auf dem Dokument – Snapshot dieser Übergabe)
+  licenseOriginalSeen          Boolean   @default(false)
+  licenseDocumentValid         Boolean?
+  licenseNameMatched           Boolean?
+  licenseNumberSnapshot        String?
+  licenseCountrySnapshot       String?
+  licenseIssuedAtSnapshot      DateTime?
+  licenseValidUntilSnapshot    DateTime?
+  licenseClassesSnapshot       String[]  @default([])
+  requiredLicenseClassSnapshot String?
+  licenseClassSatisfied        Boolean?
+  internationalPermitPresented Boolean   @default(false)
+  translationPresented         Boolean   @default(false)
+  manualReviewRequired         Boolean   @default(false)
+  manualReviewConfirmed        Boolean?
+  deviatesFromCustomer         Boolean   @default(false)
+  deviationConfirmed           Boolean?
+  licenseCheckedAt             DateTime?
+  licenseCheckedById           String?
+  licenseCheckedByName         String?
+
+  verifiedAt     DateTime?
+  verifiedById   String?
+  verifiedByName String?
+  blockedReasons String[]  @default([])
+  notes          String?
+  contentHash    String?
+  createdById    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking        Booking              @relation(fields: [bookingId], references: [id])
+  contract       RentalContract       @relation(fields: [contractId], references: [id])
+  handover       Handover             @relation(fields: [handoverId], references: [id])
+  contractDriver ContractDriver       @relation(fields: [contractDriverId], references: [id])
+  customer       Customer?            @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  documentCopies DriverDocumentCopy[]
+
+  @@unique([tenantId, handoverId, contractDriverId, version])
+  @@index([tenantId, handoverId])
+  @@index([tenantId, customerId, verifiedAt])
+  @@index([tenantId, bookingId])
+}
+
+model DriverDocumentCopy {
+  id                    String    @id @default(cuid())
+  tenantId              String
+  bookingId             String
+  handoverId            String
+  verificationId        String
+  contractDriverId      String
+  documentKind          String // IDENTITY | LICENSE
+  side                  String    @default("FRONT") // FRONT | BACK
+  storageKey            String    @unique
+  contentType           String
+  sizeBytes             Int
+  checksum              String
+  width                 Int?
+  height                Int?
+  markedAsCopy          Boolean   @default(true) // serverseitig als Kopie gekennzeichnet (Overlay), Original nicht aufbewahrt
+  purposeSnapshot       String
+  consentRequired       Boolean   @default(false)
+  consentGiven          Boolean   @default(false)
+  consentAt             DateTime?
+  consentRecordedById   String?
+  consentRecordedByName String?
+  retentionUntil        DateTime?
+  deletionStatus        String    @default("ACTIVE") // ACTIVE | DELETED
+  deletedAt             DateTime?
+  deletedById           String?
+  deletedByName         String?
+  deletionReason        String?
+  createdById           String?
+  createdByName         String?
+  createdAt             DateTime  @default(now())
+
+  tenant         Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking        Booking            @relation(fields: [bookingId], references: [id])
+  handover       Handover           @relation(fields: [handoverId], references: [id])
+  verification   DriverVerification @relation(fields: [verificationId], references: [id])
+  contractDriver ContractDriver     @relation(fields: [contractDriverId], references: [id])
+
+  @@index([tenantId, handoverId])
+  @@index([tenantId, verificationId])
+  @@index([tenantId, deletionStatus, retentionUntil])
 }

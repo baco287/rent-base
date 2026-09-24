@@ -9,6 +9,7 @@ import { REQUIRED_PHOTO_CATEGORIES } from "@/lib/constants";
 import { buildContractDocument, landlordOf, type ContractDocumentData, type TenantLike } from "@/lib/contract-view";
 import type { CustomerSnapshot, VehicleSnapshot } from "@/lib/contracts";
 import { buildHandoverDocument, type HandoverContext, type HandoverDocumentData } from "@/lib/handover-view";
+import { driverCheckSummaries } from "@/lib/driver-verification";
 import { DomainError } from "@/lib/integrity";
 import { loadSealedComparison } from "@/lib/returns";
 import { buildInvoiceDocument, type InvoiceDocumentData } from "@/lib/invoice-view";
@@ -95,8 +96,9 @@ export async function loadHandoverDocumentData(tenantId: string, handoverId: str
   const signatures = validSignatures(rows, h.contentHash);
   const context = await loadHandoverContext(tenantId, h);
   const comparison = h.type === "RETURN" ? await loadSealedComparison(db, tenantId, h.id) : null;
+  const driverChecks = h.type === "PICKUP" ? await driverCheckSummaries(tenantId, h.id) : [];
   return {
-    doc: buildHandoverDocument(h, sketch, signatures, [...REQUIRED_PHOTO_CATEGORIES], context, comparison),
+    doc: buildHandoverDocument(h, sketch, signatures, [...REQUIRED_PHOTO_CATEGORIES], context, comparison, driverChecks),
     bookingId: h.bookingId,
     handoverId: h.id,
     contractId: h.contractId,

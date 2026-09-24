@@ -53,7 +53,7 @@ export default async function GroupsPage({ searchParams }: PageProps<"/fahrzeuge
                   values={{
                     name: g.name, description: g.description ?? "", sortOrder: g.sortOrder.toString(),
                     dailyRate: dec(g.dailyRate), workWeekRate: dec(g.workWeekRate), weeklyRate: dec(g.weeklyRate), monthlyRate: dec(g.monthlyRate),
-                    kmIncludedPerDay: g.kmIncludedPerDay.toString(), extraKmRate: dec(g.extraKmRate), deposit: dec(g.deposit),
+                    kmIncludedPerDay: g.kmIncludedPerDay.toString(), extraKmRate: dec(g.extraKmRate), deposit: dec(g.deposit), requiredLicenseClass: g.requiredLicenseClass ?? "",
                   }}
                 />
               ) : (
@@ -69,7 +69,7 @@ export default async function GroupsPage({ searchParams }: PageProps<"/fahrzeuge
           ))}
           {canEdit && (
             <Card title="Neue Gruppe" className="border-dashed">
-              <GroupForm values={{ name: "", description: "", sortOrder: String((groups.at(-1)?.sortOrder ?? 0) + 10), dailyRate: "", workWeekRate: "", weeklyRate: "", monthlyRate: "", kmIncludedPerDay: "200", extraKmRate: "0,25", deposit: "" }} />
+              <GroupForm values={{ name: "", description: "", sortOrder: String((groups.at(-1)?.sortOrder ?? 0) + 10), dailyRate: "", workWeekRate: "", weeklyRate: "", monthlyRate: "", kmIncludedPerDay: "200", extraKmRate: "0,25", deposit: "", requiredLicenseClass: "" }} />
             </Card>
           )}
         </div>

@@ -13,7 +13,7 @@ export function fmtMinutes(minutes: number) {
   const m = minutes % 60;
   return h > 0 ? `${h} Std. ${m} Min.` : `${m} Min.`;
 }
-import { DAMAGE_KINDS, DAMAGE_SEVERITY, DAMAGE_VIEWS, FUELS, PHOTO_CATEGORIES, RETURN_ATTENTION_ON_YES, energyRequirements } from "@/lib/constants";
+import { DAMAGE_KINDS, DAMAGE_SEVERITY, DAMAGE_VIEWS, FUELS, PHOTO_CATEGORIES, RETURN_ATTENTION_ON_YES, energyRequirements, IDENTITY_DOCUMENT_TYPES } from "@/lib/constants";
 
 /** Alle Skizzendateien verwenden ein 1000 Einheiten breites Zeichenfeld; die Rahmen der Ansichten beziehen sich darauf. */
 export const SKETCH_CANVAS_WIDTH = 1000;
@@ -69,9 +69,29 @@ export type DocComparison = {
   deductible: string;
 };
 
+/** Fahrerprüfung für die Dokumentanzeige (Phase 19.5): nie Bilder, nie die volle Führerscheinnummer. */
+export type DocDriverCheck = {
+  role: string;
+  roleLabel: string;
+  name: string;
+  statusLabel: string;
+  identityDocumentLabel: string | null;
+  identityOriginalSeen: boolean;
+  identityMatched: boolean | null;
+  licenseOriginalSeen: boolean;
+  licenseValid: boolean | null;
+  requiredLicenseClass: string | null;
+  licenseClasses: string[];
+  licenseClassSatisfied: boolean | null;
+  validUntilLabel: string | null;
+  checkedAtLabel: string | null;
+  checkedByName: string | null;
+};
+
 export type HandoverDocument = {
   context: HandoverContext | null;
   comparison: DocComparison | null;
+  driverChecks: DocDriverCheck[];
   title: string;
   number: string;
   type: "PICKUP" | "RETURN";
@@ -149,7 +169,14 @@ export function buildDocComparison(c: ReturnComparison, damages: DocDamage[]): D
   };
 }
 
-export function buildHandoverDocument(h: HandoverFull, sketch: Parameters<typeof parseSketch>[0], signatures: SignatureLike[], requiredPhotoCategories: string[], context: HandoverContext | null = null, comparison: ReturnComparison | null = null): HandoverDocument {
+/** Eingabeform der Fahrerprüfungen (siehe lib/driver-verification.ts DriverCheckSummary) – hier lose typisiert, damit diese Datei frei von Server-Abhängigkeiten bleibt. */
+type DriverCheckInput = {
+  role: string; name: string; status: string; identityDocumentType: string | null; identityOriginalSeen: boolean; identityMatched: boolean | null;
+  licenseOriginalSeen: boolean; licenseValid: boolean | null; requiredLicenseClass: string | null; licenseClasses: string[]; licenseClassSatisfied: boolean | null;
+  validUntil: string | null; checkedAt: string | null; checkedByName: string | null;
+};
+
+export function buildHandoverDocument(h: HandoverFull, sketch: Parameters<typeof parseSketch>[0], signatures: SignatureLike[], requiredPhotoCategories: string[], context: HandoverContext | null = null, comparison: ReturnComparison | null = null, driverChecks: DriverCheckInput[] = []): HandoverDocument {
   const energy = energyRequirements(h.driveType);
   const readings = [
     { label: "Kilometerstand", value: h.mileage != null ? `${h.mileage.toLocaleString("de-DE")} km` : "", missing: h.mileage == null },
@@ -189,6 +216,23 @@ export function buildHandoverDocument(h: HandoverFull, sketch: Parameters<typeof
   return {
     context,
     comparison: comparison ? buildDocComparison(comparison, damages) : null,
+    driverChecks: driverChecks.map((d) => ({
+      role: d.role,
+      roleLabel: d.role === "PRIMARY_DRIVER" ? "Hauptfahrer" : "Zusatzfahrer",
+      name: d.name,
+      statusLabel: d.status === "CONFIRMED" ? "Bestätigt" : d.status === "BLOCKED" ? "Blockiert" : d.status === "IN_PROGRESS" ? "In Prüfung" : "Nicht geprüft",
+      identityDocumentLabel: d.identityDocumentType ? label(IDENTITY_DOCUMENT_TYPES, d.identityDocumentType) : null,
+      identityOriginalSeen: d.identityOriginalSeen,
+      identityMatched: d.identityMatched,
+      licenseOriginalSeen: d.licenseOriginalSeen,
+      licenseValid: d.licenseValid,
+      requiredLicenseClass: d.requiredLicenseClass,
+      licenseClasses: d.licenseClasses,
+      licenseClassSatisfied: d.licenseClassSatisfied,
+      validUntilLabel: d.validUntil ? dateTime(new Date(d.validUntil)).split(",")[0] : null,
+      checkedAtLabel: d.checkedAt ? dateTime(new Date(d.checkedAt)) : null,
+      checkedByName: d.checkedByName,
+    })),
     title: h.type === "PICKUP" ? "Übergabeprotokoll" : "Rückgabeprotokoll",
     number: h.number,
     type: h.type === "RETURN" ? "RETURN" : "PICKUP",

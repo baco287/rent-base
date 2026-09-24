@@ -1,5 +1,6 @@
 // Gemeinsame Helfer für die Integrationstests gegen die lokale Entwicklungsdatenbank.
 import { db } from "../src/lib/db";
+import { startOrGetVerification, recordIdentityCheck, recordLicenseCheck, confirmVerification } from "../src/lib/driver-verification";
 
 export type World = { tenantId: string; userId: string; groupId: string; vehicleId: string; customerId: string; bookingId: string; actor: { id: string; name: string } };
 
@@ -11,7 +12,9 @@ export async function createWorld(label: string, opts: { customer?: Record<strin
   const tenant = await db.tenant.create({ data: { name: `Test ${run}`, slug: `test-${run}`, street: "Hafenstr. 1", zip: "28195", city: "Bremen", rentalTermsVersion: "2026-09", rentalTermsText: "§1 Das Fahrzeug ist pfleglich zu behandeln." } });
   const user = await db.user.create({ data: { tenantId: tenant.id, email: `u-${run}@example.test`, name: "Test Mitarbeiter", passwordHash: "x", role: "YARD" } });
   const group = await db.vehicleGroup.create({ data: { tenantId: tenant.id, name: "Transporter", bodyType: "TRANSPORTER", dailyRate: 89 } });
-  const vehicle = await db.vehicle.create({ data: { tenantId: tenant.id, plate: `HB-T ${run.slice(-5)}`, make: "VW", model: "Crafter", groupId: group.id, fuel: "DIESEL", mileage: 50_000, dailyRate: 89, workWeekRate: 420, weeklyRate: 540, kmIncludedPerDay: 200, extraKmRate: 0.25, deposit: 500, tankCapacityLiters: 75 } });
+  // requiredLicenseClass "B": ein Transporter dieser Klasse (VW Crafter, unter 3,5 t) braucht regulär Klasse B; ohne
+  // diese Angabe würde die Fahrerprüfung (Phase 19.5) absichtlich offen bleiben, bis OWNER/DISPO sie konfiguriert.
+  const vehicle = await db.vehicle.create({ data: { tenantId: tenant.id, plate: `HB-T ${run.slice(-5)}`, make: "VW", model: "Crafter", groupId: group.id, fuel: "DIESEL", mileage: 50_000, dailyRate: 89, workWeekRate: 420, weeklyRate: 540, kmIncludedPerDay: 200, extraKmRate: 0.25, deposit: 500, tankCapacityLiters: 75, requiredLicenseClass: "B" } });
   const customer = await db.customer.create({
     data: {
       tenantId: tenant.id, number: "K-00001", firstName: "Erika", lastName: "Muster", street: "Weg 1", zip: "28195", city: "Bremen", country: "DE", phone: "0421 12345", email: "erika@example.test",
@@ -62,6 +65,8 @@ export async function purgeTenants(tenantIds: string[]) {
         await tx.damageCaseDocument.deleteMany(w);
         await tx.damageCase.deleteMany(w);
         await tx.damage.deleteMany(w);
+        await tx.driverDocumentCopy.deleteMany(w);
+        await tx.driverVerification.deleteMany(w);
         await tx.handover.deleteMany(w);
         await tx.authorityCaseEvent.deleteMany(w);
         await tx.authoritySubmissionReceipt.deleteMany(w);
@@ -84,6 +89,32 @@ export async function purgeTenants(tenantIds: string[]) {
     },
     { timeout: 60_000, maxWait: 20_000 },
   );
+}
+
+/**
+ * Phase 19.5: prüft und bestätigt alle im finalisierten Vertrag vorgesehenen Fahrer (Hauptfahrer und
+ * Zusatzfahrer), damit eine PICKUP-Übergabe abgeschlossen werden kann. Nutzt die eigenen Snapshot-Daten
+ * jedes ContractDriver, damit kein Kundenabweichungs-Blocker unbeabsichtigt auslöst.
+ */
+export async function verifyAllDriversForPickup(tenantId: string, actor: { id: string; name: string }, handoverId: string, contractId: string) {
+  const drivers = await db.contractDriver.findMany({ where: { tenantId, contractId } });
+  for (const d of drivers) {
+    const v = await startOrGetVerification(tenantId, actor, handoverId, d.id);
+    await recordIdentityCheck(tenantId, actor, v.id, { documentType: "PERSONALAUSWEIS", originalSeen: true, nameMatched: true, birthDateMatched: true });
+    await recordLicenseCheck(tenantId, actor, v.id, {
+      originalSeen: true,
+      documentValid: true,
+      nameMatched: true,
+      licenseNumber: d.licenseNumber,
+      licenseCountry: d.licenseCountry,
+      licenseIssuedAt: d.licenseIssuedAt,
+      licenseValidUntil: d.licenseValidUntil,
+      licenseClasses: [d.licenseClass],
+      internationalPermitPresented: false,
+      translationPresented: false,
+    });
+    await confirmVerification(tenantId, actor, v.id);
+  }
 }
 
 /** PNG-Data-URL für Unterschriften im Test. Der Server prüft Kennung und Größe, nicht den Bildinhalt. */

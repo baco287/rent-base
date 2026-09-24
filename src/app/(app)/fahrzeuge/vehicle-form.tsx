@@ -2,7 +2,7 @@
 
 import { useActionState, useState } from "react";
 import Link from "next/link";
-import { FUELS, VEHICLE_STATUS } from "@/lib/constants";
+import { FUELS, LICENSE_CLASSES, VEHICLE_STATUS } from "@/lib/constants";
 import { Field, FormError } from "@/components/ui";
 import { submitWithoutReset } from "@/components/submit-without-reset";
 import type { FormState } from "./actions";
@@ -39,12 +39,13 @@ export type VehicleFormValues = {
   extraKmRate: string;
   deposit: string;
   notes: string;
+  requiredLicenseClass: string;
 };
 
 export const emptyVehicle: VehicleFormValues = {
   plate: "", make: "", model: "", groupId: "", fuel: "DIESEL", status: "AVAILABLE",
   year: "", vin: "", color: "", mileage: "0", huDate: "", dailyRate: "", workWeekRate: "", weeklyRate: "", monthlyRate: "",
-  kmIncludedPerDay: "200", extraKmRate: "0,25", deposit: "", notes: "",
+  kmIncludedPerDay: "200", extraKmRate: "0,25", deposit: "", notes: "", requiredLicenseClass: "",
 };
 
 export function VehicleForm({
@@ -123,6 +124,12 @@ export function VehicleForm({
       </Field>
       <Field label="HU fällig" htmlFor="huDate" hint="Hauptuntersuchung, Datum aus der Plakette">
         <input id="huDate" name="huDate" type="date" defaultValue={v.huDate} className="input" />
+      </Field>
+      <Field label="Erforderliche Fahrerlaubnisklasse" htmlFor="requiredLicenseClass" hint="Phase 19.5: leer = aus der Fahrzeuggruppe bzw. Standard (PKW = B)">
+        <select id="requiredLicenseClass" name="requiredLicenseClass" defaultValue={v.requiredLicenseClass} className="input">
+          <option value="">aus der Gruppe</option>
+          {Object.keys(LICENSE_CLASSES).map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
       </Field>
 
       <h2 className="md:col-span-2 text-base font-semibold mt-2">

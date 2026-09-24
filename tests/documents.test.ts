@@ -22,7 +22,7 @@ import { parseSketchSvg } from "../src/lib/pdf/sketch";
 import type { PdfTrace } from "../src/lib/pdf/layout";
 import { isImmutableError, sha256 } from "../src/lib/integrity";
 import { buildStorageKey, getStorage, type StorageDriver } from "../src/lib/storage";
-import { createWorld, purgeTenants } from "./helpers";
+import { createWorld, purgeTenants, verifyAllDriversForPickup } from "./helpers";
 import { LONG_NAME, contractData, handoverData, photoJpeg, signaturePng, sketchSvg } from "./pdf-fixtures";
 
 const tenants: string[] = [];
@@ -77,13 +77,14 @@ async function pickedUpWorld(label: string, customer?: Record<string, unknown>) 
   const items = await db.handoverChecklistItem.findMany({ where: { tenantId: w.tenantId, handoverId: h.id }, orderBy: { sortOrder: "asc" } });
   await answerChecklist(w.tenantId, h.id, items.map((i, n) => ({ itemId: i.id, result: i.answerType === "TEXT" ? "2" : n === 0 ? "NA" : n === 3 ? "NOT_OK" : i.answerType === "YES_NO" ? "YES" : "OK", note: n === 3 ? "Profil vorne rechts gering" : null })));
   await saveHandoverSignature(w.tenantId, w.actor, h.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: await pngDataUrl(), seenHash: await getHandoverContentHash(w.tenantId, h.id), ipAddress: null, userAgent: "test" });
+  await verifyAllDriversForPickup(w.tenantId, w.actor, h.id, contractId);
   await finalizeHandover(w.tenantId, h.id, w.actor, { enforcePhotos: false });
   return { w, contractId, handoverId: h.id, oldDamageId: old.id };
 }
 
 test("Übergabe-PDF: Fotos kopierter Vorschäden (aus Fahrzeugakte oder früherem Protokoll) werden eingebettet, nicht nur verwiesen", async () => {
   await ready;
-  const { w } = await signedWorld("doc-pickup-prephoto");
+  const { w, contractId } = await signedWorld("doc-pickup-prephoto");
   // Vorschaden auf dem Hof erfasst und fotografiert – das Foto hängt am Schaden, nicht an einem Protokoll
   const old = await db.damage.create({ data: { tenantId: w.tenantId, vehicleId: w.vehicleId, view: "LEFT", posX: 0.4, posY: 0.5, kind: "SCRATCH", severity: "MINOR", description: "Kratzer Schiebetür alt", status: "OPEN" } });
   const jpeg = await photoJpeg("Vorschaden");
@@ -95,6 +96,7 @@ test("Übergabe-PDF: Fotos kopierter Vorschäden (aus Fahrzeugakte oder frühere
   const items = await db.handoverChecklistItem.findMany({ where: { tenantId: w.tenantId, handoverId: h.id }, orderBy: { sortOrder: "asc" } });
   await answerChecklist(w.tenantId, h.id, items.map((i) => ({ itemId: i.id, result: i.answerType === "TEXT" ? "2" : i.answerType === "YES_NO" ? "YES" : "OK" })));
   await saveHandoverSignature(w.tenantId, w.actor, h.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: await pngDataUrl(), seenHash: await getHandoverContentHash(w.tenantId, h.id), ipAddress: null, userAgent: "test" });
+  await verifyAllDriversForPickup(w.tenantId, w.actor, h.id, contractId);
   await finalizeHandover(w.tenantId, h.id, w.actor, { enforcePhotos: false });
   assert.equal(await db.photo.count({ where: { handoverId: h.id } }), 0, "zu diesem Protokoll selbst wurde kein Foto hochgeladen");
 

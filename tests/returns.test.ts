@@ -20,7 +20,7 @@ import { sendHandoverDocuments } from "../src/lib/rental-mail";
 import { REQUIRED_PHOTO_CATEGORIES } from "../src/lib/constants";
 import { DomainError, isImmutableError, sha256 } from "../src/lib/integrity";
 import { buildStorageKey, getStorage, type StorageDriver } from "../src/lib/storage";
-import { createWorld, fakeSignaturePng, purgeTenants, type World } from "./helpers";
+import { createWorld, fakeSignaturePng, purgeTenants, verifyAllDriversForPickup, type World } from "./helpers";
 import { photoJpeg, signaturePng } from "./pdf-fixtures";
 
 const tenants: string[] = [];
@@ -85,6 +85,7 @@ async function activeWorld(label: string, opts: { fuelPrice?: number | null; fue
   for (const cat of REQUIRED_PHOTO_CATEGORIES) await photo(w, p.id, cat, undefined, opts.real);
   await answerAll(w, p.id);
   await sign(w, p.id, opts.real);
+  await verifyAllDriversForPickup(w.tenantId, w.actor, p.id, c.id);
   await finalizeHandover(w.tenantId, p.id, w.actor);
   return { w, contractId: c.id, pickupId: p.id, oldDamageId: old.id };
 }

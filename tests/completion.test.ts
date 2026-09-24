@@ -13,7 +13,7 @@ import { addNewDamage, answerChecklist, finalizeHandover, getHandoverContentHash
 import { sha256 } from "../src/lib/integrity";
 import { confirmProposal, getReturnComparison } from "../src/lib/returns";
 import { buildStorageKey } from "../src/lib/storage";
-import { createWorld, fakeSignaturePng, purgeTenants, type World } from "./helpers";
+import { createWorld, fakeSignaturePng, purgeTenants, verifyAllDriversForPickup, type World } from "./helpers";
 
 const tenants: string[] = [];
 after(async () => {
@@ -41,7 +41,7 @@ async function ready(label: string, fuel: string) {
   await saveConditions(w.tenantId, c.id, { startAt: bk.startAt, endAt: bk.endAt, deposit: 500, kmIncludedPerDay: 200, extraKmRate: 0.25, deductible: 1000, fuelPolicy: "FULL_TO_FULL", fuelPolicyNote: null, fuelPricePerLiter: 1.8, agreedTotal: null, agreedTotalNote: null, pickupLocation: "Hof", returnLocation: "Hof" });
   await saveContractSignature(w.tenantId, w.actor, c.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getContractContentHash(w.tenantId, c.id) });
   await finalizeContract(w.tenantId, c.id);
-  return w;
+  return { w, contractId: c.id };
 }
 const keysOf = (w: World, handoverId: string) => db.handoverChecklistItem.findMany({ where: { tenantId: w.tenantId, handoverId }, select: { itemKey: true }, orderBy: { sortOrder: "asc" } }).then((r) => r.map((x) => x.itemKey));
 
@@ -61,7 +61,7 @@ test("Antriebsklassen und Checklisten-Applicability: Ladezubehör nur bei Elektr
 
 test("Übergabe und Rückgabe je Antrieb: Benziner, Diesel, Elektro, Plug-in-Hybrid – Tank, Batterie, Ladekabel, Checkliste, Protokoll", async () => {
   for (const fuel of ["BENZIN", "DIESEL", "ELEKTRO", "PLUGIN_HYBRID"] as const) {
-    const w = await ready(`drive-${fuel.toLowerCase()}`, fuel);
+    const { w, contractId } = await ready(`drive-${fuel.toLowerCase()}`, fuel);
     const electric = fuel === "ELEKTRO", phev = fuel === "PLUGIN_HYBRID";
     const p = await startHandover(w.tenantId, w.bookingId, "PICKUP", w.actor);
     const pKeys = await keysOf(w, p.id);
@@ -72,13 +72,14 @@ test("Übergabe und Rückgabe je Antrieb: Benziner, Diesel, Elektro, Plug-in-Hyb
     assert.equal(c.b.includes("BATTERY_MISSING"), electric || phev, `${fuel}: Batterie fehlt ist Blocker nur mit Batterie`);
     assert.ok(c.b.includes("MILEAGE_MISSING") && c.b.includes("PHOTOS_MISSING") && c.b.includes("CHECKLIST_OPEN") && c.b.includes("SIGNATURE_MISSING"));
     assert.ok(c.w.includes("DEPOSIT_NOT_RECEIVED"), "Kaution nicht dokumentiert ist nur Hinweis");
-    assert.ok(s.blockers.every((b) => b.step >= 2 && b.step <= 6 && b.stepLabel), "jeder Blocker zeigt auf einen Schritt");
+    assert.ok(s.blockers.every((b) => b.step >= 2 && b.step <= 7 && b.stepLabel), "jeder Blocker zeigt auf einen Schritt");
     assert.deepEqual(s.blockers.filter((b) => b.code === "PHOTOS_MISSING").map((b) => b.step), [4]);
-    assert.deepEqual(s.blockers.filter((b) => b.code === "SIGNATURE_MISSING").map((b) => b.step), [6]);
+    assert.deepEqual(s.blockers.filter((b) => b.code === "SIGNATURE_MISSING").map((b) => b.step), [7]);
 
     await updateHandoverDraft(w.tenantId, p.id, { mileage: 45_100, ...(electric ? {} : { fuelLevelEighths: 7 }), ...(electric || phev ? { batteryPercent: 80 } : {}) });
     for (const cat of REQUIRED_PHOTO_CATEGORIES) await photo(w, p.id, cat);
     await answerAll(w, p.id);
+    await verifyAllDriversForPickup(w.tenantId, w.actor, p.id, contractId);
     c = codes(await getHandoverCompletionStatus(w.tenantId, p.id));
     assert.deepEqual(c.b, ["SIGNATURE_MISSING"], `${fuel}: nur die Unterschrift fehlt noch`);
     await sign(w, p.id);
@@ -133,17 +134,18 @@ test("Übergabe und Rückgabe je Antrieb: Benziner, Diesel, Elektro, Plug-in-Hyb
 });
 
 test("Abschlussprüfung: Karte und Abschluss nutzen dieselben Regeln; veränderter Stand wird beim Abschluss erneut geprüft", async () => {
-  const w = await ready("completion-rules", "DIESEL");
+  const { w, contractId } = await ready("completion-rules", "DIESEL");
   const p = await startHandover(w.tenantId, w.bookingId, "PICKUP", w.actor);
   await updateHandoverDraft(w.tenantId, p.id, { mileage: 45_100, fuelLevelEighths: 7 });
   for (const cat of REQUIRED_PHOTO_CATEGORIES) await photo(w, p.id, cat);
   await answerAll(w, p.id);
+  await verifyAllDriversForPickup(w.tenantId, w.actor, p.id, contractId);
   await sign(w, p.id);
   assert.equal((await getHandoverCompletionStatus(w.tenantId, p.id)).ready, true);
   // nach der Anzeige ändert jemand den Kilometerstand: Unterschrift veraltet → Karte und Abschluss sagen dasselbe
   await updateHandoverDraft(w.tenantId, p.id, { mileage: 45_150 });
   const s = await getHandoverCompletionStatus(w.tenantId, p.id);
-  assert.deepEqual([s.ready, s.blockers.map((b) => [b.code, b.step])], [false, [["SIGNATURE_MISSING", 6]]], "Unterschrift wird bei Änderung verworfen");
+  assert.deepEqual([s.ready, s.blockers.map((b) => [b.code, b.step])], [false, [["SIGNATURE_MISSING", 7]]], "Unterschrift wird bei Änderung verworfen");
   await assert.rejects(() => finalizeHandover(w.tenantId, p.id, w.actor), /Unterschrift des Mieters fehlt/);
   await sign(w, p.id);
   await finalizeHandover(w.tenantId, p.id, w.actor);

@@ -18,7 +18,8 @@ RUN npx prisma generate && npm run build
 
 FROM node:22-alpine AS runner
 WORKDIR /app
-RUN apk add --no-cache openssl tzdata && addgroup -S app && adduser -S app -G app
+# fontconfig + eine Schriftart: sharp/libvips braucht das, um SVG-Text zu rendern (Kennzeichnung von Dokumentkopien, Phase 19.5)
+RUN apk add --no-cache openssl tzdata fontconfig ttf-dejavu && addgroup -S app && adduser -S app -G app
 # Zeitangaben in Dokumenten und E-Mails in deutscher Zeit
 ENV TZ=Europe/Berlin
 ENV NODE_ENV=production

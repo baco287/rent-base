@@ -2,6 +2,7 @@
 
 import { useActionState } from "react";
 import { Field, FormError } from "@/components/ui";
+import { LICENSE_CLASSES } from "@/lib/constants";
 import { createGroupAction, updateGroupAction } from "./actions";
 
 export type GroupFormValues = {
@@ -15,6 +16,7 @@ export type GroupFormValues = {
   kmIncludedPerDay: string;
   extraKmRate: string;
   deposit: string;
+  requiredLicenseClass: string;
 };
 
 export function GroupForm({ id, values }: { id?: string; values: GroupFormValues }) {
@@ -44,6 +46,12 @@ export function GroupForm({ id, values }: { id?: string; values: GroupFormValues
       <Field label="Frei-km / Tag" htmlFor={`k-${id ?? "neu"}`}><input id={`k-${id ?? "neu"}`} name="kmIncludedPerDay" type="number" min={0} defaultValue={v.kmIncludedPerDay} className="input tnum" /></Field>
       <Field label="Mehr-km €" htmlFor={`x-${id ?? "neu"}`}><input id={`x-${id ?? "neu"}`} name="extraKmRate" inputMode="decimal" defaultValue={v.extraKmRate} className="input tnum" /></Field>
       <Field label="Kaution €" htmlFor={`c-${id ?? "neu"}`}><input id={`c-${id ?? "neu"}`} name="deposit" inputMode="decimal" defaultValue={v.deposit} className="input tnum" /></Field>
+      <Field label="Erforderliche Fahrerlaubnisklasse" htmlFor={`rlc-${id ?? "neu"}`} hint="Phase 19.5: leer = Standard (PKW = B)">
+        <select id={`rlc-${id ?? "neu"}`} name="requiredLicenseClass" defaultValue={v.requiredLicenseClass} className="input">
+          <option value="">Standard nach Fahrzeugart</option>
+          {Object.keys(LICENSE_CLASSES).map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </Field>
       <div className="col-span-2 md:col-span-3 flex items-center gap-3">
         <button disabled={pending} className={`btn ${isNew ? "btn-primary" : ""}`}>{pending ? "Wird gespeichert…" : isNew ? "Gruppe anlegen" : "Speichern"}</button>
         {state?.ok && <span className="text-good text-sm">{state.ok}</span>}

@@ -133,3 +133,33 @@ test("Phase 19: Suche nur mit Sitzung und Rolle, Kopfzeilen additiv, Anmeldebrem
     assert.match(src, /session\.tenant\.id/, `${route}: Mandant`);
   }
 });
+
+/** Phase 19.5: Fahreridentifikation und Führerscheinprüfung – Rollen, Kundenstammdaten-Übernahme nur Disposition/Inhaber, Dokumentrouten mandanten-/rollengesichert, keine sensiblen Daten in Suche oder Audit. */
+test("Phase 19.5: Fahrerprüfung nur mit Sitzung und Rolle, Kundendaten-Übernahme nur Disposition/Inhaber, Dokumentkopien mandantengesichert", () => {
+  const driverActions = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/uebergabe/driver-actions.ts"), "utf8");
+  assert.ok(!/"OWNER"\)/.test(driverActions.replace(/requireRole\("DISPO"\)/g, "")), "keine Aktion ist auf OWNER allein beschränkt (Inhaber darf ohnehin alles)");
+  for (const fn of ["startDriverVerificationAction", "saveIdentityCheckAction", "saveLicenseCheckAction", "confirmDriverVerificationAction"]) {
+    assert.match(new RegExp(`export async function ${fn}[\\s\\S]*?\\n}`).exec(driverActions)?.[0] ?? "", /requireRole\("DISPO", "YARD"\)/, `${fn}: Übergabe führen Inhaber, Disposition und Hofmitarbeiter gemeinsam durch`);
+  }
+  const updateFn = new RegExp(`export async function updateCustomerLicenseAction[\\s\\S]*?\\n}`).exec(driverActions)?.[0] ?? "";
+  assert.match(updateFn, /requireRole\("DISPO"\)/, "Kundenstammdaten-Übernahme nur Inhaber und Disposition");
+  assert.ok(!/"YARD"/.test(updateFn), "Kundenstammdaten-Übernahme nicht für YARD");
+
+  for (const route of ["handovers/[id]/driver-documents", "driver-documents/[id]"]) {
+    const src = readFileSync(path.join(process.cwd(), `src/app/api/${route}/route.ts`), "utf8");
+    assert.match(src, /getSession\(\)/, `${route}: Sitzung`);
+    assert.match(src, /session\.tenant\.id/, `${route}: Mandant`);
+  }
+
+  const driverLib = readFileSync(path.join(process.cwd(), "src/lib/driver-verification.ts"), "utf8");
+  assert.ok(!/https?:\/\//.test(driverLib), "Fahrerprüfung: keine öffentlichen Dokumentadressen");
+  assert.match(driverLib, /consentRequired = input\.documentKind === "IDENTITY"/, "Personalausweiskopie: Zustimmung ist Pflicht, Führerscheinkopie nicht");
+  assert.match(driverLib, /if \(consentRequired && !input\.consent\?\.given\) throw new DomainError/, "ohne Zustimmung keine Speicherung");
+  assert.ok((driverLib.match(/where: \{ id: [^,]+, tenantId/g) ?? []).length >= 5 || (driverLib.match(/tenantId,/g) ?? []).length >= 10, "Fahrerprüfung: Abfragen mandantengebunden");
+
+  const search = readFileSync(path.join(process.cwd(), "src/lib/search.ts"), "utf8");
+  assert.ok(!/driverVerification|DriverVerification|licenseNumberSnapshot/.test(search), "globale Suche indexiert keine Fahrerprüfungsdaten (Ausweis-/Führerscheinnummern)");
+
+  const pdfLib = readFileSync(path.join(process.cwd(), "src/lib/pdf/handover-pdf.ts"), "utf8");
+  assert.ok(!/licenseNumberSnapshot|identityDocumentNumber/.test(pdfLib), "PDF enthält keine vollständige Ausweis- oder Führerscheinnummer");
+});

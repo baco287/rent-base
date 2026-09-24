@@ -31,6 +31,8 @@ import { getHandoverCompletionStatus } from "@/lib/completion";
 import { CompletionCard } from "./completion-card";
 import { loadHandoverContext } from "@/lib/document-data";
 import { PhotoUploader } from "./photo-uploader";
+import { DriverVerificationSection } from "./driver-verification-panel";
+import { driverCheckSummaries } from "@/lib/driver-verification";
 
 export const metadata = { title: "Übergabe" };
 
@@ -82,7 +84,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
 
   const state = await getHandoverState(tenant.id, existing.id);
   const { handover, signatures, sketch, issues, hash } = state;
-  const doc = buildHandoverDocument(handover, sketch, signatures, REQUIRED_PHOTO_CATEGORIES, await loadHandoverContext(tenant.id, handover));
+  const doc = buildHandoverDocument(handover, sketch, signatures, REQUIRED_PHOTO_CATEGORIES, await loadHandoverContext(tenant.id, handover), null, await driverCheckSummaries(tenant.id, handover.id));
 
   // Finalisiert: nur noch Anzeige
   if (handover.status === "FINALIZED") {
@@ -104,12 +106,12 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
 
   const reached = Math.max(1, handover.wizardStep);
   const requested = typeof sp.schritt === "string" ? parseInt(sp.schritt, 10) : reached;
-  const step = Math.min(7, Math.max(1, Number.isFinite(requested) ? requested : reached));
+  const step = Math.min(8, Math.max(1, Number.isFinite(requested) ? requested : reached));
   const energy = energyRequirements(handover.driveType);
   const storage = storageStatus();
   const renterSig = signatures.find((s) => s.role === "RENTER");
   const employeeSig = signatures.find((s) => s.role === "EMPLOYEE");
-  const completion = step === 7 ? await getHandoverCompletionStatus(tenant.id, handover.id) : null!;
+  const completion = step === 8 ? await getHandoverCompletionStatus(tenant.id, handover.id) : null!;
   const generalByCategory = (c: string) => doc.photos.filter((p) => p.category === c).map((p) => ({ id: p.id, url: p.url }));
   const primaryDriver = b.contract?.drivers.find((d) => d.role === "PRIMARY_DRIVER");
   const items = [...handover.checklistItems].sort((x, y) => x.sortOrder - y.sortOrder);
@@ -124,8 +126,8 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
       </PageHeader>
       <Content className="max-w-6xl">
         <WizardProgress bookingId={b.id} current={step} reached={reached} steps={PICKUP_STEPS} basePath={base} />
-        <h2 className="text-lg font-semibold -mb-1">Schritt {step} von 7: {PICKUP_STEPS[step - 1]}</h2>
-        {step < 7 && <DepositNotice tenantId={tenant.id} bookingId={b.id} />}
+        <h2 className="text-lg font-semibold -mb-1">Schritt {step} von {PICKUP_STEPS.length}: {PICKUP_STEPS[step - 1]}</h2>
+        {step < 8 && <DepositNotice tenantId={tenant.id} bookingId={b.id} />}
 
         {step === 1 && (
           <>
@@ -265,6 +267,14 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
 
         {step === 6 && (
           <>
+            <HandoverIssueList issues={issues} areas={["DRIVERS"]} okText="Alle vorgesehenen Fahrer sind identifiziert und ihre Fahrerlaubnis ist geprüft." />
+            <DriverVerificationSection tenantId={tenant.id} bookingId={b.id} handoverId={handover.id} role={user.role} />
+            <Card className="p-4 md:p-5"><StepForm action={navigateStepAction.bind(null, b.id, 6)} step={6} nextLabel="Weiter zur Unterschrift"><span className="sr-only">Navigation</span></StepForm></Card>
+          </>
+        )}
+
+        {step === 7 && (
+          <>
             <HandoverIssueList issues={issues} okText="Alle Angaben sind vollständig. Das Protokoll kann unterschrieben werden." />
             <HandoverDocumentView doc={doc} handoverId={handover.id} showSignatures={false} />
             <p className="text-xs text-ink-3">Die Unterschrift gilt für genau diesen Protokollstand (Kennung {hash.slice(0, 12)}). Wird danach etwas geändert, wird sie verworfen und der Mieter unterschreibt erneut.</p>
@@ -298,11 +308,11 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
                 </div>
               </Card>
             </div>
-            <Card className="p-4 md:p-5"><StepForm action={navigateStepAction.bind(null, b.id, 6)} step={6} nextLabel="Weiter zum Abschluss"><span className="sr-only">Navigation</span></StepForm></Card>
+            <Card className="p-4 md:p-5"><StepForm action={navigateStepAction.bind(null, b.id, 7)} step={7} nextLabel="Weiter zum Abschluss"><span className="sr-only">Navigation</span></StepForm></Card>
           </>
         )}
 
-        {step === 7 && (
+        {step === 8 && (
           <>
             <CompletionCard status={completion} basePath={base} okText="Alle Prüfungen bestanden. Die Übergabe kann abgeschlossen werden." />
             <HandoverDocumentView doc={doc} handoverId={handover.id} />
@@ -315,7 +325,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
                 label="Übergabe verbindlich abschließen"
                 pendingLabel="Übergabe wird abgeschlossen…"
               />
-              <div><Link href={`${base}?schritt=6`} className="btn">Zurück</Link></div>
+              <div><Link href={`${base}?schritt=7`} className="btn">Zurück</Link></div>
             </Card>
           </>
         )}

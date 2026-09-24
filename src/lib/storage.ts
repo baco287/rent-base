@@ -13,7 +13,7 @@ import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DomainError } from "@/lib/integrity";
 
-export type StorageArea = "photos" | "signatures" | "documents" | "sketches";
+export type StorageArea = "photos" | "signatures" | "documents" | "sketches" | "driver-verifications";
 
 export const ALLOWED_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
 // Unter der 10-MB-Grenze, bis zu der Next.js Anfragen hinter dem Proxy puffert. Die App verkleinert Fotos vor dem Upload ohnehin.

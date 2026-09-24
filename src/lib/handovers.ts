@@ -24,12 +24,14 @@ import { itemsForDrive, resolveChecklist } from "@/lib/checklists";
 import { vehicleStatusProblem } from "@/lib/bookings";
 import { resolveSketch } from "@/lib/sketches";
 import { recordVehicleEvent } from "@/lib/vehicle-events";
+import { driverVerificationBlockers } from "@/lib/driver-verification";
 
 type Tx = Prisma.TransactionClient;
 const TX = { timeout: 20_000, maxWait: 10_000 };
 export type Actor = { id: string; name: string };
 
-export const HANDOVER_STEPS = 7;
+// Pickup: 1 Übersicht · 2 Kilometer & Energie · 3 Schäden · 4 Fotos · 5 Checkliste · 6 Fahrer & Dokumente (Phase 19.5) · 7 Unterschrift · 8 Abschluss
+export const HANDOVER_STEPS = 8;
 
 async function loadDraft(tx: Tx, tenantId: string, handoverId: string) {
   const h = await tx.handover.findFirst({ where: { id: handoverId, tenantId } });
@@ -502,7 +504,7 @@ export async function removePhoto(tenantId: string, photoId: string): Promise<st
 
 export type HandoverIssue = {
   code: string;
-  area: "BOOKING" | "READINGS" | "DAMAGES" | "PHOTOS" | "CHECKLIST" | "CHARGES" | "SIGNATURE";
+  area: "BOOKING" | "READINGS" | "DAMAGES" | "PHOTOS" | "CHECKLIST" | "CHARGES" | "SIGNATURE" | "DRIVERS";
   severity: "error" | "warning";
   message: string;
 };
@@ -602,6 +604,13 @@ async function collectIssues(tx: Tx, tenantId: string, handoverId: string, opts:
       const received = dep ? balanceOf(dep.expectedAmountCents, dep.events).receivedCents : 0;
       if (received < expected) warn("BOOKING", "DEPOSIT_NOT_RECEIVED", `Kaution laut Vertrag (${fmtCents(expected)}) noch nicht ${received > 0 ? "vollständig " : ""}als erhalten dokumentiert. Die Übergabe kann trotzdem abgeschlossen werden.`);
     }
+  }
+
+  // Fahrer & Dokumente (nur Übergabe, Phase 19.5): jeder laut Vertrag vorgesehene Fahrer muss bestätigt geprüft sein.
+  // Serverseitiger Blocker, keine reine UI-Regel – dieselbe Funktion entscheidet Anzeige und Abschluss.
+  if (h.type === "PICKUP") {
+    const driverBlockers = await driverVerificationBlockers(tenantId, handoverId, tx);
+    for (const b of driverBlockers) err("DRIVERS", b.code, b.message);
   }
 
   // Checkliste

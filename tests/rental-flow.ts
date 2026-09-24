@@ -7,7 +7,7 @@ import { addNewDamage, answerChecklist, finalizeHandover, getHandoverContentHash
 import { sha256 } from "../src/lib/integrity";
 import { addManualCharge, confirmProposal } from "../src/lib/returns";
 import { buildStorageKey } from "../src/lib/storage";
-import { createWorld, fakeSignaturePng, type World } from "./helpers";
+import { createWorld, fakeSignaturePng, verifyAllDriversForPickup, type World } from "./helpers";
 
 async function photo(w: World, handoverId: string, category: string, handoverDamageId?: string) {
   const storageKey = buildStorageKey({ tenantId: w.tenantId, area: "photos", bookingId: w.bookingId, contentType: "image/jpeg" });
@@ -35,7 +35,7 @@ export async function returnedWorld(label: string, opts: { damageCharge?: boolea
   if (opts.within) {
     // zweite Miete im bestehenden Mandanten: eigenes Fahrzeug, gleicher Kunde
     const run = `${label}-${Date.now().toString(36)}`;
-    const vehicle = await db.vehicle.create({ data: { tenantId: opts.within.tenantId, plate: `HB-RB ${run.slice(-4)}`, make: "VW", model: "Crafter", groupId: opts.within.groupId, fuel: "DIESEL", mileage: 45_000, dailyRate: 89, workWeekRate: 420, weeklyRate: 540, kmIncludedPerDay: 200, extraKmRate: 0.25, deposit: 500, tankCapacityLiters: 75 } });
+    const vehicle = await db.vehicle.create({ data: { tenantId: opts.within.tenantId, plate: `HB-RB ${run.slice(-4)}`, make: "VW", model: "Crafter", groupId: opts.within.groupId, fuel: "DIESEL", mileage: 45_000, dailyRate: 89, workWeekRate: 420, weeklyRate: 540, kmIncludedPerDay: 200, extraKmRate: 0.25, deposit: 500, tankCapacityLiters: 75, requiredLicenseClass: "B" } });
     const start = new Date(Date.now() + 86400_000);
     const booking = await db.booking.create({ data: { tenantId: opts.within.tenantId, number: `T-${run}`, vehicleId: vehicle.id, customerId: opts.within.customerId, startAt: start, endAt: new Date(start.getTime() + 6 * 86400_000), dailyRate: 89, workWeekRate: 420, weeklyRate: 540, deposit: 500 } });
     w = { ...opts.within, vehicleId: vehicle.id, bookingId: booking.id };
@@ -55,6 +55,7 @@ export async function returnedWorld(label: string, opts: { damageCharge?: boolea
   for (const cat of REQUIRED_PHOTO_CATEGORIES) await photo(w, p.id, cat);
   await answerAll(w, p.id);
   await sign(w, p.id);
+  await verifyAllDriversForPickup(w.tenantId, w.actor, p.id, c.id);
   await finalizeHandover(w.tenantId, p.id, w.actor);
 
   const r = await startHandover(w.tenantId, w.bookingId, "RETURN", w.actor);

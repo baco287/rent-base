@@ -5,7 +5,7 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { db } from "../src/lib/db";
 import { addAdditionalDriver, ensureContractDraft, finalizeContract, getContractContentHash, saveConditions, saveContractSignature, verifyContract } from "../src/lib/contracts";
-import { fakeSignaturePng, purgeTenants } from "./helpers";
+import { fakeSignaturePng, purgeTenants, verifyAllDriversForPickup } from "./helpers";
 import { addNewDamage, answerChecklistItem, saveHandoverSignature, finalizeHandover, getHandoverContentHash, registerPhoto, startHandover, updateHandoverDraft, verifyHandover } from "../src/lib/handovers";
 import { setDamageStatus } from "../src/lib/damages";
 import { publishChecklistVersion, DEFAULT_CHECKLIST, itemsForDrive } from "../src/lib/checklists";
@@ -54,7 +54,7 @@ before(async () => {
   ids.user = actor.id = user.id;
   const group = await db.vehicleGroup.create({ data: { tenantId: a.id, name: "Transporter", bodyType: "TRANSPORTER", dailyRate: 89 } });
   ids.group = group.id;
-  const vehicle = await db.vehicle.create({ data: { tenantId: a.id, plate: `HB-T ${run.slice(-4)}`, make: "VW", model: "Crafter", groupId: group.id, fuel: "DIESEL", mileage: 50_000, dailyRate: 89, workWeekRate: 420, weeklyRate: 540, kmIncludedPerDay: 200, extraKmRate: 0.25, deposit: 500, tankCapacityLiters: 75 } });
+  const vehicle = await db.vehicle.create({ data: { tenantId: a.id, plate: `HB-T ${run.slice(-4)}`, make: "VW", model: "Crafter", groupId: group.id, fuel: "DIESEL", mileage: 50_000, dailyRate: 89, workWeekRate: 420, weeklyRate: 540, kmIncludedPerDay: 200, extraKmRate: 0.25, deposit: 500, tankCapacityLiters: 75, requiredLicenseClass: "B" } });
   ids.vehicle = vehicle.id;
   const customer = await db.customer.create({ data: { tenantId: a.id, firstName: "Erika", lastName: "Muster", street: "Weg 1", zip: "28195", city: "Bremen", phone: "0421 1", birthDate: new Date("1985-03-12"), idNumber: "L01X00T47", idValidUntil: new Date("2031-01-01"), licenseNumber: "B123", licenseClass: "B", licenseIssuedAt: new Date("2005-06-01"), licenseValidUntil: new Date("2033-06-01"), discountPercent: 10 } });
   ids.customer = customer.id;
@@ -147,6 +147,7 @@ test("Finalisieren verlangt Pflichtangaben und die Unterschrift über genau dies
   await assert.rejects(() => addNewDamage(ids.tenantA, pickupId, { view: "REAR", posX: 640, posY: 0.4, kind: "DENT", description: "Pixelwert" }), /normalisiert/);
   const nd = await addNewDamage(ids.tenantA, pickupId, { view: "REAR", posX: 0.8, posY: 0.4, kind: "DENT", description: "Delle Hecktür", size: "ca. 4 cm", severity: "MODERATE" });
   await photo(pickupId, "DAMAGE", nd.id);
+  await verifyAllDriversForPickup(ids.tenantA, actor, pickupId, contractId);
 
   // Unterschrift, danach Änderung: die Unterschrift passt nicht mehr
   const hash = await getHandoverContentHash(ids.tenantA, pickupId);

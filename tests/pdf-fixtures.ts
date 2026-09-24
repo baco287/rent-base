@@ -116,6 +116,12 @@ export function handoverData(variant: "empty" | "full"): HandoverDocumentData {
   return {
     context: { landlord, contractNumber: "MV-2026-0042", bookingNumber: "2026-0107", renterName: full ? LONG_NAME : "Al Li", renterNumber: "K-00042", vehicleTitle: "VW Crafter", plate: "HB-RT 200", vehicleGroup: "Transporter 3,5 t" },
     comparison: null,
+    driverChecks: full
+      ? [
+          { role: "PRIMARY_DRIVER", roleLabel: "Hauptfahrer", name: LONG_NAME, statusLabel: "Bestätigt", identityDocumentLabel: "Personalausweis", identityOriginalSeen: true, identityMatched: true, licenseOriginalSeen: true, licenseValid: true, requiredLicenseClass: "B", licenseClasses: ["B", "BE"], licenseClassSatisfied: true, validUntilLabel: "01.06.2033", checkedAtLabel: "21.09.2026, 09:55", checkedByName: "Sezer Karakuş" },
+          { role: "ADDITIONAL_DRIVER", roleLabel: "Zusatzfahrer", name: "Al Li", statusLabel: "Bestätigt", identityDocumentLabel: "Reisepass", identityOriginalSeen: true, identityMatched: true, licenseOriginalSeen: true, licenseValid: true, requiredLicenseClass: "B", licenseClasses: ["B"], licenseClassSatisfied: true, validUntilLabel: null, checkedAtLabel: "21.09.2026, 09:58", checkedByName: "Sezer Karakuş" },
+        ]
+      : [],
     title: "Übergabeprotokoll", number: "UP-2026-0042", type: "PICKUP", status: "FINALIZED", startedAt: "21.09.2026, 09:48", finalizedAt: "21.09.2026, 10:07", employeeName: "Sezer Karakuş",
     contentHash: "7978de30115c62c7076a1a6bdb46af436f3620d0dee3cedb88d9ddbe7a58aa01",
     readings: [{ label: "Kilometerstand", value: "50.123 km", missing: false }, { label: "Antrieb", value: full ? "Plug-in-Hybrid" : "Diesel", missing: false }, { label: "Tankstand", value: "6/8", missing: false }, ...(full ? [{ label: "Batteriestand", value: "80 %", missing: false }] : [])],

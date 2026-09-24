@@ -10,6 +10,7 @@ import { AUTHORITY_OPEN_STATUS } from "@/lib/authority";
 import { deadlineInfo } from "@/lib/authority-matching";
 import { financialsFor } from "@/lib/counter-documents";
 import { openDepositRows } from "@/lib/deposits";
+import { pickupDriverCheckStatus } from "@/lib/driver-verification";
 import { customerName, fmtDate, fmtDateTime, fmtTime } from "@/lib/format";
 import { maintenanceCounts } from "@/lib/maintenance";
 import { fmtCents, toCents, type Cents } from "@/lib/money";
@@ -35,8 +36,8 @@ export const TASK_GROUPS: { key: TaskGroup; label: string; tone: "bad" | "amber"
   { key: "SOON", label: "Bald", tone: "info" },
   { key: "NOTE", label: "Hinweise", tone: "grey" },
 ];
-export type TaskArea = "RENTAL" | "INVOICE" | "DEPOSIT" | "DAMAGE" | "MAINTENANCE" | "AUTHORITY" | "EMAIL" | "DOCUMENT" | "LICENSE";
-export const TASK_AREAS: Record<TaskArea, string> = { RENTAL: "Miete", INVOICE: "Rechnung", DEPOSIT: "Kaution", DAMAGE: "Schaden", MAINTENANCE: "Wartung", AUTHORITY: "Behörde", EMAIL: "E-Mail", DOCUMENT: "Dokument", LICENSE: "Führerschein" };
+export type TaskArea = "RENTAL" | "INVOICE" | "DEPOSIT" | "DAMAGE" | "MAINTENANCE" | "AUTHORITY" | "EMAIL" | "DOCUMENT" | "LICENSE" | "DRIVER_CHECK";
+export const TASK_AREAS: Record<TaskArea, string> = { RENTAL: "Miete", INVOICE: "Rechnung", DEPOSIT: "Kaution", DAMAGE: "Schaden", MAINTENANCE: "Wartung", AUTHORITY: "Behörde", EMAIL: "E-Mail", DOCUMENT: "Dokument", LICENSE: "Führerschein", DRIVER_CHECK: "Fahrerprüfung" };
 
 export type DashboardTask = {
   key: string;
@@ -110,6 +111,9 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
   const add = (t: Omit<DashboardTask, "plate" | "at"> & { plate?: string | null; at?: Date | null }) => tasks.push({ ...t, plate: t.plate ?? null, at: t.at ?? null });
   const vehicleText = (v: { make: string; model: string; plate: string }) => `${v.make} ${v.model}`;
   const inRange = (d: Date, a: Date, b: Date) => d.getTime() >= a.getTime() && d.getTime() < b.getTime();
+  // Fahrerprüfung (Phase 19.5): nur für heutige Abholungen, eine Abfrage für alle Buchungen
+  const todaysPickupIds = bookings.filter((b) => b.status === "RESERVED" && inRange(b.startAt, start, end)).map((b) => b.id);
+  const driverChecks = await pickupDriverCheckStatus(tenantId, todaysPickupIds);
   const counts: DashboardCounts = {
     pickupsToday: 0, returnsToday: 0, overdueReturns: 0, activeRentals, pickupsNotRecorded: 0,
     openInvoices: 0, openInvoiceCents: 0, overdueInvoices: 0, overdueInvoiceCents: 0, refundsOpen: 0, refundsOpenCents: 0,
@@ -132,6 +136,14 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
         counts.pickupsToday++;
         events.push({ kind: "PICKUP", at: b.startAt, bookingId: b.id, bookingNumber: b.number, customer: name, vehicle: vehicleText(b.vehicle), plate: b.vehicle.plate, licenseMissing: !b.customer.licenseNumber });
         add({ ...base, key: `pickup-${b.id}`, group: "TODAY", title: `Abholung ${fmtTime(b.startAt)} · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)}${b.startAt < now ? " · Abholzeit bereits verstrichen" : ""}`, at: b.startAt, status: "Abholung heute" });
+        // Fahrerprüfung: jeder vertragliche Fahrer muss bei der Übergabe identifiziert und seine Fahrerlaubnis geprüft sein
+        const dc = driverChecks.get(b.id);
+        if (dc && dc.required > 0) {
+          const href = dc.handoverId ? `/buchungen/${b.id}/uebergabe?schritt=6` : `/buchungen/${b.id}/uebergabe`;
+          if (dc.blocked > 0) add({ area: "DRIVER_CHECK", href, plate: b.vehicle.plate, key: `driver-blocked-${b.id}`, group: "TODAY", title: `Fahrerprüfung blockiert · ${name}`, detail: `Buchung ${b.number} · ${dc.blocked} Fahrer mit offenem Klärungsbedarf`, at: b.startAt, status: "Blockiert" });
+          else if (dc.confirmed < dc.required) add({ area: "DRIVER_CHECK", href, plate: b.vehicle.plate, key: `driver-unverified-${b.id}`, group: "TODAY", title: `Fahrer noch nicht vollständig geprüft · ${name}`, detail: `Buchung ${b.number} · ${dc.confirmed} von ${dc.required} bestätigt`, at: b.startAt, status: "Vor Übergabe prüfen" });
+          if (dc.manualReviewOpen > 0) add({ area: "DRIVER_CHECK", href, plate: b.vehicle.plate, key: `driver-manual-${b.id}`, group: "TODAY", title: `Manuelle Prüfung erforderlich · ${name}`, detail: `Buchung ${b.number} · ausländischer Führerschein ohne bestätigte Prüfung`, at: b.startAt, status: "Manuell prüfen" });
+        }
       } else if (days > 0 && inRange(b.startAt, end, horizonEnd)) {
         add({ ...base, key: `pickup-${b.id}`, group: "SOON", title: `Abholung ${fmtDate(b.startAt)} ${fmtTime(b.startAt)} · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)}`, at: b.startAt, status: "Abholung bald" });
       }

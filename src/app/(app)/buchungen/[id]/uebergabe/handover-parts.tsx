@@ -4,7 +4,7 @@ import type { HandoverIssue } from "@/lib/handovers";
 import { Card, Chip } from "@/components/ui";
 import { DamageMap } from "./damage-map";
 
-export const PICKUP_STEPS = ["Übersicht", "Kilometer & Energie", "Schäden", "Fotos", "Checkliste", "Unterschrift", "Abschluss"] as const;
+export const PICKUP_STEPS = ["Übersicht", "Kilometer & Energie", "Schäden", "Fotos", "Checkliste", "Fahrer & Dokumente", "Unterschrift", "Abschluss"] as const;
 export const RETURN_STEPS = ["Übersicht", "Kilometer & Mietdauer", "Tank / Batterie", "Fahrzeugzustand", "Fotos", "Checkliste", "Zusatzkosten", "Unterschrift", "Abschluss"] as const;
 
 /** Vergleichstabelle Übergabe/Rückgabe, gemeinsam für Assistent, Protokollansicht und Abschluss. */
@@ -121,6 +121,29 @@ export function HandoverDocumentView({ doc, handoverId, showSignatures = true }:
       </div>
 
       {doc.type === "RETURN" && <ComparisonTable doc={doc} />}
+
+      {doc.driverChecks.length > 0 && (
+        <Card title="Fahrer- und Führerscheinprüfung">
+          <ul className="divide-y divide-line-soft text-sm">
+            {doc.driverChecks.map((d) => (
+              <li key={d.name} className="px-4 py-2.5 flex flex-col gap-1">
+                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                  <span className="font-medium">{d.name}</span>
+                  <Chip tone="info">{d.roleLabel}</Chip>
+                  <Chip tone={d.statusLabel === "Bestätigt" ? "good" : d.statusLabel === "Blockiert" ? "bad" : "amber"}>{d.statusLabel}</Chip>
+                </div>
+                <div className="text-xs text-ink-2 flex flex-wrap gap-x-3 gap-y-0.5">
+                  <span>Identität im Original geprüft: {d.identityOriginalSeen ? "Ja" : "Nein"}</span>
+                  <span>Führerschein im Original geprüft: {d.licenseOriginalSeen ? "Ja" : "Nein"}</span>
+                  {d.requiredLicenseClass && <span>Fahrerlaubnisklasse geprüft: {d.requiredLicenseClass}{d.licenseClassSatisfied === false ? " (nicht erfüllt)" : ""}</span>}
+                  <span>Gültigkeit geprüft: {d.licenseValid === true ? "Ja" : d.licenseValid === false ? "Nein" : "–"}</span>
+                  {d.checkedAtLabel && <span>Geprüft am {d.checkedAtLabel}{d.checkedByName ? ` durch ${d.checkedByName}` : ""}</span>}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
         <Card title="Kilometer und Energie">

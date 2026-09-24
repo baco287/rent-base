@@ -26,6 +26,8 @@ export type CustomerHeader = {
   /** letzte Aktivität = jüngster gespeicherter Zeitstempel über alle Vorgänge (berechnet, nicht gespeichert) */
   lastActivityAt: Date | null;
   lastActivityWhat: string | null;
+  /** Phase 19.5: letzte bestätigte Original-Führerscheinprüfung dieser Person (historischer Stand, keine Aussage über heutige Gültigkeit). */
+  licenseLastChecked: { verifiedAt: Date; validUntilThen: Date | null; expiredAtCheckTime: boolean } | null;
 };
 
 export type CustomerOverview = {
@@ -55,8 +57,14 @@ export type OpenTask = { key: string; title: string; detail: string; href: strin
 export async function customerHeader(tenantId: string, customerId: string): Promise<CustomerHeader | null> {
   const customer = await db.customer.findFirst({ where: { id: customerId, tenantId } });
   if (!customer) return null;
-  const last = await lastActivity(tenantId, customerId, customer);
-  return { customer, name: customerName(customer), lastActivityAt: last?.at ?? null, lastActivityWhat: last?.what ?? null };
+  const [last, lastCheck] = await Promise.all([
+    lastActivity(tenantId, customerId, customer),
+    db.driverVerification.findFirst({ where: { tenantId, customerId, status: "CONFIRMED" }, orderBy: { verifiedAt: "desc" }, select: { verifiedAt: true, licenseValidUntilSnapshot: true } }),
+  ]);
+  const licenseLastChecked = lastCheck?.verifiedAt
+    ? { verifiedAt: lastCheck.verifiedAt, validUntilThen: lastCheck.licenseValidUntilSnapshot, expiredAtCheckTime: !!lastCheck.licenseValidUntilSnapshot && lastCheck.licenseValidUntilSnapshot < lastCheck.verifiedAt }
+    : null;
+  return { customer, name: customerName(customer), lastActivityAt: last?.at ?? null, lastActivityWhat: last?.what ?? null, licenseLastChecked };
 }
 
 /** Jüngster Zeitstempel über die Vorgänge der Person – bewusst berechnet, keine neue Spalte. */

@@ -277,6 +277,17 @@ export const AUDIT_ACTIONS = {
   RENTAL_TERMS_ARCHIVED: "Mietbedingungen: Fassung archiviert",
   RENTAL_TERMS_NEW_VERSION_CREATED: "Mietbedingungen: neue Fassung aus veröffentlichter erstellt",
   RENTAL_TERMS_DRAFT_DISCARDED: "Mietbedingungen: Entwurf verworfen",
+  DRIVER_VERIFICATION_STARTED: "Fahrerprüfung begonnen",
+  DRIVER_IDENTITY_VERIFIED: "Fahrer: Identität geprüft",
+  DRIVER_LICENSE_VERIFIED: "Fahrer: Führerschein geprüft",
+  DRIVER_VERIFICATION_COMPLETED: "Fahrerprüfung bestätigt",
+  DRIVER_VERIFICATION_BLOCKED: "Fahrerprüfung blockiert",
+  DRIVER_VERIFICATION_SUPERSEDED: "Fahrerprüfung: neue Fassung",
+  DOCUMENT_COPY_CONSENT_RECORDED: "Dokumentkopie: Zustimmung dokumentiert",
+  DRIVER_DOCUMENT_UPLOADED: "Dokumentkopie gespeichert",
+  DRIVER_DOCUMENT_VIEWED: "Dokumentkopie angezeigt",
+  DRIVER_DOCUMENT_DELETED: "Dokumentkopie gelöscht",
+  CUSTOMER_LICENSE_UPDATED_FROM_VERIFICATION: "Kundenstammdaten: Führerschein aus Prüfung übernommen",
   BUSINESS_RULES_UPDATED: "Geschäftsregeln geändert",
   CONTRACT_TERMS_SELECTED: "Vertrag: Mietbedingungen-Fassung zugeordnet",
   CONTRACT_TERMS_ACKNOWLEDGED: "Vertrag: Mietbedingungen zur Kenntnis genommen",
@@ -323,6 +334,31 @@ export const LIABILITY_STATUS = {
   INTERNAL: "Intern (eigener Betrieb)",
 } as const;
 export type LiabilityStatus = keyof typeof LIABILITY_STATUS;
+// Phase 19.5: Fahreridentifikation und Führerscheinprüfung bei der Übergabe.
+/** Fahrerlaubnisklassen nach § 6 Abs. 1 FeV (Stand 2026). Weitere Klassen sind additiv möglich; keine Rechts-Engine. */
+export const LICENSE_CLASSES = { AM: "AM", A1: "A1", A2: "A2", A: "A", B: "B", BE: "BE", C1: "C1", C1E: "C1E", C: "C", CE: "CE", D1: "D1", D1E: "D1E", D: "D", DE: "DE", T: "T", L: "L" } as const;
+export type LicenseClass = keyof typeof LICENSE_CLASSES;
+/** § 6 Abs. 3 FeV: welche Klasse zusätzlich zum Führen welcher Klassen berechtigt (nur die dort genannten Einschlüsse). */
+export const LICENSE_CLASS_IMPLIES: Record<LicenseClass, readonly LicenseClass[]> = {
+  AM: [], A1: ["AM"], A2: ["A1", "AM"], A: ["A2", "A1", "AM"], B: ["AM", "L"], BE: [], C1: [], C1E: ["BE"], C: ["C1"], CE: ["C1E", "BE", "T"], D1: [], D1E: ["BE"], D: ["D1"], DE: ["D1E", "BE"], T: ["AM", "L"], L: [],
+};
+export const IDENTITY_DOCUMENT_TYPES = { PERSONALAUSWEIS: "Personalausweis", REISEPASS: "Reisepass", SONSTIGER_AMTLICHER_LICHTBILDAUSWEIS: "Sonstiger amtlicher Lichtbildausweis" } as const;
+export type IdentityDocumentType = keyof typeof IDENTITY_DOCUMENT_TYPES;
+export const DRIVER_VERIFICATION_STATUS = { NOT_STARTED: "Nicht geprüft", IN_PROGRESS: "In Prüfung", CONFIRMED: "Bestätigt", BLOCKED: "Blockiert" } as const;
+export type DriverVerificationStatus = keyof typeof DRIVER_VERIFICATION_STATUS;
+export const DRIVER_DOCUMENT_KINDS = { IDENTITY: "Ausweiskopie", LICENSE: "Führerscheinkopie" } as const;
+export type DriverDocumentKind = keyof typeof DRIVER_DOCUMENT_KINDS;
+export const DRIVER_DOCUMENT_SIDES = { FRONT: "Vorderseite", BACK: "Rückseite" } as const;
+/** EU/EWR-Staaten und Schweiz: Führerscheine dieser Staaten gelten nach § 29 FeV ohne Übersetzung; alle anderen brauchen die bewusste manuelle Prüfung. */
+export const EU_EEA_CH_COUNTRIES = ["DE", "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE", "IS", "LI", "NO", "CH"] as const;
+export const DRIVER_COPY_PURPOSE = "Nachweis der Fahrer- und Fahrerlaubnisprüfung zum Vermietvorgang (Mietvertrag); keine Weitergabe an Dritte.";
+export const DRIVER_VERIFICATION_HELP = {
+  ORIGINAL: "Pflicht ist die dokumentierte Prüfung des Originaldokuments. Eine gespeicherte Kopie ersetzt die Prüfung nicht und ist für den Abschluss der Übergabe nicht erforderlich.",
+  ID_CONSENT: "Für die Speicherung einer Personalausweiskopie ist die Zustimmung des Ausweisinhabers erforderlich (§ 20 Abs. 2 PAuswG). Die Kopie wird dauerhaft als Kopie gekennzeichnet.",
+  LICENSE_COPY: "Eine Führerscheinkopie ist freiwillig. Sie dient nur dem Nachweis der Prüfung zu diesem Vermietvorgang und wird dauerhaft als Kopie gekennzeichnet.",
+  FOREIGN: "Rent-Base beurteilt nicht automatisch die rechtliche Gültigkeit ausländischer Fahrerlaubnisse. Ausstellungsstaat, Dokument, Klassen und Gültigkeit werden erfasst; die Freigabe ist eine bewusste manuelle Entscheidung.",
+} as const;
+
 export const DAMAGE_CASE_DOCUMENT_TYPES = { ESTIMATE: "Kostenvoranschlag", REPAIR_INVOICE: "Werkstattrechnung", OTHER: "Sonstiges" } as const;
 export type DamageCaseDocumentType = keyof typeof DAMAGE_CASE_DOCUMENT_TYPES;
 export const DAMAGE_CASE_EVENT_TYPES = {

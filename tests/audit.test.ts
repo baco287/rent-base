@@ -24,7 +24,7 @@ import { buildStorageKey, getStorage, type StorageDriver } from "../src/lib/stor
 import { parseLocalDateTime, toDateTimeInputValue, zoneOffsetMinutes } from "../src/lib/time";
 import { fmtDateTime } from "../src/lib/format";
 import type { MailMessage, MailTransport } from "../src/lib/mail";
-import { createWorld, fakeSignaturePng, purgeTenants, type World } from "./helpers";
+import { createWorld, fakeSignaturePng, purgeTenants, verifyAllDriversForPickup, type World } from "./helpers";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -73,6 +73,7 @@ async function activeWorld(label: string) {
   await finalizeContract(w.tenantId, c.id);
   const p = await startHandover(w.tenantId, w.bookingId, "PICKUP", w.actor);
   await fillHandover(w, p.id, 50_010);
+  await verifyAllDriversForPickup(w.tenantId, w.actor, p.id, c.id);
   await finalizeHandover(w.tenantId, p.id, w.actor);
   return { w, contractId: c.id, pickupId: p.id };
 }
@@ -93,6 +94,7 @@ test("Race Conditions: Doppelklick und parallele Requests erzeugen nie Duplikate
   assert.equal(new Set(starts.map((s) => s.id)).size, 1);
   assert.equal(await db.handover.count({ where: { bookingId: w.bookingId, type: "PICKUP" } }), 1);
   await fillHandover(w, starts[0].id, 50_010);
+  await verifyAllDriversForPickup(w.tenantId, w.actor, starts[0].id, drafts[0].id);
   // Übergabe doppelt finalisieren
   const pf = await settled([1, 2, 3].map(() => finalizeHandover(w.tenantId, starts[0].id, w.actor)));
   assert.equal(pf.ok, 1);
@@ -142,6 +144,7 @@ test("Race: veralteter Entwurf, veraltete Unterschrift und gleichzeitiges Storno
   // Gleichzeitig: A schließt die Übergabe ab, B storniert. Genau eines gewinnt, der Zustand bleibt konsistent.
   await db.handoverDamage.deleteMany({ where: { handoverId: p.id, marker: "NEW" } });
   await fillHandover(w, p.id, 50_010);
+  await verifyAllDriversForPickup(w.tenantId, w.actor, p.id, c.id);
   const r = await Promise.allSettled([finalizeHandover(w.tenantId, p.id, w.actor), changeBookingStatus(w.tenantId, w.bookingId, "CANCELLED")]);
   const after = await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } });
   const handover = await db.handover.findFirst({ where: { id: p.id } });
@@ -258,6 +261,7 @@ test("Fahrzeugverfügbarkeit: Status, Überschneidung, Zeitgrenzen [start, end),
   await assert.rejects(() => finalizeHandover(v.tenantId, p.id, v.actor), /noch unterwegs/);
   await db.booking.update({ where: { id: otherBooking.id }, data: { status: "RETURNED" } });
   await fillHandover(v, p.id, 50_010);
+  await verifyAllDriversForPickup(v.tenantId, v.actor, p.id, c.id);
   await finalizeHandover(v.tenantId, p.id, v.actor);
 });
 
@@ -315,6 +319,7 @@ test("Schäden über den ganzen Zyklus: Alt, Vorschaden, Rückgabeschaden", asyn
   const pre = await addNewDamage(w.tenantId, p.id, { view: "FRONT", posX: 1, posY: 1, kind: "CHIP", severity: "MINOR", description: "Vorschaden Haube" });
   await photo(w, p.id, "DAMAGE", pre.id);
   await fillHandover(w, p.id, 50_010);
+  await verifyAllDriversForPickup(w.tenantId, w.actor, p.id, c.id);
   await finalizeHandover(w.tenantId, p.id, w.actor);
   const preDamage = await db.damage.findFirstOrThrow({ where: { discoveredInHandoverId: p.id } });
   assert.equal(preDamage.bookingId, null, "Vorschaden ohne Mieterbezug");
@@ -375,6 +380,7 @@ test("Signaturen: leer, zu klein, zu groß, falsches Format, Replay über Vertra
   // PICKUP-Signatur darf nicht als RETURN-Signatur gelten: eine Signaturzeile mit fremdem Hash zählt nicht
   const p = await startHandover(w.tenantId, w.bookingId, "PICKUP", w.actor);
   await fillHandover(w, p.id, 50_010);
+  await verifyAllDriversForPickup(w.tenantId, w.actor, p.id, c.id);
   await finalizeHandover(w.tenantId, p.id, w.actor);
   const pickupSig = await db.signature.findFirstOrThrow({ where: { handoverId: p.id } });
   const r = await startHandover(w.tenantId, w.bookingId, "RETURN", w.actor);
@@ -457,6 +463,7 @@ test("Transaktionsfehler mitten in Vertrags- und Übergabefinalisierung rollen v
   const d = await addNewDamage(w.tenantId, p.id, { view: "FRONT", posX: 0.5, posY: 0.5, kind: "CHIP", severity: "MINOR", description: "Vorschaden" });
   await photo(w, p.id, "DAMAGE", d.id);
   await fillHandover(w, p.id, 50_010);
+  await verifyAllDriversForPickup(w.tenantId, w.actor, p.id, c.id);
   // Fehler beim Fortschreiben des Kilometerstands, also NACH Buchungsstatus und Schadenakte
   await db.$executeRawUnsafe(`CREATE OR REPLACE FUNCTION rb_test_block_vehicle() RETURNS trigger AS 'BEGIN IF NEW."mileage" <> OLD."mileage" THEN RAISE EXCEPTION ''TESTBLOCK''; END IF; RETURN NEW; END' LANGUAGE plpgsql`);
   await db.$executeRawUnsafe(`CREATE TRIGGER rb_test_block_vehicle BEFORE UPDATE ON "Vehicle" FOR EACH ROW EXECUTE FUNCTION rb_test_block_vehicle()`);

@@ -53,6 +53,7 @@ export default async function VehiclePage({ params, searchParams }: PageProps<"/
     year: vehicle.year?.toString() ?? "", vin: vehicle.vin ?? "", color: vehicle.color ?? "", mileage: vehicle.mileage.toString(), huDate: toDateInput(vehicle.huDate),
     dailyRate: vehicle.dailyRate.toString().replace(".", ","), workWeekRate: vehicle.workWeekRate?.toString().replace(".", ",") ?? "", weeklyRate: vehicle.weeklyRate?.toString().replace(".", ",") ?? "", monthlyRate: vehicle.monthlyRate?.toString().replace(".", ",") ?? "",
     kmIncludedPerDay: vehicle.kmIncludedPerDay.toString(), extraKmRate: vehicle.extraKmRate.toString().replace(".", ","), deposit: vehicle.deposit.toString().replace(".", ","), notes: vehicle.notes ?? "",
+    requiredLicenseClass: vehicle.requiredLicenseClass ?? "",
   };
   const update = updateVehicleAction.bind(null, vehicle.id);
   const remove = deleteVehicleAction.bind(null, vehicle.id);

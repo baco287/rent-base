@@ -9,7 +9,7 @@ import { getReturnComparison } from "@/lib/returns";
 export type CompletionItem = { code: string; message: string; step: number; stepLabel: string; blocking: boolean };
 export type CompletionStatus = { type: "PICKUP" | "RETURN"; blockers: CompletionItem[]; warnings: CompletionItem[]; renterSigned: boolean; ready: boolean };
 
-const PICKUP_STEP_LABELS = ["Übersicht", "Kilometer & Energie", "Schäden", "Fotos", "Checkliste", "Unterschrift", "Abschluss"];
+const PICKUP_STEP_LABELS = ["Übersicht", "Kilometer & Energie", "Schäden", "Fotos", "Checkliste", "Fahrer & Dokumente", "Unterschrift", "Abschluss"];
 const RETURN_STEP_LABELS = ["Übersicht", "Kilometer & Mietdauer", "Tank / Batterie", "Fahrzeugzustand", "Fotos", "Checkliste", "Zusatzkosten", "Unterschrift", "Abschluss"];
 
 /** Zu welchem Schritt des Assistenten ein Punkt gehört (damit jeder offene Punkt direkt dorthin führt). */
@@ -20,7 +20,8 @@ function stepOf(type: "PICKUP" | "RETURN", issue: Pick<HandoverIssue, "area" | "
       case "DAMAGES": return 3;
       case "PHOTOS": return 4;
       case "CHECKLIST": return 5;
-      case "SIGNATURE": return 6;
+      case "DRIVERS": return 6;
+      case "SIGNATURE": return 7;
       default: return 1;
     }
   }

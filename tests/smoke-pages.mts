@@ -26,6 +26,7 @@ import { createCancellationDraft, createCreditNoteDraft, finalizeCounterDocument
 import { createPayout } from "../src/lib/payouts";
 import { ensurePayoutDocument } from "../src/lib/documents";
 import { toDateInputValue, zonedParts } from "../src/lib/time";
+import { confirmVerification, recordIdentityCheck, recordLicenseCheck, startOrGetVerification } from "../src/lib/driver-verification";
 
 const args = process.argv.slice(2);
 const keep = args.includes("--keep");
@@ -33,9 +34,22 @@ const base = args.find((a) => a.startsWith("http")) ?? "http://localhost:3000";
 
 const w = await createWorld("smoke");
 await db.user.update({ where: { id: w.userId }, data: { role: "OWNER" } });
+// Phase 19.5: erforderliche Fahrerlaubnisklasse für die Fahrzeuggruppe konfigurieren (sonst blockiert die Übergabe bewusst)
+await db.vehicleGroup.update({ where: { id: w.groupId }, data: { requiredLicenseClass: "B" } });
 const sessionId = randomBytes(32).toString("base64url");
 await db.session.create({ data: { id: sessionId, userId: w.userId, expiresAt: new Date(Date.now() + 6 * 3600_000) } });
 const cookie = `rb_session=${sessionId}`;
+
+// Phase 19.5: jeden laut Vertrag vorgesehenen Fahrer identifizieren und die Fahrerlaubnis prüfen (sonst blockiert die Übergabe bewusst)
+async function verifyAllDrivers(handoverId: string, contractId: string) {
+  const drivers = await db.contractDriver.findMany({ where: { tenantId: w.tenantId, contractId } });
+  for (const d of drivers) {
+    const v = await startOrGetVerification(w.tenantId, w.actor, handoverId, d.id);
+    await recordIdentityCheck(w.tenantId, w.actor, v.id, { documentType: "PERSONALAUSWEIS", originalSeen: true, nameMatched: true, birthDateMatched: true });
+    await recordLicenseCheck(w.tenantId, w.actor, v.id, { originalSeen: true, documentValid: true, nameMatched: true, licenseNumber: d.licenseNumber, licenseCountry: d.licenseCountry, licenseIssuedAt: d.licenseIssuedAt, licenseValidUntil: d.licenseValidUntil, licenseClasses: ["B"], internationalPermitPresented: false, translationPresented: false });
+    await confirmVerification(w.tenantId, w.actor, v.id);
+  }
+}
 
 // zweite, alte Buchung ohne Preisstufen (wie vor Phase 2) und eine dritte für den abgeschlossenen Vertrag
 const old = await db.booking.create({ data: { tenantId: w.tenantId, number: "ALT-1", vehicleId: w.vehicleId, customerId: w.customerId, startAt: new Date(Date.now() - 40 * 86400_000), endAt: new Date(Date.now() - 30 * 86400_000), dailyRate: 89, deposit: 500, status: "RETURNED" } });
@@ -63,6 +77,7 @@ for (const c of REQUIRED_PHOTO_CATEGORIES) { const key = buildStorageKey({ tenan
 const doneItems = await db.handoverChecklistItem.findMany({ where: { handoverId: done.id } });
 await answerChecklist(w.tenantId, done.id, doneItems.map((i) => ({ itemId: i.id, result: i.answerType === "TEXT" ? "2" : i.answerType === "YES_NO" ? "YES" : "OK" })));
 await saveHandoverSignature(w.tenantId, w.actor, done.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getHandoverContentHash(w.tenantId, done.id) });
+await verifyAllDrivers(done.id, doneContract.id);
 await finalizeHandover(w.tenantId, done.id, w.actor);
 
 // Rückgabe-Entwurf für die übergebene Buchung (Elektro): Vergleich, Vorschlag, manuelle Position
@@ -86,6 +101,7 @@ const fillHandover = async (handoverId: string, bookingId: string, mileage: numb
   await finalizeHandover(w.tenantId, handoverId, w.actor);
 };
 const retPickup = await startHandover(w.tenantId, retBooking.id, "PICKUP", w.actor);
+await verifyAllDrivers(retPickup.id, retContract.id);
 await fillHandover(retPickup.id, retBooking.id, 20010, 8);
 const retReturn = await startHandover(w.tenantId, retBooking.id, "RETURN", w.actor);
 await updateHandoverDraft(w.tenantId, retReturn.id, { mileage: 21600, fuelLevelEighths: 5, fuelPricePerLiter: 1.85 });
@@ -177,11 +193,15 @@ const pages: [string, string][] = [
   [`/buchungen/${signedBooking.id}/uebergabe?schritt=3`, "gilt als Vorschaden"],
   [`/buchungen/${signedBooking.id}/uebergabe?schritt=4`, "Kilometerstand"],
   [`/buchungen/${signedBooking.id}/uebergabe?schritt=5`, "Reifen und Felgen"],
-  [`/buchungen/${signedBooking.id}/uebergabe?schritt=6`, "Unterschrift Mieter"],
-  [`/buchungen/${signedBooking.id}/uebergabe?schritt=7`, "Übergabe verbindlich abschließen"],
+  [`/buchungen/${signedBooking.id}/uebergabe?schritt=6`, "Fahrer &amp; Dokumente"],
+  [`/buchungen/${signedBooking.id}/uebergabe?schritt=7`, "Unterschrift Mieter"],
+  [`/buchungen/${signedBooking.id}/uebergabe?schritt=8`, "Übergabe verbindlich abschließen"],
   // finalisiertes Protokoll eines Elektrofahrzeugs
   [`/buchungen/${doneBooking.id}/uebergabe`, "Prüfsumme des versiegelten Protokolls"],
   [`/buchungen/${doneBooking.id}/uebergabe`, "Batteriestand"],
+  [`/buchungen/${doneBooking.id}/uebergabe`, "Fahrer- und Führerscheinprüfung"],
+  [`/buchungen/${doneBooking.id}/uebergabe`, "Identität im Original geprüft: Ja"],
+  [`/buchungen/${signedBooking.id}/uebergabe?schritt=6`, "Prüfung für"],
   [`/buchungen/${w.bookingId}/uebergabe`, "erst möglich, wenn der Mietvertrag abgeschlossen ist"],
 ];
 
@@ -192,7 +212,7 @@ const report = (ok: boolean, text: string) => {
 };
 for (const [path, expect] of pages) {
   const res = await fetch(base + path, { headers: { cookie }, redirect: "manual" });
-  const body = res.status === 200 ? await res.text() : "";
+  const body = res.status === 200 ? (await res.text()).replace(/<!-- -->/g, "") : "";
   const ok = res.status === 200 && body.includes(expect);
   report(ok, `${res.status} ${path}${ok ? "" : `  (erwartet: "${expect}")`}`);
 }
