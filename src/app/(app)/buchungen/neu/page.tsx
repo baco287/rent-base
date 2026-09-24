@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { requireRole } from "@/lib/auth";
+import { toDateTimeInputValue } from "@/lib/time";
 import { toDateTimeInput } from "@/lib/format";
 import { Card, Content, PageHeader } from "@/components/ui";
 import { createBookingAction } from "../actions";
@@ -47,6 +49,7 @@ export default async function NewBookingPage({ searchParams }: PageProps<"/buchu
             vehicles={vehicles}
             customers={customers}
             allowNewCustomer
+            initialPayment={{ nonce: randomUUID(), defaultWhen: toDateTimeInputValue(new Date()) }}
             submitLabel="Buchung anlegen"
             cancelHref="/buchungen"
           />

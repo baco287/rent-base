@@ -186,7 +186,13 @@ export const INVOICE_UNITS = ["pauschal", "Tag", "km", "l", "kWh", "h", "Stk"] a
 // Phase 9: Zahlungen und Kaution. CARD und BANK_TRANSFER heißen nur: außerhalb von Rent-Base ausgeführt und hier dokumentiert.
 export const PAYMENT_METHODS = { CASH: "Barzahlung", CARD: "Kartenzahlung (extern)", BANK_TRANSFER: "Überweisung (extern)", OTHER: "Sonstige" } as const;
 export type PaymentMethod = keyof typeof PAYMENT_METHODS;
-export const PAYMENT_TYPES = { INVOICE_PAYMENT: "Rechnungszahlung", OTHER_PAYMENT: "Sonstige Zahlung" } as const;
+// RENTAL_PAYMENT: Mietzahlung vor der Rechnung (an der Buchung erfasst), beim Abschluss der Mietrechnung ihr zugeordnet
+export const PAYMENT_TYPES = { INVOICE_PAYMENT: "Rechnungszahlung", OTHER_PAYMENT: "Sonstige Zahlung", RENTAL_PAYMENT: "Mietzahlung" } as const;
+/** Mietzahlungsstatus einer Buchung, abgeleitet aus den Mietzahlungen; nie gespeichert. */
+export const RENTAL_PAYMENT_STATUS = { OPEN: "Offen", PARTIAL: "Teilweise bezahlt", PAID: "Vollständig bezahlt", OVERPAID: "Überzahlt – Erstattung klären" } as const;
+/** Auswahl im Buchungsformular. Gespeichert wird nur die Zahlungsbewegung; der Status wird daraus berechnet. */
+export const RENTAL_PAYMENT_INTENTS = { NONE: "Offen", PARTIAL: "Teilweise bezahlt", FULL: "Vollständig bezahlt" } as const;
+export type RentalPaymentIntent = keyof typeof RENTAL_PAYMENT_INTENTS;
 // Phase 18: Auszahlungen (Geld raus). Rent-Base führt keine Überweisung, Karten- oder Providertransaktion aus; es dokumentiert.
 export const PAYOUT_SOURCE_TYPES = { INVOICE_REFUND: "Rechnungserstattung", SECURITY_DEPOSIT_REFUND: "Kautionsrückzahlung" } as const;
 export type PayoutSourceType = keyof typeof PAYOUT_SOURCE_TYPES;
@@ -211,6 +217,7 @@ export type DepositEventType = keyof typeof DEPOSIT_EVENT_TYPES;
 export const AUDIT_ACTIONS = {
   PAYMENT_RECORDED: "Zahlung erfasst",
   PAYMENT_CANCELLED: "Zahlung storniert",
+  RENTAL_PAYMENTS_LINKED: "Mietzahlungen der Mietrechnung zugeordnet",
   DEPOSIT_RECEIVED: "Kaution erhalten",
   DEPOSIT_RELEASED: "Kaution vollständig freigegeben",
   DEPOSIT_PARTIALLY_RELEASED: "Kaution teilweise freigegeben",

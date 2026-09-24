@@ -1,7 +1,7 @@
 "use server";
 
 // Zahlungen und Kaution: alle Rechte serverseitig.
-//   Zahlung erfassen / stornieren:            Inhaber, Disponent
+//   Zahlung erfassen / stornieren:            Inhaber, Disponent (Rechnungszahlung und Mietzahlung an der Buchung)
 //   Kaution als erhalten dokumentieren:        Inhaber, Disponent, Hofmitarbeiter (operativ bei der Übergabe)
 //   Kaution freigeben / einbehalten / korrigieren: Inhaber, Disponent
 // Jede Aktion trägt einen einmaligen Formularschlüssel (nonce): Doppelklick bucht nie doppelt.
@@ -14,6 +14,7 @@ import { cancelDepositEvent, previewDepositSettlement, recordDepositReceived, se
 import { DomainError, isImmutableError } from "@/lib/integrity";
 import { fmtCents } from "@/lib/money";
 import { cancelPayment, previewInvoicePayment, recordInvoicePayment, type PaymentPreview } from "@/lib/payments";
+import { previewRentalPayment, recordRentalPayment } from "@/lib/rental-payments";
 import { parseLocalDateTime } from "@/lib/time";
 
 export type MoneyState = { error?: string; ok?: string } | undefined;
@@ -56,6 +57,33 @@ export async function recordPaymentAction(bookingId: string, _prev: MoneyState, 
     const res = await recordInvoicePayment(tenant.id, { id: user.id, name: user.name }, { ...parsed.data, paidAt, idempotencyKey: parsed.data.nonce });
     refresh(bookingId);
     return { ok: res.created ? `Zahlung über ${fmtCents(res.payment.amountCents)} erfasst.` : "Diese Zahlung war bereits erfasst. Es wurde nichts doppelt gebucht." };
+  } catch (e) {
+    return failure(e);
+  }
+}
+
+// Mietzahlung an der Buchung (vor der Rechnung). Nach Abschluss der Mietrechnung läuft sie automatisch als Rechnungszahlung.
+const rentalPaymentSchema = paymentSchema.omit({ invoiceId: true });
+
+export async function previewRentalPaymentAction(bookingId: string, amount: string, methodKey: string): Promise<PaymentPreview | { error: string }> {
+  const { tenant } = await requireRole("DISPO");
+  try {
+    return await previewRentalPayment(tenant.id, bookingId, amount, methodKey);
+  } catch (e) {
+    return { error: e instanceof DomainError ? e.message : "Vorschau nicht möglich." };
+  }
+}
+
+export async function recordRentalPaymentAction(bookingId: string, _prev: MoneyState, formData: FormData): Promise<MoneyState> {
+  const { tenant, user } = await requireRole("DISPO");
+  const parsed = rentalPaymentSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const paidAt = parseLocalDateTime(parsed.data.paidAt);
+  if (!paidAt) return { error: "Bitte ein gültiges Zahlungsdatum angeben." };
+  try {
+    const res = await recordRentalPayment(tenant.id, { id: user.id, name: user.name }, bookingId, { ...parsed.data, paidAt, idempotencyKey: parsed.data.nonce });
+    refresh(bookingId);
+    return { ok: res.created ? `Mietzahlung über ${fmtCents(res.payment.amountCents)} erfasst.` : "Diese Zahlung war bereits erfasst. Es wurde nichts doppelt gebucht." };
   } catch (e) {
     return failure(e);
   }

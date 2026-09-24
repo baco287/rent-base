@@ -12,7 +12,7 @@ import { setBookingStatusAction, updateBookingAction } from "../actions";
 import { BookingForm } from "../booking-form";
 import { loadBookingOptions } from "../options";
 import { DocumentsPanel } from "./dokumente/documents-panel";
-import { DepositPanel, PaymentsPanel } from "./finanzen/panels";
+import { DepositPanel, RentalPaymentsPanel } from "./finanzen/panels";
 import { DamageCasesPanel } from "../../schaeden/damages-panel";
 import { AuthorityCasesPanel } from "../../behoerden/authority-panel";
 
@@ -115,14 +115,8 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
         <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
         {(b.status === "RETURNED" || b.status === "ACTIVE") && <DamageCasesPanel tenantId={tenant.id} where={{ OR: [{ bookingId: b.id }, { discoveredIn: { bookingId: b.id, type: "RETURN" } }] }} title="Schäden dieser Vermietung" empty="Zu dieser Vermietung wurde kein Schaden festgestellt." />}
         <AuthorityCasesPanel tenantId={tenant.id} scope={{ bookingId: b.id }} canManage={user.role !== "YARD"} />
-        {contractSigned && (
-          <div id="kaution" className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-            <PaymentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} compact />
-            <DepositPanel tenantId={tenant.id} bookingId={b.id} role={user.role} charges={returnDone ? { count: charges.length, total: chargesTotal } : null} />
-          </div>
-        )}
-
         <div className="grid grid-cols-1 xl:grid-cols-[1fr_360px] gap-4 items-start">
+          <div className="flex flex-col gap-4 min-w-0">
           <Card className="p-5">
             {editable ? (
               <BookingForm
@@ -153,6 +147,14 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
               </dl>
             )}
           </Card>
+          {/* Mietzahlung und Kaution bleiben getrennt: eigene Bereiche, keine Verrechnung */}
+          <RentalPaymentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
+          {contractSigned && (
+            <div id="kaution">
+              <DepositPanel tenantId={tenant.id} bookingId={b.id} role={user.role} charges={returnDone ? { count: charges.length, total: chargesTotal } : null} />
+            </div>
+          )}
+          </div>
 
           <div className="flex flex-col gap-4">
             {(returnDone || returnDraft) && (

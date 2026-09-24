@@ -4,13 +4,14 @@ import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { Card, Chip } from "@/components/ui";
-import { DEPOSIT_EVENT_TYPES, DEPOSIT_STATUS, INVOICE_PAYMENT_STATUS, PAYMENT_METHODS, type DepositEventType, type PaymentMethod } from "@/lib/constants";
+import { DEPOSIT_EVENT_TYPES, DEPOSIT_STATUS, INVOICE_PAYMENT_STATUS, PAYMENT_METHODS, RENTAL_PAYMENT_STATUS, type DepositEventType, type PaymentMethod } from "@/lib/constants";
 import { depositView } from "@/lib/deposits";
 import { fmtDateTime, fmtEur } from "@/lib/format";
 import { fmtCents } from "@/lib/money";
 import { invoicePaymentSummary, listInvoicePayments, type PaymentSummary } from "@/lib/payments";
+import { listRentalPayments, rentalPaymentSummary, type RentalPaymentSummary } from "@/lib/rental-payments";
 import { toDateTimeInputValue } from "@/lib/time";
-import { cancelDepositEventAction, cancelPaymentAction, previewDepositSettleAction, previewPaymentAction, recordDepositReceivedAction, recordPaymentAction, settleDepositAction } from "./actions";
+import { cancelDepositEventAction, cancelPaymentAction, previewDepositSettleAction, previewPaymentAction, previewRentalPaymentAction, recordDepositReceivedAction, recordPaymentAction, recordRentalPaymentAction, settleDepositAction } from "./actions";
 import { DepositReceiveForm, DepositSettleForm, PaymentForm, ReasonForm } from "./money-forms";
 import { PayoutPanel } from "../../../auszahlungen/payout-panel";
 
@@ -59,7 +60,7 @@ export async function PaymentsPanel({ tenantId, bookingId, role, compact = false
         </div>
         {summary.status === "OVERPAID" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3 py-2 text-sm">Erstattung erforderlich: Die dokumentierten Zahlungen ({fmtCents(summary.paidCents)}) übersteigen die wirksame Forderung ({fmtCents(summary.grossCents)}). Offen ist 0,00 €; das Kundenguthaben beträgt {fmtCents(summary.overpaidCents)}. Rent-Base führt keine automatische Erstattung und keine Verrechnung durch; Zahlungen bleiben unverändert.</p>}
         {compact && <div className="text-xs text-ink-3">{invoice.kind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung"} <Link href={invoiceHref} className="underline">{invoice.number}</Link></div>}
-        {canManage && summary.openCents > 0 && <PaymentForm action={recordPaymentAction.bind(null, bookingId)} preview={previewPaymentAction} invoiceId={invoice.id} nonce={randomUUID()} defaultWhen={toDateTimeInputValue(new Date())} />}
+        {canManage && summary.openCents > 0 && <PaymentForm action={recordPaymentAction.bind(null, bookingId)} preview={previewPaymentAction} targetId={invoice.id} nonce={randomUUID()} defaultWhen={toDateTimeInputValue(new Date())} />}
         {canManage && summary.openCents === 0 && summary.status === "PAID" && summary.grossCents > 0 && <p className="text-sm text-good">Die Forderung ist vollständig bezahlt.</p>}
         {summary.openCents === 0 && summary.grossCents === 0 && summary.chain !== "NONE" && <p className="text-sm text-ink-2">Die Forderung wurde durch {summary.chain === "CANCELLED" ? "einen Stornobeleg" : "Gutschriften"} vollständig aufgehoben; es ist nichts mehr offen.{summary.paidCents > 0 ? " Die dokumentierten Zahlungen bleiben bestehen und ergeben ein Kundenguthaben." : ""}</p>}
         {!canManage && <p className="text-xs text-ink-3">Zahlungen erfasst und korrigiert die Disposition.</p>}
@@ -83,6 +84,71 @@ export async function PaymentsPanel({ tenantId, bookingId, role, compact = false
                 </div>
                 {p.status === "CANCELLED" && <div className="text-xs text-bad">Storniert am {fmtDateTime(p.cancelledAt)} von {p.cancelledByName ?? "–"}: {p.cancellationReason}</div>}
                 {p.status === "CONFIRMED" && canManage && <ReasonForm action={cancelPaymentAction.bind(null, bookingId)} id={p.id} label="Zahlung stornieren" question={`Zahlung über ${fmtCents(p.amountCents)} (${methodLabel(p.method)}) stornieren?`} />}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+export function RentalPaymentStatusChip({ status }: { status: PaymentSummary["status"] }) {
+  const tone = status === "PAID" ? "good" : status === "PARTIAL" ? "amber" : status === "OVERPAID" ? "bad" : "grey";
+  return <Chip tone={tone}>{RENTAL_PAYMENT_STATUS[status]}</Chip>;
+}
+
+const totalLabel = (s: RentalPaymentSummary, contractNumber: string | null) =>
+  s.source === "CONTRACT" ? `Gesamtpreis laut Vertrag${contractNumber ? ` ${contractNumber}` : ""}` : "Gesamtpreis (voraussichtlich)";
+
+/**
+ * Mietzahlung einer Buchung: Gesamtpreis, bereits bezahlt, noch offen, „Zahlung erfassen“ und Historie mit Storno.
+ * Vor der Rechnung hängen die Zahlungen an der Buchung; nach Abschluss der Mietrechnung zeigt der Bereich deren Saldo
+ * (die vorab erfassten Zahlungen sind ihr dann zugeordnet). Die Kaution erscheint hier bewusst nicht.
+ */
+export async function RentalPaymentsPanel({ tenantId, bookingId, role }: { tenantId: string; bookingId: string; role: string }) {
+  const s = await rentalPaymentSummary(tenantId, bookingId);
+  if (s.source === "INVOICE") return <PaymentsPanel tenantId={tenantId} bookingId={bookingId} role={role} compact title="Mietzahlung" />;
+  const [payments, contract] = await Promise.all([listRentalPayments(tenantId, bookingId), db.rentalContract.findFirst({ where: { tenantId, bookingId }, select: { number: true } })]);
+  const canManage = role !== "YARD";
+  return (
+    <Card title="Mietzahlung" right={<RentalPaymentStatusChip status={s.status} />}>
+      <div id="mietzahlung" className="p-4 flex flex-col gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm">
+          <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">{totalLabel(s, contract?.number ?? null)}</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(s.grossCents)}</div></div>
+          <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Bereits bezahlt</div><div className="font-mono tnum text-lg font-semibold text-good">{fmtCents(s.paidCents)}</div></div>
+          {s.status === "OVERPAID" ? (
+            <div className="rounded-md bg-bad-soft p-3"><div className="label-xs">Zu viel erfasst</div><div className="font-mono tnum text-lg font-semibold text-bad">{fmtCents(s.overpaidCents)}</div></div>
+          ) : (
+            <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Noch offen</div><div className={`font-mono tnum text-lg font-semibold ${s.openCents > 0 ? "text-bad" : ""}`}>{fmtCents(s.openCents)}</div></div>
+          )}
+        </div>
+        {s.status === "OVERPAID" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3 py-2 text-sm">Die erfassten Mietzahlungen ({fmtCents(s.paidCents)}) übersteigen den aktuellen Gesamtpreis ({fmtCents(s.grossCents)}), z. B. nach einer Änderung von Zeitraum oder Preis. Eine falsch erfasste Zahlung wird storniert; eine tatsächliche Rückzahlung wird nach Abschluss der Mietrechnung als Erstattung dokumentiert.</p>}
+        {s.bookingStatus === "CANCELLED" && s.paidCents > 0 && <p role="alert" className="rounded-md bg-amber-soft text-amber px-3 py-2 text-sm">Die Buchung ist storniert, es sind aber Mietzahlungen über {fmtCents(s.paidCents)} dokumentiert. Bitte klären, ob der Betrag zurückgezahlt wurde; eine falsch erfasste Zahlung wird storniert.</p>}
+        <p className="text-xs text-ink-3">{s.source === "ESTIMATE" ? "Der Gesamtpreis wird aus Zeitraum und Preisen der Buchung berechnet und steht erst mit dem Mietvertrag fest. " : ""}Mehrkilometer, Tank und weitere Zusatzkosten kommen mit der Rechnung dazu. Die Kaution wird getrennt unter „Kaution“ erfasst und verringert den offenen Mietbetrag nicht.</p>
+        {canManage && s.canRecord && <PaymentForm action={recordRentalPaymentAction.bind(null, bookingId)} preview={previewRentalPaymentAction} targetId={bookingId} targetField={null} totalLabel={totalLabel(s, contract?.number ?? null)} nonce={randomUUID()} defaultWhen={toDateTimeInputValue(new Date())} />}
+        {canManage && !s.canRecord && s.status === "PAID" && s.grossCents > 0 && <p className="text-sm text-good">Der Mietpreis ist vollständig bezahlt.</p>}
+        {!canManage && <p className="text-xs text-ink-3">Mietzahlungen erfasst und korrigiert die Disposition.</p>}
+        <div>
+          <div className="label-xs mb-1">Zahlungen</div>
+          {payments.length === 0 && <div className="text-sm text-ink-3">Noch keine Mietzahlung erfasst.</div>}
+          <ul className="divide-y divide-line-soft text-sm">
+            {payments.map((p) => (
+              <li key={p.id} className={`py-2 flex flex-col gap-1 ${p.status === "CANCELLED" ? "opacity-70" : ""}`}>
+                <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+                  <div className="flex flex-wrap items-baseline gap-x-2">
+                    <span className="font-mono tnum text-xs text-ink-3">{fmtDateTime(p.paidAt)}</span>
+                    <span>{methodLabel(p.method)}</span>
+                    {p.reference && <span className="text-ink-3">· {p.reference}</span>}
+                  </div>
+                  <span className={`font-mono tnum font-semibold ${p.status === "CANCELLED" ? "line-through text-ink-3" : ""}`}>{fmtCents(p.amountCents)}</span>
+                </div>
+                <div className="text-xs text-ink-3 flex flex-wrap gap-x-2">
+                  <span>erfasst von {p.createdByName ?? "–"} am {fmtDateTime(p.createdAt)}</span>
+                  {p.note && <span>· {p.note}</span>}
+                </div>
+                {p.status === "CANCELLED" && <div className="text-xs text-bad">Storniert am {fmtDateTime(p.cancelledAt)} von {p.cancelledByName ?? "–"}: {p.cancellationReason}</div>}
+                {p.status === "CONFIRMED" && canManage && <ReasonForm action={cancelPaymentAction.bind(null, bookingId)} id={p.id} label="Zahlung stornieren" question={`Mietzahlung über ${fmtCents(p.amountCents)} (${methodLabel(p.method)}) stornieren?`} />}
               </li>
             ))}
           </ul>

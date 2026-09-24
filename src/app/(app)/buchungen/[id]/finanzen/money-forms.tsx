@@ -44,7 +44,11 @@ const Row = ({ label, value, strong }: { label: string; value: string; strong?: 
 // Zahlung erfassen
 // ---------------------------------------------------------------------------
 
-export function PaymentForm({ action, preview, invoiceId, nonce, defaultWhen }: { action: Action; preview: (invoiceId: string, amount: string, method: string) => Promise<PaymentPreview | { error: string }>; invoiceId: string; nonce: string; defaultWhen: string }) {
+/**
+ * targetId: Rechnung (Rechnungszahlung) oder Buchung (Mietzahlung vor der Rechnung); die Vorschau rechnet je Ziel.
+ * targetField: Name des versteckten Feldes für targetId (null = keines, die Aktion kennt das Ziel bereits).
+ */
+export function PaymentForm({ action, preview, targetId, targetField = "invoiceId", totalLabel = "Rechnungsbetrag", nonce, defaultWhen }: { action: Action; preview: (targetId: string, amount: string, method: string) => Promise<PaymentPreview | { error: string }>; targetId: string; targetField?: string | null; totalLabel?: string; nonce: string; defaultWhen: string }) {
   const { state, formAction, pending, done } = useMoneyAction(action);
   const [open, setOpen] = useState(false);
   const [pv, setPv] = useState<PaymentPreview | { error: string } | null>(null);
@@ -54,7 +58,7 @@ export function PaymentForm({ action, preview, invoiceId, nonce, defaultWhen }: 
   const check = () => {
     if (!form) return;
     const fd = new FormData(form);
-    start(async () => setPv(await preview(invoiceId, String(fd.get("amount") ?? ""), String(fd.get("method") ?? ""))));
+    start(async () => setPv(await preview(targetId, String(fd.get("amount") ?? ""), String(fd.get("method") ?? ""))));
   };
   const pvError = pv?.error ?? null;
   const full = pv && "grossCents" in pv && !pv.error ? pv : null;
@@ -63,7 +67,7 @@ export function PaymentForm({ action, preview, invoiceId, nonce, defaultWhen }: 
 
   return (
     <form ref={setForm} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
-      <input type="hidden" name="invoiceId" value={invoiceId} />
+      {targetField && <input type="hidden" name={targetField} value={targetId} />}
       <input type="hidden" name="nonce" value={nonce} />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className="flex flex-col gap-1"><span className="label-xs">Betrag in €</span><input name="amount" inputMode="decimal" placeholder="0,00" required className="input text-xl tnum" onChange={() => setPv(null)} /></label>
@@ -86,7 +90,7 @@ export function PaymentForm({ action, preview, invoiceId, nonce, defaultWhen }: 
           <Big>{fmtCents(full.newCents)}</Big>
           <div className="text-sm">als <span className="font-medium">{full.methodLabel}</span> erfassen?</div>
           <div className="text-sm flex flex-col gap-0.5 mt-1 border-t border-line-soft pt-2">
-            <Row label="Rechnungsbetrag" value={fmtCents(full.grossCents)} />
+            <Row label={totalLabel} value={fmtCents(full.grossCents)} />
             <Row label="Bereits erfasst" value={fmtCents(full.paidCents)} />
             <Row label="Offener Betrag" value={fmtCents(full.openCents)} />
             <Row label="Neue Zahlung" value={fmtCents(full.newCents)} />

@@ -13,8 +13,36 @@ import { changeBookingStatus } from "@/lib/booking-status";
 import { DomainError } from "@/lib/integrity";
 import { getStorage } from "@/lib/storage";
 import { parseLocalDateTime } from "@/lib/time";
+import { PAYMENT_METHODS, RENTAL_PAYMENT_INTENTS, type RentalPaymentIntent } from "@/lib/constants";
+import { insertRentalPayment, parseRentalAmount, type RentalPaymentInput } from "@/lib/rental-payments";
 
 export type FormState = { error?: string } | undefined;
+
+/**
+ * Bereich „Zahlung“ der neuen Buchung. „Offen“ = keine Zahlung; sonst genau eine Zahlungsbewegung.
+ * Der Status der Buchung wird danach aus den Zahlungen berechnet, nicht aus dieser Auswahl gespeichert.
+ */
+function initialPaymentFromForm(formData: FormData): { intent: RentalPaymentIntent; input: RentalPaymentInput | null } | { error: string } {
+  const raw = String(formData.get("payIntent") ?? "NONE");
+  if (!(raw in RENTAL_PAYMENT_INTENTS)) return { error: "Bitte einen Zahlungsstatus wählen." };
+  const intent = raw as RentalPaymentIntent;
+  if (intent === "NONE") return { intent, input: null };
+  const amount = String(formData.get("payAmount") ?? "").trim();
+  if (!amount) return { error: "Zahlung: Bitte den tatsächlich gezahlten Betrag eingeben." };
+  try {
+    parseRentalAmount(amount);
+  } catch (e) {
+    return { error: `Zahlung: ${e instanceof DomainError ? e.message : "Ungültiger Betrag."}` };
+  }
+  const method = String(formData.get("payMethod") ?? "");
+  if (!(method in PAYMENT_METHODS)) return { error: "Zahlung: Bitte eine Zahlungsart wählen." };
+  const paidAt = parseLocalDateTime(String(formData.get("payPaidAt") ?? ""));
+  if (!paidAt) return { error: "Zahlung: Bitte ein gültiges Zahlungsdatum angeben." };
+  const nonce = String(formData.get("payNonce") ?? "");
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(nonce)) return { error: "Die Seite ist veraltet. Bitte neu laden." };
+  const text = (k: string, max: number) => String(formData.get(k) ?? "").trim().slice(0, max) || null;
+  return { intent, input: { amount, method, paidAt, reference: text("payReference", 120), note: text("payNote", 500), idempotencyKey: nonce } };
+}
 
 const num = z.preprocess((v) => (typeof v === "string" ? v.replace(",", ".").trim() : v), z.coerce.number().min(0));
 const optStr = z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.string().trim().optional());
@@ -53,10 +81,12 @@ async function validateRefs(tenantId: string, vehicleId: string, customerId: str
 }
 
 export async function createBookingAction(_prev: FormState, formData: FormData): Promise<FormState> {
-  const { tenant } = await requireRole("DISPO");
+  const { tenant, user } = await requireRole("DISPO");
   const parsed = bookingSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   const d = parsed.data;
+  const pay = initialPaymentFromForm(formData);
+  if ("error" in pay) return pay;
 
   // Kunde direkt in der Buchung anlegen: Kundendaten kommen mit Präfix "c_"
   const newCustomer = formData.get("customerMode") === "new";
@@ -90,6 +120,8 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
       },
     });
     id = b.id;
+    // Erste Mietzahlung in derselben Transaktion: wird sie abgelehnt (z. B. Überzahlung), entsteht auch keine Buchung
+    if (pay.input) await insertRentalPayment(tx, tenant.id, { id: user.id, name: user.name }, b.id, pay.input, { expectFull: pay.intent === "FULL" });
     return undefined;
   })).catch((e) => (e instanceof DomainError ? { error: e.message } : Promise.reject(e)));
   if (result?.error) return result;

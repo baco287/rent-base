@@ -23,6 +23,7 @@ import { DomainError, contentHash, sha256 } from "@/lib/integrity";
 import { centsToDecimalString, fmtCents, fmtRate, lineAmounts, summarize, toBasisPoints, toCents, toHundredths, type Cents } from "@/lib/money";
 import { isUniqueViolation, nextInvoiceNumber, withNumberRetry } from "@/lib/numbering";
 import { rentalDays } from "@/lib/pricing";
+import { linkRentalPaymentsToInvoice, lockUnlinkedRentalPayments } from "@/lib/rental-payment-link";
 import { APP_TIME_ZONE } from "@/lib/time";
 
 type Tx = Prisma.TransactionClient;
@@ -807,6 +808,12 @@ export async function finalizeInvoice(tenantId: string, invoiceId: string, actor
       if (mode && mode.paidCents > newGross && !opts.confirmOverpayment) {
         throw new DomainError(`Für diese Rechnung wurden bereits ${fmtCents(mode.paidCents)} Zahlungen dokumentiert. Der neue Rechnungsbetrag beträgt ${fmtCents(newGross)}. Dadurch entsteht eine Überzahlung von ${fmtCents(mode.paidCents - newGross)}. Rent-Base führt keine automatische Erstattung durch. Bitte die Überzahlung ausdrücklich bestätigen.`);
       }
+      // Erste Fassung der Mietrechnung: vorab an der Buchung erfasste Mietzahlungen werden ihr zugeordnet (Buchung gesperrt)
+      const linksRentalPayments = draft.versionNo === 1 && invoice.kind === "RENTAL";
+      const prepaidCents = linksRentalPayments ? await lockUnlinkedRentalPayments(tx, tenantId, invoice.bookingId) : 0;
+      if (prepaidCents > newGross && !opts.confirmOverpayment) {
+        throw new DomainError(`Zu dieser Buchung wurden bereits ${fmtCents(prepaidCents)} Mietzahlungen dokumentiert. Der Rechnungsbetrag beträgt ${fmtCents(newGross)}. Dadurch entsteht eine Überzahlung von ${fmtCents(prepaidCents - newGross)}. Rent-Base führt keine automatische Erstattung durch. Bitte die Überzahlung ausdrücklich bestätigen.`);
+      }
 
       const now = new Date();
       let number = invoice.number;
@@ -838,6 +845,7 @@ export async function finalizeInvoice(tenantId: string, invoiceId: string, actor
         : `Fassung ${draft.versionNo} abgeschlossen (${finalized.kind === "CORRECTION" ? "Berichtigung" : "Neufassung"}, ${diff!.entries.length} Änderungen, Betrag ${diff!.grossBefore} → ${diff!.grossAfter})${finalized.reason ? `: ${finalized.reason}` : ""}`;
       if (draft.versionNo === 1) {
         await tx.invoice.update({ where: { id: invoice.id }, data: { number, status: "FINALIZED", finalizedAt: now, currentVersionId: finalized.id, changeLog: [...log, { at: now.toISOString(), by: actor.name, versionNo: 1, summary }] } });
+        if (linksRentalPayments) await linkRentalPaymentsToInvoice(tx, tenantId, actor, { id: invoice.id, bookingId: invoice.bookingId, number });
       } else {
         await tx.invoice.update({ where: { id: invoice.id }, data: { currentVersionId: finalized.id, changeLog: [...log, { at: now.toISOString(), by: actor.name, versionNo: draft.versionNo, summary }] } });
         await recordAudit(tx, tenantId, actor, {

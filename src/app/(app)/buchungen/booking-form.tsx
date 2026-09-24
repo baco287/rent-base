@@ -7,6 +7,74 @@ import { submitWithoutReset } from "@/components/submit-without-reset";
 import type { FormState } from "./actions";
 import { CustomerFields, emptyCustomer } from "../kunden/customer-fields";
 import { calculateRentalPrice, describePrice, toNumber } from "@/lib/pricing";
+import { PAYMENT_METHODS, RENTAL_PAYMENT_INTENTS, type RentalPaymentIntent } from "@/lib/constants";
+import { fmtCents, toCents } from "@/lib/money";
+
+/** Nur bei neuer Buchung: erste Mietzahlung direkt mit erfassen. */
+export type InitialPaymentConfig = { nonce: string; defaultWhen: string };
+
+function centsOf(input: string): number | null {
+  try {
+    const c = toCents(input.trim());
+    return c > 0 ? c : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bereich „Zahlung“ im Formular. Gespeichert wird nur die tatsächliche Zahlungsbewegung; „Offen / Teilweise /
+ * Vollständig“ ist die Absicht, der Status der Buchung wird danach immer aus den Zahlungen berechnet.
+ * Die Kaution gehört nicht hierher und zählt nicht als Mietzahlung.
+ */
+function PaymentSection({ totalCents, config }: { totalCents: number; config: InitialPaymentConfig }) {
+  const [intent, setIntent] = useState<RentalPaymentIntent>("NONE");
+  const [amount, setAmount] = useState("");
+  const paid = intent === "FULL" ? totalCents : intent === "PARTIAL" ? centsOf(amount) ?? 0 : 0;
+  const open = Math.max(0, totalCents - paid);
+  const fullAmount = (totalCents / 100).toFixed(2).replace(".", ",");
+  return (
+    <fieldset className="md:col-span-2 rounded-lg border border-line p-4 flex flex-col gap-3">
+      <legend className="label-xs px-1">Zahlung (Miete)</legend>
+      <input type="hidden" name="payNonce" value={config.nonce} />
+      <div className="flex rounded-md border border-line overflow-hidden text-[13px] font-medium" role="radiogroup" aria-label="Zahlungsstatus">
+        {(Object.keys(RENTAL_PAYMENT_INTENTS) as RentalPaymentIntent[]).map((k) => (
+          <label key={k} className={`flex-1 px-3 py-1.5 text-center cursor-pointer ${intent === k ? "bg-brand text-brand-ink" : "bg-panel text-ink-2"}`}>
+            <input type="radio" name="payIntent" value={k} checked={intent === k} onChange={() => setIntent(k)} className="sr-only" />
+            {RENTAL_PAYMENT_INTENTS[k]}
+          </label>
+        ))}
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-sm tnum">
+        <div className="rounded-md bg-panel-2 p-2.5"><div className="label-xs">Gesamtpreis</div><div className="font-mono font-semibold">{fmtCents(totalCents)}</div></div>
+        <div className="rounded-md bg-panel-2 p-2.5"><div className="label-xs">Bereits bezahlt</div><div className="font-mono font-semibold text-good">{fmtCents(paid)}</div></div>
+        <div className="rounded-md bg-panel-2 p-2.5"><div className="label-xs">Noch offen</div><div className={`font-mono font-semibold ${open > 0 ? "text-bad" : ""}`}>{fmtCents(open)}</div></div>
+      </div>
+      {intent !== "NONE" && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="label-xs">Tatsächlich gezahlter Betrag €</span>
+            {intent === "FULL" ? (
+              <input name="payAmount" value={fullAmount} readOnly className="input tnum bg-panel-2" />
+            ) : (
+              <input name="payAmount" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0,00" required className="input tnum" />
+            )}
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="label-xs">Zahlungsart</span>
+            <select name="payMethod" defaultValue="CASH" className="input">
+              {Object.entries(PAYMENT_METHODS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1"><span className="label-xs">Zahlungsdatum</span><input name="payPaidAt" type="datetime-local" defaultValue={config.defaultWhen} required className="input tnum" /></label>
+          <label className="flex flex-col gap-1"><span className="label-xs">Referenz (optional)</span><input name="payReference" maxLength={120} placeholder="z. B. Belegnummer, Verwendungszweck" className="input" /></label>
+          <label className="flex flex-col gap-1 sm:col-span-2"><span className="label-xs">Notiz (optional)</span><input name="payNote" maxLength={500} className="input" /></label>
+        </div>
+      )}
+      <p className="text-xs text-ink-3">Jede Zahlung wird als eigene Bewegung gespeichert; weitere Teilzahlungen später auf der Buchung unter „Mietzahlung“. Karten- und Überweisungszahlungen werden außerhalb von Rent-Base ausgeführt und hier nur dokumentiert. Die Kaution ist keine Mietzahlung und wird getrennt erfasst.</p>
+    </fieldset>
+  );
+}
 
 export type TierRates = { workWeekRate: string | null; weeklyRate: string | null; monthlyRate: string | null };
 export type VehicleOption = { id: string; plate: string; label: string; group: string; dailyRate: string; deposit: string; status: string } & TierRates;
@@ -32,6 +100,7 @@ export function BookingForm({
   submitLabel,
   cancelHref,
   allowNewCustomer = false,
+  initialPayment,
 }: {
   action: (prev: FormState, fd: FormData) => Promise<FormState>;
   values: BookingFormValues;
@@ -39,6 +108,8 @@ export function BookingForm({
   customers: CustomerOption[];
   submitLabel: string;
   cancelHref: string;
+  /** Nur bei neuer Buchung: Bereich „Zahlung“ im Formular. Bestehende Buchungen erfassen Zahlungen unter „Mietzahlung“. */
+  initialPayment?: InitialPaymentConfig;
   /** Nur bei neuer Buchung: Kunde kann direkt mit angelegt werden. */
   allowNewCustomer?: boolean;
 }) {
@@ -140,6 +211,8 @@ export function BookingForm({
         <span className="text-ink-3">zzgl. Kaution {eur(parseFloat(deposit.replace(",", ".")) || 0)}</span>
         {vehicle && <span className="text-ink-3">Fahrzeug {vehicle.plate}</span>}
       </div>
+
+      {initialPayment && <PaymentSection totalCents={Math.round(price.total * 100)} config={initialPayment} />}
 
       <FormError error={state?.error} />
       <div className="md:col-span-2 flex items-center gap-2 mt-1">

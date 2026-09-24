@@ -111,9 +111,15 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
     const s = (v: string | null | undefined) => v ?? "";
     const kind = draft.kind as "ORIGINAL" | "REVISION" | "CORRECTION";
     const newGross = toCents(draft.grossTotal);
+    // Erste Fassung der Mietrechnung: vorab an der Buchung erfasste Mietzahlungen werden beim Abschluss zugeordnet
+    const prepaidCents = draft.versionNo === 1 && inv.kind === "RENTAL"
+      ? (await db.payment.aggregate({ where: { tenantId: tenant.id, bookingId: b.id, type: "RENTAL_PAYMENT", invoiceId: null, status: "CONFIRMED" }, _sum: { amountCents: true } }))._sum.amountCents ?? 0
+      : 0;
     const paymentPreview = mode && draft.versionNo > 1 && mode.paidCents > 0
       ? { paid: fmtCents(mode.paidCents), grossBefore: fmtCents(mode.currentGrossCents), grossAfter: fmtCents(newGross), openAfter: fmtCents(Math.max(0, newGross - mode.paidCents)), overpaid: mode.paidCents > newGross ? fmtCents(mode.paidCents - newGross) : null }
-      : null;
+      : prepaidCents > 0
+        ? { paid: fmtCents(prepaidCents), grossBefore: "–", grossAfter: fmtCents(newGross), openAfter: fmtCents(Math.max(0, newGross - prepaidCents)), overpaid: prepaidCents > newGross ? fmtCents(prepaidCents - newGross) : null }
+        : null;
     const title = draft.versionNo === 1 ? `${kindLabel} (Entwurf)` : `${kindLabel} ${inv.number} · Fassung ${draft.versionNo} (Entwurf)`;
     return (
       <>
@@ -152,6 +158,7 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
                     <span className="font-mono tnum">{fmtEur(Number(ch.amount))}</span>
                   </div>
                 ))}
+                {prepaidCents > 0 && <div className="flex justify-between gap-3 border-t border-line-soft pt-1.5 mt-1"><span>Vorab erfasste Mietzahlungen (werden beim Abschluss dieser Rechnung zugeordnet, keine Kaution)</span><span className="font-mono tnum">{fmtCents(prepaidCents)}</span></div>}
                 <p className="text-xs text-ink-3 mt-1">Vertrag und Rückgabe sind versiegelt; die Beträge oben sind die Quellen, die Positionen unten die Rechnung. Schäden erscheinen nur, wenn bei der Rückgabe eine Zusatzkostenposition dafür bestätigt wurde.</p>
               </div>
             </Card>

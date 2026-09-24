@@ -151,7 +151,12 @@ const pages: [string, string][] = [
   ["/buchungen", "Bereit zur Übergabe"],
   ["/buchungen?filter=alle", "ALT-1"],
   ["/buchungen/neu", "Neuer Kunde"],
+  ["/buchungen/neu", "Zahlung (Miete)"],
+  ["/buchungen/neu", "Teilweise bezahlt"],
   [`/buchungen/${w.bookingId}`, "Mietvertrag fortsetzen"],
+  [`/buchungen/${w.bookingId}`, "Gesamtpreis (voraussichtlich)"],
+  [`/buchungen/${w.bookingId}`, "Noch keine Mietzahlung erfasst"],
+  [`/buchungen/${signedBooking.id}`, "Gesamtpreis laut Vertrag"],
   [`/buchungen/${old.id}`, "Muster"],
   [`/buchungen/${signedBooking.id}`, "Übergabe fortsetzen"],
   [`/buchungen/${doneBooking.id}`, "Übergabeprotokoll anzeigen"],
@@ -309,7 +314,7 @@ report(retBookingHtml2.includes(`Rechnung ${finalInvoice.number} anzeigen`) && r
 
 // Zahlungen und Kaution (Phase 9): Buchungsseite mit getrennten Bereichen, Rechnungsseite mit Saldo, Rechnungsliste, Dashboard
 const bookingFin0 = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
-report(["Zahlungen", "Zahlung erfassen", "Kaution", "Kaution als erhalten erfassen", "Noch nicht erhalten", "Kautionshistorie", "Zahlungshistorie", "Offen"].every((t) => bookingFin0.includes(t)), "Buchung: Bereiche Zahlungen und Kaution mit Aktionen");
+report(["Mietzahlung", "Zahlung erfassen", "Kaution", "Kaution als erhalten erfassen", "Noch nicht erhalten", "Kautionshistorie", "Zahlungshistorie", "Offen"].every((t) => bookingFin0.includes(t)), "Buchung: Bereiche Zahlungen und Kaution mit Aktionen");
 const pickupNotice = await plain(await fetch(`${base}/buchungen/${signedBooking.id}/uebergabe?schritt=1`, { headers: { cookie } }));
 report(pickupNotice.includes("noch nicht") && pickupNotice.includes("als erhalten dokumentiert") && pickupNotice.includes("Bekannte Schäden"), "Übergabe: Warnung Kaution nicht dokumentiert, Übergabe nicht blockiert");
 const pay1 = await recordInvoicePayment(w.tenantId, w.actor, { invoiceId: invoice.id, amount: "100", method: "CASH", paidAt: new Date(Date.now() - 60_000), reference: "Beleg 77" });
