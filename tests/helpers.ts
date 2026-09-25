@@ -72,6 +72,8 @@ export async function purgeTenants(tenantIds: string[]) {
         await tx.authoritySubmissionReceipt.deleteMany(w);
         await tx.authorityCaseDocument.deleteMany(w);
         await tx.authorityResponse.deleteMany(w);
+        await tx.authorityUpload.deleteMany(w);
+        await tx.authorityContact.deleteMany(w);
         await tx.authorityCase.deleteMany(w);
         await tx.contractDriver.deleteMany(w);
         await tx.rentalContract.deleteMany(w);

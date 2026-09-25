@@ -5,7 +5,7 @@
 // sind halboffen [start, end). Gruppen: Überfällig · Heute · Bald · Hinweis – deterministisch, ohne Doppelzählung.
 
 import { db } from "@/lib/db";
-import { AUTHORITY_CASE_STATUS, DAMAGE_CASE_STATUS, DOCUMENT_TYPES, type AuthorityCaseStatus, type DamageCaseStatus, type DocumentType } from "@/lib/constants";
+import { AUTHORITY_CASE_STATUS, DAMAGE_CASE_STATUS, DOCUMENT_TYPES, type AuthorityCaseStatus, type DamageCaseStatus, type DocumentType, invoiceKindWord } from "@/lib/constants";
 import { AUTHORITY_OPEN_STATUS } from "@/lib/authority";
 import { deadlineInfo } from "@/lib/authority-matching";
 import { financialsFor } from "@/lib/counter-documents";
@@ -184,7 +184,7 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
     const f = fin.get(i.id)!;
     const name = customerName(i.booking.customer);
     const href = `/buchungen/${i.bookingId}/rechnung?nr=${i.id}`;
-    const word = i.kind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung";
+    const word = invoiceKindWord(i.kind);
     if (f.openCents > 0) {
       counts.openInvoices++; counts.openInvoiceCents += f.openCents;
       const due = i.currentVersion!.paymentDueDate;

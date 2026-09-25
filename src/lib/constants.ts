@@ -303,6 +303,12 @@ export const AUDIT_ACTIONS = {
   AUTHORITY_CASE_CLOSED: "Behördenvorgang abgeschlossen",
   AUTHORITY_CASE_REOPENED: "Behördenvorgang wieder geöffnet",
   AUTHORITY_CASE_CANCELLED: "Behördenvorgang storniert",
+  AUTHORITY_LETTER_UPLOADED: "Behördenschreiben hochgeladen (Erkennung)",
+  AUTHORITY_CONTACT_UPDATED: "Behörden-Adressbuch geändert",
+  AUTHORITY_CONTACT_DELETED: "Behörden-Adressbuch: Eintrag gelöscht",
+  AUTHORITY_REMINDER_SETTINGS_UPDATED: "Behörden-Fristenerinnerung geändert",
+  AUTHORITY_QUICK_RESPONSE: "Behördenantwort über den Schnellweg erstellt",
+  AUTHORITY_FEE_INVOICE_CREATED: "Bearbeitungsentgelt Behörde als Rechnungsentwurf erstellt",
   DAMAGE_CASE_CLOSED: "Schadenakte geschlossen",
   DAMAGE_CASE_REOPENED: "Schadenakte wieder geöffnet",
   RENTAL_TERMS_DRAFT_CREATED: "Mietbedingungen: Entwurf angelegt",
@@ -418,8 +424,12 @@ export const DAMAGE_CASE_EVENT_TYPES = {
   PHOTO_ADDED: "Foto hinzugefügt", DOCUMENT_ADDED: "Dokument hinzugefügt", NOTE_ADDED: "Notiz ergänzt", VEHICLE_BLOCKED: "Fahrzeug gesperrt", VEHICLE_RELEASED: "Fahrzeug freigegeben",
   CUSTOMER_CHARGE_CREATED: "Kundenbelastung festgelegt", INVOICE_CREATED: "Schadenabrechnung erstellt", CLOSED: "Akte geschlossen", REOPENED: "Akte wieder geöffnet",
 } as const;
-export const INVOICE_KINDS = { RENTAL: "Mietrechnung", DAMAGE: "Schadenabrechnung" } as const;
+export const INVOICE_KINDS = { RENTAL: "Mietrechnung", DAMAGE: "Schadenabrechnung", AUTHORITY_FEE: "Bearbeitungsentgelt Behörde" } as const;
 export type InvoiceKind = keyof typeof INVOICE_KINDS;
+/** Kurzes Wort für Listen und Knöpfe („Rechnung RE-…“, „Schadenabrechnung RE-…“). */
+export const invoiceKindWord = (kind: string | null | undefined) => (kind === "DAMAGE" ? "Schadenabrechnung" : kind === "AUTHORITY_FEE" ? "Bearbeitungsentgelt" : "Rechnung");
+/** Nebenrechnungen (nicht die Mietrechnung der Buchung) werden über ?nr=<id> adressiert. */
+export const isSideInvoice = (kind: string | null | undefined) => kind === "DAMAGE" || kind === "AUTHORITY_FEE";
 /**
  * Steuerliche Behandlung einer Kundenbelastung – bewusste Auswahl des Mitarbeiters, keine Vorentscheidung durch Rent-Base
  * (Abschn. 1.3 UStAE: Ausgleich für Beschädigung durch nicht vertragsgemäße Nutzung ist echter Schadensersatz und nicht
@@ -561,6 +571,7 @@ export const AUTHORITY_EVENT_TYPES = {
   CREATED: "Vorgang angelegt", UPDATED: "Daten geändert", DOCUMENT_ADDED: "Dokument hinzugefügt", DOCUMENT_ARCHIVED: "Dokument archiviert", VEHICLE_MATCHED: "Fahrzeug zugeordnet", RENTAL_MATCHED: "Vermietung zugeordnet",
   DRIVER_SELECTED: "Fahrer bestimmt", DRIVER_CHANGED: "Fahrerbestimmung geändert", RESPONSE_CREATED: "Antwortfassung erstellt", RESPONSE_APPROVED: "Antwort freigegeben", RESPONSE_SUBMITTED: "Antwort übermittelt", SUBMISSION_FAILED: "Übermittlung fehlgeschlagen",
   RECEIPT_ADDED: "Übermittlungsnachweis hinzugefügt", CLOSED: "Vorgang abgeschlossen", REOPENED: "Vorgang wieder geöffnet", CANCELLED: "Vorgang storniert", NOTE_ADDED: "Notiz ergänzt", STATUS_CHANGED: "Status geändert",
+  FEE_INVOICE_CREATED: "Bearbeitungsentgelt berechnet (Rechnungsentwurf)",
 } as const;
 export const AUTHORITY_DRIVER_NOTICE = "Bitte bestätigen Sie nur eine Person als Fahrer, wenn Ihnen hierfür eine ausreichende Grundlage vorliegt. Die Zuordnung einer Vermietung allein weist nicht nach, wer das Fahrzeug zum Tatzeitpunkt geführt hat.";
 

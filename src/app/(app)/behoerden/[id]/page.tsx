@@ -5,18 +5,42 @@ import { Card, Chip, Content, PageHeader, Plate, VehicleStatusChip } from "@/com
 import { AUTHORITY_CASE_STATUS, AUTHORITY_CASE_TYPES, AUTHORITY_DOCUMENT_TYPES, AUTHORITY_EVENT_TYPES, AUTHORITY_RESPONSE_TYPES, ASSIGNMENT_STATUS, SUBMISSION_METHODS, type AuthorityCaseStatus, type AuthorityCaseType, type AuthorityDocumentType, type AuthorityResponseType, type SubmissionMethod } from "@/lib/constants";
 import { DomainError } from "@/lib/integrity";
 import { authorityCaseView, buildResponsePdfData } from "@/lib/authority";
+import { planQuickResponse, quickPreview } from "@/lib/authority-quick";
+import { authorityFeeState } from "@/lib/authority-fee";
+import type { AuthorityResponsePdfData } from "@/lib/pdf/authority-pdf";
 import { customerName, fmtDate, fmtDateTime } from "@/lib/format";
 import { fmtCents } from "@/lib/money";
 import { toDateInputValue, toDateTimeInputValue, zonedParts } from "@/lib/time";
-import { addNoteAction, approveResponseAction, archiveDocumentAction, assignBookingAction, assignVehicleAction, cancelCaseAction, closeCaseAction, prepareResponseAction, rematchAction, reopenCaseAction, setDriverAction, setInternalNoteAction, submitResponseAction, updateCaseAction } from "../actions";
+import { addNoteAction, approveResponseAction, archiveDocumentAction, assignBookingAction, assignVehicleAction, cancelCaseAction, closeCaseAction, prepareResponseAction, quickRespondAction, createFeeInvoiceAction, rematchAction, reopenCaseAction, setDriverAction, setInternalNoteAction, submitResponseAction, updateCaseAction } from "../actions";
 import { AuthorityStatusChip, AuthorityTypeChip, DeadlineChip, DriverChip, RentalMatchChip, ResponseStatusChip, VehicleMatchChip } from "../chips";
-import { ApproveForm, CaseForm, ConfirmReasonForm, DocumentUploader, DriverForm, InternalNoteForm, NoteForm, PrepareResponseForm, SelectForm, SimpleButton, SubmitForm } from "../authority-forms";
+import { ApproveForm, CaseForm, ConfirmReasonForm, DocumentUploader, DriverForm, InternalNoteForm, NoteForm, PrepareResponseForm, QuickForm, SelectForm, SimpleButton, SubmitForm } from "../authority-forms";
 
 export const metadata = { title: "Behördenvorgang" };
 
 const eur = (c: number | null | undefined) => (c == null ? "" : (c / 100).toFixed(2).replace(".", ","));
 const kb = (bytes: number) => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1).replace(".", ",")} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
 const timeValue = (d: Date) => { const p = zonedParts(d); return `${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`; };
+
+/** Vorschau – genau dieser Inhalt geht an die Behörde (Entwurf, freigegebene Fassung oder Vorschlag des Schnellwegs). */
+function ResponsePreview({ preview }: { preview: AuthorityResponsePdfData }) {
+  return (
+    <div className="rounded-lg border border-line-soft bg-panel p-4 flex flex-col gap-2" aria-label="Vorschau der Antwort">
+      <div className="text-xs text-ink-3">Vorschau – genau dieser Inhalt geht an die Behörde</div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-xs">
+        <div><span className="label-xs">Empfänger</span><br />{preview.recipient.name}{preview.recipient.department ? `, ${preview.recipient.department}` : ""}{preview.recipient.addressLines.length ? <><br />{preview.recipient.addressLines.join(", ")}</> : null}{preview.recipient.email ? <><br />{preview.recipient.email}</> : null}</div>
+        <div><span className="label-xs">Absender</span><br />{preview.sender.name}{preview.sender.addressLines.length ? <><br />{preview.sender.addressLines.join(", ")}</> : null}</div>
+        <div><span className="label-xs">Ihr Aktenzeichen</span><br />{preview.authorityReference}</div>
+        <div><span className="label-xs">Fahrzeug / Tatzeit</span><br />{preview.vehicle.plate}{preview.vehicle.description ? ` · ${preview.vehicle.description}` : ""}<br />{preview.offense.atText}{preview.offense.location ? ` · ${preview.offense.location}` : ""}</div>
+        {preview.rental && <div className="sm:col-span-2"><span className="label-xs">Vermietung</span><br />Buchung {preview.rental.bookingNumber}{preview.rental.contractNumber ? ` · Vertrag ${preview.rental.contractNumber}` : ""} · {preview.rental.windowText}<br /><span className="text-ink-3">{preview.rental.basisText}</span></div>}
+      </div>
+      <div className="font-medium mt-1">{preview.responseTypeLabel}</div>
+      {preview.statement && <p>{preview.statement}</p>}
+      {preview.persons.map((p, i) => <div key={i} className="rounded-md bg-panel-2 p-2"><div className="text-xs font-medium">{p.role}</div><dl className="grid grid-cols-[120px_1fr] text-xs gap-y-0.5">{p.fields.map((f) => <div key={f.label} className="contents"><dt className="text-ink-3">{f.label}</dt><dd>{f.value}</dd></div>)}</dl></div>)}
+      {preview.freeText && <p className="whitespace-pre-line">{preview.freeText}</p>}
+      {preview.persons.length === 0 && <p className="text-xs text-ink-3">Diese Antwort enthält keine Personendaten.</p>}
+    </div>
+  );
+}
 
 export default async function AuthorityCasePage({ params, searchParams }: PageProps<"/behoerden/[id]">) {
   const { tenant, user } = await requireSession();
@@ -44,6 +68,9 @@ export default async function AuthorityCasePage({ params, searchParams }: PagePr
   ];
   const preview = r ? buildResponsePdfData(c, r) : null;
   const receiptOptions = c.activeDocuments.filter((d) => d.type === "SUBMISSION_RECEIPT").map((d) => ({ id: d.id, label: d.fileName }));
+  const plan = canManage && open ? planQuickResponse(c) : null;
+  const quick = plan?.available ? await quickPreview(tenant.id, c, plan, { includeBirthDate: true, includeAddress: true }).catch(() => null) : null;
+  const fee = c.bookingId ? await authorityFeeState(tenant.id, c.id) : null;
   const vehicleOptions = (c.plateHits.length > 0 ? c.plateHits : c.vehicleOptions).map((v) => ({ id: v.id, label: v.plate, detail: `${v.make} ${v.model}` }));
 
   return (
@@ -55,10 +82,28 @@ export default async function AuthorityCasePage({ params, searchParams }: PagePr
       </PageHeader>
       <Content>
         {sp.neu === "1" && <p role="status" className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Vorgang {c.caseNumber} angelegt. Fahrzeug und Vermietung wurden automatisch geprüft – die Fahrerbestimmung bleibt eine bewusste Entscheidung.</p>}
+        {sp.schnell === "gesendet" && <p role="status" className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Antwort freigegeben und per E-Mail an die Behörde gesendet. Der Übermittlungsnachweis ist abgelegt.{sp.entgelt === "1" ? " Das im Mietvertrag vereinbarte Bearbeitungsentgelt liegt als Rechnungsentwurf bereit (siehe unten)." : ""}</p>}
+        {(sp.schnell === "post" || sp.schnell === "portal") && <p role="status" className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Antwort freigegeben, das PDF liegt bereit. {sp.schnell === "post" ? "Bitte ausdrucken, versenden und danach unten „Als versendet markieren“." : "Bitte im Behördenportal übermitteln und danach unten „Im Behördenportal übermittelt“ bestätigen."}</p>}
+        {sp.schnell === "fehler" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm font-medium">Antwort freigegeben, aber der E-Mail-Versand ist fehlgeschlagen. Unten ist ein erneuter Versuch möglich; der Vorgang bleibt offen.</p>}
         {open && (c.deadline.level === "OVERDUE" || c.deadline.level === "DUE") && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm font-medium">Antwortfrist {c.deadline.text} (Antwort bis {fmtDate(c.responseDeadline!)}).</p>}
         {c.status === "CLOSED" && <p className="rounded-md bg-panel-2 px-3.5 py-2.5 text-sm">Abgeschlossen {c.closedAt ? fmtDateTime(c.closedAt) : ""}{c.closedByName ? ` von ${c.closedByName}` : ""}: {c.closeReason}</p>}
         {c.status === "CANCELLED" && <p className="rounded-md bg-panel-2 px-3.5 py-2.5 text-sm">Storniert: {c.closeReason}</p>}
         {!canManage && <p className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm">Lesender Zugriff: Zuordnung, Fahrerbestimmung, Freigabe und Übermittlung entscheidet die Disposition.</p>}
+
+        {plan?.available && quick && (
+          <Card title="Vorschlag: Prüfen & senden" right={<Chip tone="info">ein Klick statt fünf</Chip>}>
+            <div className="p-4 grid grid-cols-1 lg:grid-cols-2 gap-4 text-sm items-start">
+              <div className="flex flex-col gap-3">
+                <ul className="flex flex-col gap-1">{plan.because.map((t, i) => <li key={i} className="flex gap-2"><span className="text-good">✓</span><span>{t}</span></li>)}</ul>
+                {plan.warnings.map((w, i) => <p key={i} className="rounded-md bg-amber-soft text-amber px-3 py-2">{w}</p>)}
+                <QuickForm action={quickRespondAction.bind(null, c.id)} fingerprint={plan.fingerprint} naming={plan.driverToConfirm ? "ONE" : plan.responseType === "MULTIPLE_POSSIBLE_DRIVERS" ? "MANY" : null} driverName={plan.driverToConfirm ? `${plan.driverToConfirm.firstName} ${plan.driverToConfirm.lastName}` : null} method={plan.submissionMethod} email={c.authorityEmail} hasPersons={quick.persons.length > 0} />
+                <p className="text-xs text-ink-3">Passt etwas nicht, einfach unten im normalen Ablauf weiterarbeiten – der Vorschlag speichert nichts, bevor Sie bestätigen.</p>
+              </div>
+              <ResponsePreview preview={quick} />
+            </div>
+          </Card>
+        )}
+        {plan && !plan.available && c.responses.length === 0 && <p className="rounded-md bg-panel-2 px-3.5 py-2.5 text-sm text-ink-2">Kein Schnellweg: {plan.reason}</p>}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
           <Card title="Schreiben" right={<Chip>{AUTHORITY_CASE_TYPES[c.type as AuthorityCaseType]}</Chip>}>
@@ -171,21 +216,7 @@ export default async function AuthorityCasePage({ params, searchParams }: PagePr
                 </div>
                 <div className="text-xs text-ink-3">Erstellt {fmtDateTime(r.createdAt)} von {r.createdByName}{r.approvedAt ? ` · freigegeben ${fmtDateTime(r.approvedAt)} von ${r.approvedByName}` : ""}{r.submittedAt ? ` · übermittelt ${fmtDateTime(r.submittedAt)} von ${r.submittedByName}` : ""}{r.contentHash ? ` · Prüfsumme ${r.contentHash.slice(0, 16)}…` : ""}</div>
                 {r.status === "FAILED" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3 py-2">Übermittlung fehlgeschlagen: {r.failureReason}. Der Vorgang bleibt offen; ein erneuter Versuch ist möglich.</p>}
-                <div className="rounded-lg border border-line-soft bg-panel p-4 flex flex-col gap-2" aria-label="Vorschau der Antwort">
-                  <div className="text-xs text-ink-3">Vorschau – genau dieser Inhalt geht an die Behörde</div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-xs">
-                    <div><span className="label-xs">Empfänger</span><br />{preview.recipient.name}{preview.recipient.department ? `, ${preview.recipient.department}` : ""}{preview.recipient.addressLines.length ? <><br />{preview.recipient.addressLines.join(", ")}</> : null}{preview.recipient.email ? <><br />{preview.recipient.email}</> : null}</div>
-                    <div><span className="label-xs">Absender</span><br />{preview.sender.name}{preview.sender.addressLines.length ? <><br />{preview.sender.addressLines.join(", ")}</> : null}</div>
-                    <div><span className="label-xs">Ihr Aktenzeichen</span><br />{preview.authorityReference}</div>
-                    <div><span className="label-xs">Fahrzeug / Tatzeit</span><br />{preview.vehicle.plate}{preview.vehicle.description ? ` · ${preview.vehicle.description}` : ""}<br />{preview.offense.atText}{preview.offense.location ? ` · ${preview.offense.location}` : ""}</div>
-                    {preview.rental && <div className="sm:col-span-2"><span className="label-xs">Vermietung</span><br />Buchung {preview.rental.bookingNumber}{preview.rental.contractNumber ? ` · Vertrag ${preview.rental.contractNumber}` : ""} · {preview.rental.windowText}<br /><span className="text-ink-3">{preview.rental.basisText}</span></div>}
-                  </div>
-                  <div className="font-medium mt-1">{preview.responseTypeLabel}</div>
-                  {preview.statement && <p>{preview.statement}</p>}
-                  {preview.persons.map((p, i) => <div key={i} className="rounded-md bg-panel-2 p-2"><div className="text-xs font-medium">{p.role}</div><dl className="grid grid-cols-[120px_1fr] text-xs gap-y-0.5">{p.fields.map((f) => <div key={f.label} className="contents"><dt className="text-ink-3">{f.label}</dt><dd>{f.value}</dd></div>)}</dl></div>)}
-                  {preview.freeText && <p className="whitespace-pre-line">{preview.freeText}</p>}
-                  {preview.persons.length === 0 && <p className="text-xs text-ink-3">Diese Antwort enthält keine Personendaten.</p>}
-                </div>
+                <ResponsePreview preview={preview} />
                 {canManage && open && r.status === "DRAFT" && <ApproveForm action={approveResponseAction.bind(null, c.id)} responseId={r.id} personCount={preview.persons.length} />}
                 {canManage && open && (r.status === "APPROVED" || r.status === "FAILED") && (
                   <div className="flex flex-col gap-2">
@@ -237,6 +268,17 @@ export default async function AuthorityCasePage({ params, searchParams }: PagePr
             </div>
           </Card>
         </div>
+
+        {fee && fee.status !== "NO_RENTAL" && (
+          <Card title="Bearbeitungsentgelt" right={<Chip tone={fee.status === "INVOICED" ? "good" : fee.status === "READY" ? "amber" : "grey"}>{fee.status === "NOT_AGREED" ? "nicht vereinbart" : fee.status === "NOT_YET" ? "nach Übermittlung" : fee.status === "READY" ? "offen" : fee.status === "INVOICED" && fee.invoice.status === "DRAFT" ? "Entwurf" : "berechnet"}</Chip>}>
+            <div className="p-4 flex flex-wrap items-center gap-3 text-sm">
+              <span>{fee.message}</span>
+              {fee.status === "INVOICED" && canManage && <Link href={`/buchungen/${fee.invoice.bookingId}/rechnung?nr=${fee.invoice.id}`} className="btn !py-1.5">{fee.invoice.status === "DRAFT" ? "Entwurf prüfen und abschließen" : `Rechnung ${fee.invoice.number}`}</Link>}
+              {fee.status === "READY" && canManage && <SimpleButton action={createFeeInvoiceAction.bind(null, c.id)} label="Rechnungsentwurf anlegen" pendingLabel="…" />}
+              {fee.status === "NOT_AGREED" && <span className="text-xs text-ink-3">Einstellbar unter Einstellungen → Geschäftsregeln (gilt für neue Verträge). Das Entgelt sollte auch in Ihren Mietbedingungen stehen.</span>}
+            </div>
+          </Card>
+        )}
 
         <Card title="Abschluss">
           <div className="p-4 flex flex-wrap gap-3 items-start text-sm">

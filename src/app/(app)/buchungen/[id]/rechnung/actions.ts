@@ -9,7 +9,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
 import { DomainError, isImmutableError } from "@/lib/integrity";
-import { INVOICE_UNITS } from "@/lib/constants";
+import { INVOICE_UNITS, isSideInvoice } from "@/lib/constants";
 import { discardInvoiceDraft, ensureInvoiceDraft, finalizeInvoice, markVersionDelivered, startInvoiceEdit, updateInvoiceDraft } from "@/lib/invoices";
 import { runInvoiceFollowUp } from "@/lib/followup";
 import { discardCounterAction } from "./counter-actions";
@@ -28,7 +28,7 @@ async function context(bookingId: string, invoiceId: string | null) {
     ? await db.invoice.findFirst({ where: { id: invoiceId, bookingId, tenantId: tenant.id, status: { in: ["DRAFT", "FINALIZED"] } } })
     : await db.invoice.findFirst({ where: { bookingId, tenantId: tenant.id, kind: "RENTAL", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "desc" } });
   if (!invoice) redirect(base(bookingId));
-  const key = invoice.kind === "DAMAGE" || invoice.documentType !== "INVOICE" ? invoice.id : null;
+  const key = isSideInvoice(invoice.kind) || invoice.documentType !== "INVOICE" ? invoice.id : null;
   const caseId = invoice.damageCaseId;
   return { tenant, user, invoice, key, caseId, actor: { id: user.id, name: user.name } };
 }

@@ -24,6 +24,7 @@ const KINDS: { key: string; label: string; kind: string | null }[] = [
   { key: "alle", label: "Alle Arten", kind: null },
   { key: "miete", label: "Mietrechnungen", kind: "RENTAL" },
   { key: "schaden", label: "Schadensrechnungen", kind: "DAMAGE" },
+  { key: "behoerde", label: "Bearbeitungsentgelte Behörde", kind: "AUTHORITY_FEE" },
 ];
 const DOCS: { key: string; label: string; types: string[] }[] = [
   { key: "rechnungen", label: "Rechnungen", types: ["INVOICE"] },
@@ -32,7 +33,7 @@ const DOCS: { key: string; label: string; types: string[] }[] = [
   { key: "alle", label: "Alle Belege", types: ["INVOICE", "CREDIT_NOTE", "CANCELLATION"] },
 ];
 const PAGE = 50;
-const KindChip = ({ kind }: { kind: string }) => (kind === "DAMAGE" ? <Chip tone="amber">Schaden</Chip> : <Chip>Miete</Chip>);
+const KindChip = ({ kind }: { kind: string }) => (kind === "DAMAGE" ? <Chip tone="amber">Schaden</Chip> : kind === "AUTHORITY_FEE" ? <Chip tone="info">Behörde</Chip> : <Chip>Miete</Chip>);
 const DocChip = ({ type }: { type: string }) => (type === "CREDIT_NOTE" ? <Chip tone="info">Gutschrift</Chip> : type === "CANCELLATION" ? <Chip tone="bad">Storno</Chip> : null);
 
 /** Belegstatus in mehreren Dimensionen: Zahlungsstand · Belegkette · Erstattungsbedarf – alles aus der zentralen Summierung, nie gespeichert. */

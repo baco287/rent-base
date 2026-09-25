@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { Card, Chip } from "@/components/ui";
-import { DEPOSIT_EVENT_TYPES, DEPOSIT_STATUS, INVOICE_PAYMENT_STATUS, PAYMENT_METHODS, RENTAL_PAYMENT_STATUS, type DepositEventType, type PaymentMethod } from "@/lib/constants";
+import { DEPOSIT_EVENT_TYPES, DEPOSIT_STATUS, INVOICE_PAYMENT_STATUS, PAYMENT_METHODS, RENTAL_PAYMENT_STATUS, type DepositEventType, type PaymentMethod, invoiceKindWord, isSideInvoice } from "@/lib/constants";
 import { depositView } from "@/lib/deposits";
 import { fmtDateTime, fmtEur } from "@/lib/format";
 import { fmtCents } from "@/lib/money";
@@ -29,7 +29,7 @@ export function PaymentStatusChip({ status }: { status: PaymentSummary["status"]
 export async function PaymentsPanel({ tenantId, bookingId, role, compact = false, invoiceId = null, title }: { tenantId: string; bookingId: string; role: string; compact?: boolean; invoiceId?: string | null; title?: string }) {
   const invoice = await db.invoice.findFirst({ where: { tenantId, bookingId, status: "FINALIZED", documentType: "INVOICE", ...(invoiceId ? { id: invoiceId } : { kind: "RENTAL" }) }, select: { id: true, number: true, kind: true, grossTotal: true } });
   const canManage = role !== "YARD";
-  const heading = title ?? (invoice?.kind === "DAMAGE" ? "Zahlungen zur Schadenabrechnung" : "Zahlungen");
+  const heading = title ?? (invoice?.kind === "DAMAGE" ? "Zahlungen zur Schadenabrechnung" : invoice?.kind === "AUTHORITY_FEE" ? "Zahlungen zum Bearbeitungsentgelt" : "Zahlungen");
   if (!invoice) {
     return (
       <Card title={heading}>
@@ -38,7 +38,7 @@ export async function PaymentsPanel({ tenantId, bookingId, role, compact = false
     );
   }
   const [summary, payments] = await Promise.all([invoicePaymentSummary(tenantId, invoice.id), listInvoicePayments(tenantId, invoice.id)]);
-  const invoiceHref = `/buchungen/${bookingId}/rechnung${invoice.kind === "DAMAGE" ? `?nr=${invoice.id}` : ""}`;
+  const invoiceHref = `/buchungen/${bookingId}/rechnung${isSideInvoice(invoice.kind) ? `?nr=${invoice.id}` : ""}`;
   return (
     <Card title={heading} right={summary.grossCents > 0 || summary.paidCents > 0 ? <PaymentStatusChip status={summary.status} /> : <Chip tone={summary.chain === "CANCELLED" ? "bad" : "info"}>{summary.chain === "CANCELLED" ? "Storniert" : "Gutgeschrieben"}</Chip>}>
       <div className="p-4 flex flex-col gap-4">
@@ -59,7 +59,7 @@ export async function PaymentsPanel({ tenantId, bookingId, role, compact = false
           )}
         </div>
         {summary.status === "OVERPAID" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3 py-2 text-sm">Erstattung erforderlich: Die dokumentierten Zahlungen ({fmtCents(summary.paidCents)}) übersteigen die wirksame Forderung ({fmtCents(summary.grossCents)}). Offen ist 0,00 €; das Kundenguthaben beträgt {fmtCents(summary.overpaidCents)}. Rent-Base führt keine automatische Erstattung und keine Verrechnung durch; Zahlungen bleiben unverändert.</p>}
-        {compact && <div className="text-xs text-ink-3">{invoice.kind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung"} <Link href={invoiceHref} className="underline">{invoice.number}</Link></div>}
+        {compact && <div className="text-xs text-ink-3">{invoiceKindWord(invoice.kind)} <Link href={invoiceHref} className="underline">{invoice.number}</Link></div>}
         {canManage && summary.openCents > 0 && <PaymentForm action={recordPaymentAction.bind(null, bookingId)} preview={previewPaymentAction} targetId={invoice.id} nonce={randomUUID()} defaultWhen={toDateTimeInputValue(new Date())} />}
         {canManage && summary.openCents === 0 && summary.status === "PAID" && summary.grossCents > 0 && <p className="text-sm text-good">Die Forderung ist vollständig bezahlt.</p>}
         {summary.openCents === 0 && summary.grossCents === 0 && summary.chain !== "NONE" && <p className="text-sm text-ink-2">Die Forderung wurde durch {summary.chain === "CANCELLED" ? "einen Stornobeleg" : "Gutschriften"} vollständig aufgehoben; es ist nichts mehr offen.{summary.paidCents > 0 ? " Die dokumentierten Zahlungen bleiben bestehen und ergeben ein Kundenguthaben." : ""}</p>}
@@ -206,7 +206,7 @@ export async function DepositPanel({ tenantId, bookingId, role, charges }: { ten
           <div className="text-sm rounded-md border border-line-soft p-3 flex flex-col gap-1">
             <div className="label-xs">Zur Einordnung (keine Verrechnung)</div>
             {charges && <div className="flex justify-between"><span>Bestätigte Zusatzkosten der Rückgabe ({charges.count})</span><span className="font-mono tnum">{fmtEur(charges.total)}</span></div>}
-            {invoices.map((i) => <div key={i.id} className="flex justify-between"><span>{i.kind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung"} {i.number}</span><span className="font-mono tnum">{fmtEur(Number(i.currentVersion?.grossTotal ?? i.grossTotal))}</span></div>)}
+            {invoices.map((i) => <div key={i.id} className="flex justify-between"><span>{invoiceKindWord(i.kind)} {i.number}</span><span className="font-mono tnum">{fmtEur(Number(i.currentVersion?.grossTotal ?? i.grossTotal))}</span></div>)}
             <p className="text-xs text-ink-3">Rent-Base verrechnet die Kaution nicht automatisch mit Zusatzkosten, Rechnungen oder Schadenabrechnungen. Freigabe und Einbehalt sind eine dokumentierte Entscheidung des Mitarbeiters.</p>
           </div>
         )}

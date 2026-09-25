@@ -26,6 +26,9 @@ model Tenant {
   privacyNoticeReference String? // Verweis (Text oder Adresse) auf die Datenschutzinformationen, getrennt von den Mietbedingungen
   rentalTermsSequence    Int     @default(0) // fortlaufender Zähler der Fassungsnummern; verworfene Entwürfe geben ihre Nummer nicht zurück
   numberRanges           Json? // Nummernkreise der Belege (Phase 17): { invoice: { prefix }, creditNote: { prefix }, cancellation: { prefix } }; null = RE / GS / ST
+  // Behörden-Automatik: tägliche Fristen-Erinnerung per E-Mail (0 = aus), Empfänger leer = alle aktiven Inhaber/Disponenten
+  authorityReminderDays  Int     @default(3)
+  authorityReminderEmail String?
 
   // Plattformebene (Befehl 20): Mandantenstatus, unabhängig von Belegnummernkreisen. PENDING_SETUP nur informativ
   // (Onboarding-Hinweis), blockiert für sich allein nichts; SUSPENDED blockiert Login/Mutationen serverseitig.
@@ -94,6 +97,8 @@ model Tenant {
   authorityResponses       AuthorityResponse[]
   authorityReceipts        AuthoritySubmissionReceipt[]
   authorityCaseEvents      AuthorityCaseEvent[]
+  authorityContacts        AuthorityContact[]
+  authorityUploads         AuthorityUpload[]
   rentalTermsVersions      RentalTermsVersion[]
   payouts                  Payout[]
   driverVerifications      DriverVerification[]
@@ -923,6 +928,8 @@ model Invoice {
   versions         InvoiceVersion[] @relation("InvoiceVersions")
   currentVersion   InvoiceVersion?  @relation("InvoiceCurrentVersion", fields: [currentVersionId], references: [id])
   damageCase       DamageCase?      @relation(fields: [damageCaseId], references: [id])
+  authorityCaseId  String? // nur AUTHORITY_FEE: Behördenvorgang, dessen Bearbeitungsentgelt laut Mietvertrag berechnet wird
+  authorityCase    AuthorityCase?   @relation(fields: [authorityCaseId], references: [id])
   original         Invoice?         @relation("InvoiceCounterDocuments", fields: [originalInvoiceId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   counterDocuments Invoice[]        @relation("InvoiceCounterDocuments")
   originalVersion  InvoiceVersion?  @relation("InvoiceOriginalVersion", fields: [originalVersionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -1563,6 +1570,8 @@ model AuthorityCase {
   responses AuthorityResponse[]
   receipts  AuthoritySubmissionReceipt[]
   events    AuthorityCaseEvent[]
+  uploads   AuthorityUpload[]
+  invoices  Invoice[]
 
   @@unique([tenantId, caseNumber])
   @@index([tenantId, status])
@@ -1574,6 +1583,51 @@ model AuthorityCase {
 }
 
 // Originalschreiben, Nachweise, erzeugte Antwort-PDFs: privat gespeichert, nur anfügen; Korrektur = Archivierung mit Grund.
+// Behörden-Adressbuch: lernt Name, Anschrift, E-Mail und Portal aus erfassten Vorgängen, damit das nächste Schreiben
+// derselben Behörde vorbelegt ist. Nur Behördendaten, keine Personendaten, keine Zugangsdaten.
+model AuthorityContact {
+  id         String    @id @default(cuid())
+  tenantId   String
+  name       String
+  nameKey    String // Vergleichsschlüssel (klein, ohne Satzzeichen/Mehrfachleerzeichen)
+  department String?
+  address    String?
+  email      String?
+  portalUrl  String?
+  useCount   Int       @default(0)
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, nameKey])
+}
+
+// Hochgeladenes Behördenschreiben vor der Anlage eines Vorgangs: Datei liegt privat im Speicher, der erkannte Vorschlag
+// wird nur angezeigt. Beim Anlegen wird die Datei als „Behördenschreiben“ an den Vorgang gehängt (caseId, usedAt).
+model AuthorityUpload {
+  id            String    @id @default(cuid())
+  tenantId      String
+  fileName      String
+  storageKey    String    @unique
+  contentType   String
+  sizeBytes     Int
+  checksum      String
+  textLength    Int       @default(0) // Länge der gelesenen Textebene; 0 = Scan/Foto ohne Text
+  suggestion    Json? // erkannte Vorschläge (ExtractionSuggestion), nie verbindlich
+  caseId        String?
+  usedAt        DateTime?
+  createdById   String?
+  createdByName String?
+  createdAt     DateTime  @default(now())
+
+  tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case   AuthorityCase? @relation(fields: [caseId], references: [id])
+
+  @@index([tenantId, createdAt])
+}
+
 model AuthorityCaseDocument {
   id             String    @id @default(cuid())
   tenantId       String

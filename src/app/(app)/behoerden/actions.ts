@@ -3,7 +3,8 @@
 // Aktionen des Behörden- und Bußgeldmanagements. Rollen: OWNER und DISPO alle Vorgangsschritte (Erfassen, Zuordnen,
 // Fahrerbestimmung, Antwort vorbereiten/freigeben/übermitteln, Nachweise, Abschluss/Wiederöffnen). YARD: nur lesen –
 // keine Fahrerfreigabe, keine Antwortfreigabe, keine Übermittlung. Jede Aktion prüft Rolle und Mandant serverseitig.
-// Kein Schritt dieses Moduls erzeugt eine Rechnung, Zahlung, Zusatzkosten oder Kautionsbewegung.
+// Kein Schritt dieses Moduls erzeugt eine Zahlung, Zusatzkosten oder Kautionsbewegung; eine Rechnung nur als Entwurf für ein im
+// Mietvertrag vereinbartes Bearbeitungsentgelt.
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
@@ -14,6 +15,12 @@ import { AUTHORITY_CASE_TYPES, AUTHORITY_RESPONSE_TYPES, SUBMISSION_METHODS } fr
 import { DomainError, isImmutableError } from "@/lib/integrity";
 import { addAuthorityNote, approveResponse, archiveAuthorityDocument, assignBooking, assignVehicle, cancelAuthorityCase, closeAuthorityCase, createAuthorityCase, prepareResponse, rematchCase, reopenAuthorityCase, setDriver, setInternalNote, submitResponse, updateAuthorityCase, type CaseInput } from "@/lib/authority";
 import { parseLocalDateTime } from "@/lib/time";
+import { recordAudit } from "@/lib/audit";
+import { isValidEmail } from "@/lib/mail";
+import { runQuickResponse } from "@/lib/authority-quick";
+import { ensureAuthorityFeeInvoice, type FeeOutcome } from "@/lib/authority-fee";
+import { deleteContact, updateContact } from "@/lib/authority-contacts";
+import { sendAuthorityReminders } from "@/lib/authority-reminders";
 
 export type AuthState = { error?: string; ok?: string; warnings?: string[] } | undefined;
 
@@ -65,6 +72,7 @@ const caseSchema = z.object({
   responseDeadline: text(10),
   noticeAmount: text(20),
   notes: text(2000),
+  uploadId: text(40),
 });
 
 function toInput(d: z.infer<typeof caseSchema>): CaseInput {
@@ -248,7 +256,7 @@ export async function submitResponseAction(caseId: string, _prev: AuthState, fd:
     refresh(caseId, x.c.vehicleId, x.c.bookingId);
     if (res.outcome === "FAILED") return { error: `Der Versand ist fehlgeschlagen: ${res.error ?? "unbekannter Fehler"}. Der Vorgang bleibt offen; ein erneuter Versuch ist möglich.` };
     if (res.outcome === "ALREADY_SUBMITTED") return { ok: "Diese Fassung war bereits übermittelt – es wurde nichts erneut gesendet." };
-    return { ok: "Als übermittelt markiert und Nachweis angelegt." };
+    return { ok: `${res.response.submissionMethod === "EMAIL" ? "Per E-Mail gesendet" : "Als übermittelt markiert"} und Nachweis angelegt.${feeText(res.fee)}` };
   } catch (e) {
     return asState(e);
   }
@@ -345,4 +353,107 @@ export async function archiveDocumentAction(caseId: string, documentId: string, 
   } catch (e) {
     return asState(e);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Schnellweg „Prüfen & senden“, Bearbeitungsentgelt
+// ---------------------------------------------------------------------------
+
+const quickSchema = z.object({ fingerprint: z.string().min(8).max(100), confirmed: flag, includeBirthDate: flag, includeAddress: flag });
+
+function feeText(fee: FeeOutcome | undefined): string {
+  return fee && (fee.status === "CREATED" || fee.status === "FAILED") ? ` ${fee.message}` : "";
+}
+
+/** Vorschlag bestätigen: Fahrer (falls nötig) → Entwurf → Freigabe → bei E-Mail Versand – jeweils die normalen, geprüften Schritte. */
+export async function quickRespondAction(caseId: string, _prev: AuthState, fd: FormData): Promise<AuthState> {
+  const x = await ctx(caseId);
+  if (!x) return { error: "Behördenvorgang nicht gefunden." };
+  const p = quickSchema.safeParse(Object.fromEntries(fd));
+  if (!p.success) return { error: "Ungültige Eingabe." };
+  let target: string;
+  try {
+    const r = await runQuickResponse(x.tenant.id, caseId, x.actor, { fingerprint: p.data.fingerprint, confirmed: !!p.data.confirmed, includeBirthDate: !!p.data.includeBirthDate, includeAddress: !!p.data.includeAddress });
+    const c = await db.authorityCase.findFirst({ where: { id: caseId, tenantId: x.tenant.id }, select: { driverCustomerId: true } });
+    refresh(caseId, x.c.vehicleId, x.c.bookingId, c?.driverCustomerId ?? x.c.driverCustomerId);
+    // Ergebnis als Hinweis oben auf der Seite – die Vorschlagskarte verschwindet nach dem Klick
+    const code = r.submit?.outcome === "FAILED" ? "fehler" : r.submit?.outcome === "SUBMITTED" ? "gesendet" : r.method === "POST" ? "post" : "portal";
+    target = `/behoerden/${caseId}?schnell=${code}${r.submit?.fee?.status === "CREATED" ? "&entgelt=1" : ""}`;
+  } catch (e) {
+    return asState(e);
+  }
+  redirect(target);
+}
+
+export async function createFeeInvoiceAction(caseId: string, _prev: AuthState, _fd: FormData): Promise<AuthState> {
+  void _fd;
+  const x = await ctx(caseId);
+  if (!x) return { error: "Behördenvorgang nicht gefunden." };
+  const r = await ensureAuthorityFeeInvoice(x.tenant.id, caseId, x.actor);
+  refresh(caseId, null, x.c.bookingId);
+  if (r.invoiceId && x.c.bookingId) revalidatePath(`/buchungen/${x.c.bookingId}/rechnung`);
+  return r.status === "CREATED" || r.status === "EXISTS" ? { ok: r.message } : { error: r.message };
+}
+
+// ---------------------------------------------------------------------------
+// Adressbuch und Fristen-Erinnerung
+// ---------------------------------------------------------------------------
+
+const contactSchema = z.object({ name: z.string().trim().min(2, "Bitte den Namen der Behörde angeben.").max(160), department: text(160), address: text(400), email: text(160), portalUrl: text(300) });
+
+export async function updateContactAction(contactId: string, _prev: AuthState, fd: FormData): Promise<AuthState> {
+  const { tenant, user } = await requireRole("DISPO");
+  const p = contactSchema.safeParse(Object.fromEntries(fd));
+  if (!p.success) return { error: p.error.issues[0].message };
+  try {
+    await updateContact(tenant.id, contactId, { id: user.id, name: user.name }, p.data);
+    revalidatePath("/behoerden/einstellungen");
+    return { ok: "Adressbucheintrag gespeichert." };
+  } catch (e) {
+    return asState(e);
+  }
+}
+
+export async function deleteContactAction(contactId: string, _prev: AuthState, _fd: FormData): Promise<AuthState> {
+  void _fd;
+  const { tenant, user } = await requireRole("DISPO");
+  try {
+    await deleteContact(tenant.id, contactId, { id: user.id, name: user.name });
+    revalidatePath("/behoerden/einstellungen");
+    return { ok: "Eintrag gelöscht. Bestehende Vorgänge behalten ihre Behördendaten." };
+  } catch (e) {
+    return asState(e);
+  }
+}
+
+const reminderSchema = z.object({ days: z.coerce.number().int().min(0).max(30), email: text(160) });
+
+/** Fristen-Erinnerung: Tage vor Ablauf (0 = aus) und optional eine feste Empfängeradresse. Nur Inhaber. */
+export async function saveReminderSettingsAction(_prev: AuthState, fd: FormData): Promise<AuthState> {
+  const { tenant, user } = await requireRole("OWNER");
+  const p = reminderSchema.safeParse(Object.fromEntries(fd));
+  if (!p.success) return { error: "Bitte eine Zahl zwischen 0 und 30 angeben." };
+  const email = p.data.email?.trim() || null;
+  if (email && !isValidEmail(email)) return { error: "Die E-Mail-Adresse ist ungültig." };
+  await db.$transaction(async (tx) => {
+    await tx.tenant.update({ where: { id: tenant.id }, data: { authorityReminderDays: p.data.days, authorityReminderEmail: email } });
+    await recordAudit(tx, tenant.id, { id: user.id, name: user.name }, { action: "AUTHORITY_REMINDER_SETTINGS_UPDATED", details: { days: p.data.days, customRecipient: !!email } });
+  });
+  revalidatePath("/behoerden/einstellungen");
+  return { ok: p.data.days === 0 ? "Fristen-Erinnerung ausgeschaltet." : `Gespeichert: tägliche Erinnerung ab 7 Uhr für Fristen innerhalb von ${p.data.days} ${p.data.days === 1 ? "Tag" : "Tagen"} und überfällige Vorgänge.` };
+}
+
+/** Heutige Erinnerung sofort auslösen (sonst ab 7 Uhr automatisch); je Tag und Empfänger höchstens einmal. */
+export async function sendReminderNowAction(_prev: AuthState, _fd: FormData): Promise<AuthState> {
+  void _fd;
+  const { tenant } = await requireRole("OWNER");
+  const res = await sendAuthorityReminders({ tenantId: tenant.id });
+  if (res.length === 0) return { error: "Die Erinnerung ist ausgeschaltet." };
+  if (res.some((r) => r.status === "NOTHING_DUE")) return { ok: "Heute steht keine Frist an – es wurde nichts gesendet." };
+  if (res.some((r) => r.status === "NO_RECIPIENT")) return { error: "Es gibt keinen Empfänger mit gültiger E-Mail-Adresse." };
+  const sent = res.filter((r) => r.status === "SENT").map((r) => r.recipient);
+  const already = res.filter((r) => r.status === "ALREADY").map((r) => r.recipient);
+  const failed = res.filter((r) => r.status === "FAILED").map((r) => r.recipient);
+  if (failed.length) return { error: `Versand fehlgeschlagen an: ${failed.join(", ")}.` };
+  return { ok: [sent.length ? `Gesendet an ${sent.join(", ")}.` : null, already.length ? `Heute bereits gesendet an ${already.join(", ")}.` : null].filter(Boolean).join(" ") };
 }

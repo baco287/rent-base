@@ -45,7 +45,8 @@ export type BusinessRules = {
   cleaningSpecialCents: number | null;
   // Schlüssel und Zubehör
   keysAccessoriesNote: string | null;
-  // Behörden (vorbereitet, standardmäßig deaktiviert; erzeugt nie eine Belastung)
+  // Behörden: Bearbeitungsentgelt je beantworteter Behördenanfrage (standardmäßig aus); wird im Vertrag eingefroren und nach
+  // der Übermittlung der Antwort nur als Rechnungsentwurf angelegt (lib/authority-fee.ts)
   authorityHandlingFeeEnabled: boolean;
   authorityHandlingFeeCents: number;
   // Sondernutzung

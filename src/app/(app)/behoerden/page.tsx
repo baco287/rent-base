@@ -28,6 +28,7 @@ export default async function AuthorityOverviewPage({ searchParams }: PageProps<
   return (
     <>
       <PageHeader title="Behörden & Bußgelder" sub={`${counts.received} neu · ${counts.assignment} Zuordnung erforderlich · ${counts.overdue} überfällig`}>
+        {canManage && <Link href="/behoerden/einstellungen" className="btn">Adressbuch & Erinnerung</Link>}
         {canManage && <Link href="/behoerden/neu" className="btn btn-primary">Schreiben erfassen</Link>}
       </PageHeader>
       <Content>

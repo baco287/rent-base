@@ -336,6 +336,47 @@ export async function createDamageInvoiceDraft(tx: Tx, tenantId: string, actor: 
   return invoice;
 }
 
+/**
+ * Bearbeitungsentgelt zu einem Behördenvorgang (kind AUTHORITY_FEE) als Entwurf mit Fassung 1: eine Position über den im
+ * Mietvertrag eingefrorenen Betrag. Steuer wie jede Leistung des Vermieters (Standardsatz aus den Einstellungen);
+ * Rechnungsempfänger aus der Vertragskopie. Eindeutigkeit je Vorgang sichert der Datenbank-Index.
+ */
+export async function createAuthorityFeeInvoiceDraft(tx: Tx, tenantId: string, actor: Actor, input: { bookingId: string; authorityCaseId: string; caseNumber: string; authorityName: string; authorityReference: string; amountCents: Cents }): Promise<InvoiceRow> {
+  const booking = await tx.booking.findFirst({ where: { id: input.bookingId, tenantId }, include: { contract: true, tenant: true } });
+  if (!booking) throw new DomainError("Buchung nicht gefunden.");
+  if (!booking.contract || booking.contract.status !== "SIGNED") throw new DomainError("Zu dieser Buchung gibt es keinen abgeschlossenen Mietvertrag; ohne Vertragskopie gibt es keinen Rechnungsempfänger.");
+  const tenant = booking.tenant;
+  const missing = invoiceSettingsMissing(tenant);
+  if (missing.length > 0) throw new DomainError(`Bevor Rechnungen erstellt werden können, muss der Inhaber in den Einstellungen ergänzen: ${missing.join("; ")}.`);
+  if (input.amountCents <= 0) throw new DomainError("Das Bearbeitungsentgelt muss größer als 0,00 € sein.");
+  const mode = tenant.pricesIncludeTax ? "GROSS" : "NET";
+  const c = booking.contract.customerSnapshot as Partial<CustomerSnapshot>;
+  const item = computeItem(mode, { description: `Bearbeitungsentgelt für die Beantwortung einer Behördenanfrage (${input.authorityName}, Az. ${input.authorityReference}) zur Vermietung ${booking.number}, laut Mietvertrag ${booking.contract.number}`, quantity: 1, unit: "pauschal", unitPrice: centsToDecimalString(input.amountCents), taxRate: Number(tenant.defaultTaxRate), source: "MANUAL", reference: `Behördenvorgang ${input.caseNumber}` });
+  const totals = summarize([{ taxRateBp: item.taxRateBp, amounts: item.amounts }]);
+  const now = new Date();
+  const invoice = await tx.invoice.create({
+    data: {
+      tenantId, bookingId: booking.id, customerId: booking.customerId, contractId: booking.contract.id,
+      kind: "AUTHORITY_FEE", authorityCaseId: input.authorityCaseId,
+      sourceHash: sha256(`${booking.contract.contentHash}:${input.authorityCaseId}:${input.amountCents}`),
+      createdById: actor.id,
+      changeLog: [{ at: now.toISOString(), by: actor.name, versionNo: 1, summary: `Bearbeitungsentgelt zum Behördenvorgang ${input.caseNumber} als Entwurf erstellt (${fmtCents(input.amountCents)} laut Mietvertrag)` }],
+    },
+  });
+  const version = await tx.invoiceVersion.create({
+    data: {
+      tenantId, invoiceId: invoice.id, versionNo: 1, kind: "ORIGINAL",
+      servicePeriodStart: now, servicePeriodEnd: now, pricesIncludeTax: mode === "GROSS",
+      customerSnapshot: customerSnapshotFromContract(c), companySnapshot: companySnapshotOf(tenant),
+      netTotal: centsToDecimalString(totals.total.net), taxTotal: centsToDecimalString(totals.total.tax), grossTotal: centsToDecimalString(totals.total.gross),
+      paymentTermDays: tenant.paymentTermDays, taxNote: tenant.taxNote,
+      createdById: actor.id, createdByName: actor.name,
+    },
+  });
+  await tx.invoiceVersionItem.create({ data: itemData(tenantId, version.id, 0, item) });
+  return invoice;
+}
+
 // ---------------------------------------------------------------------------
 // Übermittlung und Bearbeitungsmodus
 // ---------------------------------------------------------------------------
@@ -618,6 +659,15 @@ async function collectIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, draf
     if (!draft.taxTreatment) err("TAX_TREATMENT", "Die steuerliche Behandlung der Kundenbelastung ist nicht festgelegt.");
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
     for (const m of invoiceSettingsMissing(tenant)) err("COMPANY", `Firmendaten unvollständig: ${m}.`);
+  } else if (draft.versionNo === 1 && invoice.kind === "AUTHORITY_FEE") {
+    // Bearbeitungsentgelt: braucht Vertrag (Rechnungsempfänger) und den Behördenvorgang dieser Vermietung
+    if (booking && booking.contract?.status !== "SIGNED") err("CONTRACT", "Zu dieser Buchung gibt es keinen abgeschlossenen Mietvertrag.");
+    const ac = invoice.authorityCaseId ? await tx.authorityCase.findFirst({ where: { id: invoice.authorityCaseId, tenantId } }) : null;
+    if (!ac) err("AUTHORITY_CASE", "Zu diesem Bearbeitungsentgelt gibt es keinen Behördenvorgang.");
+    else if (ac.bookingId !== invoice.bookingId) err("AUTHORITY_CASE", "Der Behördenvorgang ist nicht (mehr) dieser Vermietung zugeordnet.");
+    else if (ac.status === "CANCELLED") err("AUTHORITY_CASE", "Der Behördenvorgang wurde storniert.");
+    const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+    for (const m of invoiceSettingsMissing(tenant)) err("COMPANY", `Firmendaten unvollständig: ${m}.`);
   } else if (draft.versionNo === 1) {
     if (booking && booking.status !== "RETURNED") err("BOOKING_STATUS", "Die Buchung ist nicht zurückgegeben.");
     if (booking && booking.contract?.status !== "SIGNED") err("CONTRACT", "Zu dieser Buchung gibt es keinen abgeschlossenen Mietvertrag.");
@@ -860,6 +910,7 @@ export async function finalizeInvoice(tenantId: string, invoiceId: string, actor
     }, TX),
   ).catch((e) => {
     if (isUniqueViolation(e, "damageCaseId")) throw new DomainError("Zu dieser Schadenakte gibt es bereits eine Schadenabrechnung.");
+    if (isUniqueViolation(e, "authorityCaseId") || isUniqueViolation(e, "one_per_authority_case")) throw new DomainError("Zu diesem Behördenvorgang gibt es bereits ein Bearbeitungsentgelt.");
     if (isUniqueViolation(e, "bookingId")) throw new DomainError("Zu dieser Buchung gibt es bereits eine abgeschlossene Mietrechnung.");
     throw e;
   });

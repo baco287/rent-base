@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { DAMAGE_TAX_TREATMENTS, EXTRA_CHARGE_TYPES, INVOICE_CHAIN_STATUS, INVOICE_ITEM_SOURCES, INVOICE_VERSION_KINDS, type DamageTaxTreatment, type ExtraChargeType } from "@/lib/constants";
+import { DAMAGE_TAX_TREATMENTS, EXTRA_CHARGE_TYPES, INVOICE_CHAIN_STATUS, INVOICE_ITEM_SOURCES, INVOICE_VERSION_KINDS, invoiceKindWord, isSideInvoice, type DamageTaxTreatment, type ExtraChargeType } from "@/lib/constants";
 import { loadInvoiceDocumentData } from "@/lib/document-data";
 import { customerName, fmtDateTime, fmtEur } from "@/lib/format";
 import { getInvoiceState, invoiceSettingsMissing, listVersions, type CompanySnapshot, type InvoiceCustomerSnapshot, type VersionDiff } from "@/lib/invoices";
@@ -42,11 +42,13 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
     ? await db.invoice.findFirst({ where: { id: requestedId, bookingId: b.id, tenantId: tenant.id, status: { in: ["DRAFT", "FINALIZED"] } } })
     : await db.invoice.findFirst({ where: { bookingId: b.id, tenantId: tenant.id, kind: "RENTAL", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: [{ status: "asc" }, { createdAt: "desc" }] });
   if (requestedId && !invoice) notFound();
-  const key = invoice?.kind === "DAMAGE" || (invoice && invoice.documentType !== "INVOICE") ? invoice!.id : null;
+  const key = isSideInvoice(invoice?.kind) || (invoice && invoice.documentType !== "INVOICE") ? invoice!.id : null;
   const self = `/buchungen/${b.id}/rechnung${key ? `?nr=${key}` : ""}`;
   const selfWith = (q: string) => `${self}${self.includes("?") ? "&" : "?"}${q}`;
   const damageCase = invoice?.damageCaseId ? await db.damageCase.findFirst({ where: { id: invoice.damageCaseId, tenantId: tenant.id }, select: { id: true, caseNumber: true, customerChargeBasis: true } }) : null;
-  const kindLabel = invoice?.kind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung";
+  const authorityCase = invoice?.authorityCaseId ? await db.authorityCase.findFirst({ where: { id: invoice.authorityCaseId, tenantId: tenant.id }, select: { id: true, caseNumber: true, authorityName: true, authorityReference: true } }) : null;
+  const kindLabel = invoiceKindWord(invoice?.kind);
+  const feeNote = authorityCase ? <div className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm"><span className="font-semibold">Bearbeitungsentgelt zum Behördenvorgang {authorityCase.caseNumber}</span> ({authorityCase.authorityName}, Az. {authorityCase.authorityReference}). Grundlage ist das im Mietvertrag vereinbarte Bearbeitungsentgelt für Behördenanfragen. Das Bußgeld selbst wird nicht weiterberechnet; diese Rechnung ist von der Mietrechnung getrennt.</div> : null;
 
   // Hofmitarbeiter: nur abgeschlossene Rechnungen, kein Entwurf und keine Neuanlage (serverseitig auch in den Actions)
   if (!canEdit && invoice?.status !== "FINALIZED") redirect(`/buchungen/${b.id}`);
@@ -123,9 +125,10 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
     const title = draft.versionNo === 1 ? `${kindLabel} (Entwurf)` : `${kindLabel} ${inv.number} · Fassung ${draft.versionNo} (Entwurf)`;
     return (
       <>
-        <PageHeader title={title} sub={<>Buchung {b.number} · {doc.customer.name}{damageCase ? <> · Schadenakte {damageCase.caseNumber}</> : null}</>}>
+        <PageHeader title={title} sub={<>Buchung {b.number} · {doc.customer.name}{damageCase ? <> · Schadenakte {damageCase.caseNumber}</> : null}{authorityCase ? <> · Behördenvorgang {authorityCase.caseNumber}</> : null}</>}>
           <Chip tone="amber">{draft.versionNo === 1 ? "Entwurf" : kind === "CORRECTION" ? "Berichtigung in Bearbeitung" : "Neufassung in Bearbeitung"}</Chip>
           {damageCase && <Link href={`/schaeden/${damageCase.id}`} className="btn">Zur Schadenakte</Link>}
+          {authorityCase && <Link href={`/behoerden/${authorityCase.id}`} className="btn">Zum Behördenvorgang</Link>}
           <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
           <form action={discardInvoiceDraftAction.bind(null, b.id, key)}><button className="btn btn-danger">Entwurf verwerfen</button></form>
         </PageHeader>
@@ -136,6 +139,7 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
               <span className="font-semibold">Schadenabrechnung zur Schadenakte {damageCase.caseNumber}.</span> Steuerliche Behandlung dieser Fassung: {DAMAGE_TAX_TREATMENTS[draft.taxTreatment as DamageTaxTreatment] ?? "noch nicht festgelegt"}. Grundlage: {damageCase.customerChargeBasis ?? "–"}. Diese Rechnung ist von der Mietrechnung getrennt; Kaution und Forderung wurden nicht miteinander verrechnet.
             </div>
           )}
+          {feeNote}
           {draft.versionNo > 1 && mode && (
             <div className={`rounded-md px-3.5 py-2.5 text-sm ${mode.delivered ? "bg-amber-soft text-amber" : "bg-info-soft text-info"}`}>
               {mode.delivered ? (
@@ -208,13 +212,14 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
 
   return (
     <>
-      <PageHeader title={`${kindLabel} ${inv.number}`} sub={<>Buchung {b.number} · {doc.customer.name}{damageCase ? <> · Schadenakte {damageCase.caseNumber}</> : null}</>}>
+      <PageHeader title={`${kindLabel} ${inv.number}`} sub={<>Buchung {b.number} · {doc.customer.name}{damageCase ? <> · Schadenakte {damageCase.caseNumber}</> : null}{authorityCase ? <> · Behördenvorgang {authorityCase.caseNumber}</> : null}</>}>
         <Chip tone="good">Finalisiert</Chip>
         <Chip>Aktuelle Fassung {current.versionNo}</Chip>
         <Chip tone={currentInfo.delivered ? "info" : "amber"}>{transmission}</Chip>
         {(finance.effectiveCents > 0 || finance.paidCents > 0) && <PaymentStatusChip status={pay.status} />}
         {finance.chain !== "NONE" && <Chip tone={finance.chain === "CANCELLED" ? "bad" : "info"}>{INVOICE_CHAIN_STATUS[finance.chain]}</Chip>}
         {damageCase && <Link href={`/schaeden/${damageCase.id}`} className="btn">Zur Schadenakte</Link>}
+          {authorityCase && <Link href={`/behoerden/${authorityCase.id}`} className="btn">Zum Behördenvorgang</Link>}
         <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
         {canEdit && mode?.editable && <form action={startInvoiceEditAction.bind(null, b.id, key)}><button className="btn btn-primary">Rechnung bearbeiten</button></form>}
       </PageHeader>
@@ -225,6 +230,7 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
             <span className="font-semibold">Schadenabrechnung zur Schadenakte {damageCase.caseNumber}.</span> Steuerliche Behandlung (Fassung {shown.versionNo}): {DAMAGE_TAX_TREATMENTS[shown.taxTreatment as DamageTaxTreatment] ?? "–"}. Diese Rechnung ist von der Mietrechnung getrennt; Kaution und Forderung wurden nicht miteinander verrechnet.
           </div>
         )}
+        {feeNote}
         {Number.isFinite(finishedNo) && finishedNo === current.versionNo && (
           <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 font-medium">
             {finishedNo === 1 ? `Die Rechnung ${inv.number} ist abgeschlossen und versiegelt.` : `Fassung ${finishedNo} der Rechnung ${inv.number} ist abgeschlossen und versiegelt (${INVOICE_VERSION_KINDS[current.kind as keyof typeof INVOICE_VERSION_KINDS]}). Fassung ${finishedNo - 1} bleibt archiviert.`} Rechnungsbetrag {fmtCents(toCents(current.grossTotal))}.

@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
 import { Card, Chip } from "@/components/ui";
-import { DOCUMENT_TYPES, type DocumentType } from "@/lib/constants";
+import { DOCUMENT_TYPES, type DocumentType, invoiceKindWord, isSideInvoice } from "@/lib/constants";
 import { listBookingDocuments } from "@/lib/documents";
 import { listBookingEmails } from "@/lib/email-log";
 import { fmtDateTime } from "@/lib/format";
@@ -34,8 +34,8 @@ export async function DocumentsPanel({ tenantId, bookingId, role, invoiceId = nu
   const currentVersionId = invoice?.currentVersion?.id ?? null;
   // Gegenbelege (Gutschrift, Stornobeleg) haben ihren eigenen Dokumenttyp und immer einen eigenen Schlüssel
   const invoiceDocType: DocumentType = invoice?.documentType === "CREDIT_NOTE" ? "CREDIT_NOTE" : invoice?.documentType === "CANCELLATION" ? "CANCELLATION" : "INVOICE";
-  const invoiceKey = invoice && (invoice.kind === "DAMAGE" || invoiceDocType !== "INVOICE") ? invoice.id : null;
-  const invoiceWord = invoiceDocType === "CREDIT_NOTE" ? "Gutschrift" : invoiceDocType === "CANCELLATION" ? "Stornobeleg" : invoice?.kind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung";
+  const invoiceKey = invoice && (isSideInvoice(invoice.kind) || invoiceDocType !== "INVOICE") ? invoice.id : null;
+  const invoiceWord = invoiceDocType === "CREDIT_NOTE" ? "Gutschrift" : invoiceDocType === "CANCELLATION" ? "Stornobeleg" : invoiceKindWord(invoice?.kind);
   const canSendInvoice = role !== "YARD";
   const pickup = handovers.find((h) => h.type === "PICKUP");
   const ret = handovers.find((h) => h.type === "RETURN");
@@ -72,7 +72,7 @@ export async function DocumentsPanel({ tenantId, bookingId, role, invoiceId = nu
             return (
               <li key={r.type} className="px-4 py-3 flex flex-col gap-2">
                 <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-                  <span className="font-medium">{r.type === invoiceDocType && invoice && (invoice.kind === "DAMAGE" || invoiceDocType !== "INVOICE") ? `${invoiceWord} ${invoice.number}` : DOCUMENT_TYPES[r.type]}</span>
+                  <span className="font-medium">{r.type === invoiceDocType && invoice && (isSideInvoice(invoice.kind) || invoiceDocType !== "INVOICE") ? `${invoiceWord} ${invoice.number}` : DOCUMENT_TYPES[r.type]}</span>
                   {doc ? <Chip tone="good">✓ erstellt</Chip> : r.available ? <Chip tone="amber">noch nicht erzeugt</Chip> : <Chip>{r.waitText}</Chip>}
                 </div>
                 {doc && (

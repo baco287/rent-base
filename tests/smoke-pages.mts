@@ -549,8 +549,13 @@ report(!bhSearch.includes(bhCase.caseNumber), "Behördenübersicht: Suche filter
 const bhSearchPlate = await plain(await fetch(base + "/behoerden?filter=alle&q=hbrt400", { headers: { cookie } }));
 report(bhSearchPlate.includes(bhCase.caseNumber), "Behördenübersicht: Suche nach Kennzeichen in anderer Schreibweise");
 const bhNew = await plain(await fetch(`${base}/behoerden/neu?fahrzeug=${v4.id}`, { headers: { cookie } }));
-report(bhNew.includes("Behördenschreiben erfassen") && bhNew.includes("HB-RT 400") && bhNew.includes("Zeit unbekannt") && bhNew.includes("keine automatische Texterkennung"), "Behörden: Erfassung mit vorbelegtem Kennzeichen, manuelle Eingabe");
+report(bhNew.includes("Behördenschreiben erfassen") && bhNew.includes("Behördenschreiben hochladen") && bhNew.includes("Ohne Datei manuell erfassen") && bhNew.includes("nicht an Dritte übertragen"), "Behörden: Erfassung mit Upload (PDF wird gelesen) oder manuell");
+// Posteingang (Behörden-Automatik): Upload mit Erkennung, nur Disposition
+const bhIntake = await (async () => { const fd = new FormData(); fd.set("file", new Blob([pdfBytes], { type: "application/pdf" }), "Anhoerung.pdf"); return fetch(`${base}/api/authority-uploads`, { method: "POST", body: fd, headers: { cookie } }); })();
+const bhIntakeJson = (await bhIntake.json()) as { id?: string; suggestion?: object };
+report(bhIntake.status === 201 && !!bhIntakeJson.id && typeof bhIntakeJson.suggestion === "object", `${bhIntake.status} Posteingang: Schreiben gespeichert, Vorschläge geliefert`);
 const bhPage0 = await plain(await fetch(`${base}/behoerden/${bhCase.id}`, { headers: { cookie } }));
+report(bhPage0.includes("Vorschlag: Prüfen") && bhPage0.includes("Freigeben und per E-Mail senden") && bhPage0.includes("Ich habe die Angaben mit dem Schreiben verglichen") && bhPage0.includes("Bearbeitungsentgelt"), "Behördenvorgang: Schnellweg mit Vorschau und Pflichtbestätigung, Entgelt-Hinweis");
 report(bhPage0.includes(bhCase.caseNumber) && bhPage0.includes("Fahrerbestimmung") && bhPage0.includes("Bitte bestätigen Sie nur eine Person als Fahrer") && bhPage0.includes("Vertraglicher Hauptfahrer") && bhPage0.includes("Antwort vorbereiten") && bhPage0.includes("Fahrer nicht eindeutig feststellbar") && bhPage0.includes("RET-1") && bhPage0.includes("Tatzeit innerhalb der tatsächlichen Mietdauer") && bhPage0.includes("Vorgang abschließen"), "Behördenvorgang: Zuordnung, Kandidaten, Pflichthinweis, Aktionen");
 const bhUp = await (async () => { const fd = new FormData(); fd.set("file", new Blob([pdfBytes], { type: "application/pdf" }), "Anhoerung.pdf"); fd.set("type", "INCOMING_NOTICE"); return fetch(`${base}/api/authority-cases/${bhCase.id}/documents`, { method: "POST", body: fd, headers: { cookie } }); })();
 const bhUpJson = (await bhUp.json()) as { id: string };
@@ -592,6 +597,12 @@ const yardBhNew = await fetch(base + "/behoerden/neu", { headers: { cookie: `rb_
 report(yardBhNew.status === 307, `${yardBhNew.status} Hofmitarbeiter: keine Erfassung von Behördenschreiben`);
 const yardBhList = await fetch(base + "/behoerden", { headers: { cookie: `rb_session=${yardSession}` } });
 report(yardBhList.status === 200 && !(await yardBhList.text()).includes("Schreiben erfassen"), `${yardBhList.status} Hofmitarbeiter: Behördenliste lesbar ohne Erfassen-Knopf`);
+const bhSettings = await plain(await fetch(base + "/behoerden/einstellungen", { headers: { cookie } }));
+report(bhSettings.includes("Behörden-Adressbuch") && bhSettings.includes("Stadtamt Bremen") && bhSettings.includes("Fristen-Erinnerung per E-Mail") && bhSettings.includes("ab 7 Uhr"), "Behörden-Einstellungen: Adressbuch gelernt, Erinnerung");
+const yardBhSettings = await fetch(base + "/behoerden/einstellungen", { headers: { cookie: `rb_session=${yardSession}` }, redirect: "manual" });
+report(yardBhSettings.status === 307, `${yardBhSettings.status} Hofmitarbeiter: keine Behörden-Einstellungen`);
+const yardIntake = await (async () => { const fd = new FormData(); fd.set("file", new Blob([pdfBytes], { type: "application/pdf" }), "x.pdf"); return fetch(`${base}/api/authority-uploads`, { method: "POST", body: fd, headers: { cookie: `rb_session=${yardSession}` } }); })();
+report(yardIntake.status === 403, `${yardIntake.status} Hofmitarbeiter: kein Posteingang-Upload`);
 // Mietbedingungen & Geschäftsregeln (Phase 15): Einrichtung, Fassung, Vertragsassistent mit Kenntnisnahme, Rollen
 const setup0 = await plain(await fetch(base + "/einstellungen/mietbedingungen", { headers: { cookie } }));
 report(setup0.includes("Noch keine Mietbedingungen veröffentlicht") && setup0.includes("Entwurf anlegen") && setup0.includes("Bisheriger Text"), "Mietbedingungen: Einrichtungshinweis, Entwurf anlegen, bisheriger Text sichtbar");

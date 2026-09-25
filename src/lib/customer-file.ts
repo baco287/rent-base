@@ -4,6 +4,7 @@
 // Behördenvorgänge nur über die bewusste Fahrerbestimmung (driverCustomerId). Historische Snapshots bleiben unberührt.
 // Die Akte erfindet keine Ereignisse: Die Historie entsteht ausschließlich aus gespeicherten Zeitstempeln.
 
+import { invoiceKindWord } from "@/lib/constants";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { financialsFor, type InvoiceFinancials } from "@/lib/counter-documents";
@@ -114,7 +115,7 @@ export async function customerOverview(tenantId: string, customerId: string, cus
   let openReceivablesCents = 0, openInvoices = 0, refundOpenCents = 0, refundsOpen = 0;
   for (const i of invoices) {
     const f = fin.get(i.id)!;
-    const word = i.kind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung";
+    const word = invoiceKindWord(i.kind);
     if (f.openCents > 0) {
       openInvoices++; openReceivablesCents += f.openCents;
       const due = i.currentVersion!.paymentDueDate;
@@ -299,7 +300,7 @@ export async function customerTimeline(tenantId: string, customerId: string, lim
   }
   for (const c of contracts) if (c.status === "SIGNED" && c.signedAt) e.push({ key: `c-${c.id}`, at: c.signedAt, kind: "Vertrag", title: `Mietvertrag ${c.number} abgeschlossen`, detail: null, href: `/buchungen/${c.bookingId}/vertrag` });
   for (const h of handovers) if (h.finalizedAt) e.push({ key: `h-${h.id}`, at: h.finalizedAt, kind: h.type === "PICKUP" ? "Übergabe" : "Rückgabe", title: `${h.type === "PICKUP" ? "Übergabe" : "Rückgabe"} ${h.number}`, detail: h.mileage != null ? `${h.mileage.toLocaleString("de-DE")} km` : null, href: `/buchungen/${h.bookingId}/${h.type === "PICKUP" ? "uebergabe" : "rueckgabe"}` });
-  for (const i of invoices) if (i.finalizedAt) e.push({ key: `i-${i.id}`, at: i.finalizedAt, kind: i.documentType === "INVOICE" ? (i.kind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung") : i.documentType === "CREDIT_NOTE" ? "Gutschrift" : "Stornobeleg", title: `${i.documentType === "INVOICE" ? (i.kind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung") : i.documentType === "CREDIT_NOTE" ? "Gutschrift" : "Stornobeleg"} ${i.number ?? ""} abgeschlossen`, detail: fmt(toCents(i.currentVersion?.grossTotal ?? 0)), href: `/buchungen/${i.bookingId}/rechnung?nr=${i.id}` });
+  for (const i of invoices) if (i.finalizedAt) e.push({ key: `i-${i.id}`, at: i.finalizedAt, kind: i.documentType === "INVOICE" ? (invoiceKindWord(i.kind)) : i.documentType === "CREDIT_NOTE" ? "Gutschrift" : "Stornobeleg", title: `${i.documentType === "INVOICE" ? (invoiceKindWord(i.kind)) : i.documentType === "CREDIT_NOTE" ? "Gutschrift" : "Stornobeleg"} ${i.number ?? ""} abgeschlossen`, detail: fmt(toCents(i.currentVersion?.grossTotal ?? 0)), href: `/buchungen/${i.bookingId}/rechnung?nr=${i.id}` });
   for (const p of payments) {
     e.push({ key: `p-${p.id}`, at: p.paidAt, kind: "Zahlung", title: `Zahlung ${fmt(p.amountCents)}${p.invoice?.number ? ` zu ${p.invoice.number}` : ""}`, detail: p.status === "CANCELLED" ? "storniert" : null, href: `/buchungen/${p.bookingId}/finanzen` });
     if (p.status === "CANCELLED" && p.cancelledAt) e.push({ key: `pc-${p.id}`, at: p.cancelledAt, kind: "Zahlung", title: `Zahlung ${fmt(p.amountCents)} storniert`, detail: null, href: `/buchungen/${p.bookingId}/finanzen` });

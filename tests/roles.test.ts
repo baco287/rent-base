@@ -98,7 +98,11 @@ test("Jede Server-Action-Datei und jede Prozessseite prüft die Rolle serverseit
   const authActions = auth.match(/export async function (\w+)/g)!.map((m) => m.replace("export async function ", ""));
   assert.ok(authActions.length >= 14);
   const authBody = (name: string) => new RegExp(`export async function ${name}[\\s\\S]*?\\n}`).exec(auth)?.[0] ?? "";
-  for (const fn of authActions) assert.ok(/await ctx\(caseId\)/.test(authBody(fn)) || /requireRole\("DISPO"\)/.test(authBody(fn)), `${fn}: nur Inhaber und Disponent`);
+  for (const fn of authActions) assert.ok(/await ctx\(caseId\)/.test(authBody(fn)) || /requireRole\("(DISPO|OWNER)"\)/.test(authBody(fn)), `${fn}: nur Inhaber und Disponent`);
+  // Behörden-Automatik: Schnellweg und Bearbeitungsentgelt nur über ctx (Disposition, eigener Mandant); Erinnerung nur Inhaber
+  for (const fn of ["quickRespondAction", "createFeeInvoiceAction"]) assert.match(authBody(fn), /await ctx\(caseId\)/, `${fn}: nur Disposition`);
+  for (const fn of ["saveReminderSettingsAction", "sendReminderNowAction"]) assert.match(authBody(fn), /requireRole\("OWNER"\)/, `${fn}: nur Inhaber`);
+  assert.match(readFileSync(path.join(process.cwd(), "src/app/api/authority-uploads/route.ts"), "utf8"), /roleAllows\(session\.user\.role, \["DISPO"\]\)/, "Posteingang-Upload nur Disposition");
   for (const fn of ["setDriverAction", "approveResponseAction", "submitResponseAction", "closeCaseAction", "reopenCaseAction"]) assert.match(authBody(fn), /await ctx\(caseId\)/, `${fn}: Fahrerfreigabe, Antwortfreigabe, Übermittlung, Abschluss nur Disposition`);
   assert.match(auth, /const \{ tenant, user \} = await requireRole\("DISPO"\);\n  const c = await db\.authorityCase\.findFirst/, "ctx: nur DISPO und eigener Mandant");
   const upload = readFileSync(path.join(process.cwd(), "src/app/api/authority-cases/[id]/documents/route.ts"), "utf8");

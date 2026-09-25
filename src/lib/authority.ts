@@ -3,13 +3,16 @@
 // Harte Regeln: Rent-Base stellt automatisch nur „Tatzeit innerhalb der (tatsächlichen/geplanten) Mietdauer“ und
 // „vertraglicher Haupt-/Zusatzfahrer“ fest – nie den tatsächlichen Fahrzeugführer. Ohne Freigabe eines berechtigten
 // Mitarbeiters verlässt keine Person diesen Mandanten. Freigegebene Fassungen sind unveränderlich; Korrekturen sind neue
-// Fassungen. Ein Bußgeld erzeugt nie Rechnung, Zahlung, Zusatzkosten oder Kautionsbewegung.
+// Fassungen. Ein Bußgeld erzeugt nie Rechnung, Zahlung, Zusatzkosten oder Kautionsbewegung. Einzige Ausnahme: ein im
+// Mietvertrag vereinbartes Bearbeitungsentgelt wird nach der Übermittlung als Rechnungsentwurf angelegt (lib/authority-fee.ts).
 
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { recordAudit, type Actor } from "@/lib/audit";
 import { AUTHORITY_CASE_STATUS, AUTHORITY_CASE_TYPES, AUTHORITY_RESPONSE_TYPES, DRIVER_DETERMINATION, RENTAL_MATCH, SUBMISSION_METHODS, type AuthorityCaseStatus, type AuthorityResponseType, type SubmissionMethod } from "@/lib/constants";
 import { claimEmail, markEmailFailed, markEmailSent } from "@/lib/email-log";
+import { learnContact } from "@/lib/authority-contacts";
+import { ensureAuthorityFeeInvoice, type FeeOutcome } from "@/lib/authority-fee";
 import { deadlineInfo, matchRentals, matchVehicles, plateKey, portalUrlInfo, type RentalCandidate, type RentalCandidateInput } from "@/lib/authority-matching";
 import { DomainError, contentHash, sha256 } from "@/lib/integrity";
 import { getMailTransport, isValidEmail, safeMailError, type MailTransport } from "@/lib/mail";
@@ -148,6 +151,8 @@ export type CaseInput = {
   type: string; authorityName: string; authorityDepartment?: string | null; authorityReference: string; authorityAddress?: string | null; authorityEmail?: string | null; authorityPortalUrl?: string | null;
   offenseType?: string | null; offenseDescription?: string | null; offenseDate: string; offenseTime?: string | null; offenseLocation?: string | null;
   licensePlate: string; responseDeadline?: Date | null; noticeAmount?: string | number | null; notes?: string | null;
+  /** vorher hochgeladenes Schreiben (Posteingang), wird als „Behördenschreiben“ an den neuen Vorgang gehängt */
+  uploadId?: string | null;
 };
 
 function caseData(input: CaseInput) {
@@ -168,7 +173,20 @@ function caseData(input: CaseInput) {
   };
 }
 
-/** Manuelle Erfassung eines Schreibens; danach automatische Zuordnung (Fahrzeug, Vermietung) – keine Fahrerbehauptung. */
+/** Hängt ein vorher hochgeladenes Schreiben an den Vorgang (genau einmal, nur im eigenen Mandanten). */
+async function attachUpload(tx: Tx, tenantId: string, caseId: string, uploadId: string, actor: Actor) {
+  const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "AuthorityUpload" WHERE "id" = ${uploadId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+  if (locked.length === 0) throw new DomainError("Das hochgeladene Schreiben wurde nicht gefunden. Bitte erneut hochladen.");
+  const u = await tx.authorityUpload.findUniqueOrThrow({ where: { id: uploadId } });
+  if (u.caseId) throw new DomainError("Dieses Schreiben ist bereits einem Vorgang zugeordnet.");
+  assertKeyBelongsToTenant(u.storageKey, tenantId);
+  const doc = await tx.authorityCaseDocument.create({ data: { tenantId, caseId, type: "INCOMING_NOTICE", fileName: u.fileName, storageKey: u.storageKey, contentType: u.contentType, sizeBytes: u.sizeBytes, checksum: u.checksum, note: u.textLength > 0 ? "beim Anlegen hochgeladen, Angaben aus der Textebene vorgeschlagen" : "beim Anlegen hochgeladen", createdById: actor.id, createdByName: actor.name } });
+  await tx.authorityUpload.update({ where: { id: u.id }, data: { caseId, usedAt: new Date() } });
+  await event(tx, tenantId, caseId, actor, { type: "DOCUMENT_ADDED", toValue: "INCOMING_NOTICE", note: doc.fileName });
+  await recordAudit(tx, tenantId, actor, { action: "AUTHORITY_DOCUMENT_ADDED", details: { caseId, type: "INCOMING_NOTICE", documentId: doc.id, fromUpload: u.id } });
+}
+
+/** Erfassung eines Schreibens (manuell oder aus dem hochgeladenen PDF vorbelegt); danach automatische Zuordnung – keine Fahrerbehauptung. */
 export async function createAuthorityCase(tenantId: string, actor: Actor, input: CaseInput): Promise<CaseRow> {
   const data = caseData(input);
   try {
@@ -177,7 +195,9 @@ export async function createAuthorityCase(tenantId: string, actor: Actor, input:
         const caseNumber = await nextAuthorityCaseNumber(tx, tenantId);
         const created = await tx.authorityCase.create({ data: { tenantId, caseNumber, ...data, createdById: actor.id, createdByName: actor.name } });
         await event(tx, tenantId, created.id, actor, { type: "CREATED", toValue: "RECEIVED", note: `${AUTHORITY_CASE_TYPES[input.type as keyof typeof AUTHORITY_CASE_TYPES]} · ${data.authorityName} · ${data.authorityReference}` });
-        await recordAudit(tx, tenantId, actor, { action: "AUTHORITY_CASE_CREATED", details: { caseNumber, type: input.type, authorityName: data.authorityName, plate: data.licensePlateSnapshot } });
+        await recordAudit(tx, tenantId, actor, { action: "AUTHORITY_CASE_CREATED", details: { caseNumber, type: input.type, authorityName: data.authorityName, plate: data.licensePlateSnapshot, fromUpload: !!input.uploadId } });
+        if (input.uploadId) await attachUpload(tx, tenantId, created.id, input.uploadId, actor);
+        await learnContact(tx, tenantId, data);
         const matched = await runMatching(tx, tenantId, created, actor);
         return refreshStatus(tx, tenantId, matched.id, actor);
       }, TX),
@@ -194,6 +214,7 @@ export async function updateAuthorityCase(tenantId: string, id: string, actor: A
       const c = await lockCase(tx, tenantId, id);
       assertOpen(c);
       await tx.authorityCase.update({ where: { id: c.id }, data });
+      await learnContact(tx, tenantId, data);
       await event(tx, tenantId, c.id, actor, { type: "UPDATED", note: "Vorgangsdaten geändert" });
       await recordAudit(tx, tenantId, actor, { action: "AUTHORITY_CASE_UPDATED", details: { caseNumber: c.caseNumber } });
       const changedKey = data.licensePlateNormalized !== c.licensePlateNormalized || data.offenseAt.getTime() !== c.offenseAt.getTime() || data.offenseTimeKnown !== c.offenseTimeKnown;
@@ -349,39 +370,75 @@ const personFields = (s: DriverSnapshot, includeBirthDate: boolean, includeAddre
   return fields;
 };
 
-/** Antwortentwurf (neue Fassung) aus dem aktuellen Stand; nur bewusst ausgewählte Personendaten werden aufgenommen. */
-export async function prepareResponse(tenantId: string, id: string, actor: Actor, input: ResponseInput): Promise<ResponseRow> {
+function checkResponseInput(input: ResponseInput): AuthorityResponseType {
   if (!(input.responseType in AUTHORITY_RESPONSE_TYPES)) throw new DomainError("Ungültige Antwortart.");
   if (!(input.submissionMethod in SUBMISSION_METHODS)) throw new DomainError("Ungültiger Übermittlungsweg.");
   if (input.submissionMethod === "VERIFIED_API") throw new DomainError("Für diesen Empfänger gibt es keine verifizierte Schnittstelle. Bitte Post, E-Mail oder Behördenportal wählen.");
-  const responseType = input.responseType as AuthorityResponseType;
+  return input.responseType as AuthorityResponseType;
+}
+
+/**
+ * Inhalt einer Antwortfassung aus dem aktuellen Stand – gemeinsam für den Entwurf und die Vorschau des Schnellwegs.
+ * `driverOverride` nur für die Vorschau: die Person, die mit der Bestätigung bestimmt würde (noch nicht gespeichert).
+ */
+async function buildResponseContent(tx: Tx | typeof db, tenantId: string, c: CaseRow, responseType: AuthorityResponseType, input: ResponseInput, driverOverride?: DriverSnapshot | null) {
+  const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+  const email = input.recipientEmail?.trim() || c.authorityEmail || null;
+  if (input.submissionMethod === "EMAIL") {
+    if (!email || !isValidEmail(email)) throw new DomainError("Für den E-Mail-Versand muss eine E-Mail-Adresse der Behörde aus dem Schreiben erfasst sein.");
+  }
+  const driver = driverOverride ?? (c.driverSnapshot as DriverSnapshot | null);
+  const driverDetermined = !!driverOverride || c.driverDeterminationStatus === "CONTRACT_DRIVER_SELECTED" || c.driverDeterminationStatus === "OTHER_DRIVER_ENTERED";
+  let persons: { role: string; fields: { label: string; value: string }[] }[] = [];
+  if (responseType === "DRIVER_IDENTIFIED") {
+    if (!driver || !driverDetermined) throw new DomainError("„Fahrer benannt“ setzt eine bewusste Fahrerbestimmung voraus (Vertragsfahrer ausgewählt oder andere Person erfasst).");
+    persons = [{ role: driver.role === "PRIMARY_DRIVER" ? "Vertraglicher Hauptfahrer" : driver.role === "ADDITIONAL_DRIVER" ? "Zusätzlicher Vertragsfahrer" : "Benannte Person", fields: personFields(driver, !!input.includeBirthDate, !!input.includeAddress) }];
+  } else if (responseType === "MULTIPLE_POSSIBLE_DRIVERS") {
+    const cands = await driverCandidatesOf(tx, tenantId, c.contractId);
+    if (cands.length === 0) throw new DomainError("Zu diesem Vorgang ist kein Mietvertrag mit Fahrern zugeordnet.");
+    persons = cands.map((d) => ({ role: d.roleLabel, fields: personFields({ source: "CONTRACT_DRIVER", role: d.role, firstName: d.firstName, lastName: d.lastName, birthDate: d.birthDate.toISOString().slice(0, 10), street: d.street, zip: d.zip, city: d.city, country: d.country }, !!input.includeBirthDate, !!input.includeAddress) }));
+  } else if (responseType === "CUSTOM_RESPONSE" && !input.freeText?.trim()) {
+    throw new DomainError("Eine individuelle Antwort braucht einen Text.");
+  }
+  const booking = c.bookingId ? await tx.booking.findFirst({ where: { id: c.bookingId, tenantId }, select: { number: true, actualPickupAt: true, actualReturnAt: true, startAt: true, endAt: true, contract: { select: { number: true, status: true } } } }) : null;
+  const vehicle = c.vehicleId ? await tx.vehicle.findFirst({ where: { id: c.vehicleId, tenantId }, select: { plate: true, make: true, model: true } }) : null;
+  const actual = !!booking?.actualPickupAt;
+  const rentalSnapshot = booking && responseType !== "NO_MATCHING_RENTAL" && responseType !== "VEHICLE_NOT_IN_FLEET"
+    ? { bookingNumber: booking.number, contractNumber: booking.contract?.status === "SIGNED" ? booking.contract.number : null, windowStart: (actual ? booking.actualPickupAt! : booking.startAt).toISOString(), windowEnd: actual ? booking.actualReturnAt?.toISOString() ?? null : booking.endAt.toISOString(), basis: actual ? "ACTUAL" : "PLANNED", dayOnly: c.rentalMatchDayOnly }
+    : null;
+  return {
+    responseType, submissionMethod: input.submissionMethod, authorityReference: c.authorityReference,
+    recipientSnapshot: { name: c.authorityName, department: c.authorityDepartment, address: c.authorityAddress, email: input.submissionMethod === "EMAIL" ? email : null, portalUrl: c.authorityPortalUrl },
+    senderSnapshot: { name: [tenant.name, tenant.legalForm].filter(Boolean).join(" "), street: tenant.street, zip: tenant.zip, city: tenant.city, email: tenant.email, phone: tenant.phone },
+    vehicleSnapshot: { plate: c.licensePlateSnapshot, vehicle: vehicle ? `${vehicle.make} ${vehicle.model} (${vehicle.plate})` : null },
+    offenseSnapshot: { type: c.type, typeLabel: AUTHORITY_CASE_TYPES[c.type as keyof typeof AUTHORITY_CASE_TYPES], offenseAt: c.offenseAt.toISOString(), timeKnown: c.offenseTimeKnown, atText: offenseText(c.offenseAt, c.offenseTimeKnown), location: c.offenseLocation },
+    rentalSnapshot: rentalSnapshot ?? undefined,
+    personSnapshot: persons.length ? { persons } : undefined,
+    freeText: input.freeText?.trim() || null,
+    persons,
+  };
+}
+
+/** Vorschau einer Antwort, ohne etwas zu speichern (Schnellweg). Liefert dieselbe Struktur wie das spätere PDF. */
+export async function previewResponse(tenantId: string, id: string, input: ResponseInput, driverOverride?: DriverSnapshot | null): Promise<AuthorityResponsePdfData> {
+  const responseType = checkResponseInput(input);
+  const c = await db.authorityCase.findFirst({ where: { id, tenantId } });
+  if (!c) throw new DomainError("Behördenvorgang nicht gefunden.");
+  const { persons, ...content } = await buildResponseContent(db, tenantId, c, responseType, input, driverOverride);
+  void persons;
+  const now = new Date();
+  const fake = { ...content, version: 0, status: "DRAFT", createdAt: now, approvedAt: null, contentHash: null, rentalSnapshot: content.rentalSnapshot ?? null, personSnapshot: content.personSnapshot ?? null } as unknown as ResponseRow;
+  return buildResponsePdfData(c, fake);
+}
+
+/** Antwortentwurf (neue Fassung) aus dem aktuellen Stand; nur bewusst ausgewählte Personendaten werden aufgenommen. */
+export async function prepareResponse(tenantId: string, id: string, actor: Actor, input: ResponseInput): Promise<ResponseRow> {
+  const responseType = checkResponseInput(input);
   try {
     return await db.$transaction(async (tx) => {
       const c = await lockCase(tx, tenantId, id);
       assertOpen(c);
-      const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
-      const email = input.recipientEmail?.trim() || c.authorityEmail || null;
-      if (input.submissionMethod === "EMAIL") {
-        if (!email || !isValidEmail(email)) throw new DomainError("Für den E-Mail-Versand muss eine E-Mail-Adresse der Behörde aus dem Schreiben erfasst sein.");
-      }
-      const driver = c.driverSnapshot as DriverSnapshot | null;
-      let persons: { role: string; fields: { label: string; value: string }[] }[] = [];
-      if (responseType === "DRIVER_IDENTIFIED") {
-        if (!driver || (c.driverDeterminationStatus !== "CONTRACT_DRIVER_SELECTED" && c.driverDeterminationStatus !== "OTHER_DRIVER_ENTERED")) throw new DomainError("„Fahrer benannt“ setzt eine bewusste Fahrerbestimmung voraus (Vertragsfahrer ausgewählt oder andere Person erfasst).");
-        persons = [{ role: driver.role === "PRIMARY_DRIVER" ? "Vertraglicher Hauptfahrer" : driver.role === "ADDITIONAL_DRIVER" ? "Zusätzlicher Vertragsfahrer" : "Benannte Person", fields: personFields(driver, !!input.includeBirthDate, !!input.includeAddress) }];
-      } else if (responseType === "MULTIPLE_POSSIBLE_DRIVERS") {
-        const cands = await driverCandidatesOf(tx, tenantId, c.contractId);
-        if (cands.length === 0) throw new DomainError("Zu diesem Vorgang ist kein Mietvertrag mit Fahrern zugeordnet.");
-        persons = cands.map((d) => ({ role: d.roleLabel, fields: personFields({ source: "CONTRACT_DRIVER", role: d.role, firstName: d.firstName, lastName: d.lastName, birthDate: d.birthDate.toISOString().slice(0, 10), street: d.street, zip: d.zip, city: d.city, country: d.country }, !!input.includeBirthDate, !!input.includeAddress) }));
-      } else if (responseType === "CUSTOM_RESPONSE" && !input.freeText?.trim()) {
-        throw new DomainError("Eine individuelle Antwort braucht einen Text.");
-      }
-      const booking = c.bookingId ? await tx.booking.findFirst({ where: { id: c.bookingId, tenantId }, select: { number: true, actualPickupAt: true, actualReturnAt: true, startAt: true, endAt: true, contract: { select: { number: true, status: true } } } }) : null;
-      const vehicle = c.vehicleId ? await tx.vehicle.findFirst({ where: { id: c.vehicleId, tenantId }, select: { plate: true, make: true, model: true } }) : null;
-      const actual = !!booking?.actualPickupAt;
-      const rentalSnapshot = booking && responseType !== "NO_MATCHING_RENTAL" && responseType !== "VEHICLE_NOT_IN_FLEET"
-        ? { bookingNumber: booking.number, contractNumber: booking.contract?.status === "SIGNED" ? booking.contract.number : null, windowStart: (actual ? booking.actualPickupAt! : booking.startAt).toISOString(), windowEnd: actual ? booking.actualReturnAt?.toISOString() ?? null : booking.endAt.toISOString(), basis: actual ? "ACTUAL" : "PLANNED", dayOnly: c.rentalMatchDayOnly }
-        : null;
+      const { persons, ...content } = await buildResponseContent(tx, tenantId, c, responseType, input);
       // vorhandenen Entwurf ersetzen, freigegebene aber nicht übermittelte Fassungen als ersetzt markieren
       const existing = await tx.authorityResponse.findMany({ where: { caseId: c.id } });
       for (const r of existing) {
@@ -390,17 +447,7 @@ export async function prepareResponse(tenantId: string, id: string, actor: Actor
       }
       const version = (existing.length ? Math.max(...existing.map((r) => r.version)) : 0) + (existing.some((r) => r.status === "DRAFT") ? 0 : 1);
       const created = await tx.authorityResponse.create({
-        data: {
-          tenantId, caseId: c.id, version, status: "DRAFT", responseType, submissionMethod: input.submissionMethod, authorityReference: c.authorityReference,
-          recipientSnapshot: { name: c.authorityName, department: c.authorityDepartment, address: c.authorityAddress, email: input.submissionMethod === "EMAIL" ? email : null, portalUrl: c.authorityPortalUrl },
-          senderSnapshot: { name: [tenant.name, tenant.legalForm].filter(Boolean).join(" "), street: tenant.street, zip: tenant.zip, city: tenant.city, email: tenant.email, phone: tenant.phone },
-          vehicleSnapshot: { plate: c.licensePlateSnapshot, vehicle: vehicle ? `${vehicle.make} ${vehicle.model} (${vehicle.plate})` : null },
-          offenseSnapshot: { type: c.type, typeLabel: AUTHORITY_CASE_TYPES[c.type as keyof typeof AUTHORITY_CASE_TYPES], offenseAt: c.offenseAt.toISOString(), timeKnown: c.offenseTimeKnown, atText: offenseText(c.offenseAt, c.offenseTimeKnown), location: c.offenseLocation },
-          rentalSnapshot: rentalSnapshot ?? undefined,
-          personSnapshot: persons.length ? { persons } : undefined,
-          freeText: input.freeText?.trim() || null,
-          createdById: actor.id, createdByName: actor.name,
-        },
+        data: { tenantId, caseId: c.id, version, status: "DRAFT", ...content, createdById: actor.id, createdByName: actor.name },
       });
       await event(tx, tenantId, c.id, actor, { type: "RESPONSE_CREATED", toValue: String(version), note: `${AUTHORITY_RESPONSE_TYPES[responseType]} · ${SUBMISSION_METHODS[input.submissionMethod as SubmissionMethod]}` });
       await recordAudit(tx, tenantId, actor, { action: "AUTHORITY_RESPONSE_CREATED", bookingId: c.bookingId, details: { caseNumber: c.caseNumber, version, responseType, submissionMethod: input.submissionMethod, persons: persons.length } });
@@ -463,7 +510,17 @@ export async function approveResponse(tenantId: string, responseId: string, acto
 }
 
 export type SubmitInput = { submittedAt?: Date | null; reference?: string | null; note?: string | null; receiptDocumentId?: string | null; nonce?: string | null; transport?: MailTransport; storage?: StorageDriver };
-export type SubmitResult = { response: ResponseRow; outcome: "SUBMITTED" | "FAILED" | "ALREADY_SUBMITTED"; error?: string };
+export type SubmitResult = { response: ResponseRow; outcome: "SUBMITTED" | "FAILED" | "ALREADY_SUBMITTED"; error?: string; /** Bearbeitungsentgelt laut Vertrag (nur nach erfolgreicher Übermittlung versucht) */ fee?: FeeOutcome };
+
+/** Nach erfolgreicher Übermittlung: vereinbartes Bearbeitungsentgelt als Rechnungsentwurf – ein Fehler dabei ändert nichts an der Übermittlung. */
+async function feeAfterSubmit(tenantId: string, caseId: string, actor: Actor): Promise<FeeOutcome> {
+  try {
+    return await ensureAuthorityFeeInvoice(tenantId, caseId, actor);
+  } catch (e) {
+    console.error("Bearbeitungsentgelt konnte nicht angelegt werden:", (e as Error).name);
+    return { status: "FAILED", message: "Das Bearbeitungsentgelt konnte nicht automatisch angelegt werden – bitte am Vorgang erneut versuchen." };
+  }
+}
 
 /**
  * Übermittlung der freigegebenen Fassung. E-Mail: nur an die aus dem Schreiben erfasste Adresse, idempotent über EmailLog,
@@ -497,7 +554,8 @@ export async function submitResponse(tenantId: string, responseId: string, actor
       await refreshStatus(tx, tenantId, c.id, actor);
       return updated;
     }, TX);
-    return { response, outcome: already ? "ALREADY_SUBMITTED" : "SUBMITTED" };
+    if (already) return { response, outcome: "ALREADY_SUBMITTED" };
+    return { response, outcome: "SUBMITTED", fee: await feeAfterSubmit(tenantId, base.caseId, actor) };
   } catch (e) {
     return domainFromDb(e);
   }
@@ -537,7 +595,7 @@ async function submitByEmail(tenantId: string, r: ResponseRow, actor: Actor, inp
       await refreshStatus(tx, tenantId, c.id, actor);
       return updated;
     }, TX);
-    return { response, outcome: "SUBMITTED" };
+    return { response, outcome: "SUBMITTED", fee: await feeAfterSubmit(tenantId, c.id, actor) };
   } catch (e) {
     const message = safeMailError(e);
     await markEmailFailed(tenantId, log.id, message);
