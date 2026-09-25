@@ -62,7 +62,7 @@ export type ReminderOutcome = { tenantId: string; recipient: string | null; stat
 export async function sendAuthorityReminders(opts: { now?: Date; transport?: MailTransport; tenantId?: string } = {}): Promise<ReminderOutcome[]> {
   const now = opts.now ?? new Date();
   const day = toDateInputValue(now);
-  const tenants = await db.tenant.findMany({ where: { authorityReminderDays: { gt: 0 }, ...(opts.tenantId ? { id: opts.tenantId } : {}) }, select: { id: true, name: true, authorityReminderDays: true, email: true } });
+  const tenants = await db.tenant.findMany({ where: { authorityReminderDays: { gt: 0 }, status: { not: "SUSPENDED" }, ...(opts.tenantId ? { id: opts.tenantId } : {}) }, select: { id: true, name: true, authorityReminderDays: true, email: true } });
   const out: ReminderOutcome[] = [];
   for (const t of tenants) {
     const rows = await deadlineDigest(t.id, t.authorityReminderDays, now);
