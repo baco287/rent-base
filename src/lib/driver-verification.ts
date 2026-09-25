@@ -403,6 +403,40 @@ export function listDriverDocumentCopies(tenantId: string, handoverId: string) {
   return db.driverDocumentCopy.findMany({ where: { tenantId, handoverId, deletionStatus: "ACTIVE" }, orderBy: { createdAt: "asc" } });
 }
 
+export type DriverDocumentHistoryEntry = {
+  verificationId: string;
+  bookingId: string;
+  bookingNumber: string;
+  driverName: string;
+  driverRole: "PRIMARY_DRIVER" | "ADDITIONAL_DRIVER";
+  status: "IN_PROGRESS" | "CONFIRMED" | "BLOCKED";
+  verifiedAt: Date | null;
+  copies: { id: string; documentKind: "IDENTITY" | "LICENSE"; side: "FRONT" | "BACK"; createdAt: Date }[];
+};
+
+/** Verlauf der Ausweis-/Führerscheinkopien eines Kunden über alle Vermietvorgänge – rein lesend für die Kundenakte.
+ *  Jede Kopie bleibt zweckgebunden an ihren jeweiligen Vermietvorgang; hier wird nur eine Übersicht angezeigt, es
+ *  wird nichts wiederverwendet oder in einen neuen Vorgang übernommen. */
+export async function driverDocumentHistoryForCustomer(tenantId: string, customerId: string): Promise<DriverDocumentHistoryEntry[]> {
+  const verifications = await db.driverVerification.findMany({
+    where: { tenantId, customerId },
+    orderBy: { createdAt: "desc" },
+    include: { documentCopies: { where: { deletionStatus: "ACTIVE" }, orderBy: { createdAt: "asc" } }, booking: { select: { number: true } } },
+  });
+  return verifications
+    .filter((v) => v.documentCopies.length > 0)
+    .map((v) => ({
+      verificationId: v.id,
+      bookingId: v.bookingId,
+      bookingNumber: v.booking.number,
+      driverName: `${v.driverFirstNameSnapshot} ${v.driverLastNameSnapshot}`,
+      driverRole: v.driverRole as "PRIMARY_DRIVER" | "ADDITIONAL_DRIVER",
+      status: v.status as "IN_PROGRESS" | "CONFIRMED" | "BLOCKED",
+      verifiedAt: v.verifiedAt,
+      copies: v.documentCopies.map((c) => ({ id: c.id, documentKind: c.documentKind as "IDENTITY" | "LICENSE", side: c.side as "FRONT" | "BACK", createdAt: c.createdAt })),
+    }));
+}
+
 // ---------------------------------------------------------------------------
 // Zusammenfassung für Dokumente (HTML-Vorschau, PDF): nie Dokumentbilder, nie die volle Führerscheinnummer.
 // ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@
 import { useActionState, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FormError } from "@/components/ui";
+import { DocumentThumb } from "@/components/document-thumb";
 import { submitWithoutReset } from "@/components/submit-without-reset";
 import { COUNTRIES, IDENTITY_DOCUMENT_TYPES, LICENSE_CLASSES } from "@/lib/constants";
 import type { DriverState } from "./driver-actions";
@@ -249,11 +250,12 @@ export function DriverDocumentUploader({ handoverId, verificationId, contractDri
       </div>
       <p className="text-xs text-ink-3">{documentKind === "IDENTITY" ? "Für die Speicherung einer Personalausweiskopie ist die Zustimmung des Ausweisinhabers erforderlich. Die Kopie wird dauerhaft als Kopie gekennzeichnet und ersetzt nicht die Originalprüfung." : "Freiwillig, dient nur dem Nachweis zu diesem Vermietvorgang und wird dauerhaft als Kopie gekennzeichnet. Die Originalprüfung funktioniert auch ohne Kopie."}</p>
       {copies.length > 0 && (
-        <ul className="flex flex-col gap-1 text-xs text-ink-2">
+        <ul className="flex flex-col gap-1.5 text-xs text-ink-2">
           {copies.map((c) => (
-            <li key={c.id} className="flex items-center justify-between gap-2 rounded-md bg-panel-2 px-2 py-1.5">
-              <span>{c.side === "FRONT" ? "Vorderseite" : "Rückseite"}</span>
-              <button type="button" onClick={() => remove(c.id)} disabled={busy} className="text-bad underline">Löschen</button>
+            <li key={c.id} className="flex items-center gap-2.5 rounded-md bg-panel-2 px-2 py-1.5">
+              <DocumentThumb id={c.id} label={c.side === "FRONT" ? "Vorderseite" : "Rückseite"} />
+              <span className="flex-1">{c.side === "FRONT" ? "Vorderseite" : "Rückseite"}</span>
+              {editable && <button type="button" onClick={() => remove(c.id)} disabled={busy} className="text-bad underline shrink-0">Löschen</button>}
             </li>
           ))}
         </ul>

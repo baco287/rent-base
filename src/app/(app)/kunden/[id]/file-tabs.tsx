@@ -3,8 +3,10 @@
 // Auszahlungen bleiben sichtbar, werden aber nie summiert. Haftung bei Schäden ist die Entscheidung der Akte.
 import Link from "next/link";
 import { BookingStatusChip, Card, Chip, Empty, KPI, Plate } from "@/components/ui";
-import { AUTHORITY_DOCUMENT_TYPES, CONTRACT_STATUS, DAMAGE_CASE_DOCUMENT_TYPES, DEPOSIT_EVENT_TYPES, DEPOSIT_STATUS, DOCUMENT_TYPES, DRIVER_ROLES, EMAIL_STATUS, INVOICE_CHAIN_STATUS, INVOICE_DOCUMENT_TYPES, PAYMENT_METHODS, PAYOUT_METHODS, PAYOUT_SOURCE_TYPES, PAYOUT_STATUS, type AuthorityDocumentType, type DamageCaseDocumentType, type DepositEventType, type DepositStatus, type DocumentType, type DriverRole, type EmailStatus, type InvoiceDocumentTypeKey, type PaymentMethod, type PayoutMethod, type PayoutSourceType, type PayoutStatus } from "@/lib/constants";
+import { DocumentThumb } from "@/components/document-thumb";
+import { AUTHORITY_DOCUMENT_TYPES, CONTRACT_STATUS, DAMAGE_CASE_DOCUMENT_TYPES, DEPOSIT_EVENT_TYPES, DEPOSIT_STATUS, DOCUMENT_TYPES, DRIVER_ROLES, DRIVER_VERIFICATION_STATUS, EMAIL_STATUS, INVOICE_CHAIN_STATUS, INVOICE_DOCUMENT_TYPES, PAYMENT_METHODS, PAYOUT_METHODS, PAYOUT_SOURCE_TYPES, PAYOUT_STATUS, type AuthorityDocumentType, type DamageCaseDocumentType, type DepositEventType, type DepositStatus, type DocumentType, type DriverRole, type DriverVerificationStatus, type EmailStatus, type InvoiceDocumentTypeKey, type PaymentMethod, type PayoutMethod, type PayoutSourceType, type PayoutStatus } from "@/lib/constants";
 import { casesForCustomer } from "@/lib/authority";
+import { driverDocumentHistoryForCustomer } from "@/lib/driver-verification";
 import { BOOKINGS_PAGE, customerBookings, customerDamageCases, customerDeposits, customerDocuments, customerDriverRoles, customerEmails, customerFinance, customerTimeline, type CustomerOverview } from "@/lib/customer-file";
 import { templateLabel } from "@/lib/dashboard";
 import { customerName, fmtDate, fmtDateTime, fmtEur } from "@/lib/format";
@@ -240,25 +242,54 @@ export async function DamagesTab({ tenantId, customerId }: { tenantId: string; c
 // ---------------------------------------------------------------------------
 
 export async function DocumentsTab({ tenantId, customerId, role }: { tenantId: string; customerId: string; role: string }) {
-  const rows = await customerDocuments(tenantId, customerId, role);
+  const [rows, driverHistory] = await Promise.all([customerDocuments(tenantId, customerId, role), driverDocumentHistoryForCustomer(tenantId, customerId)]);
   const label = (d: (typeof rows)[number]) => d.kind === "BOOKING" ? DOCUMENT_TYPES[d.type as DocumentType] ?? d.type : d.kind === "DAMAGE" ? DAMAGE_CASE_DOCUMENT_TYPES[d.type as DamageCaseDocumentType] ?? d.type : AUTHORITY_DOCUMENT_TYPES[d.type as AuthorityDocumentType] ?? d.type;
+  const copyLabel = (kind: string, side: string) => `${kind === "IDENTITY" ? "Ausweis" : "Führerschein"} · ${side === "FRONT" ? "Vorderseite" : "Rückseite"}`;
   return (
-    <Card title="Dokumente" right={<Chip>{rows.length}</Chip>}>
-      {rows.length === 0 ? <Empty>Noch keine Dokumente archiviert.</Empty> : (
-        <ul className="divide-y divide-line-soft">
-          {rows.map((d) => (
-            <Row key={`${d.kind}-${d.id}`}>
-              <span className="font-medium">{label(d)}</span>
-              <Link href={d.contextHref} className="text-xs underline">{d.context}</Link>
-              <span className="text-xs text-ink-3 break-all">{d.fileName} · {kb(d.sizeBytes)}</span>
-              <span className="font-mono tnum text-xs text-ink-3">{fmtDateTime(d.createdAt)}</span>
-              <span className="ml-auto flex gap-2"><a href={d.href} target="_blank" rel="noopener" className="btn !py-1">Öffnen</a><a href={`${d.href}?download=1`} className="btn !py-1">Herunterladen</a></span>
-            </Row>
-          ))}
-        </ul>
-      )}
-      <p className="px-4 pb-3 text-xs text-ink-3">Dateien liegen im privaten Speicher und werden nur über die geschützte Adresse an angemeldete Mitarbeiter dieses Mandanten ausgeliefert. Fahrzeug- und Werkstattdokumente gehören zur Fahrzeugakte.{role === "YARD" ? " Behördendokumente sind der Disposition vorbehalten." : ""}</p>
-    </Card>
+    <>
+      <Card title="Dokumente" right={<Chip>{rows.length}</Chip>}>
+        {rows.length === 0 ? <Empty>Noch keine Dokumente archiviert.</Empty> : (
+          <ul className="divide-y divide-line-soft">
+            {rows.map((d) => (
+              <Row key={`${d.kind}-${d.id}`}>
+                <span className="font-medium">{label(d)}</span>
+                <Link href={d.contextHref} className="text-xs underline">{d.context}</Link>
+                <span className="text-xs text-ink-3 break-all">{d.fileName} · {kb(d.sizeBytes)}</span>
+                <span className="font-mono tnum text-xs text-ink-3">{fmtDateTime(d.createdAt)}</span>
+                <span className="ml-auto flex gap-2"><a href={d.href} target="_blank" rel="noopener" className="btn !py-1">Öffnen</a><a href={`${d.href}?download=1`} className="btn !py-1">Herunterladen</a></span>
+              </Row>
+            ))}
+          </ul>
+        )}
+        <p className="px-4 pb-3 text-xs text-ink-3">Dateien liegen im privaten Speicher und werden nur über die geschützte Adresse an angemeldete Mitarbeiter dieses Mandanten ausgeliefert. Fahrzeug- und Werkstattdokumente gehören zur Fahrzeugakte.{role === "YARD" ? " Behördendokumente sind der Disposition vorbehalten." : ""}</p>
+      </Card>
+      <Card title="Ausweis- & Führerscheinkopien (Verlauf)" right={<Chip>{driverHistory.length}</Chip>}>
+        {driverHistory.length === 0 ? <Empty>Noch keine Dokumentkopien bei einer Übergabe erfasst.</Empty> : (
+          <ul className="divide-y divide-line-soft">
+            {driverHistory.map((h) => (
+              <li key={h.verificationId} className="px-4 py-3 flex flex-col gap-2">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+                  <span className="font-medium">{h.driverName}</span>
+                  <Chip tone="info">{DRIVER_ROLES[h.driverRole as DriverRole]}</Chip>
+                  <Chip tone={h.status === "CONFIRMED" ? "good" : h.status === "BLOCKED" ? "bad" : "amber"}>{DRIVER_VERIFICATION_STATUS[h.status as DriverVerificationStatus]}</Chip>
+                  <Link href={`/buchungen/${h.bookingId}`} className="text-xs underline">Buchung {h.bookingNumber}</Link>
+                  {h.verifiedAt && <span className="font-mono tnum text-xs text-ink-3">{fmtDateTime(h.verifiedAt)}</span>}
+                </div>
+                <div className="flex flex-wrap gap-2.5">
+                  {h.copies.map((c) => (
+                    <div key={c.id} className="flex flex-col items-center gap-1">
+                      <DocumentThumb id={c.id} label={copyLabel(c.documentKind, c.side)} />
+                      <span className="text-[11px] text-ink-3">{copyLabel(c.documentKind, c.side)}</span>
+                    </div>
+                  ))}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="px-4 pb-3 text-xs text-ink-3">Nur zur Ansicht. Jede Kopie bleibt an ihren jeweiligen Vermietvorgang gebunden (Zweckbindung, Art. 5/6 DSGVO) und wird nicht automatisch für neue Buchungen übernommen.</p>
+      </Card>
+    </>
   );
 }
 

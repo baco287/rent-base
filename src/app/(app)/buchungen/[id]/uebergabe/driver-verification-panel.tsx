@@ -55,6 +55,12 @@ function DriverCard({ bookingId, handoverId, view, role, copies }: { bookingId: 
               <dt className="text-ink-3">Geprüft am</dt><dd>{v.verifiedAt ? fmtDateTime(v.verifiedAt) : "–"}</dd>
               <dt className="text-ink-3">Geprüft von</dt><dd>{v.verifiedByName ?? "–"}</dd>
             </dl>
+            {(idCopies.length > 0 || licCopies.length > 0) && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                {idCopies.length > 0 && <DriverDocumentUploader handoverId={handoverId} verificationId={v.id} contractDriverId={view.driver.contractDriverId} documentKind="IDENTITY" copies={idCopies} editable={false} />}
+                {licCopies.length > 0 && <DriverDocumentUploader handoverId={handoverId} verificationId={v.id} contractDriverId={view.driver.contractDriverId} documentKind="LICENSE" copies={licCopies} editable={false} />}
+              </div>
+            )}
           </div>
         ) : !v ? (
           <StartDriverVerificationButton action={startDriverVerificationAction.bind(null, bookingId, handoverId, view.driver.contractDriverId)} label={`Prüfung für ${name} beginnen`} />
