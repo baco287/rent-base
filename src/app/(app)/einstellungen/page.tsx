@@ -1,13 +1,15 @@
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { ROLES, type Role } from "@/lib/constants";
+import { ROLES, INVITATION_STATUS, type Role, type InvitationStatus } from "@/lib/constants";
 import { Card, Chip, Content, PageHeader } from "@/components/ui";
-import { toggleUserActiveAction } from "./actions";
+import { resendInvitationAction, revokeInvitationAction, toggleUserActiveAction } from "./actions";
 import Link from "next/link";
-import { InvoiceSettingsForm, NewUserForm, TenantForm } from "./forms";
+import { InvoiceSettingsForm, InviteUserForm, TenantForm } from "./forms";
+import { RoleSelect } from "./role-select";
 import { invoiceSettingsMissing } from "@/lib/invoices";
 import { termsOverview } from "@/lib/rental-terms";
-import { fmtDate } from "@/lib/format";
+import { listInvitations } from "@/lib/invitations";
+import { fmtDate, fmtDateTime } from "@/lib/format";
 import { numberRangesOf } from "@/lib/number-ranges";
 
 export const metadata = { title: "Einstellungen" };
@@ -17,6 +19,7 @@ export default async function SettingsPage({ searchParams }: PageProps<"/einstel
   const sp = await searchParams;
   const isOwner = me.role === "OWNER";
   const users = await db.user.findMany({ where: { tenantId: tenant.id }, orderBy: [{ active: "desc" }, { name: "asc" }] });
+  const invitations = (await listInvitations(tenant.id)).filter((i) => i.status === "PENDING");
   const terms = await termsOverview(tenant.id);
   const ranges = numberRangesOf(tenant.numberRanges);
 
@@ -25,6 +28,7 @@ export default async function SettingsPage({ searchParams }: PageProps<"/einstel
       <PageHeader title="Einstellungen" sub={tenant.name} />
       <Content>
         {sp.fehler === "selbst" && <Chip tone="bad">Das eigene Konto kann nicht deaktiviert werden.</Chip>}
+        {typeof sp.fehler === "string" && sp.fehler !== "selbst" && <Chip tone="bad">{decodeURIComponent(sp.fehler)}</Chip>}
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
           <Card title="Firmendaten">
             {isOwner ? (
@@ -77,12 +81,16 @@ export default async function SettingsPage({ searchParams }: PageProps<"/einstel
                 {users.map((u) => {
                   const toggle = toggleUserActiveAction.bind(null, u.id);
                   return (
-                    <li key={u.id} className="px-4 py-2.5 flex items-center gap-3">
+                    <li key={u.id} className="px-4 py-2.5 flex items-center gap-3 flex-wrap">
                       <div className="flex-1 min-w-0">
                         <div className="font-medium">{u.name}{u.id === me.id ? " (du)" : ""}</div>
-                        <div className="text-xs text-ink-3">{u.email}</div>
+                        <div className="text-xs text-ink-3">{u.email}{u.lastLoginAt ? ` · zuletzt angemeldet ${fmtDateTime(u.lastLoginAt)}` : " · noch nie angemeldet"}</div>
                       </div>
-                      <Chip tone={u.role === "OWNER" ? "info" : "grey"}>{ROLES[u.role as Role] ?? u.role}</Chip>
+                      {isOwner && u.id !== me.id ? (
+                        <RoleSelect userId={u.id} currentRole={u.role} />
+                      ) : (
+                        <Chip tone={u.role === "OWNER" ? "info" : "grey"}>{ROLES[u.role as Role] ?? u.role}</Chip>
+                      )}
                       {!u.active && <Chip tone="bad">Deaktiviert</Chip>}
                       {isOwner && u.id !== me.id && (
                         <form action={toggle}><button className="btn !py-1">{u.active ? "Deaktivieren" : "Aktivieren"}</button></form>
@@ -92,9 +100,29 @@ export default async function SettingsPage({ searchParams }: PageProps<"/einstel
                 })}
               </ul>
             </Card>
+            {isOwner && invitations.length > 0 && (
+              <Card title="Offene Einladungen">
+                <ul className="divide-y divide-line-soft">
+                  {invitations.map((inv) => {
+                    const resend = resendInvitationAction.bind(null, inv.id);
+                    const revoke = revokeInvitationAction.bind(null, inv.id);
+                    return (
+                      <li key={inv.id} className="px-4 py-2.5 flex items-center gap-3 flex-wrap">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium">{inv.email}</div>
+                          <div className="text-xs text-ink-3">{ROLES[inv.role as Role] ?? inv.role} · {INVITATION_STATUS[inv.status as InvitationStatus] ?? inv.status} · gültig bis {fmtDateTime(inv.expiresAt)}</div>
+                        </div>
+                        <form action={resend}><button className="btn !py-1">Erneut senden</button></form>
+                        <form action={revoke}><button className="btn !py-1">Widerrufen</button></form>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </Card>
+            )}
             {isOwner && (
-              <Card title="Mitarbeiter anlegen">
-                <NewUserForm />
+              <Card title="Mitarbeiter einladen">
+                <InviteUserForm />
               </Card>
             )}
           </div>

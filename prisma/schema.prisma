@@ -27,6 +27,14 @@ model Tenant {
   rentalTermsSequence    Int     @default(0) // fortlaufender Zähler der Fassungsnummern; verworfene Entwürfe geben ihre Nummer nicht zurück
   numberRanges           Json? // Nummernkreise der Belege (Phase 17): { invoice: { prefix }, creditNote: { prefix }, cancellation: { prefix } }; null = RE / GS / ST
 
+  // Plattformebene (Befehl 20): Mandantenstatus, unabhängig von Belegnummernkreisen. PENDING_SETUP nur informativ
+  // (Onboarding-Hinweis), blockiert für sich allein nichts; SUSPENDED blockiert Login/Mutationen serverseitig.
+  status          String    @default("ACTIVE") // PENDING_SETUP | ACTIVE | SUSPENDED
+  suspendedAt     DateTime?
+  suspendedReason String?
+  suspendedById   String? // User.id des SUPER_ADMIN, nur Referenz (kein Fremdschlüssel, analog AuditLog.userId)
+  suspendedByName String?
+
   // Rechnungsdaten (Phase 8). "street" enthält Straße und Hausnummer, keine doppelte Speicherung.
   legalForm        String? // z. B. GmbH, e. K., Einzelunternehmen; Teil des vollständigen Unternehmensnamens
   country          String   @default("DE")
@@ -49,6 +57,8 @@ model Tenant {
   customers Customer[]
   bookings  Booking[]
 
+  invitations              Invitation[]
+  supportSessions          SupportSession[]
   sketches                 VehicleSketch[]
   contracts                RentalContract[]
   contractDrivers          ContractDriver[]
@@ -91,21 +101,87 @@ model Tenant {
 }
 
 model User {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   tenantId     String
-  email        String   @unique
+  email        String    @unique
   name         String
   passwordHash String
-  role         String   @default("OWNER") // OWNER | DISPO | YARD
-  active       Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  role         String    @default("OWNER") // OWNER | DISPO | YARD (Mandantenrolle)
+  active       Boolean   @default(true)
+  platformRole String    @default("NONE") // NONE | SUPER_ADMIN (Plattformrolle, Befehl 20) – strikt getrennt von "role"
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
-  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  sessions  Session[]
-  handovers Handover[]
+  tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sessions            Session[]
+  handovers           Handover[]
+  passwordResetTokens PasswordResetToken[]
 
   @@index([tenantId])
+  @@index([platformRole])
+}
+
+// ============================================================================
+// Plattformebene (Befehl 20): Super-Admin, Mandantenverwaltung, Einladungen, Passwort-Reset, Supportzugriff.
+// Kein Membership-Modell: ein User gehört weiterhin zu genau einem Tenant (Bestandsarchitektur), Details im Bericht.
+// ============================================================================
+
+// Einladung zu einem Mandanten: erste OWNER-Einladung bei Mandantenanlage durch SUPER_ADMIN, oder weitere
+// Mitarbeiter durch den OWNER. Token nur gehasht gespeichert, single-use, zeitlich begrenzt.
+model Invitation {
+  id       String @id @default(cuid())
+  tenantId String
+  email    String
+  role     String // OWNER | DISPO | YARD – Mandantenrolle, die der eingeladene Benutzer erhält
+
+  tokenHash String   @unique
+  status    String   @default("PENDING") // PENDING | ACCEPTED | EXPIRED | REVOKED
+  expiresAt DateTime
+
+  invitedById    String? // User.id, nur Referenz (kann SUPER_ADMIN oder OWNER sein)
+  invitedByName  String?
+  acceptedUserId String? // User.id des neu angelegten Kontos, erst nach Annahme gesetzt
+
+  createdAt  DateTime  @default(now())
+  acceptedAt DateTime?
+  revokedAt  DateTime?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@index([email])
+}
+
+// Einmaliger Passwort-Reset-Token, nur gehasht gespeichert, single-use, zeitlich begrenzt.
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// Zeitlich begrenzter, read-only Supportzugriff eines SUPER_ADMIN auf einen Mandanten. Vollständig protokolliert.
+model SupportSession {
+  id             String    @id @default(cuid())
+  tenantId       String
+  superAdminId   String // User.id, nur Referenz
+  superAdminName String
+  reason         String
+  startedAt      DateTime  @default(now())
+  expiresAt      DateTime
+  endedAt        DateTime?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, startedAt])
+  @@index([superAdminId])
 }
 
 model Session {

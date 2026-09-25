@@ -2,11 +2,14 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { hashPassword, requireRole } from "@/lib/auth";
-import { ROLES } from "@/lib/constants";
+import { requireRole } from "@/lib/auth";
+import { ROLES, type Role } from "@/lib/constants";
+import { createInvitation, resendInvitation, revokeInvitation } from "@/lib/invitations";
+import { activateUser, changeUserRole, deactivateUser } from "@/lib/tenant-users";
+import { requestBaseUrl } from "@/lib/request-url";
+import { DomainError } from "@/lib/integrity";
 
 export type FormState = { error?: string; ok?: string } | undefined;
 
@@ -34,26 +37,37 @@ export async function updateTenantAction(_prev: FormState, formData: FormData): 
   return { ok: "Firmendaten gespeichert." };
 }
 
-const userSchema = z.object({
-  name: z.string().trim().min(2, "Bitte den Namen eingeben."),
+const inviteUserSchema = z.object({
   email: z.string().trim().toLowerCase().email("Bitte eine gültige E-Mail-Adresse eingeben."),
   role: z.enum(Object.keys(ROLES) as [string, ...string[]]),
-  password: z.string().min(10, "Das Passwort braucht mindestens 10 Zeichen."),
 });
 
-export async function createUserAction(_prev: FormState, formData: FormData): Promise<FormState> {
-  const { tenant } = await requireRole("OWNER");
-  const parsed = userSchema.safeParse(Object.fromEntries(formData));
+/** Lädt einen Mitarbeiter per E-Mail ein (Befehl 20, item 15/27): kein vom Inhaber vergebenes Passwort mehr. */
+export async function inviteUserAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const { tenant, user: me } = await requireRole("OWNER");
+  const parsed = inviteUserSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   const d = parsed.data;
   try {
-    await db.user.create({ data: { tenantId: tenant.id, name: d.name, email: d.email, role: d.role, passwordHash: await hashPassword(d.password) } });
+    await createInvitation(tenant.id, { id: me.id, name: me.name }, { email: d.email, role: d.role as Role, baseUrl: await requestBaseUrl() });
   } catch (e) {
-    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") return { error: "Diese E-Mail-Adresse wird bereits verwendet." };
+    if (e instanceof DomainError) return { error: e.message };
     throw e;
   }
   revalidatePath("/einstellungen");
-  return { ok: `${d.name} wurde angelegt.` };
+  return { ok: `Einladung an ${d.email} gesendet.` };
+}
+
+export async function resendInvitationAction(invitationId: string) {
+  const { tenant, user: me } = await requireRole("OWNER");
+  await resendInvitation(tenant.id, { id: me.id, name: me.name }, invitationId, await requestBaseUrl());
+  revalidatePath("/einstellungen");
+}
+
+export async function revokeInvitationAction(invitationId: string) {
+  const { tenant, user: me } = await requireRole("OWNER");
+  await revokeInvitation(tenant.id, { id: me.id, name: me.name }, invitationId);
+  revalidatePath("/einstellungen");
 }
 
 export async function toggleUserActiveAction(userId: string) {
@@ -61,10 +75,30 @@ export async function toggleUserActiveAction(userId: string) {
   if (userId === me.id) redirect("/einstellungen?fehler=selbst");
   const u = await db.user.findFirst({ where: { id: userId, tenantId: tenant.id } });
   if (!u) redirect("/einstellungen");
-  await db.user.update({ where: { id: userId }, data: { active: !u.active } });
-  if (u.active) await db.session.deleteMany({ where: { userId } });
+  try {
+    if (u.active) await deactivateUser({ id: me.id, name: me.name }, tenant.id, userId);
+    else await activateUser({ id: me.id, name: me.name }, tenant.id, userId);
+  } catch (e) {
+    if (e instanceof DomainError) redirect(`/einstellungen?fehler=${encodeURIComponent(e.message)}`);
+    throw e;
+  }
   revalidatePath("/einstellungen");
   redirect("/einstellungen");
+}
+
+export async function changeUserRoleAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const { tenant, user: me } = await requireRole("OWNER");
+  const userId = String(formData.get("userId") ?? "");
+  const role = String(formData.get("role") ?? "");
+  if (!Object.keys(ROLES).includes(role)) return { error: "Ungültige Rolle." };
+  try {
+    await changeUserRole({ id: me.id, name: me.name }, tenant.id, userId, role as Role);
+  } catch (e) {
+    if (e instanceof DomainError) return { error: e.message };
+    throw e;
+  }
+  revalidatePath("/einstellungen");
+  return { ok: "Rolle geändert." };
 }
 
 const optInt = z.preprocess((v) => (v === "" || v === undefined ? undefined : v), z.coerce.number().int().min(0).max(365).optional());

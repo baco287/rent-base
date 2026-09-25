@@ -21,6 +21,37 @@ export function roleAllows(role: string, allowed: readonly string[]) {
   return role === "OWNER" || allowed.includes(role);
 }
 
+// Befehl 20: Plattformebene. PLATFORM_ROLE ist strikt von ROLES (Mandantenrolle) getrennt – ein SUPER_ADMIN
+// ist kein "stärkerer OWNER", sondern gehört zur RentBase-Plattform (lib/platform-auth.ts).
+export const PLATFORM_ROLES = {
+  NONE: "Kein Plattformzugang",
+  SUPER_ADMIN: "Super-Admin",
+} as const;
+export type PlatformRole = keyof typeof PLATFORM_ROLES;
+
+export const TENANT_STATUS = {
+  PENDING_SETUP: "Einrichtung offen",
+  ACTIVE: "Aktiv",
+  SUSPENDED: "Gesperrt",
+} as const;
+export type TenantStatus = keyof typeof TENANT_STATUS;
+
+export const INVITATION_STATUS = {
+  PENDING: "Offen",
+  ACCEPTED: "Angenommen",
+  EXPIRED: "Abgelaufen",
+  REVOKED: "Widerrufen",
+} as const;
+export type InvitationStatus = keyof typeof INVITATION_STATUS;
+
+export const INVITATION_EXPIRY_HOURS = 72;
+export const PASSWORD_RESET_EXPIRY_MINUTES = 60;
+export const SUPPORT_SESSION_MAX_MINUTES = 60;
+// Supportzugriff ist read-only und zeigt keine besonders sensiblen Dokumentarten (item 36): Ausweis-/Führerscheinkopien,
+// Behördendokumente, volle IBAN. Jede Ausliefer-Route entscheidet selbst anhand dieser Liste (lib/support-sessions.ts).
+export const SUPPORT_BLOCKED_DOCUMENT_KINDS = ["DRIVER_DOCUMENT_COPY", "AUTHORITY_DOCUMENT", "DAMAGE_DOCUMENT"] as const;
+export type SupportBlockedKind = (typeof SUPPORT_BLOCKED_DOCUMENT_KINDS)[number];
+
 export const VEHICLE_STATUS = {
   AVAILABLE: "Verfügbar",
   WORKSHOP: "Werkstatt",
@@ -56,6 +87,9 @@ export const BLOCKING_BOOKING_STATUS: BookingStatus[] = ["RESERVED", "ACTIVE"];
 
 export const SESSION_COOKIE = "rb_session";
 export const SESSION_DAYS = 14;
+// Befehl 20: zweiter, unabhängiger Cookie für eine aktive Supportsession. Wird serverseitig gegen SupportSession
+// geprüft (Eigentümer, nicht beendet, nicht abgelaufen) – niemals allein vertraut.
+export const SUPPORT_COOKIE = "rb_support";
 
 // ---------------------------------------------------------------------------
 // Etappe 2: Mietvertrag, Übergabe, Rückgabe, Schäden, Dokumente
@@ -309,6 +343,23 @@ export const AUDIT_ACTIONS = {
   PAYOUT_DOCUMENT_UPLOADED: "Auszahlung: Nachweis hochgeladen",
   PAYOUT_DOCUMENT_ARCHIVED: "Auszahlung: Beleg archiviert",
   PAYOUT_EMAIL_SENT: "Auszahlungsbeleg versendet",
+  // Befehl 20: Plattformebene (Super-Admin, Mandanten, Einladungen, Passwort-Reset, Supportzugriff)
+  TENANT_CREATED: "Mandant angelegt",
+  TENANT_SUSPENDED: "Mandant gesperrt",
+  TENANT_REACTIVATED: "Mandant reaktiviert",
+  OWNER_INVITED: "Inhaber eingeladen",
+  USER_INVITED: "Benutzer eingeladen",
+  INVITATION_RESENT: "Einladung erneut gesendet",
+  INVITATION_REVOKED: "Einladung widerrufen",
+  INVITATION_ACCEPTED: "Einladung angenommen",
+  USER_ACTIVATED: "Benutzer aktiviert",
+  USER_DEACTIVATED: "Benutzer deaktiviert",
+  USER_ROLE_CHANGED: "Rolle geändert",
+  PASSWORD_RESET_REQUESTED: "Passwort-Reset angefordert",
+  PASSWORD_RESET_COMPLETED: "Passwort zurückgesetzt",
+  SUPPORT_SESSION_STARTED: "Supportzugriff gestartet",
+  SUPPORT_SESSION_ENDED: "Supportzugriff beendet",
+  SUPER_ADMIN_GRANTED: "Plattformrolle SUPER_ADMIN vergeben",
 } as const;
 export type AuditAction = keyof typeof AUDIT_ACTIONS;
 

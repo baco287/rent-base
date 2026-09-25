@@ -83,6 +83,9 @@ export async function purgeTenants(tenantIds: string[]) {
         await tx.vehicleGroup.deleteMany(w);
         await tx.vehicleSketch.deleteMany(w);
         await tx.session.deleteMany({ where: { user: { tenantId: t } } });
+        await tx.supportSession.deleteMany(w);
+        await tx.invitation.deleteMany(w);
+        await tx.passwordResetToken.deleteMany({ where: { user: { tenantId: t } } });
         await tx.user.deleteMany(w);
         await tx.tenant.deleteMany({ where: { id: t } });
       }

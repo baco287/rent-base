@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
+import Link from "next/link";
 import { loginAction } from "../actions";
 
 export function LoginForm({ weiter }: { weiter?: string }) {
@@ -16,6 +17,7 @@ export function LoginForm({ weiter }: { weiter?: string }) {
       <div className="flex flex-col gap-1">
         <label htmlFor="password" className="label-xs">Passwort</label>
         <input id="password" name="password" type="password" autoComplete="current-password" required className="input" />
+        <Link href="/passwort-vergessen" className="text-xs text-ink-3 hover:text-ink self-end">Passwort vergessen?</Link>
       </div>
       {state?.error && (
         <p role="alert" className="text-bad bg-bad-soft rounded-md px-3 py-2 text-sm">{state.error}</p>

@@ -27,6 +27,12 @@ import { createPayout } from "../src/lib/payouts";
 import { ensurePayoutDocument } from "../src/lib/documents";
 import { toDateInputValue, zonedParts } from "../src/lib/time";
 import { confirmVerification, recordIdentityCheck, recordLicenseCheck, startOrGetVerification } from "../src/lib/driver-verification";
+import { hashPassword } from "../src/lib/password";
+import { createTenantByPlatform, suspendTenant, reactivateTenant } from "../src/lib/platform-tenants";
+import { acceptInvitation } from "../src/lib/invitations";
+import { requestPasswordReset } from "../src/lib/password-reset";
+import { startSupportSession } from "../src/lib/support-sessions";
+import { setMailTransport, type MailMessage, type MailTransport } from "../src/lib/mail";
 
 const args = process.argv.slice(2);
 const keep = args.includes("--keep");
@@ -34,6 +40,9 @@ const base = args.find((a) => a.startsWith("http")) ?? "http://localhost:3000";
 
 const w = await createWorld("smoke");
 await db.user.update({ where: { id: w.userId }, data: { role: "OWNER" } });
+// Befehl 20: zweiter Inhaber, damit w.userId testweise auf andere Rollen umgeschaltet werden kann – der letzte
+// aktive Inhaber eines Mandanten lässt sich nicht mehr herabstufen (item 28, DB-Trigger rb_guard_last_owner).
+await db.user.create({ data: { tenantId: w.tenantId, email: `zweiter-inhaber-${Date.now()}@example.test`, name: "Zweiter Inhaber", passwordHash: await hashPassword("zweiterinhaberpasswort1"), role: "OWNER" } });
 // Phase 19.5: erforderliche Fahrerlaubnisklasse für die Fahrzeuggruppe konfigurieren (sonst blockiert die Übergabe bewusst)
 await db.vehicleGroup.update({ where: { id: w.groupId }, data: { requiredLicenseClass: "B" } });
 const sessionId = randomBytes(32).toString("base64url");
@@ -792,6 +801,93 @@ const foreignSearch = await plain(await fetch(`${base}/suche?q=${encodeURICompon
 report(foreignSearch.includes("Nichts gefunden"), "Suche: fremder Mandant findet die Rechnung nicht");
 const anonSearch = await fetch(base + "/suche?q=muster", { redirect: "manual" });
 report(anonSearch.status === 307 || anonSearch.status === 302, `${anonSearch.status} Suche ohne Sitzung leitet zum Login`);
+
+// ---------------------------------------------------------------------------
+// Befehl 20: Super-Admin, Mandantenverwaltung, Einladungen, Sperrung, Supportmodus, Passwort-Reset.
+// Mailversand wird für diesen Prozess abgefangen (setMailTransport gilt nur im laufenden Prozess, nicht im
+// separaten Dev-Server) – die HTTP-Prüfungen selbst laufen wie überall gegen den echten laufenden Server.
+// ---------------------------------------------------------------------------
+class SmokeMailTransport implements MailTransport {
+  readonly name = "smoke";
+  sent: MailMessage[] = [];
+  async send(m: MailMessage) { this.sent.push(m); return { messageId: `<smoke-${this.sent.length}@test>` }; }
+}
+const mail = new SmokeMailTransport();
+setMailTransport(mail);
+const tokenFromMail = (m: MailMessage, path: string) => new RegExp(`/${path}/([A-Za-z0-9_-]+)`).exec(m.text)![1];
+const platformTenants: string[] = [];
+
+const admin = await db.user.create({ data: { tenantId: w.tenantId, email: `superadmin-${Date.now()}@example.test`, name: "Super Admin", passwordHash: await hashPassword("superadminpasswort1"), role: "OWNER" } });
+await db.$transaction(async (tx) => {
+  await tx.$executeRawUnsafe(`SET LOCAL rentbase.allow_platform_role_change = 'on'`);
+  await tx.user.update({ where: { id: admin.id }, data: { platformRole: "SUPER_ADMIN" } });
+});
+const adminSessionId = randomBytes(32).toString("base64url");
+await db.session.create({ data: { id: adminSessionId, userId: admin.id, expiresAt: new Date(Date.now() + 3600_000) } });
+const adminCookie = `rb_session=${adminSessionId}`;
+
+const notAdmin = await fetch(`${base}/admin`, { headers: { cookie }, redirect: "manual" });
+report(notAdmin.status === 307, `${notAdmin.status} normaler Inhaber kommt nicht auf /admin`);
+const adminHome = await plain(await fetch(`${base}/admin`, { headers: { cookie: adminCookie } }));
+report(adminHome.includes("RentBase Administration"), "Super-Admin: Plattformdashboard erreichbar");
+
+mail.sent = [];
+const newTenant = await createTenantByPlatform({ id: admin.id, name: admin.name }, { companyName: `Smoke Neu ${Date.now()}`, ownerFirstName: "Neu", ownerLastName: "Inhaber", ownerEmail: `neu-inhaber-${Date.now()}@example.test`, baseUrl: base });
+platformTenants.push(newTenant.id);
+report(mail.sent.length === 1 && !/[Pp]ass(?:wort|word)\s*[:=]/.test(mail.sent[0].text), "Mandantenanlage: Einladung versendet, kein Passwortwert in der Mail");
+const inviteToken = tokenFromMail(mail.sent[0], "einladung");
+const inviteAccept = await fetch(`${base}/einladung/${inviteToken}`, { headers: { cookie: "" } });
+report(inviteAccept.status === 200 && (await inviteAccept.clone().text()).includes("Willkommen bei RentBase"), `${inviteAccept.status} Einladungsseite zeigt Willkommen`);
+const { userId: newOwnerId } = await acceptInvitation(inviteToken, { name: "Neu Inhaber", password: "ganzneuespasswort1" });
+const newOwnerSessionId = randomBytes(32).toString("base64url");
+await db.session.create({ data: { id: newOwnerSessionId, userId: newOwnerId, expiresAt: new Date(Date.now() + 3600_000) } });
+const newOwnerCookie = `rb_session=${newOwnerSessionId}`;
+const newTenantHome = await plain(await fetch(`${base}/heute`, { headers: { cookie: newOwnerCookie } }));
+report(newTenantHome.includes("Einrichtung fortsetzen"), "Neuer Mandant: Onboarding-Hinweis auf dem Dashboard (PENDING_SETUP)");
+
+await suspendTenant({ id: admin.id, name: admin.name }, newTenant.id, "Smoke-Test Sperrung");
+// Sperrung beendet sofort alle bestehenden Sitzungen (item 11: "keine Sessions still weiterarbeiten lassen") –
+// der alte Cookie ist danach schlicht ungültig, keine Sitzung mehr gefunden, normale Login-Weiterleitung.
+const oldCookieAfterSuspend = await fetch(`${base}/heute`, { headers: { cookie: newOwnerCookie }, redirect: "manual" });
+report(oldCookieAfterSuspend.status === 307 && (oldCookieAfterSuspend.headers.get("location") ?? "").includes("/login"), `${oldCookieAfterSuspend.status} Sperrung beendet die bestehende Sitzung sofort`);
+// Eine neue Sitzung (wie bei einer erneuten Anmeldung) sieht die Sperre klar über /gesperrt.
+const freshOwnerSessionId = randomBytes(32).toString("base64url");
+await db.session.create({ data: { id: freshOwnerSessionId, userId: newOwnerId, expiresAt: new Date(Date.now() + 3600_000) } });
+const freshOwnerCookie = `rb_session=${freshOwnerSessionId}`;
+const suspendedHome = await fetch(`${base}/heute`, { headers: { cookie: freshOwnerCookie }, redirect: "manual" });
+report(suspendedHome.status === 307 && (suspendedHome.headers.get("location") ?? "").includes("/gesperrt"), `${suspendedHome.status} neue Sitzung im gesperrten Mandanten leitet auf /gesperrt`);
+const lockedPage = await plain(await fetch(`${base}/gesperrt`, { headers: { cookie: freshOwnerCookie } }));
+report(lockedPage.includes("gesperrt") && lockedPage.includes("Smoke-Test Sperrung"), "Sperrseite zeigt Mandant und Grund");
+await reactivateTenant({ id: admin.id, name: admin.name }, newTenant.id);
+const reactivatedHome = await fetch(`${base}/heute`, { headers: { cookie: freshOwnerCookie }, redirect: "manual" });
+report(reactivatedHome.status === 200, `${reactivatedHome.status} reaktivierter Mandant hat wieder Zugriff`);
+
+const support = await startSupportSession({ id: admin.id, name: admin.name }, w.tenantId, "Smoke-Test Supportzugriff");
+const supportCookies = `${adminCookie}; rb_support=${support.id}`;
+const supportHome = await plain(await fetch(`${base}/heute`, { headers: { cookie: supportCookies } }));
+report(supportHome.includes("SUPPORTMODUS"), "Supportmodus: Banner sichtbar");
+const supportSettings = await plain(await fetch(`${base}/einstellungen`, { headers: { cookie: supportCookies } }));
+report(!supportSettings.includes("Mitarbeiter einladen"), "Supportmodus: keine Inhaber-Aktionen sichtbar (read-only)");
+// Der eigentliche Schreibschutz (requireRole() lehnt jede Mutation während einer Supportsession unbedingt ab,
+// siehe lib/auth.ts) läuft über Server Actions, die sich nicht wie API-Routen per einfachem POST simulieren
+// lassen; er ist durch tests/platform.test.ts (Supportmodus-Szenario) und Code-Review abgesichert.
+const foreignSupportSession = await db.supportSession.findFirst({ where: { superAdminId: admin.id, tenantId: newTenant.id } });
+report(foreignSupportSession === null, "Supportmodus: keine Session für einen anderen Mandanten entstanden");
+
+mail.sent = [];
+await requestPasswordReset((await db.user.findUniqueOrThrow({ where: { id: w.userId } })).email, base);
+report(mail.sent.length === 1, "Passwort-Reset: Mail versendet");
+const resetToken = tokenFromMail(mail.sent[0], "passwort-vergessen");
+const resetPage = await plain(await fetch(`${base}/passwort-vergessen/${resetToken}`));
+report(resetPage.includes("Neues Passwort festlegen"), "Passwort-Reset: gültiger Link zeigt Formular");
+const badResetPage = await plain(await fetch(`${base}/passwort-vergessen/ungueltiger-token-${Date.now()}`));
+report(badResetPage.includes("nicht mehr gültig"), "Passwort-Reset: ungültiger Link zeigt Fehlermeldung");
+
+const health = await fetch(`${base}/api/health`);
+const healthJson = await health.json().catch(() => ({}));
+report(health.status === 200 && healthJson.status === "ok" && healthJson.db === "ok", `${health.status} Healthcheck`);
+
+await purgeTenants(platformTenants);
 
 if (keep) {
   console.log(`\nTestdaten bleiben stehen.\nSITZUNG=${sessionId}\nBUCHUNG=${w.bookingId}\nRUECKGABE_ENTWURF=${doneBooking.id}\nRUECKGABE_FERTIG=${retBooking.id}\nRET_DAMAGE=${retDamage.id} UEBERGEBEN=${doneBooking.id} BEREIT=${signedBooking.id}\nVERTRAG=${draft.number}\nMANDANTEN=${w.tenantId},${foreign.tenantId}`);

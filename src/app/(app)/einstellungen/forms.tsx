@@ -3,7 +3,7 @@
 import { useActionState } from "react";
 import { ROLES } from "@/lib/constants";
 import { Field, FormError } from "@/components/ui";
-import { createUserAction, updateInvoiceSettingsAction, updateTenantAction, type FormState } from "./actions";
+import { inviteUserAction, updateInvoiceSettingsAction, updateTenantAction, type FormState } from "./actions";
 
 function Ok({ state }: { state: FormState }) {
   if (!state?.ok) return null;
@@ -27,23 +27,20 @@ export function TenantForm({ t }: { t: { name: string; street: string | null; zi
   );
 }
 
-export function NewUserForm() {
-  const [state, formAction, pending] = useActionState(createUserAction, undefined);
+/** Lädt einen neuen Mitarbeiter per E-Mail ein (Befehl 20, item 15/27): kein vom Inhaber vergebenes Passwort mehr. */
+export function InviteUserForm() {
+  const [state, formAction, pending] = useActionState(inviteUserAction, undefined);
   return (
     <form action={formAction} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5 p-5" key={state?.ok}>
-      <Field label="Name" htmlFor="u-name"><input id="u-name" name="name" required className="input" autoComplete="off" /></Field>
-      <Field label="E-Mail" htmlFor="u-email"><input id="u-email" name="email" type="email" required className="input" autoComplete="off" /></Field>
-      <Field label="Rolle" htmlFor="u-role" hint="Inhaber: alles. Disponent: Buchungen und Stammdaten. Hofmitarbeiter: Übergaben und Kunden.">
+      <Field label="E-Mail" htmlFor="u-email" full><input id="u-email" name="email" type="email" required className="input" autoComplete="off" /></Field>
+      <Field label="Rolle" htmlFor="u-role" full hint="Inhaber: alles. Disponent: Buchungen und Stammdaten. Hofmitarbeiter: Übergaben und Kunden.">
         <select id="u-role" name="role" defaultValue="DISPO" className="input">
           {Object.entries(ROLES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
         </select>
       </Field>
-      <Field label="Startpasswort, mindestens 10 Zeichen" htmlFor="u-password" hint="Dem Mitarbeiter persönlich mitteilen">
-        <input id="u-password" name="password" type="password" required minLength={10} className="input" autoComplete="new-password" />
-      </Field>
       <FormError error={state?.error} />
       <Ok state={state} />
-      <div className="md:col-span-2"><button disabled={pending} className="btn btn-primary">{pending ? "Wird angelegt…" : "Mitarbeiter anlegen"}</button></div>
+      <div className="md:col-span-2"><button disabled={pending} className="btn btn-primary">{pending ? "Wird eingeladen…" : "Einladen"}</button></div>
     </form>
   );
 }
