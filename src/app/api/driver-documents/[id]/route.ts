@@ -1,13 +1,13 @@
 // Liefert oder löscht eine Fahrer-Dokumentkopie aus dem privaten Speicher (Phase 19.5). Nur für angemeldete
 // Mitarbeiter desselben Mandanten; keine öffentliche, keine weitergebbare Adresse. Löschen entfernt die Datei
 // und markiert die Zeile als gelöscht (Nachweis bleibt bestehen); der zugehörige Prüfvermerk bleibt unberührt.
-import { getSession } from "@/lib/auth";
+import { apiSession } from "@/lib/auth";
 import { DomainError } from "@/lib/integrity";
 import { deleteDriverDocumentCopy, readDriverDocumentCopy } from "@/lib/driver-verification";
 
 export async function GET(_req: Request, ctx: RouteContext<"/api/driver-documents/[id]">) {
-  const session = await getSession();
-  if (!session) return new Response("Nicht angemeldet", { status: 401 });
+  const session = await apiSession("read", "DRIVER_DOCUMENT_COPY");
+  if (session instanceof Response) return session;
   const { id } = await ctx.params;
   try {
     const file = await readDriverDocumentCopy(session.tenant.id, id);
@@ -22,8 +22,8 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/driver-document
 }
 
 export async function DELETE(req: Request, ctx: RouteContext<"/api/driver-documents/[id]">) {
-  const session = await getSession();
-  if (!session) return Response.json({ error: "Nicht angemeldet." }, { status: 401 });
+  const session = await apiSession("write");
+  if (session instanceof Response) return session;
   const { id } = await ctx.params;
   let reason = "Auf Wunsch entfernt";
   try {

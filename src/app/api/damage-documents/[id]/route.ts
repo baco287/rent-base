@@ -1,12 +1,12 @@
 // Liefert ein Dokument der Schadenakte aus dem privaten Speicher. Nur angemeldete Benutzer desselben Mandanten;
 // keine öffentliche und keine weitergebbare Adresse. Dokumente werden nicht gelöscht (Akte ist nur anfügend).
 import { db } from "@/lib/db";
-import { getSession } from "@/lib/auth";
+import { apiSession } from "@/lib/auth";
 import { assertKeyBelongsToTenant, getStorage } from "@/lib/storage";
 
 export async function GET(_req: Request, ctx: RouteContext<"/api/damage-documents/[id]">) {
-  const session = await getSession();
-  if (!session) return new Response("Nicht angemeldet", { status: 401 });
+  const session = await apiSession("read", "DAMAGE_DOCUMENT");
+  if (session instanceof Response) return session;
   const { id } = await ctx.params;
 
   const doc = await db.damageCaseDocument.findFirst({ where: { id, tenantId: session.tenant.id }, select: { storageKey: true, fileName: true, contentType: true } });

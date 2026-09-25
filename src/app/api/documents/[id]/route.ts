@@ -1,15 +1,15 @@
 // Liefert ein archiviertes Dokument aus dem privaten Speicher. Nur für angemeldete Mitarbeiter desselben Mandanten.
 // Die Datei läuft über den App-Server: Es gibt keine öffentliche und keine weitergebbare Adresse.
 // Vor der Auslieferung wird die gespeicherte Prüfsumme gegen die Datei geprüft.
-import { getSession } from "@/lib/auth";
+import { apiSession } from "@/lib/auth";
 import { DocumentIntegrityError, readDocumentFile } from "@/lib/documents";
 import { DomainError } from "@/lib/integrity";
 
 const STAFF_ROLES = ["OWNER", "DISPO", "YARD"];
 
 export async function GET(req: Request, ctx: RouteContext<"/api/documents/[id]">) {
-  const session = await getSession();
-  if (!session) return new Response("Nicht angemeldet", { status: 401 });
+  const session = await apiSession("read");
+  if (session instanceof Response) return session;
   if (!STAFF_ROLES.includes(session.user.role)) return new Response("Keine Berechtigung", { status: 403 });
   const { id } = await ctx.params;
   try {

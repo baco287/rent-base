@@ -6,7 +6,6 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { db } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
 import { DomainError, isImmutableError } from "@/lib/integrity";
 import { parseLocalDateTime } from "@/lib/time";
@@ -150,10 +149,4 @@ export async function updateCustomerLicenseAction(bookingId: string, verificatio
   } catch (e) {
     return asState(e);
   }
-}
-
-/** Lädt den aktuellen Kunden-Führerscheinstand zum Vergleich (Anzeige „unterscheidet sich von Kundendaten“). */
-export async function customerLicenseSnapshot(tenantId: string, customerId: string | null) {
-  if (!customerId) return null;
-  return db.customer.findFirst({ where: { id: customerId, tenantId }, select: { licenseNumber: true, licenseValidUntil: true, licenseClass: true } });
 }

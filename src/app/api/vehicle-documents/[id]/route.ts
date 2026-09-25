@@ -1,12 +1,12 @@
 // Liefert ein Fahrzeugdokument aus dem privaten Speicher – nur mit Sitzung desselben Mandanten, keine öffentliche Adresse.
 // Archivierte Dokumente bleiben abrufbar (Nachvollziehbarkeit), werden in der Oberfläche aber als archiviert geführt.
 import { db } from "@/lib/db";
-import { getSession } from "@/lib/auth";
+import { apiSession } from "@/lib/auth";
 import { assertKeyBelongsToTenant, getStorage } from "@/lib/storage";
 
 export async function GET(req: Request, ctx: RouteContext<"/api/vehicle-documents/[id]">) {
-  const session = await getSession();
-  if (!session) return new Response("Nicht angemeldet", { status: 401 });
+  const session = await apiSession("read");
+  if (session instanceof Response) return session;
   const { id } = await ctx.params;
   const doc = await db.vehicleDocument.findFirst({ where: { id, tenantId: session.tenant.id }, select: { storageKey: true, fileName: true, contentType: true } });
   if (!doc) return new Response("Nicht gefunden", { status: 404 });

@@ -129,8 +129,25 @@ test("Phase 19: Suche nur mit Sitzung und Rolle, Kopfzeilen additiv, Anmeldebrem
   assert.match(customerFile, /driverCustomerId: customerId/, "Kundenakte: Behördenvorgänge nur über echte Fahrerreferenz");
   for (const route of ["documents", "authority-documents", "damage-documents", "vehicle-documents", "photos", "signatures"]) {
     const src = readFileSync(path.join(process.cwd(), `src/app/api/${route}/[id]/route.ts`), "utf8");
-    assert.match(src, /getSession\(\)/, `${route}: Sitzung`);
+    assert.match(src, /apiSession\("(read|write)"/, `${route}: Sitzung`);
     assert.match(src, /session\.tenant\.id/, `${route}: Mandant`);
+  }
+});
+
+/** Befehl 20: API-Routen laufen nicht über requireRole() – jede geht über apiSession() (Supportmodus read-only, sensible Dokumente gesperrt, gesperrter Mandant). */
+test("Befehl 20: jede API-Route mit Sitzung nutzt apiSession, Schreibrouten als write, sensible Dokumente gesperrt", () => {
+  const apiRoot = path.join(process.cwd(), "src/app/api");
+  const routes = (readdirSync(apiRoot, { recursive: true }) as string[]).filter((f) => f.endsWith("route.ts") && !f.startsWith("health"));
+  assert.ok(routes.length >= 15, "alle API-Routen gefunden");
+  for (const route of routes) {
+    const src = readFileSync(path.join(apiRoot, route), "utf8");
+    assert.ok(!/getSession\(/.test(src), `${route}: kein direktes getSession() (umgeht Supportmodus)`);
+    for (const m of src.matchAll(/export async function (GET|POST|PUT|PATCH|DELETE)[\s\S]*?apiSession\("(read|write)"/g)) {
+      assert.equal(m[2], m[1] === "GET" ? "read" : "write", `${route} ${m[1]}: passender Modus`);
+    }
+  }
+  for (const [route, kind] of [["driver-documents", "DRIVER_DOCUMENT_COPY"], ["authority-documents", "AUTHORITY_DOCUMENT"], ["damage-documents", "DAMAGE_DOCUMENT"]]) {
+    assert.match(readFileSync(path.join(apiRoot, route, "[id]", "route.ts"), "utf8"), new RegExp(`apiSession\\("read", "${kind}"\\)`), `${route}: im Supportmodus gesperrt`);
   }
 });
 
@@ -147,7 +164,7 @@ test("Phase 19.5: Fahrerprüfung nur mit Sitzung und Rolle, Kundendaten-Übernah
 
   for (const route of ["handovers/[id]/driver-documents", "driver-documents/[id]"]) {
     const src = readFileSync(path.join(process.cwd(), `src/app/api/${route}/route.ts`), "utf8");
-    assert.match(src, /getSession\(\)/, `${route}: Sitzung`);
+    assert.match(src, /apiSession\("(read|write)"/, `${route}: Sitzung`);
     assert.match(src, /session\.tenant\.id/, `${route}: Mandant`);
   }
 

@@ -1,14 +1,14 @@
 // Liefert ein Foto aus dem privaten Speicher. Nur für angemeldete Benutzer desselben Mandanten.
 // Die Datei wird über den App-Server gereicht: es gibt keine öffentliche und keine weitergebbare Adresse.
 import { db } from "@/lib/db";
-import { getSession } from "@/lib/auth";
+import { apiSession } from "@/lib/auth";
 import { DomainError, isImmutableError } from "@/lib/integrity";
 import { removePhoto } from "@/lib/handovers";
 import { assertKeyBelongsToTenant, getStorage } from "@/lib/storage";
 
 export async function GET(_req: Request, ctx: RouteContext<"/api/photos/[id]">) {
-  const session = await getSession();
-  if (!session) return new Response("Nicht angemeldet", { status: 401 });
+  const session = await apiSession("read");
+  if (session instanceof Response) return session;
   const { id } = await ctx.params;
 
   const photo = await db.photo.findFirst({ where: { id, tenantId: session.tenant.id }, select: { storageKey: true } });
@@ -28,8 +28,8 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/photos/[id]">) 
 
 /** Löscht ein Foto aus einem Protokollentwurf. Finalisierte Protokolle bleiben unangetastet. */
 export async function DELETE(_req: Request, ctx: RouteContext<"/api/photos/[id]">) {
-  const session = await getSession();
-  if (!session) return Response.json({ error: "Nicht angemeldet." }, { status: 401 });
+  const session = await apiSession("write");
+  if (session instanceof Response) return session;
   const { id } = await ctx.params;
   try {
     const key = await removePhoto(session.tenant.id, id);

@@ -858,6 +858,8 @@ const suspendedHome = await fetch(`${base}/heute`, { headers: { cookie: freshOwn
 report(suspendedHome.status === 307 && (suspendedHome.headers.get("location") ?? "").includes("/gesperrt"), `${suspendedHome.status} neue Sitzung im gesperrten Mandanten leitet auf /gesperrt`);
 const lockedPage = await plain(await fetch(`${base}/gesperrt`, { headers: { cookie: freshOwnerCookie } }));
 report(lockedPage.includes("gesperrt") && lockedPage.includes("Smoke-Test Sperrung"), "Sperrseite zeigt Mandant und Grund");
+const suspendedApiWrite = await fetch(`${base}/api/photos/irgendeins`, { method: "DELETE", headers: { cookie: freshOwnerCookie } });
+report(suspendedApiWrite.status === 403, `${suspendedApiWrite.status} gesperrter Mandant: API-Schreibzugriff abgelehnt`);
 await reactivateTenant({ id: admin.id, name: admin.name }, newTenant.id);
 const reactivatedHome = await fetch(`${base}/heute`, { headers: { cookie: freshOwnerCookie }, redirect: "manual" });
 report(reactivatedHome.status === 200, `${reactivatedHome.status} reaktivierter Mandant hat wieder Zugriff`);
@@ -868,9 +870,17 @@ const supportHome = await plain(await fetch(`${base}/heute`, { headers: { cookie
 report(supportHome.includes("SUPPORTMODUS"), "Supportmodus: Banner sichtbar");
 const supportSettings = await plain(await fetch(`${base}/einstellungen`, { headers: { cookie: supportCookies } }));
 report(!supportSettings.includes("Mitarbeiter einladen"), "Supportmodus: keine Inhaber-Aktionen sichtbar (read-only)");
-// Der eigentliche Schreibschutz (requireRole() lehnt jede Mutation während einer Supportsession unbedingt ab,
-// siehe lib/auth.ts) läuft über Server Actions, die sich nicht wie API-Routen per einfachem POST simulieren
-// lassen; er ist durch tests/platform.test.ts (Supportmodus-Szenario) und Code-Review abgesichert.
+// Server Actions sind über requireRole() gesperrt (tests/platform.test.ts); API-Routen über apiSession() –
+// die lassen sich hier direkt per HTTP prüfen. Sperre greift vor jeder Datenbankabfrage, daher genügt eine beliebige ID.
+for (const [path, label] of [["driver-documents", "Ausweis-/Führerscheinkopie"], ["authority-documents", "Behördendokument"], ["damage-documents", "Schadendokument"]] as const) {
+  const blocked = await fetch(`${base}/api/${path}/irgendeins`, { headers: { cookie: supportCookies } });
+  const ownerSees = await fetch(`${base}/api/${path}/irgendeins`, { headers: { cookie } });
+  report(blocked.status === 403 && (await blocked.text()).includes("Supportmodus") && ownerSees.status === 404, `${blocked.status}/${ownerSees.status} Supportmodus: ${label} gesperrt (Inhaber: nur nicht gefunden)`);
+}
+const supportDelete = await fetch(`${base}/api/driver-documents/irgendeins`, { method: "DELETE", headers: { cookie: supportCookies } });
+report(supportDelete.status === 403, `${supportDelete.status} Supportmodus: API-Löschen abgelehnt`);
+const supportUpload = await fetch(`${base}/api/vehicles/${w.vehicleId}/documents`, { method: "POST", headers: { cookie: supportCookies }, body: new FormData() });
+report(supportUpload.status === 403, `${supportUpload.status} Supportmodus: API-Upload abgelehnt`);
 const foreignSupportSession = await db.supportSession.findFirst({ where: { superAdminId: admin.id, tenantId: newTenant.id } });
 report(foreignSupportSession === null, "Supportmodus: keine Session für einen anderen Mandanten entstanden");
 

@@ -1,7 +1,7 @@
 // Allgemeines Fahrzeugdokument (Zulassung, Versicherung, HU-Bericht …) ohne Wartungsvorgang. Nur Inhaber und Disponent
 // (sensible Unterlagen); PDF oder Bild, Typ am Inhalt erkannt, privater Speicher.
 import { db } from "@/lib/db";
-import { getSession } from "@/lib/auth";
+import { apiSession } from "@/lib/auth";
 import { VEHICLE_DOCUMENT_TYPES, roleAllows } from "@/lib/constants";
 import { DomainError, sha256 } from "@/lib/integrity";
 import { registerVehicleDocument } from "@/lib/maintenance";
@@ -11,8 +11,8 @@ import { parseLocalDateTime } from "@/lib/time";
 const json = (status: number, body: Record<string, unknown>) => Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
 
 export async function POST(req: Request, ctx: RouteContext<"/api/vehicles/[id]/documents">) {
-  const session = await getSession();
-  if (!session) return json(401, { error: "Nicht angemeldet." });
+  const session = await apiSession("write");
+  if (session instanceof Response) return session;
   const { id } = await ctx.params;
   const tenantId = session.tenant.id;
   const vehicle = await db.vehicle.findFirst({ where: { id, tenantId }, select: { id: true } });

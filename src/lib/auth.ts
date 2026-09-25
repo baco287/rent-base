@@ -4,7 +4,8 @@ import { redirect } from "next/navigation";
 import { cache } from "react";
 import { randomBytes } from "node:crypto";
 import { db } from "@/lib/db";
-import { SESSION_COOKIE, SESSION_DAYS, SUPPORT_COOKIE, roleAllows, type Role } from "@/lib/constants";
+import { SESSION_COOKIE, SESSION_DAYS, SUPPORT_COOKIE, roleAllows, type Role, type SupportBlockedKind } from "@/lib/constants";
+import { supportBlockedMessage } from "@/lib/support-sessions";
 
 export { hashPassword, verifyPassword } from "@/lib/password";
 
@@ -74,6 +75,28 @@ export const getSession = cache(async () => {
   }
   return { user, tenant: realTenant, supportSession: null as SupportSessionInfo | null, realUser: user, realTenant };
 });
+
+export type AppSession = NonNullable<Awaited<ReturnType<typeof getSession>>>;
+
+/**
+ * Für API-Routen (Dateien ausliefern, hochladen, löschen): Sitzung oder eine fertige Fehlerantwort.
+ * API-Routen laufen nicht über requireRole(), deshalb gelten die Regeln von Befehl 20 hier ausdrücklich:
+ * im Supportmodus keine Schreibzugriffe (item 35) und keine besonders sensiblen Dokumentarten (item 36);
+ * ein gesperrter Mandant wird nicht mehr bedient (item 11) – außer lesend in einer Supportsession.
+ */
+export async function apiSession(mode: "read" | "write", sensitive?: SupportBlockedKind): Promise<AppSession | Response> {
+  const fail = (status: number, message: string) =>
+    mode === "write" ? Response.json({ error: message }, { status }) : new Response(message, { status });
+  const session = await getSession();
+  if (!session) return fail(401, mode === "write" ? "Nicht angemeldet." : "Nicht angemeldet");
+  if (session.supportSession) {
+    if (mode === "write") return fail(403, "Im Supportmodus sind keine Änderungen möglich.");
+    if (sensitive) return fail(403, supportBlockedMessage(sensitive));
+  } else if (session.tenant.status === "SUSPENDED") {
+    return fail(403, "Dieser Mandant ist gesperrt.");
+  }
+  return session;
+}
 
 /**
  * Für geschützte Seiten: leitet zum Login um, wenn keine Sitzung besteht. Ist der Mandant gesperrt (Befehl 20,

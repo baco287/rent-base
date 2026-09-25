@@ -3,15 +3,15 @@
 // dokumentierte Zustimmung des Ausweisinhabers (§ 20 Abs. 2 PAuswG); ohne Zustimmung wird nichts gespeichert.
 // Das Bild wird serverseitig dauerhaft als Kopie gekennzeichnet (Prägung), eine unmarkierte Fassung bleibt nicht bestehen.
 import { db } from "@/lib/db";
-import { getSession } from "@/lib/auth";
+import { apiSession } from "@/lib/auth";
 import { DomainError, isImmutableError } from "@/lib/integrity";
 import { recordDriverDocumentCopy } from "@/lib/driver-verification";
 
 const json = (status: number, body: Record<string, unknown>) => Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
 
 export async function POST(req: Request, ctx: RouteContext<"/api/handovers/[id]/driver-documents">) {
-  const session = await getSession();
-  if (!session) return json(401, { error: "Nicht angemeldet." });
+  const session = await apiSession("write");
+  if (session instanceof Response) return session;
   const { id } = await ctx.params;
   const tenantId = session.tenant.id;
 

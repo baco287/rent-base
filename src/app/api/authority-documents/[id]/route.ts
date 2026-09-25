@@ -2,13 +2,13 @@
 // nur mit Sitzung desselben Mandanten, keine öffentliche Adresse. Bei Antwort-PDFs wird die Prüfsumme vor der Auslieferung
 // geprüft; archivierte Dokumente bleiben abrufbar (Nachvollziehbarkeit).
 import { db } from "@/lib/db";
-import { getSession } from "@/lib/auth";
+import { apiSession } from "@/lib/auth";
 import { sha256 } from "@/lib/integrity";
 import { assertKeyBelongsToTenant, getStorage } from "@/lib/storage";
 
 export async function GET(req: Request, ctx: RouteContext<"/api/authority-documents/[id]">) {
-  const session = await getSession();
-  if (!session) return new Response("Nicht angemeldet", { status: 401 });
+  const session = await apiSession("read", "AUTHORITY_DOCUMENT");
+  if (session instanceof Response) return session;
   const { id } = await ctx.params;
   const doc = await db.authorityCaseDocument.findFirst({ where: { id, tenantId: session.tenant.id }, select: { storageKey: true, fileName: true, contentType: true, checksum: true, type: true } });
   if (!doc) return new Response("Nicht gefunden", { status: 404 });

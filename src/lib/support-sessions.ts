@@ -58,8 +58,12 @@ export async function requireSupportSession(superAdminId: string, tenantId: stri
  * die betroffenen Dokumentarten auf – die Funktion lehnt immer ab, sie entscheidet nicht fallweise.
  */
 export function blockSensitiveDocumentInSupportMode(kind: SupportBlockedKind): never {
+  throw new DomainError(supportBlockedMessage(kind));
+}
+
+export function supportBlockedMessage(kind: SupportBlockedKind): string {
   const label = kind === "DRIVER_DOCUMENT_COPY" ? "Ausweis- und Führerscheinkopien" : kind === "AUTHORITY_DOCUMENT" ? "Behördendokumente" : "Schadendokumente";
-  throw new DomainError(`${label} sind im Supportmodus nicht einsehbar.`);
+  return `${label} sind im Supportmodus nicht einsehbar.`;
 }
 
 /** Vom SUPER_ADMIN aktuell einsehbare Supportsessions eines Mandanten (Historie für die Mandantenseite). */
