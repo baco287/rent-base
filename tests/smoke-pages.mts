@@ -33,6 +33,7 @@ import { acceptInvitation } from "../src/lib/invitations";
 import { requestPasswordReset } from "../src/lib/password-reset";
 import { startSupportSession } from "../src/lib/support-sessions";
 import { setMailTransport, type MailMessage, type MailTransport } from "../src/lib/mail";
+import { saveMailSettings } from "../src/lib/tenant-mail";
 
 const args = process.argv.slice(2);
 const keep = args.includes("--keep");
@@ -894,6 +895,51 @@ const supportUpload = await fetch(`${base}/api/vehicles/${w.vehicleId}/documents
 report(supportUpload.status === 403, `${supportUpload.status} Supportmodus: API-Upload abgelehnt`);
 const foreignSupportSession = await db.supportSession.findFirst({ where: { superAdminId: admin.id, tenantId: newTenant.id } });
 report(foreignSupportSession === null, "Supportmodus: keine Session für einen anderen Mandanten entstanden");
+
+// ---------------------------------------------------------------------------
+// Befehl 20.5: E-Mail-Versand und Branding (Seiten, Rollen, Supportmodus, Mandantentrennung, kein Geheimnis im HTML)
+// ---------------------------------------------------------------------------
+await db.user.update({ where: { id: foreign.userId }, data: { role: "OWNER" } }); // fremder Mandant mit vollen Rechten – trotzdem kein Zugriff
+const mailPage0 = await plain(await fetch(`${base}/einstellungen/e-mail`, { headers: { cookie } }));
+report(mailPage0.includes("Geschäftliche E-Mails werden derzeit über den RentBase-Versanddienst versendet") && mailPage0.includes("SMTP-Zugang") && mailPage0.includes("Eigener E-Mail-Versand, damit Kunden Nachrichten direkt von Ihrer Firmenadresse erhalten"), "E-Mail-Versand: Standard RentBase, Empfehlung sichtbar");
+const smokeSecret = `Smoke-Geheim-${randomBytes(6).toString("hex")}`;
+process.env.RENTBASE_SECRET_KEY ||= Buffer.from("rentbase-testschluessel-32-bytes").toString("base64");
+await saveMailSettings(w.tenantId, w.actor, { host: "smtp.smoke-vermieter.test", port: 587, security: "STARTTLS", username: "vermietung@smoke.test", newPassword: smokeSecret, fromName: "Smoke Vermietung", fromEmail: "vermietung@smoke.test", replyTo: null });
+const mailRow = await db.tenantMailSettings.findUniqueOrThrow({ where: { tenantId: w.tenantId } });
+const mailPage1 = await plain(await fetch(`${base}/einstellungen/e-mail`, { headers: { cookie } }));
+report(mailPage1.includes("•••••••• – gespeichert") && !mailPage1.includes(smokeSecret) && !mailPage1.includes(mailRow.passwordCiphertext!) && mailPage1.includes("smtp.smoke-vermieter.test"), "E-Mail-Versand (Inhaber): Passwort nur als „gespeichert“, nie im HTML");
+const dispoMail = await plain(await fetch(`${base}/einstellungen/e-mail`, { headers: { cookie: `rb_session=${dispoSession}` } }));
+report(dispoMail.includes("Eingerichtet, nicht getestet") && !dispoMail.includes("smtp.smoke-vermieter.test") && !dispoMail.includes("SMTP-Zugang") && !dispoMail.includes(smokeSecret), "E-Mail-Versand (Disposition): nur Status, kein Server, kein Formular");
+const yardMail = await fetch(`${base}/einstellungen/e-mail`, { headers: { cookie: `rb_session=${yardSession}` }, redirect: "manual" });
+report(yardMail.status === 307, `${yardMail.status} E-Mail-Versand: Hofmitarbeiter wird umgeleitet`);
+const supportMail = await fetch(`${base}/einstellungen/e-mail`, { headers: { cookie: supportCookies }, redirect: "manual" });
+report(supportMail.status === 307, `${supportMail.status} E-Mail-Versand: im Supportmodus nicht einsehbar`);
+const supportSettings2 = await plain(await fetch(`${base}/einstellungen`, { headers: { cookie: supportCookies } }));
+report(!supportSettings2.includes(smokeSecret) && !supportSettings2.includes(mailRow.passwordCiphertext!) && !supportSettings2.includes("Logo hochladen"), "Supportmodus: kein Geheimnis, keine Logo-Aktion in den Einstellungen");
+const logoPng = await (await import("sharp")).default({ create: { width: 400, height: 120, channels: 3, background: { r: 22, g: 50, b: 92 } } }).png().toBuffer();
+const logoForm = () => { const f = new FormData(); f.set("file", new Blob([new Uint8Array(logoPng)], { type: "image/png" }), "logo.png"); return f; };
+const supportLogo = await fetch(`${base}/api/branding/logo`, { method: "POST", headers: { cookie: supportCookies }, body: logoForm() });
+const supportLogoDel = await fetch(`${base}/api/branding/logo`, { method: "DELETE", headers: { cookie: supportCookies } });
+report(supportLogo.status === 403 && supportLogoDel.status === 403, `${supportLogo.status}/${supportLogoDel.status} Supportmodus: Logo hochladen/entfernen abgelehnt`);
+const dispoLogo = await fetch(`${base}/api/branding/logo`, { method: "POST", headers: { cookie: `rb_session=${dispoSession}` }, body: logoForm() });
+report(dispoLogo.status === 403, `${dispoLogo.status} Logo: Disposition darf nicht hochladen`);
+const ownerLogo = await fetch(`${base}/api/branding/logo`, { method: "POST", headers: { cookie }, body: logoForm() });
+report(ownerLogo.status === 201, `${ownerLogo.status} Logo: Inhaber lädt hoch`);
+const svgForm = new FormData();
+svgForm.set("file", new Blob(['<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'], { type: "image/svg+xml" }), "logo.svg");
+const svgLogo = await fetch(`${base}/api/branding/logo`, { method: "POST", headers: { cookie }, body: svgForm });
+report(svgLogo.status === 422, `${svgLogo.status} Logo: SVG abgelehnt`);
+const ownLogo = await fetch(`${base}/api/branding/logo`, { headers: { cookie } });
+const foreignLogo = await fetch(`${base}/api/branding/logo`, { headers: { cookie: `rb_session=${foreignSession}` } });
+report(ownLogo.status === 200 && ownLogo.headers.get("content-type") === "image/png" && foreignLogo.status === 404, `${ownLogo.status}/${foreignLogo.status} Logo: eigener Mandant sieht es, fremder nicht`);
+const foreignLogoDel = await fetch(`${base}/api/branding/logo`, { method: "DELETE", headers: { cookie: `rb_session=${foreignSession}` } });
+report(foreignLogoDel.status === 200 && (await db.tenant.findUniqueOrThrow({ where: { id: w.tenantId } })).logoStorageKey !== null, "Logo: Entfernen durch fremden Mandanten trifft nur dessen eigenen (leeren) Stand");
+const foreignMail = await plain(await fetch(`${base}/einstellungen/e-mail`, { headers: { cookie: `rb_session=${foreignSession}` } }));
+report(!foreignMail.includes("smtp.smoke-vermieter.test") && foreignMail.includes("Nicht eingerichtet"), "E-Mail-Versand: fremder Mandant sieht nichts von diesem SMTP");
+const setupPage = await plain(await fetch(`${base}/einrichtung`, { headers: { cookie } }));
+report(setupPage.includes("E-Mail-Versand") && setupPage.includes("Eigener E-Mail-Versand empfohlen"), "Einrichtung: E-Mail-Versand als Empfehlung");
+const settingsWithCards = await plain(await fetch(`${base}/einstellungen`, { headers: { cookie } }));
+report(settingsWithCards.includes("E-Mail-Versand einrichten") && settingsWithCards.includes("Logo ersetzen") && settingsWithCards.includes("Website (optional)"), "Einstellungen: E-Mail-Versand, Logo und Website");
 
 mail.sent = [];
 await requestPasswordReset((await db.user.findUniqueOrThrow({ where: { id: w.userId } })).email, base);

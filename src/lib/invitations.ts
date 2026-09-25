@@ -13,7 +13,8 @@ import { DomainError, sha256 } from "@/lib/integrity";
 import { isUniqueViolation } from "@/lib/numbering";
 import { INVITATION_EXPIRY_HOURS, ROLES, type Role } from "@/lib/constants";
 import { claimEmail, markEmailFailed, markEmailSent } from "@/lib/email-log";
-import { getMailTransport, isValidEmail } from "@/lib/mail";
+import { deliveryMetaOf, isValidEmail } from "@/lib/mail";
+import { sendPlatformSystemMail } from "@/lib/tenant-mail";
 
 function newToken() {
   return randomBytes(32).toString("base64url");
@@ -38,13 +39,13 @@ async function sendInvitationMail(opts: { tenantId: string; tenantName: string; 
   const acceptUrl = `${opts.baseUrl}/einladung/${opts.rawToken}`;
   const { text, html } = inviteText({ tenantName: opts.tenantName, inviterName: opts.inviterName, acceptUrl, role: opts.role, isFirstOwner: opts.isFirstOwner });
   try {
-    const transport = getMailTransport();
-    const result = await transport.send({ to: opts.email, subject: log.subject, text, html, fromName: opts.tenantName, replyTo: opts.tenantEmail, attachments: [] });
-    await markEmailSent(opts.tenantId, log.id, result.messageId);
-  } catch {
+    // Befehl 20.5: Systemmail – immer Plattform-SMTP, auch wenn der Mandant noch keinen (oder einen defekten) eigenen SMTP hat
+    const result = await sendPlatformSystemMail({ to: opts.email, subject: log.subject, text, html, fromName: opts.tenantName, replyTo: opts.tenantEmail, attachments: [] });
+    await markEmailSent(opts.tenantId, log.id, result.messageId, result.meta);
+  } catch (e) {
     // Mailversand darf die Mandanten-/Einladungsanlage nicht rückgängig machen (item 14): Zeile bleibt FAILED,
     // die Einladung kann über "erneut senden" wiederholt werden.
-    await markEmailFailed(opts.tenantId, log.id, "Versand fehlgeschlagen");
+    await markEmailFailed(opts.tenantId, log.id, "Versand fehlgeschlagen", deliveryMetaOf(e));
   }
   return log;
 }

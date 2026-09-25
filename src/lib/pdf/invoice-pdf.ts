@@ -3,7 +3,7 @@
 import type { InvoiceDocumentData } from "@/lib/invoice-view";
 import { COLORS, Pdf, type Cell, type PdfTrace } from "@/lib/pdf/layout";
 
-export async function renderInvoicePdf(data: InvoiceDocumentData): Promise<{ bytes: Buffer; trace: PdfTrace }> {
+export async function renderInvoicePdf(data: InvoiceDocumentData, logo: Uint8Array | null = null): Promise<{ bytes: Buffer; trace: PdfTrace }> {
   const v = data.version;
   const correction = v.kind === "CORRECTION";
   const damage = data.kind === "DAMAGE";
@@ -17,7 +17,7 @@ export async function renderInvoicePdf(data: InvoiceDocumentData): Promise<{ byt
   const pdf = new Pdf({
     title: correction ? `Berichtigte ${baseTitle}` : baseTitle,
     number: v.versionNo > 1 ? `${data.number} · Fassung ${v.versionNo}` : data.number,
-    landlord: { name: data.company.fullName, address: data.company.addressLines.join(", "), contact: [data.company.phone, data.company.email].filter(Boolean).join(" · ") },
+    landlord: { name: data.company.fullName, address: data.company.addressLines.join(", "), contact: [data.company.phone, data.company.email, data.company.website?.replace(/^https?:\/\//i, "")].filter(Boolean).join(" · "), logoImage: logo },
     footerNote: data.contentHash ? { label: "Prüfsumme der Rechnung (SHA-256)", value: data.contentHash } : undefined,
   });
 

@@ -8,7 +8,8 @@ import { recordAudit } from "@/lib/audit";
 import { DomainError, sha256 } from "@/lib/integrity";
 import { PASSWORD_RESET_EXPIRY_MINUTES } from "@/lib/constants";
 import { claimEmail, markEmailFailed, markEmailSent } from "@/lib/email-log";
-import { getMailTransport } from "@/lib/mail";
+import { deliveryMetaOf } from "@/lib/mail";
+import { sendPlatformSystemMail } from "@/lib/tenant-mail";
 
 function newToken() {
   return randomBytes(32).toString("base64url");
@@ -34,10 +35,11 @@ export async function requestPasswordReset(email: string, baseUrl: string): Prom
   const text = `Für Ihr RentBase-Konto wurde ein Passwort-Reset angefordert.\n\nÜber den folgenden Link legen Sie ein neues Passwort fest:\n${resetUrl}\n\nDer Link ist ${PASSWORD_RESET_EXPIRY_MINUTES} Minuten gültig.\n\nWenn Sie das nicht waren, können Sie diese E-Mail ignorieren – Ihr Passwort bleibt unverändert.`;
   const html = `<p>Für Ihr RentBase-Konto wurde ein Passwort-Reset angefordert.</p><p><a href="${resetUrl}">Neues Passwort festlegen</a></p><p>Der Link ist ${PASSWORD_RESET_EXPIRY_MINUTES} Minuten gültig.</p><p>Wenn Sie das nicht waren, können Sie diese E-Mail ignorieren – Ihr Passwort bleibt unverändert.</p>`;
   try {
-    const result = await getMailTransport().send({ to: user.email, subject: log.subject, text, html, fromName: user.tenant.name, replyTo: user.tenant.email, attachments: [] });
-    await markEmailSent(user.tenantId, log.id, result.messageId);
-  } catch {
-    await markEmailFailed(user.tenantId, log.id, "Versand fehlgeschlagen");
+    // Befehl 20.5: Account-Recovery hängt nie vom SMTP des Vermieters ab – immer Plattform-SMTP
+    const result = await sendPlatformSystemMail({ to: user.email, subject: log.subject, text, html, fromName: user.tenant.name, replyTo: user.tenant.email, attachments: [] });
+    await markEmailSent(user.tenantId, log.id, result.messageId, result.meta);
+  } catch (e) {
+    await markEmailFailed(user.tenantId, log.id, "Versand fehlgeschlagen", deliveryMetaOf(e));
   }
 }
 

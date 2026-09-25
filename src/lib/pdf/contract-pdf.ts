@@ -58,11 +58,11 @@ export function drawTermsBlocks(pdf: Pdf, blocks: TermsBlock[]) {
   }
 }
 
-export async function renderContractPdf(data: ContractDocumentData, signatureImages: SignatureImages): Promise<{ bytes: Buffer; trace: PdfTrace }> {
+export async function renderContractPdf(data: ContractDocumentData, signatureImages: SignatureImages, logo: Uint8Array | null = null): Promise<{ bytes: Buffer; trace: PdfTrace }> {
   const pdf = new Pdf({
     title: data.title,
     number: data.number,
-    landlord: data.landlord,
+    landlord: { name: data.landlord.name, address: data.landlord.address, contact: data.landlord.contact, logoImage: logo },
     footerNote: data.contentHash ? { label: "Prüfsumme des unterschriebenen Vertragsinhalts (SHA-256)", value: data.contentHash } : undefined,
     footerLine: data.terms.version ? `Mietbedingungen Version ${data.terms.version}` : undefined,
   });

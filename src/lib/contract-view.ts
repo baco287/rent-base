@@ -3,6 +3,7 @@
 // Struktur erzeugt. Sie entsteht ausschließlich aus den Daten des Vertrags (Snapshots), nie aus Live-Stammdaten.
 // So kann die Oberfläche nie etwas anderes zeigen als das Dokument.
 
+import { logoRefFromSnapshot, logoRefOf, type LogoRef } from "@/lib/branding-ref";
 import type { Prisma } from "@prisma/client";
 import { ADDITIONAL_DRIVER_FEE_TYPES, COUNTRIES, CUSTOMER_TYPES, DRIVER_MODES, FUELS, FUEL_POLICIES, ID_TYPES, KM_POLICIES, LATE_RETURN_RULES, OUT_OF_HOURS_RETURN, PETS_POLICIES, driveClassOf } from "@/lib/constants";
 import { readContractRules, type ContractRules } from "@/lib/business-rules";
@@ -14,22 +15,24 @@ export type DocRow = { label: string; value: string; missing?: boolean };
 export type DocSection = { key: string; title: string; rows: DocRow[] };
 export type DocPriceLine = { text: string; amount: string };
 
-export type LandlordInfo = { name: string; address: string; contact: string; email: string | null };
+export type LandlordInfo = { name: string; address: string; contact: string; email: string | null; logo?: LogoRef | null };
 
 /** Vermieterdaten für Dokumente. Beim Abschluss wird diese Struktur im Vertrag eingefroren (landlordSnapshot). */
 export function landlordFromTenant(t: TenantLike): LandlordInfo {
   return {
     name: t.name,
     address: [t.street, [t.zip, t.city].filter(Boolean).join(" ")].filter(Boolean).join(", "),
-    contact: [t.phone, t.email].filter(Boolean).join(" · "),
+    contact: [t.phone, t.email, t.website?.replace(/^https?:\/\//i, "")].filter(Boolean).join(" · "),
     email: t.email,
+    // Befehl 20.5: nur beim Einfrieren (Vertragsabschluss) mit Logo-Feldern aufgerufen; Rückfall ohne Snapshot bleibt ohne Logo
+    logo: logoRefOf(t),
   };
 }
 
 /** Eingefrorene Vermieterdaten des Vertrags; nur bei älteren Verträgen ohne Kopie greifen die aktuellen Stammdaten. */
 export function landlordOf(snapshot: unknown, tenant: TenantLike): LandlordInfo {
   const s = snapshot as Partial<LandlordInfo> | null;
-  if (s && typeof s === "object" && typeof s.name === "string") return { name: s.name, address: String(s.address ?? ""), contact: String(s.contact ?? ""), email: typeof s.email === "string" ? s.email : null };
+  if (s && typeof s === "object" && typeof s.name === "string") return { name: s.name, address: String(s.address ?? ""), contact: String(s.contact ?? ""), email: typeof s.email === "string" ? s.email : null, logo: logoRefFromSnapshot(s) };
   return landlordFromTenant(tenant);
 }
 
@@ -112,7 +115,7 @@ export function rulesSection(rules: ContractRules | null, contract: { kmIncluded
 }
 
 type ContractWithDrivers = Prisma.RentalContractGetPayload<{ include: { drivers: true } }>;
-export type TenantLike = { name: string; street: string | null; zip: string | null; city: string | null; phone: string | null; email: string | null };
+export type TenantLike = { name: string; street: string | null; zip: string | null; city: string | null; phone: string | null; email: string | null; website?: string | null; logoStorageKey?: string | null; logoChecksum?: string | null };
 type SignatureLike = { id: string; role: string; signerName: string; signedAt: Date };
 
 function driverSection(key: string, title: string, d: ContractWithDrivers["drivers"][number]): DocSection {

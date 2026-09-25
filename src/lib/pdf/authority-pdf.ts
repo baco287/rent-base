@@ -20,11 +20,11 @@ export type AuthorityResponsePdfData = {
   contentHash: string | null;
 };
 
-export async function renderAuthorityResponsePdf(data: AuthorityResponsePdfData): Promise<{ bytes: Buffer; trace: PdfTrace }> {
+export async function renderAuthorityResponsePdf(data: AuthorityResponsePdfData, logo: Uint8Array | null = null): Promise<{ bytes: Buffer; trace: PdfTrace }> {
   const pdf = new Pdf({
     title: "Antwort auf Behördenanfrage",
     number: data.version > 1 ? `${data.caseNumber} · Fassung ${data.version}` : data.caseNumber,
-    landlord: { name: data.sender.name, address: data.sender.addressLines.join(", "), contact: data.sender.contact },
+    landlord: { name: data.sender.name, address: data.sender.addressLines.join(", "), contact: data.sender.contact, logoImage: logo },
     footerNote: data.contentHash ? { label: "Prüfsumme der Antwortfassung (SHA-256)", value: data.contentHash } : undefined,
   });
 

@@ -10,7 +10,7 @@ function Ok({ state }: { state: FormState }) {
   return <p className="md:col-span-2 text-good bg-good-soft rounded-md px-3 py-2 text-sm">{state.ok}</p>;
 }
 
-export function TenantForm({ t }: { t: { name: string; street: string | null; zip: string | null; city: string | null; phone: string | null; email: string | null } }) {
+export function TenantForm({ t }: { t: { name: string; street: string | null; zip: string | null; city: string | null; phone: string | null; email: string | null; website: string | null } }) {
   const [state, formAction, pending] = useActionState(updateTenantAction, undefined);
   return (
     <form action={formAction} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5 p-5">
@@ -20,6 +20,7 @@ export function TenantForm({ t }: { t: { name: string; street: string | null; zi
       <Field label="Ort" htmlFor="city"><input id="city" name="city" defaultValue={t.city ?? ""} className="input" /></Field>
       <Field label="Telefon" htmlFor="phone"><input id="phone" name="phone" defaultValue={t.phone ?? ""} className="input" /></Field>
       <Field label="E-Mail" htmlFor="email"><input id="email" name="email" type="email" defaultValue={t.email ?? ""} className="input" /></Field>
+      <Field label="Website (optional)" htmlFor="website" full hint="Erscheint auf neuen Dokumenten im Briefkopf neben Telefon und E-Mail."><input id="website" name="website" inputMode="url" defaultValue={t.website ?? ""} placeholder="www.ihre-firma.de" className="input" /></Field>
       <FormError error={state?.error} />
       <Ok state={state} />
       <div className="md:col-span-2"><button disabled={pending} className="btn btn-primary">{pending ? "Wird gespeichert…" : "Speichern"}</button></div>

@@ -8,7 +8,8 @@ import { AUTHORITY_OPEN_STATUS, offenseText } from "@/lib/authority";
 import { deadlineInfo } from "@/lib/authority-matching";
 import { AUTHORITY_CASE_STATUS, type AuthorityCaseStatus } from "@/lib/constants";
 import { claimEmail, markEmailFailed, markEmailSent } from "@/lib/email-log";
-import { getMailTransport, isValidEmail, safeMailError, type MailTransport } from "@/lib/mail";
+import { deliveryMetaOf, isValidEmail, safeMailError, type MailTransport } from "@/lib/mail";
+import { sendPlatformSystemMail } from "@/lib/tenant-mail";
 import { APP_TIME_ZONE, toDateInputValue, zonedDayStartPlus, zonedParts } from "@/lib/time";
 
 export const AUTHORITY_REMINDER_TEMPLATE = "AUTHORITY_DEADLINES";
@@ -74,12 +75,12 @@ export async function sendAuthorityReminders(opts: { now?: Date; transport?: Mai
       const { log, created } = await claimEmail({ tenantId: t.id, recipient: to, subject, template: AUTHORITY_REMINDER_TEMPLATE, trigger: "AUTO", idempotencyKey: `${AUTHORITY_REMINDER_TEMPLATE}:${day}:${to}` });
       if (!created) { out.push({ tenantId: t.id, recipient: to, status: "ALREADY", count: rows.length }); continue; }
       try {
-        const transport = opts.transport ?? getMailTransport();
-        const res = await transport.send({ to, subject, text, html, fromName: `Rent-Base · ${t.name}`, replyTo: t.email, attachments: [] });
-        await markEmailSent(t.id, log.id, res.messageId);
+        // interne Erinnerung von RentBase an die Mitarbeiter des Vermieters: Systemmail (Plattform-SMTP)
+        const res = await sendPlatformSystemMail({ to, subject, text, html, fromName: `Rent-Base · ${t.name}`, replyTo: t.email, attachments: [] }, { transport: opts.transport });
+        await markEmailSent(t.id, log.id, res.messageId, res.meta);
         out.push({ tenantId: t.id, recipient: to, status: "SENT", count: rows.length });
       } catch (e) {
-        await markEmailFailed(t.id, log.id, safeMailError(e));
+        await markEmailFailed(t.id, log.id, safeMailError(e), deliveryMetaOf(e));
         out.push({ tenantId: t.id, recipient: to, status: "FAILED", count: rows.length });
       }
     }

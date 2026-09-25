@@ -4,11 +4,11 @@
 import type { PayoutDocumentData } from "@/lib/payout-view";
 import { COLORS, Pdf, type PdfTrace } from "@/lib/pdf/layout";
 
-export async function renderPayoutPdf(data: PayoutDocumentData): Promise<{ bytes: Buffer; trace: PdfTrace }> {
+export async function renderPayoutPdf(data: PayoutDocumentData, logo: Uint8Array | null = null): Promise<{ bytes: Buffer; trace: PdfTrace }> {
   const pdf = new Pdf({
     title: data.title,
     number: data.number,
-    landlord: { name: data.company.name, address: data.company.addressLines.join(", "), contact: data.company.contact },
+    landlord: { name: data.company.name, address: data.company.addressLines.join(", "), contact: data.company.contact, logoImage: logo },
     footerNote: data.contentHash ? { label: "Prüfsumme des Auszahlungsbelegs (SHA-256)", value: data.contentHash } : undefined,
   });
 

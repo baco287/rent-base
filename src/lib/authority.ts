@@ -15,7 +15,9 @@ import { learnContact } from "@/lib/authority-contacts";
 import { ensureAuthorityFeeInvoice, type FeeOutcome } from "@/lib/authority-fee";
 import { deadlineInfo, matchRentals, matchVehicles, plateKey, portalUrlInfo, type RentalCandidate, type RentalCandidateInput } from "@/lib/authority-matching";
 import { DomainError, contentHash, sha256 } from "@/lib/integrity";
-import { getMailTransport, isValidEmail, safeMailError, type MailTransport } from "@/lib/mail";
+import { deliveryMetaOf, isValidEmail, safeMailError, type MailTransport } from "@/lib/mail";
+import { sendBusinessMail } from "@/lib/tenant-mail";
+import { loadLogo, logoRefFromSnapshot, logoRefOf } from "@/lib/branding";
 import { toCents, type Cents } from "@/lib/money";
 import { isUniqueViolation, nextAuthorityCaseNumber, withNumberRetry } from "@/lib/numbering";
 import { renderAuthorityResponsePdf, type AuthorityResponsePdfData } from "@/lib/pdf/authority-pdf";
@@ -409,7 +411,7 @@ async function buildResponseContent(tx: Tx | typeof db, tenantId: string, c: Cas
   return {
     responseType, submissionMethod: input.submissionMethod, authorityReference: c.authorityReference,
     recipientSnapshot: { name: c.authorityName, department: c.authorityDepartment, address: c.authorityAddress, email: input.submissionMethod === "EMAIL" ? email : null, portalUrl: c.authorityPortalUrl },
-    senderSnapshot: { name: [tenant.name, tenant.legalForm].filter(Boolean).join(" "), street: tenant.street, zip: tenant.zip, city: tenant.city, email: tenant.email, phone: tenant.phone },
+    senderSnapshot: { name: [tenant.name, tenant.legalForm].filter(Boolean).join(" "), street: tenant.street, zip: tenant.zip, city: tenant.city, email: tenant.email, phone: tenant.phone, logo: logoRefOf(tenant) },
     vehicleSnapshot: { plate: c.licensePlateSnapshot, vehicle: vehicle ? `${vehicle.make} ${vehicle.model} (${vehicle.plate})` : null },
     offenseSnapshot: { type: c.type, typeLabel: AUTHORITY_CASE_TYPES[c.type as keyof typeof AUTHORITY_CASE_TYPES], offenseAt: c.offenseAt.toISOString(), timeKnown: c.offenseTimeKnown, atText: offenseText(c.offenseAt, c.offenseTimeKnown), location: c.offenseLocation },
     rentalSnapshot: rentalSnapshot ?? undefined,
@@ -493,8 +495,8 @@ export async function approveResponse(tenantId: string, responseId: string, acto
       const now = new Date();
       const hash = contentHash({ caseNumber: c.caseNumber, version: r.version, responseType: r.responseType, submissionMethod: r.submissionMethod, recipient: r.recipientSnapshot, sender: r.senderSnapshot, authorityReference: r.authorityReference, vehicle: r.vehicleSnapshot, offense: r.offenseSnapshot, rental: r.rentalSnapshot, persons: r.personSnapshot, freeText: r.freeText, approvedAt: now.toISOString(), approvedBy: actor.id });
       const approved = await tx.authorityResponse.update({ where: { id: r.id }, data: { status: "APPROVED", approvedAt: now, approvedById: actor.id, approvedByName: actor.name, contentHash: hash } });
-      const pdf = await renderAuthorityResponsePdf(buildResponsePdfData(c, approved));
       const storage = opts.storage ?? getStorage();
+      const pdf = await renderAuthorityResponsePdf(buildResponsePdfData(c, approved), await loadLogo(tenantId, logoRefFromSnapshot(approved.senderSnapshot), storage));
       const storageKey = buildStorageKey({ tenantId, area: "documents", contentType: "application/pdf" });
       await storage.put(storageKey, pdf.bytes, "application/pdf");
       const doc = await tx.authorityCaseDocument.create({ data: { tenantId, caseId: c.id, responseId: r.id, type: "RESPONSE_PDF", fileName: `Antwort_${c.caseNumber}_Fassung${r.version}.pdf`, storageKey, contentType: "application/pdf", sizeBytes: pdf.bytes.length, checksum: sha256(pdf.bytes), createdById: actor.id, createdByName: actor.name } });
@@ -582,9 +584,9 @@ async function submitByEmail(tenantId: string, r: ResponseRow, actor: Actor, inp
     if (!file || sha256(file.body) !== pdfDoc.checksum) throw new DomainError("Das Antwort-PDF konnte nicht unverändert aus dem Archiv gelesen werden.");
     const snd = r.senderSnapshot as { name: string; email: string | null };
     const text = [`Sehr geehrte Damen und Herren,`, ``, `anbei erhalten Sie unsere Antwort zu Ihrem Aktenzeichen ${r.authorityReference} (Kennzeichen ${(r.vehicleSnapshot as { plate: string }).plate}).`, ``, `Mit freundlichen Grüßen`, snd.name].join("\n");
-    const transport = input.transport ?? getMailTransport();
-    const result = await transport.send({ to: rec.email, subject, text, html: `<p>${text.replace(/\n/g, "<br>")}</p>`, fromName: snd.name, replyTo: snd.email, attachments: [{ filename: pdfDoc.fileName, content: file.body, contentType: "application/pdf" }] });
-    await markEmailSent(tenantId, log.id, result.messageId);
+    // Befehl 20.5: Antwort an die Behörde ist Kommunikation des Vermieters (eigener SMTP, falls aktiviert)
+    const result = await sendBusinessMail(tenantId, { to: rec.email, subject, text, html: `<p>${text.replace(/\n/g, "<br>")}</p>`, fromName: snd.name, replyTo: snd.email, attachments: [{ filename: pdfDoc.fileName, content: file.body, contentType: "application/pdf" }] }, { transport: input.transport, storage });
+    await markEmailSent(tenantId, log.id, result.messageId, result.meta);
     const now = new Date();
     const response = await db.$transaction(async (tx) => {
       const updated = await tx.authorityResponse.update({ where: { id: r.id }, data: { status: "SUBMITTED", submittedAt: now, submittedById: actor.id, submittedByName: actor.name, emailLogId: log.id, failureReason: null } });
@@ -598,7 +600,7 @@ async function submitByEmail(tenantId: string, r: ResponseRow, actor: Actor, inp
     return { response, outcome: "SUBMITTED", fee: await feeAfterSubmit(tenantId, c.id, actor) };
   } catch (e) {
     const message = safeMailError(e);
-    await markEmailFailed(tenantId, log.id, message);
+    await markEmailFailed(tenantId, log.id, message, deliveryMetaOf(e));
     const response = await db.$transaction(async (tx) => {
       const updated = await tx.authorityResponse.update({ where: { id: r.id }, data: { status: "FAILED", failureReason: message, emailLogId: log.id } });
       await event(tx, tenantId, c.id, actor, { type: "SUBMISSION_FAILED", toValue: String(r.version), note: message });

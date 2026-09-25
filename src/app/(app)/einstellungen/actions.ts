@@ -22,6 +22,11 @@ const tenantSchema = z.object({
   city: optStr,
   phone: optStr,
   email: z.preprocess((v) => (v === "" ? undefined : v), z.string().trim().toLowerCase().email("Die E-Mail-Adresse ist ungültig.").optional()),
+  // Befehl 20.5: optionale Website für Briefkopf/Branding; ohne Schema wird https:// ergänzt
+  website: z.preprocess(
+    (v) => (typeof v !== "string" || v.trim() === "" ? undefined : /^https?:\/\//i.test(v.trim()) ? v.trim() : `https://${v.trim()}`),
+    z.string().max(200, "Die Website-Adresse ist zu lang.").url("Die Website-Adresse ist ungültig.").refine((u) => /^https?:\/\/[^\s/]+\.[^\s/]+/i.test(u), "Die Website-Adresse ist ungültig.").optional(),
+  ),
 });
 
 export async function updateTenantAction(_prev: FormState, formData: FormData): Promise<FormState> {
@@ -31,7 +36,7 @@ export async function updateTenantAction(_prev: FormState, formData: FormData): 
   const d = parsed.data;
   await db.tenant.update({
     where: { id: tenant.id },
-    data: { name: d.name, street: d.street ?? null, zip: d.zip ?? null, city: d.city ?? null, phone: d.phone ?? null, email: d.email ?? null },
+    data: { name: d.name, street: d.street ?? null, zip: d.zip ?? null, city: d.city ?? null, phone: d.phone ?? null, email: d.email ?? null, website: d.website ?? null },
   });
   revalidatePath("/", "layout");
   return { ok: "Firmendaten gespeichert." };

@@ -171,7 +171,7 @@ export async function loadPayoutDocumentData(tenantId: string, payoutId: string,
   const p = await db.payout.findFirst({ where: { id: payoutId, tenantId } });
   if (!p) throw new DomainError("Auszahlung nicht gefunden.");
   if (!opts.allowDraft && (p.status === "DRAFT" || !p.contentHash)) throw new DomainError("Einen Auszahlungsbeleg gibt es erst, wenn die Auszahlung als erfolgt erfasst ist.");
-  const tenant = await db.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { ...TENANT_FIELDS, legalForm: true } });
+  const tenant = await db.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { ...TENANT_FIELDS, legalForm: true, website: true } });
   const snap = p.sourceSnapshot as { customerEmail?: string | null } | null;
   return { doc: buildPayoutDocument(p, tenant), bookingId: p.bookingId, payoutId: p.id, sourceHash: p.contentHash ?? "", recipientEmail: typeof snap?.customerEmail === "string" && snap.customerEmail.trim() ? snap.customerEmail.trim() : null };
 }

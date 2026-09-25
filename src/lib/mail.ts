@@ -2,9 +2,12 @@
 // SMTP ist der erste Treiber. Zugangsdaten kommen ausschließlich aus Environment Variables und werden nie
 // geloggt oder in Fehlermeldungen übernommen.
 
+import { isIP } from "node:net";
 import { DomainError } from "@/lib/integrity";
+import type { SmtpErrorCode } from "@/lib/constants";
 
-export type MailAttachment = { filename: string; content: Uint8Array; contentType: string };
+/** cid: eingebettetes Bild (z. B. Logo im HTML-Teil), wird nicht als Anhang angezeigt */
+export type MailAttachment = { filename: string; content: Uint8Array; contentType: string; cid?: string };
 export type MailMessage = {
   to: string;
   subject: string;
@@ -45,40 +48,102 @@ export function isValidEmail(value: string | null | undefined): value is string 
 
 const headerSafe = (s: string) => s.replace(/[\r\n"<>]/g, " ").trim().slice(0, 120);
 
-class SmtpTransport implements MailTransport {
+/**
+ * Eine SMTP-Verbindung: Plattform (aus der Umgebung) oder Vermieter (aus TenantMailSettings, Passwort entschlüsselt
+ * nur für diesen Aufruf im Speicher). connectHost ist die vorab geprüfte IP-Adresse; servername der echte Hostname
+ * für die TLS-Zertifikatsprüfung (verhindert DNS-Rebinding zwischen Prüfung und Verbindung).
+ */
+export type SmtpConfig = {
+  host: string;
+  connectHost?: string;
+  port: number;
+  /** true = SSL/TLS ab Verbindungsbeginn (465); false = STARTTLS, verpflichtend */
+  secure: boolean;
+  user: string;
+  pass: string;
+  fromEmail: string;
+  /** Rückfall-Anzeigename, wenn die Nachricht keinen mitbringt */
+  fromName?: string | null;
+  /** fester Anzeigename, überschreibt message.fromName (eigener Versand: Absender stammt aus der Konfiguration) */
+  fixedFromName?: string | null;
+};
+
+function nodemailerOptions(cfg: SmtpConfig) {
+  return {
+    host: cfg.connectHost ?? cfg.host,
+    port: cfg.port,
+    secure: cfg.secure,
+    auth: { user: cfg.user, pass: cfg.pass },
+    requireTLS: !cfg.secure,
+    // Hostname für die Zertifikatsprüfung (auch wenn über die vorab geprüfte IP verbunden wird); eine IP als Servername ist in TLS nicht zulässig
+    tls: { ...(isIP(cfg.host) ? {} : { servername: cfg.host }), minVersion: "TLSv1.2" as const },
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
+    socketTimeout: 45_000,
+    logger: false,
+    debug: false,
+  };
+}
+
+export class SmtpTransport implements MailTransport {
   readonly name = "smtp";
-  constructor(private env: NodeJS.ProcessEnv) {}
+  constructor(private cfg: SmtpConfig) {}
+
+  get fromAddress() { return this.cfg.fromEmail; }
 
   async send(message: MailMessage): Promise<MailResult> {
     const nodemailer = await import("nodemailer");
-    const port = Number(this.env.SMTP_PORT || 587);
-    const transport = nodemailer.createTransport({
-      host: this.env.SMTP_HOST,
-      port,
-      secure: this.env.SMTP_SECURE ? this.env.SMTP_SECURE === "true" : port === 465,
-      auth: { user: this.env.SMTP_USER, pass: this.env.SMTP_PASSWORD },
-      requireTLS: port !== 465,
-      connectionTimeout: 15_000,
-      greetingTimeout: 15_000,
-      socketTimeout: 45_000,
-    });
+    const transport = nodemailer.createTransport(nodemailerOptions(this.cfg));
     try {
-      const name = headerSafe(message.fromName || this.env.SMTP_FROM_NAME || "");
+      const name = headerSafe(this.cfg.fixedFromName || message.fromName || this.cfg.fromName || "");
       const info = await transport.sendMail({
-        from: name ? { name, address: this.env.SMTP_FROM_EMAIL! } : this.env.SMTP_FROM_EMAIL!,
+        from: name ? { name, address: this.cfg.fromEmail } : this.cfg.fromEmail,
         to: message.to,
         replyTo: isValidEmail(message.replyTo) ? message.replyTo : undefined,
         subject: headerSafe(message.subject),
         text: message.text,
         html: message.html,
-        attachments: message.attachments.map((a) => ({ filename: a.filename, content: Buffer.from(a.content), contentType: a.contentType })),
+        attachments: message.attachments.map((a) => ({ filename: a.filename, content: Buffer.from(a.content), contentType: a.contentType, ...(a.cid ? { cid: a.cid, contentDisposition: "inline" as const } : {}) })),
       });
-      if (info.rejected && info.rejected.length > 0) throw Object.assign(new Error("rejected"), { code: "EENVELOPE" });
+      if (info.rejected && info.rejected.length > 0) throw Object.assign(new Error("rejected"), { code: "EENVELOPE", command: "RCPT TO" });
       return { messageId: info.messageId ?? null };
     } finally {
       transport.close();
     }
   }
+
+  /** Verbindungstest: DNS, Verbindung, TLS/STARTTLS und Anmeldung – es wird nichts versendet. */
+  async verify(): Promise<void> {
+    const nodemailer = await import("nodemailer");
+    const transport = nodemailer.createTransport(nodemailerOptions(this.cfg));
+    try {
+      await transport.verify();
+    } finally {
+      transport.close();
+    }
+  }
+}
+
+/** Plattform-SMTP aus der Umgebung (unverändertes Verhalten wie vor Befehl 20.5). */
+export function platformSmtpConfig(env: NodeJS.ProcessEnv = process.env): SmtpConfig {
+  const port = Number(env.SMTP_PORT || 587);
+  return {
+    host: env.SMTP_HOST!,
+    port,
+    secure: env.SMTP_SECURE ? env.SMTP_SECURE === "true" : port === 465,
+    user: env.SMTP_USER!,
+    pass: env.SMTP_PASSWORD!,
+    fromEmail: env.SMTP_FROM_EMAIL!,
+    fromName: env.SMTP_FROM_NAME || null,
+  };
+}
+
+/** Absenderadresse des Plattform-Versands für das Protokoll (keine Zugangsdaten). */
+export function platformFromAddress(env: NodeJS.ProcessEnv = process.env): string | null {
+  if (override) return "test@platform.invalid";
+  const status = mailStatus(env);
+  if (status.driver === "outbox") return "entwicklung@localhost";
+  return env.SMTP_FROM_EMAIL?.trim() || null;
 }
 
 /** Entwicklungs-Postausgang: schreibt die fertige E-Mail als Datei. Es wird nichts versendet. */
@@ -97,7 +162,7 @@ class OutboxTransport implements MailTransport {
       subject: headerSafe(message.subject),
       text: message.text,
       html: message.html,
-      attachments: message.attachments.map((a) => ({ filename: a.filename, content: Buffer.from(a.content), contentType: a.contentType })),
+      attachments: message.attachments.map((a) => ({ filename: a.filename, content: Buffer.from(a.content), contentType: a.contentType, ...(a.cid ? { cid: a.cid } : {}) })),
     });
     await mkdir(this.dir, { recursive: true });
     await writeFile(path.join(this.dir, `${new Date().toISOString().replace(/[:.]/g, "-")}.eml`), info.message as Buffer);
@@ -117,7 +182,48 @@ export function getMailTransport(env: NodeJS.ProcessEnv = process.env): MailTran
   const status = mailStatus(env);
   if (status.driver === "outbox") return new OutboxTransport(devOutbox(env)!);
   if (!status.configured) throw new DomainError("Der E-Mail-Versand ist noch nicht eingerichtet (SMTP-Zugang fehlt in den Servereinstellungen).");
-  return new SmtpTransport(env);
+  return new SmtpTransport(platformSmtpConfig(env));
+}
+
+/**
+ * Befehl 20.5: Versandfehler mit bekanntem Versandweg. publicMessage ist bereits unbedenklich (keine Rohmeldung),
+ * meta landet im E-Mail-Protokoll (Kanal, Absender-Snapshot, abstrakte Fehlerart).
+ */
+export class MailDeliveryError extends Error {
+  constructor(
+    readonly code: SmtpErrorCode,
+    readonly publicMessage: string,
+    readonly meta: { channel: "PLATFORM_SMTP" | "TENANT_SMTP"; fromAddress: string | null },
+  ) {
+    super(publicMessage);
+  }
+}
+
+/** Versandweg eines fehlgeschlagenen Versuchs fürs Protokoll, falls bekannt. */
+export function deliveryMetaOf(e: unknown): { channel: "PLATFORM_SMTP" | "TENANT_SMTP"; fromAddress: string | null; errorCode: SmtpErrorCode } | null {
+  return e instanceof MailDeliveryError ? { ...e.meta, errorCode: e.code } : null;
+}
+
+/** Befehl 20.5: ausdrücklich der zentrale RentBase-Versand (Systemmails). Nie von einem Vermieter-SMTP abhängig. */
+export const getPlatformTransport = getMailTransport;
+
+/**
+ * Ordnet einen Versand-/Verbindungsfehler einer abstrakten Fehlerart zu. Die Rohmeldung wird nur zur Einordnung
+ * gelesen, nie gespeichert oder angezeigt (kann Serverantworten, Adressen oder Zugangsdaten enthalten).
+ */
+export function classifySmtpError(e: unknown): SmtpErrorCode {
+  const err = e as { code?: unknown; responseCode?: unknown; command?: unknown; message?: unknown };
+  const code = String(err?.code ?? "");
+  const responseCode = Number(err?.responseCode ?? 0);
+  const command = String(err?.command ?? "").toUpperCase();
+  const msg = String(err?.message ?? "");
+  if (code === "EAUTH" || responseCode === 535 || responseCode === 534 || command === "AUTH PLAIN" || command === "AUTH LOGIN") return "AUTH";
+  if (command.startsWith("MAIL FROM") || (responseCode >= 550 && responseCode <= 553 && /sender|from|absender/i.test(msg))) return "SENDER_REJECTED";
+  if (command.startsWith("RCPT TO") || code === "EENVELOPE") return "RECIPIENT_REJECTED";
+  if (["ENOTFOUND", "EDNS", "EAI_AGAIN"].includes(code)) return "DNS";
+  if (code === "ETLS" || /certificate|ssl|tls|wrong version number|self.signed/i.test(msg)) return "TLS";
+  if (["ECONNREFUSED", "ECONNECTION", "ETIMEDOUT", "ESOCKET", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH"].includes(code)) return "CONNECT";
+  return "UNKNOWN";
 }
 
 /**
@@ -125,6 +231,7 @@ export function getMailTransport(env: NodeJS.ProcessEnv = process.env): MailTran
  * Die Originalmeldung wird nie übernommen: Sie kann Serverantworten, Adressen oder Zugangsdaten enthalten.
  */
 export function safeMailError(e: unknown): string {
+  if (e instanceof MailDeliveryError) return e.publicMessage;
   if (e instanceof DomainError) return e.message;
   const code = String((e as { code?: unknown })?.code ?? "");
   const responseCode = Number((e as { responseCode?: unknown })?.responseCode ?? 0);

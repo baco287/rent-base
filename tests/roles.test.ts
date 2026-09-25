@@ -104,7 +104,7 @@ test("Jede Server-Action-Datei und jede Prozessseite prüft die Rolle serverseit
   for (const fn of ["saveReminderSettingsAction", "sendReminderNowAction"]) assert.match(authBody(fn), /requireRole\("OWNER"\)/, `${fn}: nur Inhaber`);
   assert.match(readFileSync(path.join(process.cwd(), "src/app/api/authority-uploads/route.ts"), "utf8"), /roleAllows\(session\.user\.role, \["DISPO"\]\)/, "Posteingang-Upload nur Disposition");
   for (const fn of ["setDriverAction", "approveResponseAction", "submitResponseAction", "closeCaseAction", "reopenCaseAction"]) assert.match(authBody(fn), /await ctx\(caseId\)/, `${fn}: Fahrerfreigabe, Antwortfreigabe, Übermittlung, Abschluss nur Disposition`);
-  assert.match(auth, /const \{ tenant, user \} = await requireRole\("DISPO"\);\n  const c = await db\.authorityCase\.findFirst/, "ctx: nur DISPO und eigener Mandant");
+  assert.match(auth, /const \{ tenant, user \} = await requireRole\("DISPO"\);\r?\n  const c = await db\.authorityCase\.findFirst/, "ctx: nur DISPO und eigener Mandant");
   const upload = readFileSync(path.join(process.cwd(), "src/app/api/authority-cases/[id]/documents/route.ts"), "utf8");
   assert.match(upload, /roleAllows\(session\.user\.role, \["DISPO"\]\)/, "Upload zu Behördenvorgängen nur DISPO");
 });

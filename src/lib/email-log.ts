@@ -9,6 +9,10 @@
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { isUniqueViolation } from "@/lib/numbering";
+import { mailCategoryOf, type MailChannel, type SmtpErrorCode } from "@/lib/constants";
+
+/** Tatsächlicher Versandweg eines Versuchs (Befehl 20.5). Nie Zugangsdaten, nur Kanal und Absenderadresse. */
+export type EmailDeliveryMeta = { channel: MailChannel | null; fromAddress: string | null; errorCode?: SmtpErrorCode | null };
 
 export type EmailAttachmentRef = { documentId: string; fileName: string; checksum: string; version?: number; type?: string };
 
@@ -49,6 +53,7 @@ export async function claimEmail(input: EnqueueEmailInput): Promise<{ log: Email
         recipient: input.recipient.trim().toLowerCase().slice(0, 320),
         subject: input.subject,
         template: input.template,
+        category: mailCategoryOf(input.template),
         attachments: (input.attachments ?? []) as unknown as Prisma.InputJsonValue,
         trigger: input.trigger ?? "AUTO",
         attemptNo: earlier + 1,
@@ -71,13 +76,15 @@ export async function enqueueEmail(input: EnqueueEmailInput) {
   return (await claimEmail(input)).log;
 }
 
-export async function markEmailSent(tenantId: string, id: string, providerMessageId: string | null) {
+const metaData = (meta?: EmailDeliveryMeta | null) => (meta ? { channel: meta.channel, fromAddress: meta.fromAddress?.slice(0, 320) ?? null } : {});
+
+export async function markEmailSent(tenantId: string, id: string, providerMessageId: string | null, meta?: EmailDeliveryMeta | null) {
   const now = new Date();
-  return db.emailLog.updateMany({ where: { id, tenantId }, data: { status: "SENT", providerMessageId, sentAt: now, lastAttemptAt: now, error: null, attempts: { increment: 1 } } });
+  return db.emailLog.updateMany({ where: { id, tenantId }, data: { status: "SENT", providerMessageId, sentAt: now, lastAttemptAt: now, error: null, errorCode: null, attempts: { increment: 1 }, ...metaData(meta) } });
 }
 
-export async function markEmailFailed(tenantId: string, id: string, error: string) {
-  return db.emailLog.updateMany({ where: { id, tenantId }, data: { status: "FAILED", error: error.slice(0, 500), lastAttemptAt: new Date(), attempts: { increment: 1 } } });
+export async function markEmailFailed(tenantId: string, id: string, error: string, meta?: EmailDeliveryMeta | null) {
+  return db.emailLog.updateMany({ where: { id, tenantId }, data: { status: "FAILED", error: error.slice(0, 500), errorCode: meta?.errorCode ?? null, lastAttemptAt: new Date(), attempts: { increment: 1 }, ...metaData(meta) } });
 }
 
 /** Versandhistorie einer Buchung, neueste zuerst. */

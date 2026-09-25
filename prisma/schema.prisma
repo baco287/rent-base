@@ -51,8 +51,15 @@ model Tenant {
   defaultTaxRate   Decimal? // Steuersatz in Prozent für Rechnungspositionen; null = noch nicht konfiguriert
   pricesIncludeTax Boolean? // true: Vertrags- und Zusatzkostenbeträge sind Bruttobeträge; null = noch nicht entschieden
   taxNote          String? // Hinweistext, der bei Positionen mit 0 % auf der Rechnung erscheint (Inhalt entscheidet der Inhaber)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+
+  // Branding (Befehl 20.5). Logo privat im Speicher (t/<tenant>/branding/…), nie überschrieben; beim Ersetzen/Entfernen
+  // bleibt die alte Datei bestehen, weil eingefrorene Dokument-Snapshots sie weiterhin referenzieren können.
+  website        String?
+  logoStorageKey String?
+  logoChecksum   String?
+  logoUpdatedAt  DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   users     User[]
   groups    VehicleGroup[]
@@ -103,6 +110,7 @@ model Tenant {
   payouts                  Payout[]
   driverVerifications      DriverVerification[]
   driverDocumentCopies     DriverDocumentCopy[]
+  mailSettings             TenantMailSettings?
 }
 
 model User {
@@ -134,6 +142,36 @@ model User {
 
 // Einladung zu einem Mandanten: erste OWNER-Einladung bei Mandantenanlage durch SUPER_ADMIN, oder weitere
 // Mitarbeiter durch den OWNER. Token nur gehasht gespeichert, single-use, zeitlich begrenzt.
+// Befehl 20.5: eigener SMTP-Versand eines Mandanten für geschäftliche Mails (TENANT_BUSINESS). Eine Zeile je Mandant.
+// Ohne Zeile oder mit mode = PLATFORM gilt der bisherige RentBase-Versand. Das Passwort liegt nur verschlüsselt vor
+// (AES-256-GCM, lib/secret-box.ts) und verlässt den Server nie. Änderungen an Verbindungsdaten setzen VERIFIED per
+// DB-Trigger zurück (rb_guard_mail_settings), unabhängig davon, ob der Code daran denkt.
+model TenantMailSettings {
+  id                 String    @id @default(cuid())
+  tenantId           String    @unique
+  mode               String    @default("PLATFORM") // PLATFORM | TENANT_SMTP
+  status             String    @default("NOT_CONFIGURED") // NOT_CONFIGURED | CONFIGURED | VERIFIED | ERROR
+  host               String?
+  port               Int?
+  security           String? // STARTTLS | SSL_TLS
+  username           String?
+  passwordCiphertext String? // v1.<keyId>.<iv>.<tag>.<ciphertext>
+  fromName           String?
+  fromEmail          String?
+  replyTo            String?
+  verifiedAt         DateTime?
+  verifiedById       String?
+  verifiedByName     String?
+  lastErrorCode      String? // abstrakte Fehlerart (SMTP_ERROR_CODES), nie Rohfehler
+  lastErrorAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  updatedById        String?
+  updatedByName      String?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
 model Invitation {
   id       String @id @default(cuid())
   tenantId String
@@ -821,6 +859,11 @@ model EmailLog {
   createdAt         DateTime  @default(now())
   lastAttemptAt     DateTime?
   sentAt            DateTime?
+  // Befehl 20.5: Art und tatsächlicher Versandweg. Ältere Zeilen: null (vor der Trennung immer Plattform-SMTP).
+  category          String? // PLATFORM_SYSTEM | TENANT_BUSINESS
+  channel           String? // PLATFORM_SMTP | TENANT_SMTP
+  fromAddress       String? // Absenderadresse als Snapshot, nie Zugangsdaten
+  errorCode         String? // abstrakte Fehlerart (SMTP_ERROR_CODES)
 
   tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   booking        Booking?        @relation(fields: [bookingId], references: [id], onDelete: SetNull)

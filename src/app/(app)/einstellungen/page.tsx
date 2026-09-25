@@ -1,6 +1,6 @@
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { ROLES, INVITATION_STATUS, type Role, type InvitationStatus } from "@/lib/constants";
+import { ROLES, INVITATION_STATUS, SMTP_STATUS, type Role, type InvitationStatus } from "@/lib/constants";
 import { Card, Chip, Content, PageHeader } from "@/components/ui";
 import { resendInvitationAction, revokeInvitationAction, toggleUserActiveAction } from "./actions";
 import Link from "next/link";
@@ -11,17 +11,20 @@ import { termsOverview } from "@/lib/rental-terms";
 import { listInvitations } from "@/lib/invitations";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import { numberRangesOf } from "@/lib/number-ranges";
+import { mailStatusOf } from "@/lib/tenant-mail";
+import { LogoManager } from "./logo-card";
 
 export const metadata = { title: "Einstellungen" };
 
 export default async function SettingsPage({ searchParams }: PageProps<"/einstellungen">) {
-  const { tenant, user: me } = await requireSession();
+  const { tenant, user: me, supportSession } = await requireSession();
   const sp = await searchParams;
   const isOwner = me.role === "OWNER";
   const users = await db.user.findMany({ where: { tenantId: tenant.id }, orderBy: [{ active: "desc" }, { name: "asc" }] });
   const invitations = (await listInvitations(tenant.id)).filter((i) => i.status === "PENDING");
   const terms = await termsOverview(tenant.id);
   const ranges = numberRangesOf(tenant.numberRanges);
+  const mail = await mailStatusOf(tenant.id);
 
   return (
     <>
@@ -125,6 +128,19 @@ export default async function SettingsPage({ searchParams }: PageProps<"/einstel
                 <InviteUserForm />
               </Card>
             )}
+          </div>
+
+          <div className="flex flex-col gap-4">
+            <Card title="E-Mail-Versand" right={<Chip tone={mail.status === "VERIFIED" ? "good" : mail.status === "ERROR" ? "bad" : mail.status === "CONFIGURED" ? "amber" : "grey"}>{SMTP_STATUS[mail.status]}</Chip>}>
+              <div className="p-5 flex flex-col gap-3 text-sm">
+                <p>{mail.mode === "TENANT_SMTP" ? "Geschäftliche E-Mails werden über Ihren eigenen SMTP-Server versendet." : "Geschäftliche E-Mails werden derzeit über den RentBase-Versanddienst versendet."}</p>
+                {mail.mode === "PLATFORM" && isOwner && <p className="rounded-md bg-amber-soft text-amber px-3 py-2">Eigener E-Mail-Versand empfohlen, damit Kunden Nachrichten direkt von Ihrer Firmenadresse erhalten.</p>}
+                {me.role !== "YARD" && !supportSession && <div><Link href="/einstellungen/e-mail" className="btn">{isOwner ? "E-Mail-Versand einrichten" : "E-Mail-Versand ansehen"}</Link></div>}
+              </div>
+            </Card>
+            <Card title="Logo">
+              <LogoManager hasLogo={Boolean(tenant.logoStorageKey)} version={tenant.logoUpdatedAt?.toISOString() ?? "0"} canEdit={isOwner && !supportSession} />
+            </Card>
           </div>
         </div>
       </Content>

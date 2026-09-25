@@ -23,7 +23,8 @@ import type { PayoutSourceSnapshot } from "@/lib/payout-view";
 import { loadPayoutDocumentData } from "@/lib/document-data";
 import { readDocumentFile, registerDocument } from "@/lib/documents";
 import { claimEmail, markEmailFailed, markEmailSent, type EmailLogRow } from "@/lib/email-log";
-import { getMailTransport, isValidEmail, safeMailError, type MailTransport } from "@/lib/mail";
+import { deliveryMetaOf, isValidEmail, safeMailError, type MailTransport } from "@/lib/mail";
+import { sendBusinessMail } from "@/lib/tenant-mail";
 import type { StorageDriver } from "@/lib/storage";
 import { APP_TIME_ZONE } from "@/lib/time";
 
@@ -499,14 +500,13 @@ export async function sendPayoutReceipt(tenantId: string, actor: Actor | null, p
     if (!isValidEmail(recipient)) throw new DomainError("Zum Empfänger ist keine gültige E-Mail-Adresse hinterlegt");
     const file = await readDocumentFile(tenantId, doc.id, opts.storage);
     if (!file) throw new DomainError("Der Auszahlungsbeleg wurde im Archiv nicht gefunden");
-    const transport = opts.transport ?? getMailTransport();
-    const result = await transport.send({ to: recipient.trim(), subject: mail.subject, text: mail.text, html: mail.html, fromName: tenant.name, replyTo: tenant.email, attachments: [{ filename: doc.fileName, content: file.body, contentType: doc.contentType }] });
-    await markEmailSent(tenantId, log.id, result.messageId);
+    const result = await sendBusinessMail(tenantId, { to: recipient.trim(), subject: mail.subject, text: mail.text, html: mail.html, fromName: tenant.name, replyTo: tenant.email, attachments: [{ filename: doc.fileName, content: file.body, contentType: doc.contentType }] }, { transport: opts.transport, storage: opts.storage });
+    await markEmailSent(tenantId, log.id, result.messageId, result.meta);
     await db.$transaction((tx) => recordAudit(tx, tenantId, actor, { action: "PAYOUT_EMAIL_SENT", bookingId: p.bookingId, invoiceId: p.invoiceId, depositId: p.securityDepositId, details: { payoutId: p.id, number: p.number, emailLogId: log.id } }));
     return finish("SENT");
   } catch (e) {
     const message = e instanceof Error && e.constructor.name === "DocumentIntegrityError" ? "Der Beleg konnte nicht unverändert aus dem Archiv gelesen werden" : safeMailError(e);
-    await markEmailFailed(tenantId, log.id, message);
+    await markEmailFailed(tenantId, log.id, message, deliveryMetaOf(e));
     return finish("FAILED");
   }
 }

@@ -181,7 +181,7 @@ function MailHistory({ rows }: { rows: EmailRow[] }) {
             <span className={e.status === "SENT" ? "text-good font-medium" : e.status === "FAILED" ? "text-bad font-medium" : "text-amber font-medium"}>
               {e.status === "SENT" ? "Erfolgreich" : e.status === "FAILED" ? `Fehlgeschlagen – ${e.error ?? "Grund unbekannt"}` : "Nicht bestätigt"}
             </span>
-            <span className="text-xs text-ink-3">Versuch {e.attemptNo}{e.trigger === "MANUAL" ? ", manuell" : ", automatisch"}</span>
+            <span className="text-xs text-ink-3">Versuch {e.attemptNo}{e.trigger === "MANUAL" ? ", manuell" : ", automatisch"}{e.channel === "TENANT_SMTP" ? ` · eigener SMTP${e.fromAddress ? ` (${e.fromAddress})` : ""}` : e.channel === "PLATFORM_SMTP" ? " · RentBase-Versand" : ""}</span>
           </li>
         ))}
       </ul>

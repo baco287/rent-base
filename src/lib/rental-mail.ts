@@ -7,7 +7,8 @@ import { readDocumentFile } from "@/lib/documents";
 import { loadContractDocumentData, loadInvoiceDocumentData } from "@/lib/document-data";
 import { claimEmail, markEmailFailed, markEmailSent, type EmailLogRow } from "@/lib/email-log";
 import { DomainError } from "@/lib/integrity";
-import { getMailTransport, isValidEmail, safeMailError, type MailTransport } from "@/lib/mail";
+import { deliveryMetaOf, isValidEmail, safeMailError, type MailTransport } from "@/lib/mail";
+import { sendBusinessMail } from "@/lib/tenant-mail";
 import { recordAudit } from "@/lib/audit";
 import type { StorageDriver } from "@/lib/storage";
 import { APP_TIME_ZONE } from "@/lib/time";
@@ -321,15 +322,15 @@ async function sendPlannedDocuments(tenantId: string, plan: PickupMailPlan & { i
   const finish = async (status: "SENT" | "FAILED") => ({ status, log: (await db.emailLog.findFirst({ where: { id: log.id, tenantId } })) ?? log });
   try {
     if (!isValidEmail(plan.recipient)) throw new DomainError("Im Mietvertrag ist keine gültige E-Mail-Adresse des Mieters hinterlegt");
-    const transport = opts.transport ?? getMailTransport();
     const attachments = [];
     for (const doc of plan.documents) {
       const file = await readDocumentFile(tenantId, doc.id, opts.storage); // prüft Mandant und Prüfsumme
       if (!file) throw new DomainError("Ein Anhang wurde im Archiv nicht gefunden");
       attachments.push({ filename: doc.fileName, content: file.body, contentType: doc.contentType });
     }
-    const result = await transport.send({ to: plan.recipient.trim(), subject: mail.subject, text: mail.text, html: mail.html, fromName: plan.facts.landlordName, replyTo: plan.replyTo, attachments });
-    await markEmailSent(tenantId, log.id, result.messageId);
+    // Befehl 20.5: geschäftliche Mail des Vermieters – Kanal (RentBase oder eigener SMTP) entscheidet sendBusinessMail
+    const result = await sendBusinessMail(tenantId, { to: plan.recipient.trim(), subject: mail.subject, text: mail.text, html: mail.html, fromName: plan.facts.landlordName, replyTo: plan.replyTo, attachments }, { transport: opts.transport, storage: opts.storage });
+    await markEmailSent(tenantId, log.id, result.messageId, result.meta);
     const counterInvoice = counterType ? plan.invoice : null;
     if (counterType && counterInvoice) {
       // Versand eines Gegenbelegs protokollieren (ohne Empfängeradresse: kein Klartext-PII im Audit)
@@ -338,7 +339,7 @@ async function sendPlannedDocuments(tenantId: string, plan: PickupMailPlan & { i
     return finish("SENT");
   } catch (e) {
     const message = e instanceof Error && e.constructor.name === "DocumentIntegrityError" ? "Ein Anhang konnte nicht unverändert aus dem Archiv gelesen werden" : safeMailError(e);
-    await markEmailFailed(tenantId, log.id, message);
+    await markEmailFailed(tenantId, log.id, message, deliveryMetaOf(e));
     return finish("FAILED");
   }
 }

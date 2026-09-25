@@ -793,7 +793,7 @@ export async function finalizeContract(tenantId: string, contractId: string) {
     const contract = await loadContract(tx, tenantId, contractId);
     const hash = contentHash(signedContent(contract));
     // Vermieterdaten einfrieren: Dokumente zeigen später den Briefkopf von heute, auch wenn sich die Stammdaten ändern
-    const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { name: true, street: true, zip: true, city: true, phone: true, email: true } });
+    const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { name: true, street: true, zip: true, city: true, phone: true, email: true, website: true, logoStorageKey: true, logoChecksum: true } });
     return tx.rentalContract.update({ where: { id: contract.id }, data: { status: "SIGNED", signedAt: new Date(), contentHash: hash, wizardStep: 7, landlordSnapshot: landlordFromTenant(tenant) } });
   }, TX).catch(domainFromDb);
 }

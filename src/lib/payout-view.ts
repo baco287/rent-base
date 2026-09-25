@@ -84,7 +84,7 @@ export type PayoutLike = {
   cancellationReason: string | null;
 };
 
-export type CompanyLike = { name: string; legalForm?: string | null; street: string | null; zip: string | null; city: string | null; phone: string | null; email: string | null };
+export type CompanyLike = { name: string; legalForm?: string | null; street: string | null; zip: string | null; city: string | null; phone: string | null; email: string | null; website?: string | null };
 
 export function buildPayoutDocument(p: PayoutLike, company: CompanyLike): PayoutDocumentData {
   const sourceType = (p.sourceType === "SECURITY_DEPOSIT_REFUND" ? "SECURITY_DEPOSIT_REFUND" : "INVOICE_REFUND") as PayoutSourceType;
@@ -118,7 +118,7 @@ export function buildPayoutDocument(p: PayoutLike, company: CompanyLike): Payout
     company: {
       name: [company.name, company.legalForm].filter(Boolean).join(" "),
       addressLines: [company.street, [company.zip, company.city].filter(Boolean).join(" ")].filter((x): x is string => !!x),
-      contact: [company.phone, company.email].filter(Boolean).join(" · "),
+      contact: [company.phone, company.email, company.website?.replace(/^https?:\/\//i, "")].filter(Boolean).join(" · "),
     },
     customer: { name: snapshot.customerName },
     contentHash: p.contentHash,

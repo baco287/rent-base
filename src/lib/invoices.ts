@@ -13,6 +13,7 @@
 // bewussten Auswahl (0 % mit gespeichertem Hinweistext). Ob Beträge brutto oder netto sind, entscheidet der Inhaber
 // (pricesIncludeTax). Ohne diese Entscheidungen gibt es keine Rechnung; das System erfindet keine steuerliche Regel.
 
+import { logoRefOf, type LogoRef } from "@/lib/branding-ref";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { DAMAGE_TAX_NOTES, DAMAGE_TAX_TREATMENTS, type DamageTaxTreatment } from "@/lib/constants";
@@ -59,6 +60,8 @@ export type CompanySnapshot = {
   iban: string | null;
   bic: string | null;
   invoiceFooter: string | null;
+  website?: string | null;
+  logo?: LogoRef | null;
 };
 
 export type InvoiceCustomerSnapshot = {
@@ -77,7 +80,8 @@ export type InvoiceCustomerSnapshot = {
 type TenantRow = Prisma.TenantGetPayload<object>;
 
 export function companySnapshotOf(t: TenantRow): CompanySnapshot {
-  return { name: t.name, legalForm: t.legalForm, street: t.street, zip: t.zip, city: t.city, country: t.country, email: t.email, phone: t.phone, vatId: t.vatId, taxNumber: t.taxNumber, bankName: t.bankName, iban: t.iban, bic: t.bic, invoiceFooter: t.invoiceFooter };
+  // Befehl 20.5: Logo-Verweis wird mit eingefroren (neue Fassungen); ältere Snapshots haben keinen und bleiben ohne Logo
+  return { name: t.name, legalForm: t.legalForm, street: t.street, zip: t.zip, city: t.city, country: t.country, email: t.email, phone: t.phone, vatId: t.vatId, taxNumber: t.taxNumber, bankName: t.bankName, iban: t.iban, bic: t.bic, invoiceFooter: t.invoiceFooter, website: t.website, logo: logoRefOf(t) };
 }
 
 export function customerSnapshotFromContract(c: Partial<CustomerSnapshot>): InvoiceCustomerSnapshot {

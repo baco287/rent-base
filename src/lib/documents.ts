@@ -2,6 +2,7 @@
 // Eine neue Fassung bekommt eine neue Versionsnummer und einen neuen Storage Key.
 // Änderungen und Löschen blockiert zusätzlich ein Datenbank-Trigger.
 
+import { loadLogo, logoRefOf } from "@/lib/branding";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { Prisma } from "@prisma/client";
@@ -158,7 +159,7 @@ export async function ensureContractDocument(tenantId: string, contractId: strin
     opts,
     data.sourceHash,
     (v) => documentFileName("RENTAL_CONTRACT", data.doc.number, null, v),
-    async () => (await renderContractPdf(data.doc, data.signatureImages)).bytes,
+    async () => (await renderContractPdf(data.doc, data.signatureImages, await loadLogo(tenantId, data.doc.landlord.logo ?? null, opts.storage))).bytes,
   );
 }
 
@@ -216,8 +217,8 @@ export async function ensureHandoverDocument(tenantId: string, handoverId: strin
     (v) => documentFileName(type, data.doc.context?.contractNumber ?? data.doc.number, data.doc.context?.plate, v),
     async () => {
       const storage = opts.storage ?? getStorage();
-      const [sketchSvg, photos] = await Promise.all([loadSketchSvg(data.sketch), loadPhotosForPdf(tenantId, storage, data.photoFiles)]);
-      return (await renderHandoverPdf(data.doc, { sketchSvg, photos, signatures: data.signatureImages })).bytes;
+      const [sketchSvg, photos, logo] = await Promise.all([loadSketchSvg(data.sketch), loadPhotosForPdf(tenantId, storage, data.photoFiles), loadLogo(tenantId, data.doc.context?.landlord.logo ?? null, storage)]);
+      return (await renderHandoverPdf(data.doc, { sketchSvg, photos, signatures: data.signatureImages, logo })).bytes;
     },
   );
 }
@@ -245,7 +246,7 @@ export async function ensureInvoiceDocument(tenantId: string, versionId: string,
     opts,
     data.sourceHash,
     (v) => invoiceFileName(data.doc.number, data.versionNo, v, data.documentType),
-    async () => (await renderInvoicePdf(data.doc)).bytes,
+    async () => (await renderInvoicePdf(data.doc, await loadLogo(tenantId, data.doc.company.logo ?? null, opts.storage))).bytes,
   );
 }
 
@@ -259,7 +260,8 @@ export async function ensurePayoutDocument(tenantId: string, payoutId: string, a
     opts,
     data.sourceHash,
     (v) => `Auszahlungsbeleg_${safeFilePart(data.doc.number) || "ohne-Nummer"}${v > 1 ? `_v${v}` : ""}.pdf`,
-    async () => (await renderPayoutPdf(data.doc)).bytes,
+    // Auszahlungsbeleg: einmalig erzeugt und archiviert – das Logo zum Zeitpunkt der Erzeugung ist damit eingefroren
+    async () => (await renderPayoutPdf(data.doc, await loadLogo(tenantId, logoRefOf(await db.tenant.findUnique({ where: { id: tenantId }, select: { logoStorageKey: true, logoChecksum: true } })), opts.storage))).bytes,
   );
 }
 

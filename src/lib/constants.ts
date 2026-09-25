@@ -91,6 +91,58 @@ export const SESSION_DAYS = 14;
 // geprüft (Eigentümer, nicht beendet, nicht abgelaufen) – niemals allein vertraut.
 export const SUPPORT_COOKIE = "rb_support";
 
+// Befehl 20.5: zwei getrennte E-Mail-Arten. PLATFORM_SYSTEM verschickt RentBase selbst (immer über den zentralen
+// Plattform-SMTP, nie abhängig von der Konfiguration eines Vermieters). TENANT_BUSINESS ist Kommunikation des
+// Vermieters mit Kunden bzw. Behörden und läuft über dessen eigenen SMTP, sobald er ihn eingerichtet und aktiviert hat.
+export const MAIL_CATEGORIES = { PLATFORM_SYSTEM: "RentBase-Systemmail", TENANT_BUSINESS: "Geschäftliche Mail des Vermieters" } as const;
+export type MailCategory = keyof typeof MAIL_CATEGORIES;
+/** Jede vorhandene Vorlage genau einer Art zugeordnet. Unbekannte Vorlagen gelten als geschäftlich (sicherer Standard: nie still über fremde Identität). */
+export const MAIL_TEMPLATE_CATEGORY: Record<string, MailCategory> = {
+  OWNER_INVITATION: "PLATFORM_SYSTEM",
+  USER_INVITATION: "PLATFORM_SYSTEM",
+  PASSWORD_RESET: "PLATFORM_SYSTEM",
+  AUTHORITY_DEADLINES: "PLATFORM_SYSTEM", // interne Fristen-Erinnerung an die Mitarbeiter des Vermieters, von RentBase
+  PICKUP_DOCUMENTS: "TENANT_BUSINESS",
+  RETURN_DOCUMENTS: "TENANT_BUSINESS",
+  INVOICE: "TENANT_BUSINESS", // auch Schadenabrechnung (Rechnungsart DAMAGE) und Bearbeitungsentgelt
+  INVOICE_CORRECTION: "TENANT_BUSINESS",
+  CREDIT_NOTE: "TENANT_BUSINESS",
+  CANCELLATION: "TENANT_BUSINESS",
+  PAYOUT_RECEIPT: "TENANT_BUSINESS",
+  AUTHORITY_RESPONSE: "TENANT_BUSINESS",
+  SMTP_TEST: "TENANT_BUSINESS",
+};
+export const mailCategoryOf = (template: string): MailCategory => MAIL_TEMPLATE_CATEGORY[template] ?? "TENANT_BUSINESS";
+export const MAIL_CHANNELS = { PLATFORM_SMTP: "RentBase-Versanddienst", TENANT_SMTP: "Eigener SMTP des Vermieters" } as const;
+export type MailChannel = keyof typeof MAIL_CHANNELS;
+
+export const SMTP_MODES = { PLATFORM: "RentBase-Versanddienst", TENANT_SMTP: "Eigener SMTP-Server" } as const;
+export type SmtpMode = keyof typeof SMTP_MODES;
+export const SMTP_STATUS = { NOT_CONFIGURED: "Nicht eingerichtet", CONFIGURED: "Eingerichtet, nicht getestet", VERIFIED: "Erfolgreich getestet", ERROR: "Fehler" } as const;
+export type SmtpStatus = keyof typeof SMTP_STATUS;
+export const SMTP_SECURITY = { STARTTLS: "STARTTLS (meist Port 587)", SSL_TLS: "SSL/TLS (meist Port 465)" } as const;
+export type SmtpSecurity = keyof typeof SMTP_SECURITY;
+/** Nur übliche Submission-Ports: kein Portscanner für beliebige interne Dienste (Verbindungstest läuft vom Server aus). */
+export const SMTP_ALLOWED_PORTS = [25, 465, 587, 2525] as const;
+/** Abstrakte Fehlerarten für Oberfläche, Protokoll und Audit – nie Rohfehler des Mailservers. */
+export const SMTP_ERROR_CODES = {
+  INCOMPLETE: "Konfiguration unvollständig",
+  KEY_MISSING: "Verschlüsselung auf dem Server nicht eingerichtet",
+  HOST_BLOCKED: "Dieser Server ist nicht zulässig",
+  DNS: "Server nicht gefunden",
+  CONNECT: "Server nicht erreichbar",
+  TLS: "TLS-Verbindung fehlgeschlagen",
+  AUTH: "Anmeldung abgelehnt",
+  SENDER_REJECTED: "Absenderadresse vom Mailserver nicht erlaubt",
+  RECIPIENT_REJECTED: "Empfängeradresse abgelehnt",
+  NOT_VERIFIED: "Eigener E-Mail-Versand nicht erfolgreich geprüft",
+  UNKNOWN: "Versand fehlgeschlagen",
+} as const;
+export type SmtpErrorCode = keyof typeof SMTP_ERROR_CODES;
+// Branding: Logo pro Mandant (Befehl 20.5). Nur Rasterformate; SVG bewusst nicht (Skript-/XXE-Risiko, pdfkit kann es nicht).
+export const LOGO_ALLOWED_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
+export const LOGO_MAX_BYTES = 2 * 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // Etappe 2: Mietvertrag, Übergabe, Rückgabe, Schäden, Dokumente
 // ---------------------------------------------------------------------------
@@ -367,6 +419,16 @@ export const AUDIT_ACTIONS = {
   SUPPORT_SESSION_ENDED: "Supportzugriff beendet",
   SUPER_ADMIN_GRANTED: "Plattformrolle SUPER_ADMIN vergeben",
   USER_EMAIL_CHANGED: "Login-E-Mail geändert",
+  // Befehl 20.5: mandanteneigener E-Mail-Versand und Branding (nie Passwort, Schlüssel oder Verbindungszeichenfolge)
+  SMTP_SETTINGS_CREATED: "E-Mail-Versand eingerichtet",
+  SMTP_SETTINGS_UPDATED: "E-Mail-Versand geändert",
+  SMTP_SETTINGS_VERIFIED: "E-Mail-Versand erfolgreich getestet",
+  SMTP_TEST_FAILED: "E-Mail-Versand: Test fehlgeschlagen",
+  SMTP_TEST_MAIL_SENT: "E-Mail-Versand: Testmail versendet",
+  SMTP_MODE_CHANGED: "Versandweg geändert",
+  SMTP_SETTINGS_DISABLED: "Eigener E-Mail-Versand deaktiviert",
+  TENANT_LOGO_UPDATED: "Logo hochgeladen",
+  TENANT_LOGO_REMOVED: "Logo entfernt",
 } as const;
 export type AuditAction = keyof typeof AUDIT_ACTIONS;
 

@@ -17,7 +17,7 @@ export type PdfTrace = {
   texts: string[];
   /** Jede platzierte Textbox. overflow = true hieße: passt nicht in den vorgesehenen Bereich. */
   boxes: { page: number; x: number; y: number; w: number; h: number; overflow: boolean }[];
-  images: { kind: "signature" | "photo"; naturalW: number; naturalH: number; w: number; h: number }[];
+  images: { kind: "signature" | "photo" | "logo"; naturalW: number; naturalH: number; w: number; h: number }[];
   markers: { index: number; marker: string; symbol: string; view: string; cx: number; cy: number; r: number; frame: { x: number; y: number; w: number; h: number } }[];
   notes: string[];
 };
@@ -25,7 +25,8 @@ export type PdfTrace = {
 export type PdfMeta = {
   title: string; // z. B. "Mietvertrag"
   number: string;
-  landlord: { name: string; address: string; contact: string };
+  /** logo: Bilddaten des eingefrorenen Logo-Verweises (Befehl 20.5); ohne Logo exakt der bisherige Briefkopf */
+  landlord: { name: string; address: string; contact: string; logoImage?: Uint8Array | null };
   /** Unten links, zwei Zeilen: Bezeichnung und Wert, z. B. die Prüfsumme des versiegelten Inhalts */
   footerNote?: { label: string; value: string };
   /** Unten rechts unter der Seitenzahl, z. B. „Mietbedingungen Version 1.2“ */
@@ -37,6 +38,7 @@ export type Cell = string | { text: string; color?: string; bold?: boolean };
 
 const PAGE = { width: 595.28, height: 841.89 };
 const MARGIN = { left: 48, right: 48, top: 92, bottom: 58 };
+const LOGO_BOX = { w: 110, h: 40 };
 
 export class Pdf {
   readonly doc: PDFKit.PDFDocument;
@@ -262,6 +264,24 @@ export class Pdf {
 
   note(text: string) { this.trace.notes.push(text); }
 
+  private logoCache: { img: { width: number; height: number }; w: number; h: number } | null | undefined;
+  /** Logo einmal öffnen; ein nicht lesbares Logo verhindert das Dokument nie (dann ohne Logo). */
+  private headerLogo() {
+    if (this.logoCache !== undefined) return this.logoCache;
+    this.logoCache = null;
+    const bytes = this.meta.landlord.logoImage;
+    if (!bytes || bytes.length === 0) return null;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const img = (this.doc as any).openImage(Buffer.from(bytes)) as { width: number; height: number };
+      const s = Math.min(LOGO_BOX.w / img.width, LOGO_BOX.h / img.height);
+      this.logoCache = { img, w: img.width * s, h: img.height * s };
+    } catch {
+      this.trace.notes.push("Logo nicht lesbar – Briefkopf ohne Logo");
+    }
+    return this.logoCache;
+  }
+
   /** Kopf- und Fußzeilen auf allen Seiten ergänzen und das PDF abschließen. */
   async finish(): Promise<{ bytes: Buffer; trace: PdfTrace }> {
     const range = this.doc.bufferedPageRange();
@@ -274,10 +294,18 @@ export class Pdf {
       m.top = 0;
       m.bottom = 0;
       const right = this.left + this.width;
+      // Logo links im Kopf (höchstens 110 × 40 pt, Seitenverhältnis bleibt), Name und Anschrift rücken daneben
+      const logo = this.headerLogo();
+      const textX = logo ? this.left + LOGO_BOX.w + 12 : this.left;
+      const textW = (w: number) => (logo ? w - LOGO_BOX.w - 12 : w);
+      if (logo) {
+        this.doc.image(logo.img as unknown as string, this.left, 28 + (LOGO_BOX.h - logo.h) / 2, { width: logo.w, height: logo.h });
+        if (i === 0) this.trace.images.push({ kind: "logo", naturalW: logo.img.width, naturalH: logo.img.height, w: logo.w, h: logo.h });
+      }
       this.style({ size: 11, bold: true, color: COLORS.brand });
-      this.doc.text(this.meta.landlord.name, this.left, 34, { width: this.width * 0.6, lineBreak: false, ellipsis: true });
+      this.doc.text(this.meta.landlord.name, textX, 34, { width: textW(this.width * 0.6), lineBreak: false, ellipsis: true });
       this.style({ size: 7.5, color: COLORS.ink3 });
-      this.doc.text([this.meta.landlord.address, this.meta.landlord.contact].filter(Boolean).join("  ·  "), this.left, 50, { width: this.width * 0.68, height: 20, ellipsis: true });
+      this.doc.text([this.meta.landlord.address, this.meta.landlord.contact].filter(Boolean).join("  ·  "), textX, 50, { width: textW(this.width * 0.68), height: 20, ellipsis: true });
       this.style({ size: 9, bold: true, color: COLORS.ink });
       this.doc.text(this.meta.title, right - 200, 34, { width: 200, align: "right", lineBreak: false });
       this.style({ size: 8.5, color: COLORS.ink2 });

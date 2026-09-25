@@ -7,6 +7,8 @@ import { COLORS, Pdf, type Cell, type PdfTrace } from "@/lib/pdf/layout";
 import { drawMarker, drawSketchView, parseSketchSvg } from "@/lib/pdf/sketch";
 
 export type HandoverPdfAssets = {
+  /** Logo aus dem eingefrorenen Vermieter-Snapshot des Vertrags (Befehl 20.5); fehlt es, bleibt der Briefkopf wie bisher. */
+  logo?: Uint8Array | null;
   /** Inhalt der SVG-Datei genau der Skizzenfassung, die im Protokoll festgehalten ist. null = Skizze nicht verfügbar. */
   sketchSvg: string | null;
   /** Photo.id -> für das PDF verkleinertes JPEG oder PNG. Fehlt ein Eintrag, erscheint ein Hinweis statt des Bildes. */
@@ -186,7 +188,7 @@ export async function renderHandoverPdf(data: HandoverDocumentData, assets: Hand
   const pdf = new Pdf({
     title,
     number: data.number,
-    landlord: ctx?.landlord ?? { name: "", address: "", contact: "" },
+    landlord: { name: ctx?.landlord.name ?? "", address: ctx?.landlord.address ?? "", contact: ctx?.landlord.contact ?? "", logoImage: assets.logo ?? null },
     footerNote: data.contentHash ? { label: "Prüfsumme des versiegelten Protokolls (SHA-256)", value: data.contentHash } : undefined,
   });
 
