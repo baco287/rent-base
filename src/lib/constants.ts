@@ -360,6 +360,7 @@ export const AUDIT_ACTIONS = {
   SUPPORT_SESSION_STARTED: "Supportzugriff gestartet",
   SUPPORT_SESSION_ENDED: "Supportzugriff beendet",
   SUPER_ADMIN_GRANTED: "Plattformrolle SUPER_ADMIN vergeben",
+  USER_EMAIL_CHANGED: "Login-E-Mail geändert",
 } as const;
 export type AuditAction = keyof typeof AUDIT_ACTIONS;
 
