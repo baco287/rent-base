@@ -10,6 +10,7 @@ import { buildContractDocument, landlordOf, type ContractDocumentData, type Tena
 import type { CustomerSnapshot, VehicleSnapshot } from "@/lib/contracts";
 import { buildHandoverDocument, type DocKeyDrop, type HandoverContext, type HandoverDocumentData } from "@/lib/handover-view";
 import { keyDropCustomerRows } from "@/lib/key-drop-document";
+import { effectiveKeyDropEnd, keyDropFindings, type KeyDropFinding } from "@/lib/key-drop-checks";
 import { keyDropSettingsOf } from "@/lib/key-drop";
 import { PHOTO_CATEGORIES, type PhotoCategory } from "@/lib/constants";
 import { APP_TIME_ZONE } from "@/lib/time";
@@ -80,7 +81,36 @@ export async function loadHandoverContext(tenantId: string, handover: { contract
  * Befehl 20.6: Kundenangaben einer kontaktlosen Rückgabe für Anzeige und PDF des Rückgabeprotokolls. Liest die versiegelte
  * Kundenmeldung; Kundenfotos und Kundenunterschrift gehören zur Meldung, nicht zum Protokoll.
  */
-export async function loadDocKeyDrop(tenantId: string, h: { returnMode: string | null; keyDropId: string | null; keyDropExceptionReason: string | null }) {
+type KeyDropHandoverLike = {
+  id: string;
+  returnMode: string | null;
+  keyDropId: string | null;
+  keyDropExceptionReason: string | null;
+  customerDropOffAt: Date | null;
+  returnTimeOverrideAt: Date | null;
+  returnTimeOverrideReason: string | null;
+  returnTimeOverrideByName: string | null;
+  mileage: number | null;
+  fuelLevelEighths: number | null;
+  batteryPercent: number | null;
+};
+
+/** Befehl 20.6: Hinweise zur kontaktlosen Rückgabe für ein Protokoll (Assistent, „Vor Abschluss prüfen“, PDF). */
+export async function keyDropFindingsForHandover(tenantId: string, h: KeyDropHandoverLike): Promise<KeyDropFinding[]> {
+  if (h.returnMode !== "KEY_DROP" || !h.keyDropId) return [];
+  const kd = await db.keyDropReturn.findFirst({ where: { id: h.keyDropId, tenantId }, select: { confirmedAt: true, customerStartedAt: true, customerDropOffAt: true, customerMileage: true, customerFuelEighths: true, customerBatteryPercent: true, customerNewDamages: true } });
+  if (!kd?.confirmedAt) return [];
+  const [firstPhoto, newDamageCount] = await Promise.all([
+    db.photo.findFirst({ where: { tenantId, keyDropId: h.keyDropId }, orderBy: { uploadedAt: "asc" }, select: { uploadedAt: true } }),
+    db.handoverDamage.count({ where: { tenantId, handoverId: h.id, marker: "NEW" } }),
+  ]);
+  return keyDropFindings({
+    customer: { dropOffAt: kd.customerDropOffAt, mileage: kd.customerMileage, fuelEighths: kd.customerFuelEighths, batteryPercent: kd.customerBatteryPercent, newDamages: kd.customerNewDamages, startedAt: kd.customerStartedAt, confirmedAt: kd.confirmedAt, firstPhotoAt: firstPhoto?.uploadedAt ?? null },
+    inspection: { mileage: h.mileage, fuelEighths: h.fuelLevelEighths, batteryPercent: h.batteryPercent, newDamageCount },
+  });
+}
+
+export async function loadDocKeyDrop(tenantId: string, h: KeyDropHandoverLike) {
   if (h.returnMode !== "KEY_DROP" || !h.keyDropId) return null;
   const kd = await db.keyDropReturn.findFirst({ where: { id: h.keyDropId, tenantId }, include: { photos: { orderBy: { uploadedAt: "asc" } }, signatures: { orderBy: { signedAt: "asc" } } } });
   if (!kd) return null;
@@ -97,6 +127,13 @@ export async function loadDocKeyDrop(tenantId: string, h: { returnMode: string |
     signatureId: sig?.id ?? null,
     photos: confirmed ? kd.photos.map((p) => ({ id: p.id, url: `/api/photos/${p.id}`, caption: `Kunde: ${PHOTO_CATEGORIES[p.category as PhotoCategory] ?? p.category}` })) : [],
     exceptionReason: h.keyDropExceptionReason,
+    serverTimes: confirmed ? [
+      ...(kd.customerStartedAt ? [{ label: "Link erstmals geöffnet (Serverzeit)", value: at(kd.customerStartedAt)! }] : []),
+      ...(kd.photos.length > 0 ? [{ label: "Erstes Foto hochgeladen (Serverzeit)", value: at(kd.photos[0].uploadedAt)! }] : []),
+      { label: "Meldung abgeschickt (Serverzeit)", value: at(kd.confirmedAt)! },
+    ] : [],
+    findings: (await keyDropFindingsForHandover(tenantId, h)).map((f) => f.message),
+    effectiveEnd: effectiveKeyDropEnd(h) ? { value: at(effectiveKeyDropEnd(h))!, corrected: Boolean(h.returnTimeOverrideAt), reason: h.returnTimeOverrideReason, byName: h.returnTimeOverrideByName } : null,
   };
   return {
     doc,

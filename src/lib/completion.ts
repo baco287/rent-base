@@ -5,6 +5,7 @@
 
 import { getHandoverState, type HandoverIssue } from "@/lib/handovers";
 import { getReturnComparison } from "@/lib/returns";
+import { keyDropFindingsForHandover } from "@/lib/document-data";
 
 export type CompletionItem = { code: string; message: string; step: number; stepLabel: string; blocking: boolean };
 export type CompletionStatus = { type: "PICKUP" | "RETURN"; blockers: CompletionItem[]; warnings: CompletionItem[]; renterSigned: boolean; ready: boolean };
@@ -51,6 +52,12 @@ export async function getHandoverCompletionStatus(tenantId: string, handoverId: 
     if (!renter) all.push({ area: "SIGNATURE", code: "SIGNATURE_MISSING", severity: "error", message: "Die Unterschrift des Mieters fehlt." });
     else if (renter.contentHash !== hash) all.push({ area: "SIGNATURE", code: "SIGNATURE_STALE", severity: "error", message: "Das Protokoll wurde nach der Unterschrift geändert. Der Mieter muss erneut unterschreiben." });
     if (signatures.some((s) => s.role === "EMPLOYEE" && s.contentHash !== hash)) all.push({ area: "SIGNATURE", code: "SIGNATURE_STALE_EMPLOYEE", severity: "error", message: "Die Unterschrift des Mitarbeiters passt nicht mehr zum Protokoll." });
+  }
+  if (handover.status === "DRAFT" && handover.returnMode === "KEY_DROP") {
+    // Befehl 20.6: Abweichungen zur Kundenangabe und Zeitplausibilität – nur Hinweise, nie Blocker
+    for (const f of await keyDropFindingsForHandover(tenantId, handover)) {
+      all.push({ area: f.kind === "MILEAGE" || f.kind === "ENERGY" ? "READINGS" : f.kind === "DAMAGE" ? "DAMAGES" : "BOOKING", code: f.code, severity: "warning", message: f.message });
+    }
   }
   if (handover.status === "DRAFT") {
     if (type === "RETURN") {

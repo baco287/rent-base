@@ -10,7 +10,8 @@ import { CHARGE_UNITS, EXTRA_CHARGE_TYPES } from "@/lib/constants";
 import { DomainError, isImmutableError } from "@/lib/integrity";
 import { getStorage } from "@/lib/storage";
 import { runReturnFollowUp } from "@/lib/followup";
-import { addNewDamage, answerChecklist, finalizeHandover, removeHandoverSignature, removeNewDamage, saveHandoverSignature, setHandoverStep, startHandover, updateHandoverDraft, updateNewDamage } from "@/lib/handovers";
+import { addNewDamage, answerChecklist, finalizeHandover, removeHandoverSignature, removeNewDamage, saveHandoverSignature, setHandoverStep, setReturnTimeOverride, startHandover, updateHandoverDraft, updateNewDamage } from "@/lib/handovers";
+import { parseLocalDateTime } from "@/lib/time";
 import { addManualCharge, confirmProposal, removeCharge } from "@/lib/returns";
 
 export type StepState = { error?: string } | undefined;
@@ -66,6 +67,21 @@ export async function startKeyDropExceptionAction(bookingId: string, _prev: Step
   }
   revalidatePath(`/buchungen/${bookingId}`);
   redirect(`${base(bookingId)}?schritt=1`);
+}
+
+/** Befehl 20.6: maßgebliches Mietende bei kontaktloser Rückgabe korrigieren oder Korrektur zurücknehmen – nur Inhaber/Disposition, mit Grund. */
+export async function setReturnTimeOverrideAction(bookingId: string, _prev: StepState, formData: FormData): Promise<StepState> {
+  const { tenant, user } = await requireRole("DISPO");
+  const handover = await db.handover.findFirst({ where: { bookingId, tenantId: tenant.id, type: "RETURN", correctsId: null, status: "DRAFT" }, select: { id: true } });
+  if (!handover) return { error: "Keine offene Rückgabe gefunden." };
+  const reset = formData.get("reset") === "1";
+  try {
+    await setReturnTimeOverride(tenant.id, handover.id, { id: user.id, name: user.name }, { at: reset ? null : parseLocalDateTime(String(formData.get("at") ?? "")), reason: String(formData.get("reason") ?? "") });
+  } catch (e) {
+    return asState(e);
+  }
+  revalidatePath(base(bookingId));
+  redirect(`${base(bookingId)}?schritt=2`);
 }
 
 export async function navigateStepAction(bookingId: string, step: number, _prev: StepState, formData: FormData): Promise<StepState> {

@@ -117,7 +117,15 @@ export function KeyDropCustomerCard({ k }: { k: NonNullable<HandoverDocument["ke
           <dt className="text-ink-3">Vereinbarter Ort</dt><dd className="break-words">{k.agreedLocation}</dd>
           {k.customerRows.map((r) => <Fragment key={r.label}><dt className="text-ink-3">{r.label}</dt><dd className="break-words">{r.value}</dd></Fragment>)}
           {k.signerName && <><dt className="text-ink-3">Bestätigt von</dt><dd>{k.signerName}</dd></>}
+          {k.serverTimes.map((r) => <Fragment key={r.label}><dt className="text-ink-3">{r.label}</dt><dd>{r.value}</dd></Fragment>)}
+          {k.effectiveEnd && <><dt className="text-ink-3">Maßgebliches Mietende</dt><dd className="font-medium">{k.effectiveEnd.value}{k.effectiveEnd.corrected ? ` – korrigiert${k.effectiveEnd.byName ? ` durch ${k.effectiveEnd.byName}` : ""}: ${k.effectiveEnd.reason ?? ""}` : " (Abgabe laut Kunde)"}</dd></>}
         </dl>
+        {k.findings.length > 0 && (
+          <div role="alert" className="rounded-md bg-amber-soft text-amber px-3 py-2">
+            <div className="font-medium">Abweichungen zwischen Kundenangabe und Kontrolle</div>
+            <ul className="list-disc pl-5">{k.findings.map((f) => <li key={f}>{f}</li>)}</ul>
+          </div>
+        )}
         {k.confirmationText && <p className="text-xs text-ink-2">„{k.confirmationText}“</p>}
         {k.signatureId && (
           // eslint-disable-next-line @next/next/no-img-element

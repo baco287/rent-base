@@ -102,6 +102,12 @@ export type DocKeyDrop = {
   signatureId: string | null;
   photos: { id: string; url: string; caption: string }[];
   exceptionReason: string | null;
+  /** Serverzeiten (vom Kunden nicht beeinflussbar): Link geöffnet, erstes Foto, Meldung abgeschickt */
+  serverTimes: { label: string; value: string }[];
+  /** Abweichungen Kundenangabe ↔ Kontrolle und Zeitplausibilität (Hinweise, keine Bewertung) */
+  findings: string[];
+  /** Maßgebliches Mietende; bei Korrektur mit Begründung und Person */
+  effectiveEnd: { value: string; corrected: boolean; reason: string | null; byName: string | null } | null;
 };
 
 export type HandoverDocument = {

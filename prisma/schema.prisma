@@ -664,14 +664,19 @@ model Handover {
   sketchVersion   Int?
   sketchAssetHash String? // genau diese Skizzenfassung wurde verwendet
 
-  correctsId             String? // Nachtrag: verweist auf das ursprüngliche Protokoll
-  wizardStep             Int       @default(1) // zuletzt erreichter Schritt im Assistenten
-  fuelPricePerLiter      Decimal? // nur Rückgabe: bei der Rückgabe ausdrücklich angegebener Literpreis, falls der Vertrag keinen nennt
+  correctsId               String? // Nachtrag: verweist auf das ursprüngliche Protokoll
+  wizardStep               Int       @default(1) // zuletzt erreichter Schritt im Assistenten
+  fuelPricePerLiter        Decimal? // nur Rückgabe: bei der Rückgabe ausdrücklich angegebener Literpreis, falls der Vertrag keinen nennt
   // Befehl 20.6: Rückgabeart. NULL = Protokoll vor 20.6 bzw. Übergabe; neue Rückgaben IN_PERSON oder KEY_DROP.
-  returnMode             String?
-  keyDropId              String?   @unique
-  customerDropOffAt      DateTime? // KEY_DROP: vom Kunden gemeldeter Abstellzeitpunkt (Kopie aus KeyDropReturn), Grundlage der Mietdauer
-  keyDropExceptionReason String? // KEY_DROP ohne Kundenbestätigung: dokumentierter Pflichtgrund (nur Inhaber/Disposition)
+  returnMode               String?
+  keyDropId                String?   @unique
+  customerDropOffAt        DateTime? // KEY_DROP: vom Kunden gemeldeter Abstellzeitpunkt (Kopie aus KeyDropReturn), Grundlage der Mietdauer
+  keyDropExceptionReason   String? // KEY_DROP ohne Kundenbestätigung: dokumentierter Pflichtgrund (nur Inhaber/Disposition)
+  // KEY_DROP: vom Vermieter mit Pflichtgrund korrigiertes maßgebliches Mietende (die Kundenangabe bleibt unverändert als Beleg)
+  returnTimeOverrideAt     DateTime?
+  returnTimeOverrideReason String?
+  returnTimeOverrideById   String?
+  returnTimeOverrideByName String?
 
   startedAt   DateTime  @default(now())
   finalizedAt DateTime?

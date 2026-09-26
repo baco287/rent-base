@@ -190,7 +190,7 @@ function keyDropSection(pdf: Pdf, k: NonNullable<HandoverDocumentData["keyDrop"]
     pdf.keyValues([{ label: "Vereinbarter Rückgabeort", value: k.agreedLocation }], 1);
     return;
   }
-  pdf.keyValues([{ label: "Rückgabeart", value: `Kontaktlos (${k.label})` }, { label: "Vereinbarter Rückgabeort", value: k.agreedLocation }, ...k.customerRows, { label: "Gemeldet am", value: k.confirmedAt ?? "–" }], 1);
+  pdf.keyValues([{ label: "Rückgabeart", value: `Kontaktlos (${k.label})` }, { label: "Vereinbarter Rückgabeort", value: k.agreedLocation }, ...k.customerRows, { label: "Gemeldet am", value: k.confirmedAt ?? "–" }, ...k.serverTimes], 1);
   if (k.confirmationText) pdf.paragraph(`Bestätigung des Kunden: „${k.confirmationText}“`, { size: 8.5, color: COLORS.ink2, gapAfter: 4 });
   const sig = k.signatureId ? assets.signatures.get(k.signatureId) : undefined;
   pdf.ensureSpace(80);
@@ -241,6 +241,13 @@ export async function renderHandoverPdf(data: HandoverDocumentData, assets: Hand
 
   pdf.sectionTitle(data.type === "PICKUP" ? "Übergabedaten" : data.keyDrop ? "Nachträgliche Fahrzeugkontrolle" : "Rückgabedaten");
   if (data.keyDrop) pdf.paragraph("Der Kunde war bei der nachträglichen Fahrzeugkontrolle nicht anwesend. Die folgenden Feststellungen sind die des Vermieters.", { size: 8.5, color: COLORS.ink2, gapAfter: 6 });
+  if (data.keyDrop?.effectiveEnd) pdf.keyValues([{ label: "Maßgebliches Mietende", value: data.keyDrop.effectiveEnd.corrected ? `${data.keyDrop.effectiveEnd.value} (vom Vermieter korrigiert${data.keyDrop.effectiveEnd.byName ? ` durch ${data.keyDrop.effectiveEnd.byName}` : ""}; Grund: ${data.keyDrop.effectiveEnd.reason ?? "–"})` : `${data.keyDrop.effectiveEnd.value} (Abgabe laut Kunde)` }], 1);
+  if (data.keyDrop && data.keyDrop.findings.length > 0) {
+    pdf.textAt("Abweichungen zwischen Kundenangabe und Kontrolle", pdf.left, pdf.y, pdf.width, { size: 9, bold: true, color: COLORS.warn });
+    pdf.gap(2);
+    for (const f of data.keyDrop.findings) pdf.paragraph(`• ${f}`, { size: 8.5, color: COLORS.warn, gapAfter: 2 });
+    pdf.gap(4);
+  }
   pdf.keyValues([
     ...(data.keyDrop ? [{ label: "Kontrolle begonnen", value: data.startedAt }] : []),
     { label: data.type === "PICKUP" ? "Übergabe am" : data.keyDrop ? "Kontrolle abgeschlossen" : "Rückgabe am", value: data.finalizedAt ?? data.startedAt },

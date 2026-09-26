@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Fragment } from "react";
 import { notFound } from "next/navigation";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/lib/db";
@@ -8,7 +9,9 @@ import { buildHandoverDocument } from "@/lib/handover-view";
 import { getReturnComparison, fmtMinutes } from "@/lib/returns";
 import { loadDocKeyDrop, loadHandoverContext } from "@/lib/document-data";
 import { keyDropForBooking } from "@/lib/key-drop";
-import { KeyDropExceptionForm } from "./key-drop-parts";
+import { KeyDropExceptionForm, ReturnTimeOverrideForm } from "./key-drop-parts";
+import { keyDropFindingsForHandover } from "@/lib/document-data";
+import { toDateTimeInputValue } from "@/lib/time";
 import { storageStatus } from "@/lib/storage";
 import { FUELS, PHOTO_CATEGORIES, REQUIRED_PHOTO_CATEGORIES, energyRequirements, type Fuel, type PhotoCategory } from "@/lib/constants";
 import { customerName, fmtDateTime, fmtEur, fmtInt } from "@/lib/format";
@@ -129,6 +132,11 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
   const kdRaw = handover.keyDropId ? await db.keyDropReturn.findFirst({ where: { id: handover.keyDropId, tenantId: tenant.id }, select: { customerMileage: true, customerFuelEighths: true, customerBatteryPercent: true, customerNewDamages: true, customerDamageNote: true, customerDropOffAt: true } }) : null;
   const doc = buildHandoverDocument(handover, sketch, signatures, REQUIRED_PHOTO_CATEGORIES, context, comparison, [], keyDrop?.doc ?? null);
   const isKeyDrop = handover.returnMode === "KEY_DROP";
+  const findings = isKeyDrop ? await keyDropFindingsForHandover(tenant.id, handover) : [];
+  const findingList = (kinds: string[]) => {
+    const rows = findings.filter((f) => kinds.includes(f.kind));
+    return rows.length > 0 ? <div role="alert" className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm"><div className="font-medium">Abweichung zur Angabe des Kunden</div><ul className="list-disc pl-5">{rows.map((f) => <li key={f.code}>{f.message}</li>)}</ul></div> : null;
+  };
   const customerSays = (text: string) => <p className="rounded-md bg-info-soft text-info px-3 py-2 text-sm"><span className="font-medium">Angabe des Kunden:</span> {text} <span className="text-xs">(wird nicht übernommen – bitte selbst ablesen)</span></p>;
 
   if (handover.status === "FINALIZED") {
@@ -222,11 +230,25 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
 
         {step === 2 && (
           <>
+            {isKeyDrop && (
+              <Card title="Maßgebliches Mietende" right={handover.returnTimeOverrideAt ? <Chip tone="amber">korrigiert</Chip> : <Chip tone="info">Abgabe laut Kunde</Chip>}>
+                <div className="p-4 flex flex-col gap-3 text-sm">
+                  <dl className="grid grid-cols-[minmax(150px,40%)_1fr] gap-x-3 gap-y-1.5">
+                    <dt className="text-ink-3">Abgabe laut Kunde</dt><dd>{fmtDateTime(handover.customerDropOffAt) || "– (keine Kundenmeldung)"}</dd>
+                    {keyDrop?.doc.serverTimes.map((r) => <Fragment key={r.label}><dt className="text-ink-3">{r.label}</dt><dd>{r.value}</dd></Fragment>)}
+                    {handover.returnTimeOverrideAt && <><dt className="text-ink-3">Korrigiert auf</dt><dd className="font-medium">{fmtDateTime(handover.returnTimeOverrideAt)} · {handover.returnTimeOverrideByName}: {handover.returnTimeOverrideReason}</dd></>}
+                  </dl>
+                  <p className="text-xs text-ink-3">Das maßgebliche Mietende bestimmt Mietdauer und Verspätungshinweis. Die Angabe des Kunden bleibt immer unverändert als Beleg erhalten.</p>
+                  {user.role !== "YARD" ? <ReturnTimeOverrideForm bookingId={b.id} defaultAt={toDateTimeInputValue(handover.returnTimeOverrideAt ?? handover.customerDropOffAt ?? new Date())} hasOverride={Boolean(handover.returnTimeOverrideAt)} /> : <p className="text-xs text-ink-3">Korrigieren kann nur Inhaber oder Disposition.</p>}
+                </div>
+              </Card>
+            )}
             <HandoverIssueList issues={issues} areas={["READINGS"]} />
             <Card className="p-4 md:p-5">
               <StepForm action={saveMileageAction.bind(null, b.id)} step={2}>
                 <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr] gap-4 items-start">
                   {isKeyDrop && kdRaw?.customerMileage != null && customerSays(`${fmtInt(kdRaw.customerMileage)} km, abgegeben ${fmtDateTime(kdRaw.customerDropOffAt)}`)}
+                  {isKeyDrop && findingList(["MILEAGE", "TIME"])}
                   <Field label={isKeyDrop ? "Kilometerstand laut Kontrolle" : "Rückgabe-Kilometerstand"} htmlFor="mileage" hint="Das Fahrzeug übernimmt den Stand erst mit dem Abschluss der Rückgabe.">
                     <input id="mileage" name="mileage" inputMode="numeric" pattern="[0-9.]*" defaultValue={handover.mileage ?? ""} required className="input tnum !text-xl !font-semibold !min-h-[52px]" placeholder={cmp?.mileage.pickup != null ? String(cmp.mileage.pickup) : ""} />
                   </Field>
@@ -258,6 +280,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
         {step === 3 && (
           <>
             <HandoverIssueList issues={issues} areas={["READINGS"]} />
+            {isKeyDrop && findingList(["ENERGY"])}
             {isKeyDrop && (kdRaw?.customerFuelEighths != null || kdRaw?.customerBatteryPercent != null) && customerSays([kdRaw?.customerFuelEighths != null ? `Tank ${kdRaw.customerFuelEighths}/8` : null, kdRaw?.customerBatteryPercent != null ? `Batterie ${kdRaw.customerBatteryPercent} %` : null].filter(Boolean).join(", "))}
             <Card className="p-4 md:p-5">
               <StepForm action={saveEnergyAction.bind(null, b.id)} step={3}>
@@ -316,6 +339,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
 
         {step === 4 && (
           <>
+            {isKeyDrop && findingList(["DAMAGE"])}
             {isKeyDrop && kdRaw?.customerNewDamages != null && customerSays(kdRaw.customerNewDamages ? `Neue Schäden bekannt – ${kdRaw.customerDamageNote ?? ""}` : "keine neuen Schäden bekannt")}
             {isKeyDrop && <p className="text-xs text-ink-3">Neu festgestellte Schäden werden als „bei nachträglicher Kontrolle nach kontaktloser Rückgabe festgestellt“ geführt. Die Schadenakte startet neutral; über Verantwortung und Kosten wird gesondert entschieden.</p>}
             <HandoverIssueList issues={issues} areas={["DAMAGES"]} />

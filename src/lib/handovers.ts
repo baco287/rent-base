@@ -26,6 +26,7 @@ import { resolveSketch } from "@/lib/sketches";
 import { recordVehicleEvent } from "@/lib/vehicle-events";
 import { driverVerificationBlockers } from "@/lib/driver-verification";
 import { recordAudit } from "@/lib/audit";
+import { effectiveKeyDropEnd } from "@/lib/key-drop-checks";
 
 type Tx = Prisma.TransactionClient;
 const TX = { timeout: 20_000, maxWait: 10_000 };
@@ -214,7 +215,7 @@ async function handoverContent(tx: Tx, tenantId: string, handoverId: string) {
   };
   if (h.returnMode === "KEY_DROP") {
     const kd = h.keyDropId ? await tx.keyDropReturn.findFirst({ where: { id: h.keyDropId, tenantId }, select: { confirmationHash: true } }) : null;
-    Object.assign(content, { keyDrop: { id: h.keyDropId, customerDropOffAt: h.customerDropOffAt?.toISOString() ?? null, customerConfirmationHash: kd?.confirmationHash ?? null, exceptionReason: h.keyDropExceptionReason } });
+    Object.assign(content, { keyDrop: { id: h.keyDropId, customerDropOffAt: h.customerDropOffAt?.toISOString() ?? null, customerConfirmationHash: kd?.confirmationHash ?? null, exceptionReason: h.keyDropExceptionReason, ...(h.returnTimeOverrideAt ? { returnTimeOverride: { at: h.returnTimeOverrideAt.toISOString(), reason: h.returnTimeOverrideReason } } : {}) } });
   }
   return { handover: h, hash: contentHash(content) };
 }
@@ -326,6 +327,31 @@ export async function updateHandoverDraft(tenantId: string, handoverId: string, 
       },
     });
     await touch(tx, tenantId, h.id);
+    return updated;
+  }, TX);
+}
+
+/**
+ * Befehl 20.6: maßgebliches Mietende einer kontaktlosen Rückgabe korrigieren (oder Korrektur zurücknehmen).
+ * Nur im Entwurf, nur KEY_DROP, immer mit Begründung; die Kundenangabe bleibt unverändert. Die Rolle prüft der Aufrufer
+ * (Inhaber/Disposition). Als Inhaltsänderung verwirft sie eine vorhandene Mitarbeiterunterschrift.
+ */
+export async function setReturnTimeOverride(tenantId: string, handoverId: string, actor: Actor, input: { at: Date | null; reason: string }) {
+  const reason = input.reason.trim();
+  if (reason.length < 10) throw new DomainError("Bitte den Grund für die Korrektur nachvollziehbar angeben (mindestens 10 Zeichen).");
+  return db.$transaction(async (tx) => {
+    const h = await loadDraft(tx, tenantId, handoverId);
+    if (h.returnMode !== "KEY_DROP") throw new DomainError("Das Mietende kann nur bei einer kontaktlosen Rückgabe korrigiert werden.");
+    if (input.at) {
+      if (Number.isNaN(input.at.getTime())) throw new DomainError("Bitte einen gültigen Zeitpunkt angeben.");
+      if (input.at.getTime() > Date.now() + 5 * 60_000) throw new DomainError("Das Mietende kann nicht in der Zukunft liegen.");
+      const booking = await tx.booking.findFirstOrThrow({ where: { id: h.bookingId, tenantId }, select: { actualPickupAt: true } });
+      if (booking.actualPickupAt && input.at.getTime() < booking.actualPickupAt.getTime()) throw new DomainError("Das Mietende kann nicht vor der Übergabe liegen.");
+    }
+    const before = effectiveKeyDropEnd(h);
+    const updated = await tx.handover.update({ where: { id: h.id }, data: input.at ? { returnTimeOverrideAt: input.at, returnTimeOverrideReason: reason.slice(0, 500), returnTimeOverrideById: actor.id, returnTimeOverrideByName: actor.name } : { returnTimeOverrideAt: null, returnTimeOverrideReason: null, returnTimeOverrideById: null, returnTimeOverrideByName: null } });
+    await touch(tx, tenantId, h.id);
+    await recordAudit(tx, tenantId, actor, { action: "KEY_DROP_RETURN_TIME_CORRECTED", bookingId: h.bookingId, details: { handoverNumber: h.number, from: before?.toISOString() ?? null, to: input.at?.toISOString() ?? h.customerDropOffAt?.toISOString() ?? null, customerDropOffAt: h.customerDropOffAt?.toISOString() ?? null, reset: !input.at, reason: reason.slice(0, 300) } });
     return updated;
   }, TX);
 }
@@ -625,7 +651,7 @@ async function collectIssues(tx: Tx, tenantId: string, handoverId: string, opts:
     const returned = parseInt(h.checklistItems.find((c) => c.itemKey === "keys_returned")?.result ?? "", 10);
     if (Number.isFinite(given) && Number.isFinite(returned) && returned < given) warn("CHECKLIST", "ACCESSORY_MISSING", `Bei der Übergabe wurden ${given} Schlüssel dokumentiert, zurück kamen ${returned}. Falls etwas fehlt, kann in Schritt 7 eine Position „Fehlendes Zubehör“ erfasst werden.`);
     for (const c of h.checklistItems.filter(isAttention)) warn("CHECKLIST", "CHECKLIST_ATTENTION", `Auffällig: ${c.label}${c.note ? ` (${c.note})` : ""}.`);
-    const effectiveEnd = h.customerDropOffAt ?? new Date(); // kontaktlos: Abgabe laut Kunde, nicht der Kontrollzeitpunkt
+    const effectiveEnd = effectiveKeyDropEnd(h) ?? new Date(); // kontaktlos: maßgebliches Mietende (Korrektur oder Abgabe laut Kunde), nicht der Kontrollzeitpunkt
     if (booking.endAt.getTime() < effectiveEnd.getTime() - 15 * 60_000) {
       const minutes = Math.round((effectiveEnd.getTime() - booking.endAt.getTime()) / 60_000);
       warn("BOOKING", "LATE_RETURN", `Die Rückgabe liegt ${Math.floor(minutes / 60)} Std. ${minutes % 60} Min. nach der vereinbarten Zeit. Eine Gebühr entsteht nur, wenn sie in Schritt 7 bewusst erfasst wird.`);
@@ -708,7 +734,7 @@ export async function finalizeHandover(tenantId: string, handoverId: string, act
     const now = new Date();
     if (h.type === "PICKUP") await tx.booking.update({ where: { id: booking.id }, data: { status: "ACTIVE", actualPickupAt: now } });
     // Kontaktlos: Mietende ist die vom Kunden gemeldete Abgabe, nicht der (spätere) Kontrollzeitpunkt – beide bleiben getrennt gespeichert
-    else await tx.booking.update({ where: { id: booking.id }, data: { status: "RETURNED", actualReturnAt: h.customerDropOffAt ?? now } });
+    else await tx.booking.update({ where: { id: booking.id }, data: { status: "RETURNED", actualReturnAt: effectiveKeyDropEnd(h) ?? now } });
 
     // Neue Schäden in die Schadenakte übernehmen. Die Kopie im Protokoll bleibt davon unabhängig.
     for (const d of h.damages.filter((x) => x.marker === "NEW" && !x.damageId)) {

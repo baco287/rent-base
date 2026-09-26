@@ -340,3 +340,70 @@ test("Mandantentrennung, Rollen und Sicherheit im Code", async () => {
   assert.ok(!/recordAudit\([^)]*rawToken/.test(lib) && !/console\.\w+\([^)]*rawToken/.test(lib), "Token nie in Audit oder Log");
   assert.match(read("src/proxy.ts"), /"\/rueckgabe", "\/api\/rueckgabe"/);
 });
+
+// ---------------------------------------------------------------------------
+// Ergänzung: Abweichungen, Zeitplausibilität, korrigierbares Mietende
+// ---------------------------------------------------------------------------
+
+test("Abweichungen: Schwellen, Richtung, Schäden und Zeitlücken – reine Hinweise", async () => {
+  const { keyDropFindings } = await import("../src/lib/key-drop-checks");
+  const base = { dropOffAt: new Date("2026-09-26T16:00:00Z"), mileage: 45_600, fuelEighths: 6, batteryPercent: null, newDamages: false, startedAt: new Date("2026-09-26T15:50:00Z"), confirmedAt: new Date("2026-09-26T16:05:00Z"), firstPhotoAt: new Date("2026-09-26T15:58:00Z") };
+  assert.deepEqual(keyDropFindings({ customer: base, inspection: { mileage: 45_620, fuelEighths: 6, batteryPercent: null, newDamageCount: 0 } }), [], "innerhalb der Toleranz: keine Hinweise");
+  const f = keyDropFindings({ customer: { ...base, confirmedAt: new Date("2026-09-26T21:40:00Z"), firstPhotoAt: new Date("2026-09-26T21:30:00Z") }, inspection: { mileage: 46_600, fuelEighths: 4, batteryPercent: null, newDamageCount: 2 } });
+  assert.deepEqual(f.map((x) => x.code), ["MILEAGE_KEYDROP_DIFF", "FUEL_KEYDROP_DIFF", "DAMAGE_KEYDROP_UNREPORTED", "TIME_KEYDROP_PHOTO_LATE", "TIME_KEYDROP_CONFIRM_LATE"]);
+  assert.match(f[0].message, /Kunde 45\.600 km, Kontrolle 46\.600 km \(\+1\.000 km\)/);
+  assert.match(f[4].message, /5 Std\. 40 Min\. später/);
+  assert.deepEqual(keyDropFindings({ customer: { ...base, newDamages: true }, inspection: { mileage: 45_600, fuelEighths: 6, batteryPercent: null, newDamageCount: 0 } }).map((x) => x.code), ["DAMAGE_KEYDROP_NOT_FOUND"]);
+});
+
+test("Kontrolle mit Abweichungen: Hinweise blockieren nicht; Mietende nur mit Grund korrigierbar, Kundenangabe bleibt, PDF zeigt beides", async () => {
+  const w = await world("kd-diff");
+  const kd = await agree(w);
+  const { token } = await sendLink(w, kd.id);
+  const dropOff = new Date(Date.now() - 6 * HOUR);
+  await db.booking.update({ where: { id: w.bookingId }, data: { endAt: new Date(Date.now() - 7 * HOUR) } });
+  await confirmKeyDrop(token!, confirmInput({ dropOffAt: dropOff, mileage: 45_600, fuelEighths: 6, newDamages: false }));
+  const r = await staffInspect(w, { mileage: 46_600, damage: true });
+  const st = await getHandoverCompletionStatus(w.tenantId, r.id);
+  const codes = st.warnings.map((x) => x.code);
+  for (const c of ["MILEAGE_KEYDROP_DIFF", "FUEL_KEYDROP_DIFF", "DAMAGE_KEYDROP_UNREPORTED", "TIME_KEYDROP_CONFIRM_LATE"]) assert.ok(codes.includes(c), `${c} als Hinweis`);
+  assert.ok(st.ready, "Hinweise blockieren den Abschluss nicht");
+  assert.equal(st.warnings.find((x) => x.code === "MILEAGE_KEYDROP_DIFF")?.step, 2);
+  assert.equal(st.warnings.find((x) => x.code === "DAMAGE_KEYDROP_UNREPORTED")?.step, 4);
+
+  const { setReturnTimeOverride } = await import("../src/lib/handovers");
+  const { getReturnComparison } = await import("../src/lib/returns");
+  const corrected = new Date(Date.now() - 1 * HOUR);
+  await assert.rejects(setReturnTimeOverride(w.tenantId, r.id, w.actor, { at: corrected, reason: "kurz" }), /mindestens 10 Zeichen/);
+  await assert.rejects(setReturnTimeOverride(w.tenantId, r.id, w.actor, { at: new Date(Date.now() + 2 * HOUR), reason: "Zeit liegt in der Zukunft" }), /Zukunft/);
+  await assert.rejects(setReturnTimeOverride(w.tenantId, r.id, w.actor, { at: new Date(Date.now() - 5 * 86400_000), reason: "Zeit liegt vor der Übergabe" }), /vor der Übergabe/);
+  assert.equal((await getReturnComparison(w.tenantId, r.id)).time.actualEnd.getTime(), dropOff.getTime(), "ohne Korrektur: Abgabe laut Kunde");
+  await setReturnTimeOverride(w.tenantId, r.id, w.actor, { at: corrected, reason: "Fotos und Meldung erst am Abend, Nachbar bestätigt" });
+  assert.equal((await getReturnComparison(w.tenantId, r.id)).time.actualEnd.getTime(), corrected.getTime(), "Korrektur zählt für die Mietdauer");
+  await finalizeHandover(w.tenantId, r.id, w.actor);
+  const [booking, kdAfter] = await Promise.all([db.booking.findUniqueOrThrow({ where: { id: w.bookingId } }), db.keyDropReturn.findUniqueOrThrow({ where: { id: kd.id } })]);
+  assert.equal(booking.actualReturnAt?.getTime(), corrected.getTime(), "Mietende = Korrektur");
+  assert.equal(kdAfter.customerDropOffAt?.getTime(), dropOff.getTime(), "Kundenangabe unverändert");
+  const audit = await db.auditLog.findFirstOrThrow({ where: { tenantId: w.tenantId, action: "KEY_DROP_RETURN_TIME_CORRECTED" } });
+  assert.match(JSON.stringify(audit.details), /Nachbar bestätigt/);
+  await assert.rejects(setReturnTimeOverride(w.tenantId, r.id, w.actor, { at: null, reason: "nach Abschluss zurücknehmen" }), /finalisiert|Entwurf|gesperrt/);
+  const data = await loadHandoverDocumentData(w.tenantId, r.id);
+  const pdf = await renderHandoverPdf(data.doc, { sketchSvg: null, photos: new Map(), signatures: data.signatureImages });
+  const text = pdf.trace.texts.join("\n");
+  assert.match(text, /Abweichungen zwischen Kundenangabe und Kontrolle/);
+  assert.match(text, /vom Vermieter korrigiert/);
+  assert.match(text, /Meldung abgeschickt \(Serverzeit\)/);
+  assert.ok(pdf.trace.boxes.every((b) => !b.overflow));
+  assert.equal((await verifyHandover(w.tenantId, r.id)).intact, true);
+
+  // Persönliche Rückgabe: keine Korrektur möglich; DB verhindert Korrektur ohne Grund
+  const p = await world("kd-diff-inperson");
+  const ip = await startHandover(p.tenantId, p.bookingId, "RETURN", p.actor);
+  await assert.rejects(setReturnTimeOverride(p.tenantId, ip.id, p.actor, { at: new Date(), reason: "nur bei kontaktloser Rückgabe" }), /nur bei einer kontaktlosen Rückgabe/);
+  await assert.rejects(db.handover.update({ where: { id: ip.id }, data: { returnTimeOverrideAt: new Date(), returnTimeOverrideReason: "x" } }), /rb_handover_return_time_override/);
+});
+
+test("Korrektur des Mietendes nur Inhaber/Disposition (Code)", () => {
+  const src = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/rueckgabe/actions.ts"), "utf8");
+  assert.match(src, /export async function setReturnTimeOverrideAction[\s\S]*?requireRole\("DISPO"\)/);
+});

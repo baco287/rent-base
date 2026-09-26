@@ -8,6 +8,7 @@
 //   und auch sie bedeutet nur "Kostenposition zu diesem Schaden", keine Haftungsfeststellung.
 // - Verspätung wird berechnet und angezeigt. Eine Gebühr dafür ist im Vertrag nicht geregelt, also gibt es keinen Vorschlag.
 
+import { effectiveKeyDropEnd } from "@/lib/key-drop-checks";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { CHARGE_UNITS, EXTRA_CHARGE_TYPES, FUEL_POLICIES, energyRequirements, type ExtraChargeType } from "@/lib/constants";
@@ -99,7 +100,7 @@ export function buildComparison(input: {
   const v = contract.vehicleSnapshot as Partial<VehicleSnapshot>;
   const energy = energyRequirements(h.driveType);
   // Befehl 20.6: kontaktlos zählt die vom Kunden gemeldete Abgabe als Mietende (nicht der spätere Kontrollzeitpunkt)
-  const actualEnd = h.customerDropOffAt ?? h.finalizedAt ?? input.now ?? new Date();
+  const actualEnd = effectiveKeyDropEnd(h) ?? h.finalizedAt ?? input.now ?? new Date();
   const start = booking.actualPickupAt ?? contract.startAt;
   const days = rentalDays(contract.startAt, contract.endAt);
   const lateMinutes = Math.max(0, Math.round((actualEnd.getTime() - contract.endAt.getTime()) / 60_000));

@@ -459,6 +459,7 @@ export const AUDIT_ACTIONS = {
   KEY_DROP_INSPECTION_STARTED: "Kontrolle nach kontaktloser Rückgabe begonnen",
   KEY_DROP_INSPECTION_COMPLETED: "Kontrolle nach kontaktloser Rückgabe abgeschlossen",
   KEY_DROP_EXCEPTION_USED: "Kontaktlose Rückgabe ohne Kundenbestätigung abgeschlossen (Ausnahme)",
+  KEY_DROP_RETURN_TIME_CORRECTED: "Mietende bei kontaktloser Rückgabe korrigiert",
 } as const;
 export type AuditAction = keyof typeof AUDIT_ACTIONS;
 
