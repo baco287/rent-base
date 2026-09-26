@@ -43,10 +43,16 @@ export async function getHandoverCompletionStatus(tenantId: string, handoverId: 
   const all: HandoverIssue[] = [...issues];
   // Unterschrift: dieselbe Regel wie beim Abschluss (requireSignature), hier ohne Bilddaten
   const renter = signatures.find((s) => s.role === "RENTER");
-  if (handover.status === "DRAFT") {
+  if (handover.status === "DRAFT" && handover.returnMode === "KEY_DROP") {
+    // Befehl 20.6: keine Kundenunterschrift unter die Kontrolle; die Kundenmeldung (oder der Ausnahmegrund) prüft collectIssues
+    if (renter) all.push({ area: "SIGNATURE", code: "KEY_DROP_RENTER_SIGNATURE", severity: "error", message: "Bei der kontaktlosen Rückgabe unterschreibt der Kunde nicht unter die Feststellungen der Kontrolle." });
+    if (signatures.some((s) => s.role === "EMPLOYEE" && s.contentHash !== hash)) all.push({ area: "SIGNATURE", code: "SIGNATURE_STALE_EMPLOYEE", severity: "error", message: "Die Unterschrift des Mitarbeiters passt nicht mehr zum Protokoll." });
+  } else if (handover.status === "DRAFT") {
     if (!renter) all.push({ area: "SIGNATURE", code: "SIGNATURE_MISSING", severity: "error", message: "Die Unterschrift des Mieters fehlt." });
     else if (renter.contentHash !== hash) all.push({ area: "SIGNATURE", code: "SIGNATURE_STALE", severity: "error", message: "Das Protokoll wurde nach der Unterschrift geändert. Der Mieter muss erneut unterschreiben." });
     if (signatures.some((s) => s.role === "EMPLOYEE" && s.contentHash !== hash)) all.push({ area: "SIGNATURE", code: "SIGNATURE_STALE_EMPLOYEE", severity: "error", message: "Die Unterschrift des Mitarbeiters passt nicht mehr zum Protokoll." });
+  }
+  if (handover.status === "DRAFT") {
     if (type === "RETURN") {
       const cmp = await getReturnComparison(tenantId, handoverId);
       for (const p of cmp.proposals) {
@@ -57,7 +63,7 @@ export async function getHandoverCompletionStatus(tenantId: string, handoverId: 
   const toItem = (i: HandoverIssue): CompletionItem => { const step = stepOf(type, i); return { code: i.code, message: i.message, step, stepLabel: labels[step - 1], blocking: i.severity === "error" }; };
   const blockers = all.filter((i) => i.severity === "error").map(toItem);
   const warnings = all.filter((i) => i.severity === "warning").map(toItem);
-  return { type, blockers, warnings, renterSigned: !!renter && renter.contentHash === hash, ready: blockers.length === 0 };
+  return { type, blockers, warnings, renterSigned: handover.returnMode === "KEY_DROP" ? true : !!renter && renter.contentHash === hash, ready: blockers.length === 0 };
 }
 
 export const getPickupCompletionStatus = getHandoverCompletionStatus;

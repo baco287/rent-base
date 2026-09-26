@@ -6,13 +6,15 @@ import { bookingStage } from "@/lib/booking-status";
 import { getHandoverState } from "@/lib/handovers";
 import { buildHandoverDocument } from "@/lib/handover-view";
 import { getReturnComparison, fmtMinutes } from "@/lib/returns";
-import { loadHandoverContext } from "@/lib/document-data";
+import { loadDocKeyDrop, loadHandoverContext } from "@/lib/document-data";
+import { keyDropForBooking } from "@/lib/key-drop";
+import { KeyDropExceptionForm } from "./key-drop-parts";
 import { storageStatus } from "@/lib/storage";
 import { FUELS, PHOTO_CATEGORIES, REQUIRED_PHOTO_CATEGORIES, energyRequirements, type Fuel, type PhotoCategory } from "@/lib/constants";
 import { customerName, fmtDateTime, fmtEur, fmtInt } from "@/lib/format";
 import { BookingStageChip, Card, Chip, Content, Field, PageHeader, Plate } from "@/components/ui";
 import { FinalizeForm, SignatureForm, StepForm, WizardProgress } from "../vertrag/wizard-ui";
-import { FuelGauge, HandoverDocumentView, HandoverIssueList, RETURN_STEPS } from "../uebergabe/handover-parts";
+import { FuelGauge, HandoverDocumentView, HandoverIssueList, KeyDropCustomerCard, RETURN_STEPS } from "../uebergabe/handover-parts";
 import { PhotoUploader } from "../uebergabe/photo-uploader";
 import { DocumentsPanel } from "../dokumente/documents-panel";
 import { DamageCasesPanel } from "../../../schaeden/damages-panel";
@@ -60,6 +62,38 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
 
   if (!existing) {
     const canStart = stage === "ACTIVE" && !!pickup && b.contract?.status === "SIGNED";
+    // Befehl 20.6: vereinbarte kontaktlose Rückgabe – Kontrolle erst nach Kundenmeldung (oder mit dokumentierter Ausnahme)
+    const kd = canStart ? (await keyDropForBooking(tenant.id, b.id)).keyDrop : null;
+    if (kd && (kd.status === "AUTHORIZED" || kd.status === "CUSTOMER_CONFIRMED")) {
+      const confirmed = kd.status === "CUSTOMER_CONFIRMED";
+      return (
+        <>
+          <PageHeader title="Schlüsselbox-Rückgabe prüfen" sub={`Buchung ${b.number}`}>
+            <BookingStageChip stage={stage} />
+            <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
+          </PageHeader>
+          <Content>
+            {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
+            <Card className="p-5 max-w-2xl flex flex-col gap-3">
+              <div className="flex flex-wrap items-center gap-2"><Plate>{b.vehicle.plate}</Plate><span className="font-medium">{b.vehicle.make} {b.vehicle.model}</span><span className="text-ink-3">von {customerName(b.customer)}</span></div>
+              {confirmed ? (
+                <>
+                  <p className="rounded-md bg-info-soft text-info px-3.5 py-2.5 font-medium">Kontaktlos zurückgegeben – Kontrolle ausstehend. Abgabe laut Kunde: {fmtDateTime(kd.customerDropOffAt)}, {kd.customerMileage != null ? `${fmtInt(kd.customerMileage)} km` : "–"}.</p>
+                  <p className="text-sm text-ink-2">Die Kontrolle läuft über den bekannten Rückgabe-Assistenten. Die Angaben des Kunden werden daneben angezeigt, aber nie übernommen oder überschrieben. Der Kunde unterschreibt nicht unter die Feststellungen der Kontrolle.</p>
+                  <form action={startReturnAction.bind(null, b.id)}><button className="btn btn-primary !py-2.5 !px-5">Schlüsselbox-Rückgabe prüfen</button></form>
+                </>
+              ) : (
+                <>
+                  <p className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 font-medium">Für diese Miete ist eine kontaktlose Rückgabe vereinbart. Der Kunde hat die Abgabe noch nicht gemeldet.</p>
+                  <p className="text-sm text-ink-2">Bringt der Kunde das Fahrzeug doch persönlich, zuerst auf der Buchung die kontaktlose Rückgabe aufheben – danach ist die normale Rückgabe möglich.</p>
+                  {user.role !== "YARD" ? <KeyDropExceptionForm bookingId={b.id} /> : <p className="text-xs text-ink-3">Eine Kontrolle ohne Kundenmeldung kann nur Inhaber oder Disposition mit Begründung starten.</p>}
+                </>
+              )}
+            </Card>
+          </Content>
+        </>
+      );
+    }
     return (
       <>
         <PageHeader title="Rückgabe" sub={`Buchung ${b.number}`}>
@@ -91,7 +125,11 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
   const { handover, signatures, sketch, issues, hash } = state;
   const context = await loadHandoverContext(tenant.id, handover);
   const comparison = await getReturnComparison(tenant.id, handover.id).catch(() => null);
-  const doc = buildHandoverDocument(handover, sketch, signatures, REQUIRED_PHOTO_CATEGORIES, context, comparison);
+  const keyDrop = await loadDocKeyDrop(tenant.id, handover);
+  const kdRaw = handover.keyDropId ? await db.keyDropReturn.findFirst({ where: { id: handover.keyDropId, tenantId: tenant.id }, select: { customerMileage: true, customerFuelEighths: true, customerBatteryPercent: true, customerNewDamages: true, customerDamageNote: true, customerDropOffAt: true } }) : null;
+  const doc = buildHandoverDocument(handover, sketch, signatures, REQUIRED_PHOTO_CATEGORIES, context, comparison, [], keyDrop?.doc ?? null);
+  const isKeyDrop = handover.returnMode === "KEY_DROP";
+  const customerSays = (text: string) => <p className="rounded-md bg-info-soft text-info px-3 py-2 text-sm"><span className="font-medium">Angabe des Kunden:</span> {text} <span className="text-xs">(wird nicht übernommen – bitte selbst ablesen)</span></p>;
 
   if (handover.status === "FINALIZED") {
     return (
@@ -148,6 +186,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
         {step === 1 && (
           <>
             <p className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm font-medium">Der Rückgabezustand wird mit dem dokumentierten Übergabezustand ({pickup?.number}) verglichen.</p>
+            {keyDrop && <KeyDropCustomerCard k={keyDrop.doc} />}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
               <Card title="Miete">
                 <dl className="px-4 py-3 grid grid-cols-[minmax(110px,40%)_1fr] gap-x-3 gap-y-1.5 text-sm">
@@ -156,7 +195,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
                   <dt className="text-ink-3">Fahrer</dt><dd>{primaryDriver ? `${primaryDriver.firstName} ${primaryDriver.lastName}` : "–"}</dd>
                   <dt className="text-ink-3">Abholung tatsächlich</dt><dd className="font-mono tnum">{fmtDateTime(b.actualPickupAt ?? pickup?.finalizedAt)}</dd>
                   <dt className="text-ink-3">Geplante Rückgabe</dt><dd className="font-mono tnum">{fmtDateTime(b.endAt)}</dd>
-                  <dt className="text-ink-3">Aktuelle Rückgabezeit</dt><dd className="font-mono tnum">{fmtDateTime(cmp?.time.actualEnd ?? new Date())}{late && <span className="ml-2 chip bg-amber-soft text-amber">{late} später</span>}</dd>
+                  <dt className="text-ink-3">{isKeyDrop ? "Abgabe laut Kunde" : "Aktuelle Rückgabezeit"}</dt><dd className="font-mono tnum">{fmtDateTime(cmp?.time.actualEnd ?? new Date())}{late && <span className="ml-2 chip bg-amber-soft text-amber">{late} später</span>}</dd>
                   <dt className="text-ink-3">Kaution</dt><dd className="font-mono tnum">{fmtEur(cmp?.contract.deposit ?? Number(b.contract?.deposit ?? 0))}</dd>
                   <dt className="text-ink-3">Selbstbeteiligung</dt><dd className="font-mono tnum">{fmtEur(cmp?.contract.deductible ?? Number(b.contract?.deductible ?? 0))}</dd>
                   <dt className="text-ink-3">Tankregelung</dt><dd>{cmp?.contract.fuelPolicyLabel}{cmp?.contract.fuelPolicy === "OTHER" && cmp.contract.fuelPolicyNote ? `: ${cmp.contract.fuelPolicyNote}` : ""}</dd>
@@ -187,7 +226,8 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
             <Card className="p-4 md:p-5">
               <StepForm action={saveMileageAction.bind(null, b.id)} step={2}>
                 <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr] gap-4 items-start">
-                  <Field label="Rückgabe-Kilometerstand" htmlFor="mileage" hint="Das Fahrzeug übernimmt den Stand erst mit dem Abschluss der Rückgabe.">
+                  {isKeyDrop && kdRaw?.customerMileage != null && customerSays(`${fmtInt(kdRaw.customerMileage)} km, abgegeben ${fmtDateTime(kdRaw.customerDropOffAt)}`)}
+                  <Field label={isKeyDrop ? "Kilometerstand laut Kontrolle" : "Rückgabe-Kilometerstand"} htmlFor="mileage" hint="Das Fahrzeug übernimmt den Stand erst mit dem Abschluss der Rückgabe.">
                     <input id="mileage" name="mileage" inputMode="numeric" pattern="[0-9.]*" defaultValue={handover.mileage ?? ""} required className="input tnum !text-xl !font-semibold !min-h-[52px]" placeholder={cmp?.mileage.pickup != null ? String(cmp.mileage.pickup) : ""} />
                   </Field>
                   <div className="card p-3.5 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm self-stretch">
@@ -218,6 +258,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
         {step === 3 && (
           <>
             <HandoverIssueList issues={issues} areas={["READINGS"]} />
+            {isKeyDrop && (kdRaw?.customerFuelEighths != null || kdRaw?.customerBatteryPercent != null) && customerSays([kdRaw?.customerFuelEighths != null ? `Tank ${kdRaw.customerFuelEighths}/8` : null, kdRaw?.customerBatteryPercent != null ? `Batterie ${kdRaw.customerBatteryPercent} %` : null].filter(Boolean).join(", "))}
             <Card className="p-4 md:p-5">
               <StepForm action={saveEnergyAction.bind(null, b.id)} step={3}>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -275,6 +316,8 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
 
         {step === 4 && (
           <>
+            {isKeyDrop && kdRaw?.customerNewDamages != null && customerSays(kdRaw.customerNewDamages ? `Neue Schäden bekannt – ${kdRaw.customerDamageNote ?? ""}` : "keine neuen Schäden bekannt")}
+            {isKeyDrop && <p className="text-xs text-ink-3">Neu festgestellte Schäden werden als „bei nachträglicher Kontrolle nach kontaktloser Rückgabe festgestellt“ geführt. Die Schadenakte startet neutral; über Verantwortung und Kosten wird gesondert entschieden.</p>}
             <HandoverIssueList issues={issues} areas={["DAMAGES"]} />
             <p className="text-sm text-ink-2 max-w-[80ch]">Der dokumentierte Zustand bei der Übergabe und der Zustand jetzt stehen nebeneinander, auf dem Smartphone schalten Sie zwischen „Übergabe (vorher)“ und „Rückgabe (jetzt)“ um. Alles, was neu ist, markieren Sie auf der Rückgabeskizze. Ein bei der Rückgabe festgestellter Schaden wird der Miete zugeordnet und in die Fahrzeugakte übernommen. Ob und was berechnet wird, entscheiden Sie gesondert in Schritt 7.</p>
             {pickupDoc && <CompareDamages pickup={pickupDoc} current={doc} handoverId={handover.id} actions={damageActions} />}
@@ -354,9 +397,20 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
           <>
             <HandoverIssueList issues={issues} okText="Alle Angaben sind vollständig. Das Protokoll kann unterschrieben werden." />
             <ReturnSummary doc={doc} attention={attention} />
-            <p className="text-sm text-ink-2">Mit der Unterschrift bestätigt der Mieter die dokumentierte Rückgabe und den dargestellten Fahrzeugzustand. Sie ist kein Anerkenntnis über Verantwortung oder Kosten.</p>
+            {isKeyDrop ? (
+              <p className="text-sm text-ink-2">Kontaktlose Rückgabe: Der Kunde war bei der Kontrolle nicht anwesend und unterschreibt nicht unter diese Feststellungen. Seine Rückgabemeldung ersetzt die Anwesenheitsunterschrift ausschließlich für die Abgabe. Die Unterschrift des Mitarbeiters ist optional.</p>
+            ) : (
+              <p className="text-sm text-ink-2">Mit der Unterschrift bestätigt der Mieter die dokumentierte Rückgabe und den dargestellten Fahrzeugzustand. Sie ist kein Anerkenntnis über Verantwortung oder Kosten.</p>
+            )}
             <p className="text-xs text-ink-3">Die Unterschrift gilt für genau diesen Protokollstand (Kennung {hash.slice(0, 12)}). Wird danach etwas geändert (Kilometer, Tank, Schäden, Fotos, Checkliste, Zusatzkosten), wird sie verworfen und der Mieter unterschreibt erneut.</p>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+              {isKeyDrop ? (
+                <Card title="Kundenmeldung (kontaktlose Abgabe)" right={keyDrop?.doc.confirmedAt ? <Chip tone="good">Liegt vor</Chip> : <Chip tone="amber">Ausnahme</Chip>}>
+                  <div className="p-4 text-sm flex flex-col gap-2">
+                    {keyDrop?.doc.confirmedAt ? <p>Gemeldet am {keyDrop.doc.confirmedAt} von {keyDrop.doc.signerName}. Die Meldung bestätigt nur die Abgabe, nicht den Zustand bei der Kontrolle.</p> : <p>Keine Kundenmeldung. Kontrolle ohne Kundenbestätigung, Grund: {handover.keyDropExceptionReason}</p>}
+                  </div>
+                </Card>
+              ) : (
               <Card title="Unterschrift Mieter" right={renterSig ? <Chip tone="good">Erfasst</Chip> : <Chip tone="amber">Fehlt</Chip>}>
                 <div className="p-4 flex flex-col gap-3">
                   {renterSig ? (
@@ -371,6 +425,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
                   )}
                 </div>
               </Card>
+              )}
               <Card title="Unterschrift Vermieter (optional)" right={employeeSig ? <Chip tone="good">Erfasst</Chip> : <Chip>Optional</Chip>}>
                 <div className="p-4 flex flex-col gap-3">
                   {employeeSig ? (

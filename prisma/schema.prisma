@@ -58,8 +58,12 @@ model Tenant {
   logoStorageKey String?
   logoChecksum   String?
   logoUpdatedAt  DateTime?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+
+  // Befehl 20.6: kontaktlose Rückgabe / Schlüsselbox. Mandanten-Funktion (nicht Teil der eingefrorenen Vertragsregeln).
+  keyDropEnabled  Boolean  @default(false)
+  keyDropSettings Json? // { label, defaultInstructions, parkingNote, keyNote, requestedPhotos[] }
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   users     User[]
   groups    VehicleGroup[]
@@ -111,6 +115,8 @@ model Tenant {
   driverVerifications      DriverVerification[]
   driverDocumentCopies     DriverDocumentCopy[]
   mailSettings             TenantMailSettings?
+  keyDropReturns           KeyDropReturn[]
+  keyDropAccesses          KeyDropAccess[]
 }
 
 model User {
@@ -142,6 +148,88 @@ model User {
 
 // Einladung zu einem Mandanten: erste OWNER-Einladung bei Mandantenanlage durch SUPER_ADMIN, oder weitere
 // Mitarbeiter durch den OWNER. Token nur gehasht gespeichert, single-use, zeitlich begrenzt.
+// Befehl 20.6: kontaktlose Rückgabe / Schlüsselbox. Vier getrennte Vorgänge: Vereinbarung (Vermieter) → Mail mit
+// persönlichem Link (bewusster Klick) → Kundenmeldung (Abgabe) → nachträgliche Kontrolle (bestehende Rückgabe, Handover).
+// Kundenangaben sind nach der Bestätigung unveränderlich (Trigger); Mitarbeiterwerte stehen ausschließlich im Handover.
+model KeyDropReturn {
+  id                        String    @id @default(cuid())
+  tenantId                  String
+  bookingId                 String
+  status                    String    @default("AUTHORIZED") // AUTHORIZED | CUSTOMER_CONFIRMED | INSPECTED | CANCELLED
+  // Vereinbarung
+  agreedAt                  DateTime  @default(now())
+  agreedById                String
+  agreedByName              String
+  location                  String
+  instructions              String?
+  expectedReturnAt          DateTime
+  internalNote              String?
+  settingsSnapshot          Json // Bezeichnung, Hinweise und gewünschte Fotos zum Zeitpunkt der Vereinbarung
+  recipientName             String
+  recipientEmail            String? // aus der Vertragskopie (Mieter), nie frei eingegeben
+  // Kundenmeldung
+  customerStartedAt         DateTime?
+  customerDropOffAt         DateTime?
+  customerMileage           Int?
+  customerFuelEighths       Int?
+  customerBatteryPercent    Int?
+  customerLocationConfirmed Boolean?
+  customerLocationNote      String?
+  customerNewDamages        Boolean?
+  customerDamageNote        String?
+  customerRemark            String?
+  customerSignerName        String?
+  confirmationText          String?
+  confirmedAt               DateTime?
+  confirmationHash          String? // sha256 über die bestätigten Kundenangaben
+  logoRef                   Json? // Logo-Verweis zum Zeitpunkt der Bestätigung (für das Bestätigungs-PDF)
+  // Kontrolle (Mitarbeiter) – Werte selbst stehen im Rückgabeprotokoll (Handover)
+  inspectionStartedAt       DateTime?
+  inspectedAt               DateTime?
+  inspectedById             String?
+  inspectedByName           String?
+  exceptionReason           String?
+  // Aufhebung (nur vor der Kundenmeldung)
+  cancelledAt               DateTime?
+  cancelledById             String?
+  cancelledByName           String?
+  cancelReason              String?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+
+  tenant     Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking    Booking         @relation(fields: [bookingId], references: [id])
+  accesses   KeyDropAccess[]
+  photos     Photo[]
+  signatures Signature[]
+  documents  Document[]
+  inspection Handover?       @relation("KeyDropInspection")
+
+  @@index([tenantId, status])
+  @@index([tenantId, bookingId])
+}
+
+// Persönlicher Rückgabelink. In der DB nur der sha256-Hash des Tokens. Höchstens ein aktiver Zugang je Rückgabe (Index).
+model KeyDropAccess {
+  id            String    @id @default(cuid())
+  tenantId      String
+  keyDropId     String
+  tokenHash     String    @unique
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  revokedReason String?
+  createdAt     DateTime  @default(now())
+  createdById   String?
+  createdByName String?
+  lastUsedAt    DateTime?
+  emailLogId    String?
+
+  tenant  Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  keyDrop KeyDropReturn @relation(fields: [keyDropId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, keyDropId])
+}
+
 // Befehl 20.5: eigener SMTP-Versand eines Mandanten für geschäftliche Mails (TENANT_BUSINESS). Eine Zeile je Mandant.
 // Ohne Zeile oder mit mode = PLATFORM gilt der bisherige RentBase-Versand. Das Passwort liegt nur verschlüsselt vor
 // (AES-256-GCM, lib/secret-box.ts) und verlässt den Server nie. Änderungen an Verbindungsdaten setzen VERIFIED per
@@ -402,6 +490,7 @@ model Booking {
   authorityCases       AuthorityCase[]
   driverVerifications  DriverVerification[]
   driverDocumentCopies DriverDocumentCopy[]
+  keyDropReturns       KeyDropReturn[]
 
   @@unique([tenantId, number])
   @@index([tenantId, vehicleId, startAt, endAt])
@@ -573,9 +662,14 @@ model Handover {
   sketchVersion   Int?
   sketchAssetHash String? // genau diese Skizzenfassung wurde verwendet
 
-  correctsId        String? // Nachtrag: verweist auf das ursprüngliche Protokoll
-  wizardStep        Int      @default(1) // zuletzt erreichter Schritt im Assistenten
-  fuelPricePerLiter Decimal? // nur Rückgabe: bei der Rückgabe ausdrücklich angegebener Literpreis, falls der Vertrag keinen nennt
+  correctsId             String? // Nachtrag: verweist auf das ursprüngliche Protokoll
+  wizardStep             Int       @default(1) // zuletzt erreichter Schritt im Assistenten
+  fuelPricePerLiter      Decimal? // nur Rückgabe: bei der Rückgabe ausdrücklich angegebener Literpreis, falls der Vertrag keinen nennt
+  // Befehl 20.6: Rückgabeart. NULL = Protokoll vor 20.6 bzw. Übergabe; neue Rückgaben IN_PERSON oder KEY_DROP.
+  returnMode             String?
+  keyDropId              String?   @unique
+  customerDropOffAt      DateTime? // KEY_DROP: vom Kunden gemeldeter Abstellzeitpunkt (Kopie aus KeyDropReturn), Grundlage der Mietdauer
+  keyDropExceptionReason String? // KEY_DROP ohne Kundenbestätigung: dokumentierter Pflichtgrund (nur Inhaber/Disposition)
 
   startedAt   DateTime  @default(now())
   finalizedAt DateTime?
@@ -604,6 +698,7 @@ model Handover {
   damageCases          DamageCase[]
   driverVerifications  DriverVerification[]
   driverDocumentCopies DriverDocumentCopy[]
+  keyDrop              KeyDropReturn?          @relation("KeyDropInspection", fields: [keyDropId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, number])
   @@index([tenantId, bookingId, type])
@@ -720,6 +815,7 @@ model HandoverChecklistItem {
 model Photo {
   id               String    @id @default(cuid())
   tenantId         String
+  keyDropId        String? // Befehl 20.6: Kundenangabe bei kontaktloser Rückgabe
   handoverId       String?
   damageId         String?
   handoverDamageId String?
@@ -742,6 +838,8 @@ model Photo {
   handoverDamage HandoverDamage? @relation(fields: [handoverDamageId], references: [id], onDelete: SetNull)
   damageCase     DamageCase?     @relation(fields: [damageCaseId], references: [id], onDelete: SetNull)
 
+  keyDrop KeyDropReturn? @relation(fields: [keyDropId], references: [id], onDelete: SetNull)
+
   @@index([tenantId, handoverId])
   @@index([tenantId, damageId])
   @@index([tenantId, damageCaseId])
@@ -751,6 +849,7 @@ model Photo {
 model Signature {
   id            String   @id @default(cuid())
   tenantId      String
+  keyDropId     String? // Befehl 20.6: Kundenangabe bei kontaktloser Rückgabe
   handoverId    String?
   contractId    String?
   role          String // RENTER | EMPLOYEE
@@ -768,6 +867,8 @@ model Signature {
   handover Handover?       @relation(fields: [handoverId], references: [id], onDelete: SetNull)
   contract RentalContract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
 
+  keyDrop KeyDropReturn? @relation(fields: [keyDropId], references: [id], onDelete: SetNull)
+
   @@index([tenantId, handoverId])
   @@index([tenantId, contractId])
 }
@@ -776,6 +877,7 @@ model Signature {
 model Document {
   id               String   @id @default(cuid())
   tenantId         String
+  keyDropId        String? // Befehl 20.6: Kundenangabe bei kontaktloser Rückgabe
   bookingId        String
   contractId       String?
   handoverId       String?
@@ -800,6 +902,8 @@ model Document {
   invoice        Invoice?        @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
   invoiceVersion InvoiceVersion? @relation(fields: [invoiceVersionId], references: [id], onDelete: SetNull)
   payout         Payout?         @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+
+  keyDrop KeyDropReturn? @relation(fields: [keyDropId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, bookingId, type])
   @@index([tenantId, payoutId])

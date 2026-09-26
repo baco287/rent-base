@@ -1,6 +1,7 @@
 // Fahrzeug-Übergabeprotokoll als PDF. Liest ausschließlich HandoverDocumentData, dieselbe Struktur wie die Ansicht
 // des finalisierten Protokolls. Bilder und Skizze werden als fertige Bytes hereingereicht; hier wird nur dargestellt.
 
+import { photoGrid } from "@/lib/pdf/key-drop-pdf";
 import type { DamageSymbol, DocDamage, HandoverDocumentData } from "@/lib/handover-view";
 import { drawSignatures, type SignatureImages } from "@/lib/pdf/contract-pdf";
 import { COLORS, Pdf, type Cell, type PdfTrace } from "@/lib/pdf/layout";
@@ -182,9 +183,35 @@ function photos(pdf: Pdf, data: HandoverDocumentData, assets: HandoverPdfAssets)
   }
 }
 
+function keyDropSection(pdf: Pdf, k: NonNullable<HandoverDocumentData["keyDrop"]>, assets: HandoverPdfAssets) {
+  pdf.sectionTitle("Angaben des Kunden bei kontaktloser Rückgabe");
+  if (k.exceptionReason && !k.confirmedAt) {
+    pdf.paragraph(`Eine Rückgabemeldung des Kunden liegt nicht vor. Die Kontrolle wurde ausnahmsweise ohne Kundenbestätigung durchgeführt. Grund: ${k.exceptionReason}`, { size: 9, color: COLORS.warn });
+    pdf.keyValues([{ label: "Vereinbarter Rückgabeort", value: k.agreedLocation }], 1);
+    return;
+  }
+  pdf.keyValues([{ label: "Rückgabeart", value: `Kontaktlos (${k.label})` }, { label: "Vereinbarter Rückgabeort", value: k.agreedLocation }, ...k.customerRows, { label: "Gemeldet am", value: k.confirmedAt ?? "–" }], 1);
+  if (k.confirmationText) pdf.paragraph(`Bestätigung des Kunden: „${k.confirmationText}“`, { size: 8.5, color: COLORS.ink2, gapAfter: 4 });
+  const sig = k.signatureId ? assets.signatures.get(k.signatureId) : undefined;
+  pdf.ensureSpace(80);
+  const y = pdf.y;
+  const w = pdf.width / 2;
+  let ok = false;
+  if (sig) { try { pdf.imageFit("signature", sig, pdf.left, y, w, 48); ok = true; } catch { /* Hinweis */ } }
+  if (!ok) pdf.textAt("Bestätigungsvermerk ohne Unterschriftsbild", pdf.left, y + 18, w, { size: 8, color: COLORS.ink3 });
+  pdf.textAt(`Bestätigt von ${k.signerName ?? "–"} am ${k.confirmedAt ?? "–"} (nur Abgabe, nicht der Zustand bei der Kontrolle)`, pdf.left, y + 52, pdf.width, { size: 8, color: COLORS.ink3 });
+  pdf.y = y + 68;
+  if (k.photos.length > 0) {
+    pdf.gap(4);
+    pdf.textAt("Fotos des Kunden", pdf.left, pdf.y, pdf.width, { size: 9, bold: true });
+    pdf.gap(2);
+    photoGrid(pdf, k.photos.map((p) => ({ id: p.id, caption: p.caption })), assets.photos);
+  }
+}
+
 export async function renderHandoverPdf(data: HandoverDocumentData, assets: HandoverPdfAssets): Promise<{ bytes: Buffer; trace: PdfTrace }> {
   const ctx = data.context;
-  const title = data.type === "PICKUP" ? "Fahrzeug-Übergabeprotokoll" : "Fahrzeug-Rückgabeprotokoll";
+  const title = data.type === "PICKUP" ? "Fahrzeug-Übergabeprotokoll" : data.keyDrop ? "Rückgabeprotokoll (kontaktlose Rückgabe)" : "Fahrzeug-Rückgabeprotokoll";
   const pdf = new Pdf({
     title,
     number: data.number,
@@ -209,9 +236,14 @@ export async function renderHandoverPdf(data: HandoverDocumentData, assets: Hand
     ]);
   }
 
-  pdf.sectionTitle(data.type === "PICKUP" ? "Übergabedaten" : "Rückgabedaten");
+  // Befehl 20.6: kontaktlose Rückgabe – zwei klar getrennte Bereiche: Angaben des Kunden, danach die nachträgliche Kontrolle
+  if (data.keyDrop) keyDropSection(pdf, data.keyDrop, assets);
+
+  pdf.sectionTitle(data.type === "PICKUP" ? "Übergabedaten" : data.keyDrop ? "Nachträgliche Fahrzeugkontrolle" : "Rückgabedaten");
+  if (data.keyDrop) pdf.paragraph("Der Kunde war bei der nachträglichen Fahrzeugkontrolle nicht anwesend. Die folgenden Feststellungen sind die des Vermieters.", { size: 8.5, color: COLORS.ink2, gapAfter: 6 });
   pdf.keyValues([
-    { label: data.type === "PICKUP" ? "Übergabe am" : "Rückgabe am", value: data.finalizedAt ?? data.startedAt },
+    ...(data.keyDrop ? [{ label: "Kontrolle begonnen", value: data.startedAt }] : []),
+    { label: data.type === "PICKUP" ? "Übergabe am" : data.keyDrop ? "Kontrolle abgeschlossen" : "Rückgabe am", value: data.finalizedAt ?? data.startedAt },
     { label: "Mitarbeiter", value: data.employeeName },
     ...data.readings.map((r) => ({ label: r.label, value: r.missing ? "nicht erfasst" : r.value })),
   ]);

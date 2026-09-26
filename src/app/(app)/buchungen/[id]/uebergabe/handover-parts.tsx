@@ -1,4 +1,5 @@
 // Bausteine des Übergabe-Assistenten ohne eigenen Zustand (werden auf dem Server gerendert).
+import { Fragment } from "react";
 import type { HandoverDocument } from "@/lib/handover-view";
 import type { HandoverIssue } from "@/lib/handovers";
 import { Card, Chip } from "@/components/ui";
@@ -105,6 +106,39 @@ export function FuelGauge({ eighths }: { eighths: number | null }) {
 }
 
 /** Darstellung des Protokolls aus der gemeinsamen Dokumentstruktur. Dieselbe Struktur speist später das PDF. */
+/** Befehl 20.6: Angaben des Kunden bei kontaktloser Rückgabe – getrennt von der Mitarbeiterkontrolle. */
+export function KeyDropCustomerCard({ k }: { k: NonNullable<HandoverDocument["keyDrop"]> }) {
+  return (
+    <Card title="Angaben des Kunden bei kontaktloser Rückgabe" right={k.confirmedAt ? <Chip tone="info">Gemeldet {k.confirmedAt}</Chip> : <Chip tone="amber">Keine Kundenmeldung</Chip>}>
+      <div className="p-4 flex flex-col gap-3 text-sm">
+        {k.exceptionReason && !k.confirmedAt && <p className="rounded-md bg-amber-soft text-amber px-3 py-2">Kontrolle ohne Kundenbestätigung (Ausnahme). Grund: {k.exceptionReason}</p>}
+        <dl className="grid grid-cols-[minmax(130px,40%)_1fr] gap-x-3 gap-y-1.5">
+          <dt className="text-ink-3">Rückgabeart</dt><dd>Kontaktlos ({k.label})</dd>
+          <dt className="text-ink-3">Vereinbarter Ort</dt><dd className="break-words">{k.agreedLocation}</dd>
+          {k.customerRows.map((r) => <Fragment key={r.label}><dt className="text-ink-3">{r.label}</dt><dd className="break-words">{r.value}</dd></Fragment>)}
+          {k.signerName && <><dt className="text-ink-3">Bestätigt von</dt><dd>{k.signerName}</dd></>}
+        </dl>
+        {k.confirmationText && <p className="text-xs text-ink-2">„{k.confirmationText}“</p>}
+        {k.signatureId && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={`/api/signatures/${k.signatureId}`} alt="Bestätigung des Kunden" className="h-20 w-full max-w-xs object-contain rounded-md border border-line bg-white" />
+        )}
+        {k.photos.length > 0 && (
+          <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+            {k.photos.map((p) => (
+              <a key={p.id} href={p.url} target="_blank" rel="noopener noreferrer" className="block">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={p.url} alt={p.caption} className="aspect-[4/3] w-full object-cover rounded-md border border-line" />
+                <span className="text-xs text-ink-3">{p.caption.replace("Kunde: ", "")}</span>
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 export function HandoverDocumentView({ doc, handoverId, showSignatures = true }: { doc: HandoverDocument; handoverId: string; showSignatures?: boolean }) {
   const existing = doc.damages.filter((d) => d.marker === "EXISTING").length;
   const pickupNew = doc.damages.filter((d) => d.marker === "PICKUP_NEW").length;
@@ -119,6 +153,9 @@ export function HandoverDocumentView({ doc, handoverId, showSignatures = true }:
         <span className="flex-1" />
         {doc.status === "FINALIZED" ? <Chip tone="good">Finalisiert am {doc.finalizedAt}</Chip> : <Chip tone="amber">Entwurf</Chip>}
       </div>
+
+      {doc.keyDrop && <KeyDropCustomerCard k={doc.keyDrop} />}
+      {doc.keyDrop && <p className="rounded-md bg-panel-2 px-3.5 py-2.5 text-sm text-ink-2">Nachträgliche Fahrzeugkontrolle durch den Vermieter. Der Kunde war bei der Kontrolle nicht anwesend; seine Bestätigung betrifft nur die Abgabe, nicht die folgenden Feststellungen.</p>}
 
       {doc.type === "RETURN" && <ComparisonTable doc={doc} />}
 

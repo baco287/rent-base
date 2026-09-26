@@ -98,7 +98,8 @@ export function buildComparison(input: {
   const { handover: h, booking, contract, pickup } = input;
   const v = contract.vehicleSnapshot as Partial<VehicleSnapshot>;
   const energy = energyRequirements(h.driveType);
-  const actualEnd = h.finalizedAt ?? input.now ?? new Date();
+  // Befehl 20.6: kontaktlos zählt die vom Kunden gemeldete Abgabe als Mietende (nicht der spätere Kontrollzeitpunkt)
+  const actualEnd = h.customerDropOffAt ?? h.finalizedAt ?? input.now ?? new Date();
   const start = booking.actualPickupAt ?? contract.startAt;
   const days = rentalDays(contract.startAt, contract.endAt);
   const lateMinutes = Math.max(0, Math.round((actualEnd.getTime() - contract.endAt.getTime()) / 60_000));

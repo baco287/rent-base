@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireSession } from "@/lib/auth";
+import { KeyDropPanel } from "./key-drop-panel";
 import { db } from "@/lib/db";
 import { customerName, fmtDateTime, fmtEur, toDateTimeInput } from "@/lib/format";
 import { calculateRentalPrice, rateCardFrom } from "@/lib/pricing";
@@ -17,7 +18,7 @@ import { DamageCasesPanel } from "../../schaeden/damages-panel";
 import { AuthorityCasesPanel } from "../../behoerden/authority-panel";
 
 export default async function BookingPage({ params, searchParams }: PageProps<"/buchungen/[id]">) {
-  const { tenant, user } = await requireSession();
+  const { tenant, user, supportSession } = await requireSession();
   const { id } = await params;
   const sp = await searchParams;
 
@@ -124,6 +125,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
           <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Mietvertrag {b.contract!.number} ist abgeschlossen. Die Buchung ist bereit zur Übergabe.</p>
         )}
 
+        {(b.status === "ACTIVE" || b.status === "RETURNED") && pickupDone && <KeyDropPanel tenantId={tenant.id} booking={{ id: b.id, status: b.status, endAt: b.endAt, vehicleId: b.vehicleId }} role={user.role} supportMode={Boolean(supportSession)} returnStarted={Boolean(returnDraft || returnDone)} />}
         <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
         {(b.status === "RETURNED" || b.status === "ACTIVE") && <DamageCasesPanel tenantId={tenant.id} where={{ OR: [{ bookingId: b.id }, { discoveredIn: { bookingId: b.id, type: "RETURN" } }] }} title="Schäden dieser Vermietung" empty="Zu dieser Vermietung wurde kein Schaden festgestellt." />}
         <AuthorityCasesPanel tenantId={tenant.id} scope={{ bookingId: b.id }} canManage={user.role !== "YARD"} />

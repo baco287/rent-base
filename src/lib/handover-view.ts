@@ -88,8 +88,27 @@ export type DocDriverCheck = {
   checkedByName: string | null;
 };
 
+/**
+ * Befehl 20.6: Angaben des Kunden bei kontaktloser Rückgabe (versiegelt, aus KeyDropReturn) – im Protokoll getrennt von der
+ * nachträglichen Kontrolle durch den Mitarbeiter dargestellt. Der Kunde unterschreibt nie unter die Kontrollfeststellungen.
+ */
+export type DocKeyDrop = {
+  label: string;
+  agreedLocation: string;
+  customerRows: { label: string; value: string }[];
+  confirmedAt: string | null;
+  signerName: string | null;
+  confirmationText: string | null;
+  signatureId: string | null;
+  photos: { id: string; url: string; caption: string }[];
+  exceptionReason: string | null;
+};
+
 export type HandoverDocument = {
   context: HandoverContext | null;
+  /** Befehl 20.6: nur bei kontaktloser Rückgabe */
+  keyDrop: DocKeyDrop | null;
+  returnMode: "IN_PERSON" | "KEY_DROP" | null;
   comparison: DocComparison | null;
   driverChecks: DocDriverCheck[];
   title: string;
@@ -176,7 +195,7 @@ type DriverCheckInput = {
   validUntil: string | null; checkedAt: string | null; checkedByName: string | null;
 };
 
-export function buildHandoverDocument(h: HandoverFull, sketch: Parameters<typeof parseSketch>[0], signatures: SignatureLike[], requiredPhotoCategories: string[], context: HandoverContext | null = null, comparison: ReturnComparison | null = null, driverChecks: DriverCheckInput[] = []): HandoverDocument {
+export function buildHandoverDocument(h: HandoverFull, sketch: Parameters<typeof parseSketch>[0], signatures: SignatureLike[], requiredPhotoCategories: string[], context: HandoverContext | null = null, comparison: ReturnComparison | null = null, driverChecks: DriverCheckInput[] = [], keyDrop: DocKeyDrop | null = null): HandoverDocument {
   const energy = energyRequirements(h.driveType);
   const readings = [
     { label: "Kilometerstand", value: h.mileage != null ? `${h.mileage.toLocaleString("de-DE")} km` : "", missing: h.mileage == null },
@@ -215,6 +234,8 @@ export function buildHandoverDocument(h: HandoverFull, sketch: Parameters<typeof
 
   return {
     context,
+    keyDrop,
+    returnMode: (h.returnMode as "IN_PERSON" | "KEY_DROP" | null) ?? null,
     comparison: comparison ? buildDocComparison(comparison, damages) : null,
     driverChecks: driverChecks.map((d) => ({
       role: d.role,

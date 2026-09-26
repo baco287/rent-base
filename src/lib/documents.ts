@@ -26,6 +26,7 @@ export type DocumentInput = {
   invoiceId?: string | null;
   invoiceVersionId?: string | null;
   payoutId?: string | null;
+  keyDropId?: string | null;
   type: DocumentType;
   storageKey: string;
   fileName: string;
@@ -44,9 +45,10 @@ export async function registerDocument(tx: Tx, tenantId: string, actorId: string
   if (input.handoverId && (await tx.handover.count({ where: { id: input.handoverId, tenantId, bookingId: input.bookingId } })) !== 1) throw new DomainError("Das Protokoll gehört nicht zu dieser Buchung.");
   if (input.invoiceId && (await tx.invoice.count({ where: { id: input.invoiceId, tenantId, bookingId: input.bookingId } })) !== 1) throw new DomainError("Die Rechnung gehört nicht zu dieser Buchung.");
   if (input.payoutId && (await tx.payout.count({ where: { id: input.payoutId, tenantId, bookingId: input.bookingId } })) !== 1) throw new DomainError("Die Auszahlung gehört nicht zu dieser Buchung.");
+  if (input.keyDropId && (await tx.keyDropReturn.count({ where: { id: input.keyDropId, tenantId, bookingId: input.bookingId } })) !== 1) throw new DomainError("Die kontaktlose Rückgabe gehört nicht zu dieser Buchung.");
 
   const last = await tx.document.findFirst({
-    where: { tenantId, bookingId: input.bookingId, type: input.type, contractId: input.contractId ?? null, handoverId: input.handoverId ?? null, invoiceId: input.invoiceId ?? null, invoiceVersionId: input.invoiceVersionId ?? null, payoutId: input.payoutId ?? null },
+    where: { tenantId, bookingId: input.bookingId, type: input.type, contractId: input.contractId ?? null, handoverId: input.handoverId ?? null, invoiceId: input.invoiceId ?? null, invoiceVersionId: input.invoiceVersionId ?? null, payoutId: input.payoutId ?? null, keyDropId: input.keyDropId ?? null },
     orderBy: { version: "desc" },
     select: { version: true },
   });
@@ -59,6 +61,7 @@ export async function registerDocument(tx: Tx, tenantId: string, actorId: string
       invoiceId: input.invoiceId ?? null,
       invoiceVersionId: input.invoiceVersionId ?? null,
       payoutId: input.payoutId ?? null,
+      keyDropId: input.keyDropId ?? null,
       type: input.type,
       storageKey: input.storageKey,
       fileName: input.fileName,
@@ -105,10 +108,10 @@ export function documentFileName(type: DocumentType, contractNumber: string, pla
   return `${parts.join("_")}.pdf`;
 }
 
-type Subject = { type: DocumentType; bookingId: string; contractId: string | null; handoverId: string | null; invoiceId?: string | null; invoiceVersionId?: string | null; payoutId?: string | null };
+type Subject = { type: DocumentType; bookingId: string; contractId: string | null; handoverId: string | null; invoiceId?: string | null; invoiceVersionId?: string | null; payoutId?: string | null; keyDropId?: string | null };
 
 function latestDocument(client: Tx | typeof db, tenantId: string, s: Subject) {
-  return client.document.findFirst({ where: { tenantId, bookingId: s.bookingId, type: s.type, contractId: s.contractId, handoverId: s.handoverId, invoiceId: s.invoiceId ?? null, invoiceVersionId: s.invoiceVersionId ?? null, payoutId: s.payoutId ?? null }, orderBy: { version: "desc" } });
+  return client.document.findFirst({ where: { tenantId, bookingId: s.bookingId, type: s.type, contractId: s.contractId, handoverId: s.handoverId, invoiceId: s.invoiceId ?? null, invoiceVersionId: s.invoiceVersionId ?? null, payoutId: s.payoutId ?? null, keyDropId: s.keyDropId ?? null }, orderBy: { version: "desc" } });
 }
 
 async function archive(tenantId: string, actorId: string | null, subject: Subject, opts: EnsureOptions, sourceHash: string, fileName: (version: number) => string, render: () => Promise<Buffer>): Promise<EnsureResult> {
@@ -124,7 +127,8 @@ async function archive(tenantId: string, actorId: string | null, subject: Subjec
     return await db.$transaction(
       async (tx) => {
         // Zeilensperre auf dem Vertrag bzw. Protokoll: gleichzeitige Anfragen laufen nacheinander
-        if (subject.payoutId) await tx.$queryRaw`SELECT "id" FROM "Payout" WHERE "id" = ${subject.payoutId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+        if (subject.keyDropId) await tx.$queryRaw`SELECT "id" FROM "KeyDropReturn" WHERE "id" = ${subject.keyDropId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+        else if (subject.payoutId) await tx.$queryRaw`SELECT "id" FROM "Payout" WHERE "id" = ${subject.payoutId} AND "tenantId" = ${tenantId} FOR UPDATE`;
         else if (subject.invoiceVersionId) await tx.$queryRaw`SELECT "id" FROM "InvoiceVersion" WHERE "id" = ${subject.invoiceVersionId} AND "tenantId" = ${tenantId} FOR UPDATE`;
         else if (subject.invoiceId) await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${subject.invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
         else if (subject.handoverId) await tx.$queryRaw`SELECT "id" FROM "Handover" WHERE "id" = ${subject.handoverId} AND "tenantId" = ${tenantId} FOR UPDATE`;
@@ -262,6 +266,29 @@ export async function ensurePayoutDocument(tenantId: string, payoutId: string, a
     (v) => `Auszahlungsbeleg_${safeFilePart(data.doc.number) || "ohne-Nummer"}${v > 1 ? `_v${v}` : ""}.pdf`,
     // Auszahlungsbeleg: einmalig erzeugt und archiviert – das Logo zum Zeitpunkt der Erzeugung ist damit eingefroren
     async () => (await renderPayoutPdf(data.doc, await loadLogo(tenantId, logoRefOf(await db.tenant.findUnique({ where: { id: tenantId }, select: { logoStorageKey: true, logoChecksum: true } })), opts.storage))).bytes,
+  );
+}
+
+/**
+ * Befehl 20.6: „Bestätigung kontaktlose Rückgabe“ – unveränderliches Dokument der Kundenmeldung (nicht das Rückgabeprotokoll).
+ * Einmalig je bestätigter Meldung, aus den versiegelten Kundenangaben; Logo wie zum Zeitpunkt der Bestätigung.
+ */
+export async function ensureKeyDropConfirmationDocument(tenantId: string, keyDropId: string, actorId: string | null, opts: EnsureOptions = {}): Promise<EnsureResult> {
+  const { loadKeyDropDocumentData } = await import("@/lib/key-drop-document");
+  const { renderKeyDropConfirmationPdf } = await import("@/lib/pdf/key-drop-pdf");
+  const data = await loadKeyDropDocumentData(tenantId, keyDropId);
+  return archive(
+    tenantId,
+    actorId,
+    { type: "KEY_DROP_CONFIRMATION", bookingId: data.bookingId, contractId: null, handoverId: null, keyDropId },
+    opts,
+    data.sourceHash,
+    (v) => `Bestaetigung_kontaktlose_Rueckgabe_${safeFilePart(data.doc.bookingNumber) || "ohne-Nummer"}${v > 1 ? `_v${v}` : ""}.pdf`,
+    async () => {
+      const storage = opts.storage ?? getStorage();
+      const [photos, logo] = await Promise.all([loadPhotosForPdf(tenantId, storage, data.photoFiles), loadLogo(tenantId, data.logoRef, storage)]);
+      return (await renderKeyDropConfirmationPdf(data.doc, { photos, signature: data.signatureImage, logo })).bytes;
+    },
   );
 }
 

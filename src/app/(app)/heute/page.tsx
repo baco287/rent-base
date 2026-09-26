@@ -2,7 +2,8 @@ import Link from "next/link";
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { fmtCents } from "@/lib/money";
-import { fmtTime } from "@/lib/format";
+import { fmtDateTime, fmtTime } from "@/lib/format";
+import { keyDropsToInspect } from "@/lib/key-drop";
 import { Card, Chip, Content, KPI, PageHeader, Plate } from "@/components/ui";
 import { caseCounts } from "@/lib/damage-cases";
 import { HORIZONS, loadDashboard, TASK_AREAS, TASK_GROUPS, type DashboardTask, type Horizon, type TaskGroup } from "@/lib/dashboard";
@@ -10,6 +11,14 @@ import { zonedDayStartPlus } from "@/lib/time";
 import { OpenSearchButton } from "./quick-search";
 
 export const metadata = { title: "Heute" };
+
+/** Dauer seit der Rückgabemeldung, grob (Befehl 20.6). */
+function sinceText(from: Date, now: Date) {
+  const min = Math.max(0, Math.round((now.getTime() - from.getTime()) / 60_000));
+  if (min < 60) return `${min} Min.`;
+  const h = Math.floor(min / 60);
+  return h < 48 ? `${h} Std.` : `${Math.floor(h / 24)} Tagen`;
+}
 
 const groupTone: Record<TaskGroup, "bad" | "amber" | "info" | "grey"> = { OVERDUE: "bad", TODAY: "amber", SOON: "info", NOTE: "grey" };
 
@@ -36,6 +45,7 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
   const sp = await searchParams;
   const horizon: Horizon = (HORIZONS.find((h) => h.key === sp.zeitraum)?.key ?? "heute") as Horizon;
   const d = await loadDashboard(tenant.id, { horizon });
+  const keyDrops = await keyDropsToInspect(tenant.id);
   const { counts: c, now } = d;
 
   // Auslastung 7 Tage und Flotte (Bestand)
@@ -118,6 +128,24 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
             );
           })}
         </div>
+
+        {keyDrops.length > 0 && (
+          <Card title="Schlüsselbox-Rückgaben zu prüfen" right={<Chip tone="amber">{keyDrops.length}</Chip>}>
+            <ul className="divide-y divide-line-soft">
+              {keyDrops.map((k) => (
+                <li key={k.id} className="px-4 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+                  <Plate>{k.plate}</Plate>
+                  <Link href={`/buchungen/${k.bookingId}/rueckgabe`} className="font-medium hover:underline">{k.vehicle}</Link>
+                  <span className="text-ink-2">{k.customer}</span>
+                  <span className="text-ink-3">Abgabe laut Kunde {k.dropOffAt ? fmtDateTime(k.dropOffAt) : "–"} · geplantes Mietende {fmtDateTime(k.plannedEnd)}</span>
+                  <Chip tone="amber">{k.confirmedAt ? `seit ${sinceText(k.confirmedAt, now)}` : "gemeldet"}</Chip>
+                  {k.inspectionStarted && <Chip tone="info">Kontrolle begonnen</Chip>}
+                  {k.nextBooking && <Chip tone="bad">Folgebuchung {k.nextBooking.number} ab {fmtDateTime(k.nextBooking.startAt)}</Chip>}
+                </li>
+              ))}
+            </ul>
+          </Card>
+        )}
 
         <Card title="Heute auf dem Hof" right={<Chip>{d.events.length} Termine</Chip>}>
           {d.events.length === 0 ? (

@@ -53,6 +53,21 @@ export async function startReturnAction(bookingId: string) {
   redirect(`${base(bookingId)}?schritt=1`);
 }
 
+/**
+ * Befehl 20.6: Kontrolle einer vereinbarten kontaktlosen Rückgabe OHNE Kundenmeldung. Nur Inhaber und Disposition,
+ * Pflichtgrund; der Rückgabelink wird dabei sofort ungültig (siehe startHandover).
+ */
+export async function startKeyDropExceptionAction(bookingId: string, _prev: StepState, formData: FormData): Promise<StepState> {
+  const { tenant, user } = await requireRole("DISPO");
+  try {
+    await startHandover(tenant.id, bookingId, "RETURN", { id: user.id, name: user.name }, { keyDropException: String(formData.get("reason") ?? "") });
+  } catch (e) {
+    return asState(e);
+  }
+  revalidatePath(`/buchungen/${bookingId}`);
+  redirect(`${base(bookingId)}?schritt=1`);
+}
+
 export async function navigateStepAction(bookingId: string, step: number, _prev: StepState, formData: FormData): Promise<StepState> {
   const { tenant, handover } = await context(bookingId);
   return go(bookingId, handover.id, tenant.id, step, formData);

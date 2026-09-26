@@ -116,6 +116,8 @@ export function handoverData(variant: "empty" | "full"): HandoverDocumentData {
   return {
     context: { landlord, contractNumber: "MV-2026-0042", bookingNumber: "2026-0107", renterName: full ? LONG_NAME : "Al Li", renterNumber: "K-00042", vehicleTitle: "VW Crafter", plate: "HB-RT 200", vehicleGroup: "Transporter 3,5 t" },
     comparison: null,
+    keyDrop: null,
+    returnMode: null,
     driverChecks: full
       ? [
           { role: "PRIMARY_DRIVER", roleLabel: "Hauptfahrer", name: LONG_NAME, statusLabel: "Bestätigt", identityDocumentLabel: "Personalausweis", identityOriginalSeen: true, identityMatched: true, licenseOriginalSeen: true, licenseValid: true, requiredLicenseClass: "B", licenseClasses: ["B", "BE"], licenseClassSatisfied: true, validUntilLabel: "01.06.2033", checkedAtLabel: "21.09.2026, 09:55", checkedByName: "Sezer Karakuş" },

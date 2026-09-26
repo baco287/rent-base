@@ -34,6 +34,8 @@ import { requestPasswordReset } from "../src/lib/password-reset";
 import { startSupportSession } from "../src/lib/support-sessions";
 import { setMailTransport, type MailMessage, type MailTransport } from "../src/lib/mail";
 import { saveMailSettings } from "../src/lib/tenant-mail";
+import { authorizeKeyDrop, confirmKeyDrop, saveKeyDropSettings, sendKeyDropLink } from "../src/lib/key-drop";
+import { pickedUpWorld } from "./rental-flow";
 
 const args = process.argv.slice(2);
 const keep = args.includes("--keep");
@@ -938,6 +940,61 @@ const foreignMail = await plain(await fetch(`${base}/einstellungen/e-mail`, { he
 report(!foreignMail.includes("smtp.smoke-vermieter.test") && foreignMail.includes("Nicht eingerichtet"), "E-Mail-Versand: fremder Mandant sieht nichts von diesem SMTP");
 const setupPage = await plain(await fetch(`${base}/einrichtung`, { headers: { cookie } }));
 report(setupPage.includes("E-Mail-Versand") && setupPage.includes("Eigener E-Mail-Versand empfohlen"), "Einrichtung: E-Mail-Versand als Empfehlung");
+// ---------------------------------------------------------------------------
+// Befehl 20.6: kontaktlose Rückgabe – Buchungsbereich, Rollen, öffentliche Seite mit Token, Supportmodus
+// ---------------------------------------------------------------------------
+const kdw = await pickedUpWorld("smoke-kd");
+platformTenants.push(kdw.tenantId);
+await db.user.update({ where: { id: kdw.userId }, data: { role: "OWNER" } });
+await db.booking.update({ where: { id: kdw.bookingId }, data: { actualPickupAt: new Date(Date.now() - 86400_000) } });
+const kdSession = randomBytes(32).toString("base64url");
+await db.session.create({ data: { id: kdSession, userId: kdw.userId, expiresAt: new Date(Date.now() + 3600_000) } });
+const kdCookie = `rb_session=${kdSession}`;
+const kdRules = await plain(await fetch(`${base}/einstellungen/geschaeftsregeln`, { headers: { cookie: kdCookie } }));
+report(kdRules.includes("Kontaktlose Rückgabe / Schlüsselbox erlauben") && kdRules.includes("Mietbedingungen die kontaktlose Rückgabe"), "Geschäftsregeln: kontaktlose Rückgabe mit Hinweis auf Mietbedingungen");
+const kdOff = await plain(await fetch(`${base}/buchungen/${kdw.bookingId}`, { headers: { cookie: kdCookie } }));
+report(!kdOff.includes("Kontaktlose Rückgabe vereinbaren"), "Kontaktlose Rückgabe: ohne Freischaltung kein Bereich");
+await saveKeyDropSettings(kdw.tenantId, kdw.actor, { enabled: true, label: "Schlüsselbox" });
+const kdOn = await plain(await fetch(`${base}/buchungen/${kdw.bookingId}`, { headers: { cookie: kdCookie } }));
+report(kdOn.includes("Kontaktlose Rückgabe vereinbaren") && kdOn.includes("Nur aktivieren, wenn die kontaktlose Rückgabe mit dem Kunden vereinbart wurde"), "Kontaktlose Rückgabe: Vereinbaren mit Warnhinweis");
+const kd = await authorizeKeyDrop(kdw.tenantId, kdw.actor, kdw.bookingId, { location: "Hof, Stellplatz 4", instructions: "Schlüssel in die Box", expectedReturnAt: new Date(Date.now() + 3600_000), internalNote: "GEHEIM-INTERN", agreedWithCustomer: true });
+const kdAgreed = await plain(await fetch(`${base}/buchungen/${kdw.bookingId}`, { headers: { cookie: kdCookie } }));
+report(kdAgreed.includes("Rückgabe-Mail versenden") && kdAgreed.includes("An: erika@example.test"), "Kontaktlose Rückgabe: Versand-Knopf mit sichtbarem Empfänger (noch nichts versendet)");
+const kdYard = await db.user.create({ data: { tenantId: kdw.tenantId, email: `kd-yard-${Date.now()}@example.test`, name: "Hof KD", passwordHash: "x", role: "YARD" } });
+const kdYardSession = randomBytes(32).toString("base64url");
+await db.session.create({ data: { id: kdYardSession, userId: kdYard.id, expiresAt: new Date(Date.now() + 3600_000) } });
+const kdYardPage = await plain(await fetch(`${base}/buchungen/${kdw.bookingId}`, { headers: { cookie: `rb_session=${kdYardSession}` } }));
+report(kdYardPage.includes("Kontaktlose Rückgabe") && !kdYardPage.includes("Rückgabe-Mail versenden") && !kdYardPage.includes("GEHEIM-INTERN"), "Hofmitarbeiter: sieht Vereinbarung, kein Versand, keine interne Notiz");
+mail.sent = [];
+await sendKeyDropLink(kdw.tenantId, kdw.actor, kd.id, { nonce: `smoke-${Date.now()}`, baseUrl: base });
+const kdToken = tokenFromMail(mail.sent[0], "rueckgabe");
+const kdPublic = await fetch(`${base}/rueckgabe/${kdToken}`, { redirect: "manual" });
+const kdPublicHtml = (await kdPublic.text()).replace(/<!-- -->/g, "");
+report(kdPublic.status === 200 && kdPublicHtml.includes("Rückgabe verbindlich melden") && kdPublicHtml.includes("Hof, Stellplatz 4") && !kdPublicHtml.includes("GEHEIM-INTERN") && !/Kaution|IBAN/.test(kdPublicHtml), `${kdPublic.status} Kundenseite ohne Anmeldung, ohne interne Daten`);
+const kdBad = await plain(await fetch(`${base}/rueckgabe/${"x".repeat(43)}`));
+report(kdBad.includes("Link nicht gültig"), "Kundenseite: ungültiger Link");
+const kdPhotoForm = new FormData();
+kdPhotoForm.set("category", "FRONT");
+kdPhotoForm.set("file", new Blob([new Uint8Array(await (await import("sharp")).default({ create: { width: 320, height: 240, channels: 3, background: { r: 90, g: 90, b: 90 } } }).jpeg().toBuffer())], { type: "image/jpeg" }), "vorne.jpg");
+const kdPhoto = await fetch(`${base}/api/rueckgabe/${kdToken}/foto`, { method: "POST", body: kdPhotoForm });
+const kdPhotoJson = (await kdPhoto.json().catch(() => ({}))) as { id?: string };
+const kdPhotoGet = kdPhotoJson.id ? await fetch(`${base}/api/rueckgabe/${kdToken}/foto/${kdPhotoJson.id}`) : null;
+const kdPhotoWrong = kdPhotoJson.id ? await fetch(`${base}/api/rueckgabe/${"y".repeat(43)}/foto/${kdPhotoJson.id}`) : null;
+report(kdPhoto.status === 201 && kdPhotoGet?.status === 200 && kdPhotoWrong?.status === 404, `${kdPhoto.status}/${kdPhotoGet?.status}/${kdPhotoWrong?.status} Kundenfoto nur mit gültigem Link`);
+const kdStaffPhoto = kdPhotoJson.id ? await fetch(`${base}/api/photos/${kdPhotoJson.id}`, { headers: { cookie: `rb_session=${foreignSession}` } }) : null;
+report(kdStaffPhoto?.status === 404, `${kdStaffPhoto?.status} Kundenfoto für fremden Mandanten nicht auffindbar`);
+const kdSupport = await startSupportSession({ id: admin.id, name: admin.name }, kdw.tenantId, "Smoke-Test Schlüsselbox");
+const kdSupportPage = await plain(await fetch(`${base}/buchungen/${kdw.bookingId}`, { headers: { cookie: `${adminCookie}; rb_support=${kdSupport.id}` } }));
+report(kdSupportPage.includes("Kontaktlose Rückgabe") && !kdSupportPage.includes("Rückgabe-Mail erneut senden") && !kdSupportPage.includes("GEHEIM-INTERN"), "Supportmodus: kontaktlose Rückgabe nur lesend");
+await confirmKeyDrop(kdToken, { dropOffAt: new Date(Date.now() - 20 * 60_000), mileage: 45_500, fuelEighths: 6, batteryPercent: null, locationConfirmed: true, locationNote: null, newDamages: false, damageNote: null, remark: null, signerName: "Erika Muster", signatureDataUrl: fakeSignaturePng(), accepted: true });
+const kdDash = await plain(await fetch(`${base}/heute`, { headers: { cookie: kdCookie } }));
+const kdPlate = (await db.vehicle.findUniqueOrThrow({ where: { id: kdw.vehicleId } })).plate;
+report(kdDash.includes("Schlüsselbox-Rückgaben zu prüfen") && kdDash.includes(kdPlate) && kdDash.includes("Abgabe laut Kunde"), "Heute: Schlüsselbox-Rückgaben zu prüfen");
+const kdStart = await plain(await fetch(`${base}/buchungen/${kdw.bookingId}/rueckgabe`, { headers: { cookie: kdCookie } }));
+report(kdStart.includes("Kontaktlos zurückgegeben – Kontrolle ausstehend") && kdStart.includes("Schlüsselbox-Rückgabe prüfen"), "Rückgabe: Kontrolle nach kontaktloser Rückgabe startbar");
+const kdDone = await plain(await fetch(`${base}/rueckgabe/${kdToken}`));
+report(kdDone.includes("Rückgabe gemeldet") && !kdDone.includes("Rückgabe verbindlich melden"), "Kundenseite nach Meldung: nur noch Eingangsbestätigung");
+
 const settingsWithCards = await plain(await fetch(`${base}/einstellungen`, { headers: { cookie } }));
 report(settingsWithCards.includes("E-Mail-Versand einrichten") && settingsWithCards.includes("Logo ersetzen") && settingsWithCards.includes("Website (optional)"), "Einstellungen: E-Mail-Versand, Logo und Website");
 

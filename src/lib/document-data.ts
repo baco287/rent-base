@@ -8,7 +8,11 @@ import { db } from "@/lib/db";
 import { REQUIRED_PHOTO_CATEGORIES } from "@/lib/constants";
 import { buildContractDocument, landlordOf, type ContractDocumentData, type TenantLike } from "@/lib/contract-view";
 import type { CustomerSnapshot, VehicleSnapshot } from "@/lib/contracts";
-import { buildHandoverDocument, type HandoverContext, type HandoverDocumentData } from "@/lib/handover-view";
+import { buildHandoverDocument, type DocKeyDrop, type HandoverContext, type HandoverDocumentData } from "@/lib/handover-view";
+import { keyDropCustomerRows } from "@/lib/key-drop-document";
+import { keyDropSettingsOf } from "@/lib/key-drop";
+import { PHOTO_CATEGORIES, type PhotoCategory } from "@/lib/constants";
+import { APP_TIME_ZONE } from "@/lib/time";
 import { driverCheckSummaries } from "@/lib/driver-verification";
 import { DomainError } from "@/lib/integrity";
 import { loadSealedComparison } from "@/lib/returns";
@@ -72,6 +76,35 @@ export async function loadHandoverContext(tenantId: string, handover: { contract
   return handoverContext(contract, tenant, booking?.number ?? "");
 }
 
+/**
+ * Befehl 20.6: Kundenangaben einer kontaktlosen Rückgabe für Anzeige und PDF des Rückgabeprotokolls. Liest die versiegelte
+ * Kundenmeldung; Kundenfotos und Kundenunterschrift gehören zur Meldung, nicht zum Protokoll.
+ */
+export async function loadDocKeyDrop(tenantId: string, h: { returnMode: string | null; keyDropId: string | null; keyDropExceptionReason: string | null }) {
+  if (h.returnMode !== "KEY_DROP" || !h.keyDropId) return null;
+  const kd = await db.keyDropReturn.findFirst({ where: { id: h.keyDropId, tenantId }, include: { photos: { orderBy: { uploadedAt: "asc" } }, signatures: { orderBy: { signedAt: "asc" } } } });
+  if (!kd) return null;
+  const confirmed = Boolean(kd.confirmedAt);
+  const sig = confirmed ? kd.signatures.find((s) => s.role === "RENTER") ?? null : null;
+  const at = (d: Date | null) => (d ? d.toLocaleString("de-DE", { timeZone: APP_TIME_ZONE, day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : null);
+  const doc: DocKeyDrop = {
+    label: keyDropSettingsOf(kd.settingsSnapshot).label,
+    agreedLocation: kd.location,
+    customerRows: confirmed ? keyDropCustomerRows(kd) : [],
+    confirmedAt: at(kd.confirmedAt),
+    signerName: confirmed ? kd.customerSignerName : null,
+    confirmationText: confirmed ? kd.confirmationText : null,
+    signatureId: sig?.id ?? null,
+    photos: confirmed ? kd.photos.map((p) => ({ id: p.id, url: `/api/photos/${p.id}`, caption: `Kunde: ${PHOTO_CATEGORIES[p.category as PhotoCategory] ?? p.category}` })) : [],
+    exceptionReason: h.keyDropExceptionReason,
+  };
+  return {
+    doc,
+    photoFiles: confirmed ? kd.photos.map((p) => ({ id: p.id, storageKey: p.storageKey, checksum: p.checksum, contentType: p.contentType })) : [],
+    signatureImages: sig?.imageData ? [[sig.id, sig.imageData] as const] : [],
+  };
+}
+
 export type HandoverData = {
   doc: HandoverDocumentData;
   bookingId: string;
@@ -97,14 +130,15 @@ export async function loadHandoverDocumentData(tenantId: string, handoverId: str
   const context = await loadHandoverContext(tenantId, h);
   const comparison = h.type === "RETURN" ? await loadSealedComparison(db, tenantId, h.id) : null;
   const driverChecks = h.type === "PICKUP" ? await driverCheckSummaries(tenantId, h.id) : [];
+  const keyDrop = await loadDocKeyDrop(tenantId, h);
   return {
-    doc: buildHandoverDocument(h, sketch, signatures, [...REQUIRED_PHOTO_CATEGORIES], context, comparison, driverChecks),
+    doc: buildHandoverDocument(h, sketch, signatures, [...REQUIRED_PHOTO_CATEGORIES], context, comparison, driverChecks, keyDrop?.doc ?? null),
     bookingId: h.bookingId,
     handoverId: h.id,
     contractId: h.contractId,
     sourceHash: h.contentHash,
-    signatureImages: new Map(signatures.flatMap((s) => (s.imageData ? [[s.id, s.imageData] as const] : []))),
-    photoFiles: await photoFilesOf(tenantId, h),
+    signatureImages: new Map([...signatures.flatMap((s) => (s.imageData ? [[s.id, s.imageData] as const] : [])), ...(keyDrop?.signatureImages ?? [])]),
+    photoFiles: [...(await photoFilesOf(tenantId, h)), ...(keyDrop?.photoFiles ?? [])],
     // Nur wenn die Datei noch genau der im Protokoll festgehaltenen Fassung entspricht, wird sie verwendet (siehe documents.ts)
     sketch: sketch && h.sketchAssetHash ? { assetPath: sketch.assetPath, assetHash: h.sketchAssetHash } : null,
   };

@@ -112,6 +112,8 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
   const vehicleText = (v: { make: string; model: string; plate: string }) => `${v.make} ${v.model}`;
   const inRange = (d: Date, a: Date, b: Date) => d.getTime() >= a.getTime() && d.getTime() < b.getTime();
   // Fahrerprüfung (Phase 19.5): nur für heutige Abholungen, eine Abfrage für alle Buchungen
+  // Befehl 20.6: vom Kunden kontaktlos gemeldete Rückgaben (Kontrolle ausstehend)
+  const keyDropReported = new Set((await db.keyDropReturn.findMany({ where: { tenantId, status: "CUSTOMER_CONFIRMED" }, select: { bookingId: true } })).map((k) => k.bookingId));
   const todaysPickupIds = bookings.filter((b) => b.status === "RESERVED" && inRange(b.startAt, start, end)).map((b) => b.id);
   const driverChecks = await pickupDriverCheckStatus(tenantId, todaysPickupIds);
   const counts: DashboardCounts = {
@@ -158,7 +160,10 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
         }
       }
     } else if (b.status === "ACTIVE") {
-      if (b.endAt < now) {
+      if (keyDropReported.has(b.id)) {
+        // Befehl 20.6: kontaktlos zurückgegeben – nicht „überfällig“, sondern Kontrolle ausstehend
+        add({ ...base, href: `/buchungen/${b.id}/rueckgabe`, key: `keydrop-${b.id}`, group: "TODAY", title: `Schlüsselbox-Rückgabe prüfen · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)} · Rückgabe gemeldet, Kontrolle ausstehend`, at: b.endAt, status: "Kontrolle ausstehend" });
+      } else if (b.endAt < now) {
         counts.overdueReturns++;
         const daysLate = zonedDaysBetween(b.endAt, now);
         add({ ...base, key: `return-overdue-${b.id}`, group: "OVERDUE", title: `Rückgabe überfällig · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)} · sollte ${fmtDate(b.endAt)} um ${fmtTime(b.endAt)} zurück sein${daysLate > 0 ? ` · ${daysLate} ${daysLate === 1 ? "Tag" : "Tage"}` : ""}`, at: b.endAt, status: "Überfällig" });

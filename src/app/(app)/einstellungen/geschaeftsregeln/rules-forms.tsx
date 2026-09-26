@@ -188,3 +188,25 @@ export function OverrideForm({ action, values, inherited, scopeLabel }: { action
     </form>
   );
 }
+
+/** Befehl 20.6: kontaktlose Rückgabe / Schlüsselbox (nur Inhaber). */
+export function KeyDropSettingsForm({ action, v }: { action: (s: RulesState, fd: FormData) => Promise<RulesState>; v: { enabled: boolean; label: string; defaultInstructions: string; parkingNote: string; keyNote: string; requestedPhotos: string[]; photoOptions: { key: string; label: string }[]; legalHint: string } }) {
+  const [state, formAction, pending] = useActionState(action, undefined);
+  return (
+    <form action={formAction} className="p-4 flex flex-col gap-3 text-sm">
+      <label className="flex items-start gap-2"><input type="checkbox" name="enabled" defaultChecked={v.enabled} className="mt-1" /><span className="font-medium">Kontaktlose Rückgabe / Schlüsselbox erlauben</span></label>
+      <p className="text-xs text-ink-3">Erlaubt nur die Vereinbarung je Buchung. Es wird nie automatisch eine E-Mail versendet – die Rückgabe-Mail geht erst nach bewusstem Klick der Disposition.</p>
+      <label className="flex flex-col gap-1"><span className="label-xs">Bezeichnung</span><input name="label" defaultValue={v.label} maxLength={60} className="input" placeholder="Schlüsselbox" /></label>
+      <label className="flex flex-col gap-1"><span className="label-xs">Standard-Rückgabehinweis</span><textarea name="defaultInstructions" defaultValue={v.defaultInstructions} rows={3} maxLength={1500} className="input" /></label>
+      <label className="flex flex-col gap-1"><span className="label-xs">Abstellhinweis</span><textarea name="parkingNote" defaultValue={v.parkingNote} rows={2} maxLength={600} className="input" /></label>
+      <label className="flex flex-col gap-1"><span className="label-xs">Schlüsselhinweis</span><textarea name="keyNote" defaultValue={v.keyNote} rows={2} maxLength={600} className="input" /></label>
+      <fieldset className="flex flex-col gap-1"><legend className="label-xs mb-1">Gewünschte Kundenfotos (empfohlen, nicht erzwungen)</legend>
+        <div className="flex flex-wrap gap-x-4 gap-y-1">{v.photoOptions.map((o) => <label key={o.key} className="flex items-center gap-1.5"><input type="checkbox" name="requestedPhotos" value={o.key} defaultChecked={v.requestedPhotos.includes(o.key)} />{o.label}</label>)}</div>
+      </fieldset>
+      <p className="rounded-md bg-amber-soft text-amber px-3 py-2">{v.legalHint}</p>
+      {state?.error && <p className="text-bad bg-bad-soft rounded-md px-3 py-2">{state.error}</p>}
+      {state?.ok && <p className="text-good bg-good-soft rounded-md px-3 py-2">{state.ok}</p>}
+      <div><button disabled={pending} className="btn btn-primary">{pending ? "Wird gespeichert…" : "Speichern"}</button></div>
+    </form>
+  );
+}

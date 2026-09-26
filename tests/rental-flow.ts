@@ -30,7 +30,14 @@ export type ReturnedWorld = World & { contractId: string; pickupId: string; retu
  * Rückgabe: 2.000 km gefahren (800 km über Inklusivkilometern → Vorschlag bestätigt), Tank 4/8 statt 7/8
  * (Kraftstoffvorschlag bewusst NICHT bestätigt), Innenreinigung 30 € manuell, neuer Schaden (optional mit DAMAGE-Position).
  */
-export async function returnedWorld(label: string, opts: { damageCharge?: boolean; tenant?: Record<string, unknown>; customer?: Record<string, unknown>; within?: World } = {}): Promise<ReturnedWorld> {
+export type PickedUpWorld = World & { contractId: string; pickupId: string };
+
+/** Befehl 20.6: Miete bis zur abgeschlossenen Übergabe (läuft, Rückgabe offen) – z. B. für die kontaktlose Rückgabe. */
+export async function pickedUpWorld(label: string, opts: { tenant?: Record<string, unknown>; customer?: Record<string, unknown>; within?: World } = {}): Promise<PickedUpWorld> {
+  return (await returnedWorld(label, { ...opts, stopAfterPickup: true })) as unknown as PickedUpWorld;
+}
+
+export async function returnedWorld(label: string, opts: { damageCharge?: boolean; tenant?: Record<string, unknown>; customer?: Record<string, unknown>; within?: World; stopAfterPickup?: boolean } = {}): Promise<ReturnedWorld> {
   let w: World;
   if (opts.within) {
     // zweite Miete im bestehenden Mandanten: eigenes Fahrzeug, gleicher Kunde
@@ -58,6 +65,7 @@ export async function returnedWorld(label: string, opts: { damageCharge?: boolea
   await verifyAllDriversForPickup(w.tenantId, w.actor, p.id, c.id);
   await finalizeHandover(w.tenantId, p.id, w.actor);
 
+  if (opts.stopAfterPickup) return { ...w, contractId: c.id, pickupId: p.id } as unknown as ReturnedWorld;
   const r = await startHandover(w.tenantId, w.bookingId, "RETURN", w.actor);
   await updateHandoverDraft(w.tenantId, r.id, { mileage: 47_210, fuelLevelEighths: 4 });
   const dmg = await addNewDamage(w.tenantId, r.id, { view: "REAR", posX: 0.8, posY: 0.6, kind: "DENT", severity: "MODERATE", description: "Delle Heckklappe, bei Rückgabe" });

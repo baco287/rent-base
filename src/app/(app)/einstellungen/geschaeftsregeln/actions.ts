@@ -49,3 +49,19 @@ export async function updatePrivacyReferenceAction(_prev: RulesState, fd: FormDa
   revalidatePath("/einstellungen/geschaeftsregeln");
   return { ok: "Datenschutzverweis gespeichert." };
 }
+
+/** Befehl 20.6: kontaktlose Rückgabe / Schlüsselbox erlauben und konfigurieren (Mandanten-Funktion, kein Vertragsbestandteil). Nur Inhaber. */
+export async function updateKeyDropSettingsAction(_prev: RulesState, fd: FormData): Promise<RulesState> {
+  const { tenant, user } = await requireRole("OWNER");
+  const { saveKeyDropSettings } = await import("@/lib/key-drop");
+  await saveKeyDropSettings(tenant.id, { id: user.id, name: user.name }, {
+    enabled: fd.get("enabled") === "on",
+    label: String(fd.get("label") ?? ""),
+    defaultInstructions: String(fd.get("defaultInstructions") ?? ""),
+    parkingNote: String(fd.get("parkingNote") ?? ""),
+    keyNote: String(fd.get("keyNote") ?? ""),
+    requestedPhotos: fd.getAll("requestedPhotos").map(String) as never,
+  });
+  revalidatePath("/einstellungen/geschaeftsregeln");
+  return { ok: "Einstellungen zur kontaktlosen Rückgabe gespeichert." };
+}

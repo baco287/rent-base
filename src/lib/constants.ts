@@ -111,6 +111,8 @@ export const MAIL_TEMPLATE_CATEGORY: Record<string, MailCategory> = {
   PAYOUT_RECEIPT: "TENANT_BUSINESS",
   AUTHORITY_RESPONSE: "TENANT_BUSINESS",
   SMTP_TEST: "TENANT_BUSINESS",
+  KEY_DROP_LINK: "TENANT_BUSINESS", // Befehl 20.6: persönlicher Link zur kontaktlosen Rückgabe (nur durch bewussten Klick)
+  KEY_DROP_CONFIRMATION: "TENANT_BUSINESS", // Eingangsbestätigung der Kundenmeldung (keine Zustandsbestätigung)
 };
 export const mailCategoryOf = (template: string): MailCategory => MAIL_TEMPLATE_CATEGORY[template] ?? "TENANT_BUSINESS";
 export const MAIL_CHANNELS = { PLATFORM_SMTP: "RentBase-Versanddienst", TENANT_SMTP: "Eigener SMTP des Vermieters" } as const;
@@ -233,6 +235,17 @@ export const PHOTO_CATEGORIES = {
 } as const;
 export type PhotoCategory = keyof typeof PHOTO_CATEGORIES;
 
+// Befehl 20.6: kontaktlose Rückgabe / Schlüsselbox
+export const RETURN_MODES = { IN_PERSON: "Persönliche Rückgabe", KEY_DROP: "Kontaktlose Rückgabe" } as const;
+export type ReturnMode = keyof typeof RETURN_MODES;
+export const KEY_DROP_STATUS = { AUTHORIZED: "Vereinbart", CUSTOMER_CONFIRMED: "Kontaktlos zurückgegeben – Kontrolle ausstehend", INSPECTED: "Kontrolle abgeschlossen", CANCELLED: "Aufgehoben" } as const;
+export type KeyDropStatus = keyof typeof KEY_DROP_STATUS;
+/** Fotos, die der Kunde bei der kontaktlosen Rückgabe aufnehmen kann (empfohlen, nicht erzwungen). */
+export const KEY_DROP_PHOTO_CATEGORIES: PhotoCategory[] = ["FRONT", "REAR", "LEFT", "RIGHT", "ODOMETER", "FUEL", "DAMAGE"];
+export const KEY_DROP_CONFIRMATION_TEXT = "Ich bestätige, dass ich das Fahrzeug am angegebenen Ort abgestellt, verschlossen und den Fahrzeugschlüssel entsprechend der vereinbarten Rückgabeart hinterlegt habe. Mir ist bekannt, dass die Fahrzeugkontrolle durch den Vermieter erst nachträglich erfolgt.";
+export const KEY_DROP_NOT_INSPECTION_TEXT = "Diese Bestätigung ist keine gemeinsame Zustandsprüfung des Fahrzeugs.";
+export const KEY_DROP_LEGAL_HINT = "Bitte stellen Sie sicher, dass Ihre Mietbedingungen die kontaktlose Rückgabe, den Rückgabeort, die Schlüsselhinterlegung und die zeitversetzte Fahrzeugkontrolle regeln.";
+
 /** Pflichtansichten bei Übergabe und Rückgabe. */
 export const REQUIRED_PHOTO_CATEGORIES: PhotoCategory[] = ["FRONT", "REAR", "LEFT", "RIGHT", "INTERIOR", "ODOMETER", "FUEL"];
 
@@ -248,6 +261,7 @@ export const DOCUMENT_TYPES = {
   CANCELLATION: "Stornobeleg",
   PAYOUT_RECEIPT: "Auszahlungsbeleg",
   PAYOUT_ATTACHMENT: "Auszahlungsnachweis",
+  KEY_DROP_CONFIRMATION: "Bestätigung kontaktlose Rückgabe",
 } as const;
 export type DocumentType = keyof typeof DOCUMENT_TYPES;
 
@@ -429,6 +443,22 @@ export const AUDIT_ACTIONS = {
   SMTP_SETTINGS_DISABLED: "Eigener E-Mail-Versand deaktiviert",
   TENANT_LOGO_UPDATED: "Logo hochgeladen",
   TENANT_LOGO_REMOVED: "Logo entfernt",
+  // Befehl 20.6: kontaktlose Rückgabe / Schlüsselbox (nie Tokens)
+  KEY_DROP_ENABLED: "Kontaktlose Rückgabe erlaubt",
+  KEY_DROP_DISABLED: "Kontaktlose Rückgabe nicht mehr erlaubt",
+  KEY_DROP_SETTINGS_UPDATED: "Einstellungen kontaktlose Rückgabe geändert",
+  KEY_DROP_AUTHORIZED: "Kontaktlose Rückgabe vereinbart",
+  KEY_DROP_CANCELLED: "Kontaktlose Rückgabe aufgehoben",
+  KEY_DROP_LINK_CREATED: "Rückgabelink erzeugt",
+  KEY_DROP_MAIL_SENT: "Rückgabe-Mail versendet",
+  KEY_DROP_MAIL_RESENT: "Rückgabe-Mail erneut versendet",
+  KEY_DROP_TOKEN_REVOKED: "Rückgabelink widerrufen",
+  KEY_DROP_CUSTOMER_STARTED: "Kunde hat Rückgabelink geöffnet",
+  KEY_DROP_CUSTOMER_CONFIRMED: "Kunde hat kontaktlose Rückgabe gemeldet",
+  KEY_DROP_CONFIRMATION_SENT: "Eingangsbestätigung an Kunden versendet",
+  KEY_DROP_INSPECTION_STARTED: "Kontrolle nach kontaktloser Rückgabe begonnen",
+  KEY_DROP_INSPECTION_COMPLETED: "Kontrolle nach kontaktloser Rückgabe abgeschlossen",
+  KEY_DROP_EXCEPTION_USED: "Kontaktlose Rückgabe ohne Kundenbestätigung abgeschlossen (Ausnahme)",
 } as const;
 export type AuditAction = keyof typeof AUDIT_ACTIONS;
 

@@ -11,7 +11,8 @@ import { SESSION_COOKIE } from "@/lib/constants";
 //   ohne Sitzungs-Cookie erreichbar sein (neuer, noch nie angemeldeter Benutzer) – aber NIE automatisch
 //   weggeleitet werden, nur weil zufällig noch irgendein anderes Konto in diesem Browser angemeldet ist.
 const AUTH_ENTRY_PATHS = ["/login", "/setup"];
-const ALWAYS_PUBLIC_PATHS = ["/einladung", "/passwort-vergessen", "/gesperrt", "/api/health"];
+// Befehl 20.6: /rueckgabe/<token> und /api/rueckgabe/<token>/… – Berechtigung ist allein der persönliche Rückgabelink
+const ALWAYS_PUBLIC_PATHS = ["/einladung", "/passwort-vergessen", "/gesperrt", "/api/health", "/rueckgabe", "/api/rueckgabe"];
 
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;

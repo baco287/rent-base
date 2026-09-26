@@ -25,6 +25,7 @@ import { vehicleStatusProblem } from "@/lib/bookings";
 import { resolveSketch } from "@/lib/sketches";
 import { recordVehicleEvent } from "@/lib/vehicle-events";
 import { driverVerificationBlockers } from "@/lib/driver-verification";
+import { recordAudit } from "@/lib/audit";
 
 type Tx = Prisma.TransactionClient;
 const TX = { timeout: 20_000, maxWait: 10_000 };
@@ -49,7 +50,12 @@ async function loadDraft(tx: Tx, tenantId: string, handoverId: string) {
  * einen Entwurf: die Buchungszeile wird gesperrt, gleichzeitige Starts laufen nacheinander.
  * Kopiert sichtbare Schäden (EXISTING) samt Fotoverweisen und die Checkliste in das Protokoll.
  */
-export async function startHandover(tenantId: string, bookingId: string, type: HandoverType, actor: Actor) {
+export type StartHandoverOptions = {
+  /** Befehl 20.6: Kontrolle einer vereinbarten kontaktlosen Rückgabe OHNE Kundenmeldung – Pflichtgrund, nur Inhaber/Disposition (Aufrufer prüft die Rolle). */
+  keyDropException?: string | null;
+};
+
+export async function startHandover(tenantId: string, bookingId: string, type: HandoverType, actor: Actor, opts: StartHandoverOptions = {}) {
   return db.$transaction(async (tx) => {
     const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Booking" WHERE "id" = ${bookingId} AND "tenantId" = ${tenantId} FOR UPDATE`;
     if (locked.length === 0) throw new DomainError("Buchung nicht gefunden.");
@@ -75,6 +81,30 @@ export async function startHandover(tenantId: string, bookingId: string, type: H
       pickupId = pickup.id;
     }
 
+    // Befehl 20.6: Rückgabeart. Eine vereinbarte kontaktlose Rückgabe wird nie still zur persönlichen Rückgabe und umgekehrt.
+    let keyDrop: { id: string; customerDropOffAt: Date | null; exception: string | null } | null = null;
+    if (type === "RETURN") {
+      const kd = await tx.keyDropReturn.findFirst({ where: { tenantId, bookingId, status: { in: ["AUTHORIZED", "CUSTOMER_CONFIRMED"] } } });
+      if (kd) {
+        await tx.$queryRaw`SELECT "id" FROM "KeyDropReturn" WHERE "id" = ${kd.id} FOR UPDATE`;
+        const fresh = await tx.keyDropReturn.findUniqueOrThrow({ where: { id: kd.id } });
+        if (fresh.status === "CUSTOMER_CONFIRMED") {
+          keyDrop = { id: fresh.id, customerDropOffAt: fresh.customerDropOffAt, exception: null };
+        } else {
+          const reason = opts.keyDropException?.trim();
+          if (!reason) throw new DomainError("Für diese Miete ist eine kontaktlose Rückgabe vereinbart, der Kunde hat die Abgabe aber noch nicht gemeldet. Entweder die Vereinbarung aufheben (persönliche Rückgabe) oder – nur Inhaber/Disposition – die Kontrolle ohne Kundenbestätigung mit Begründung starten.");
+          if (reason.length < 10) throw new DomainError("Bitte den Grund für die Kontrolle ohne Kundenbestätigung nachvollziehbar angeben (mindestens 10 Zeichen).");
+          keyDrop = { id: fresh.id, customerDropOffAt: null, exception: reason.slice(0, 500) };
+          // Der Kunde kann danach nichts mehr melden: Link sofort ungültig
+          const revoked = await tx.keyDropAccess.updateMany({ where: { tenantId, keyDropId: fresh.id, revokedAt: null }, data: { revokedAt: new Date(), revokedReason: "Kontrolle ohne Kundenbestätigung begonnen" } });
+          if (revoked.count > 0) await recordAudit(tx, tenantId, actor, { action: "KEY_DROP_TOKEN_REVOKED", bookingId, details: { keyDropId: fresh.id, reason: "Kontrolle ohne Kundenbestätigung begonnen" } });
+          await recordAudit(tx, tenantId, actor, { action: "KEY_DROP_EXCEPTION_USED", bookingId, details: { keyDropId: fresh.id, reason: keyDrop.exception } });
+        }
+        await tx.keyDropReturn.update({ where: { id: fresh.id }, data: { inspectionStartedAt: new Date() } });
+        await recordAudit(tx, tenantId, actor, { action: "KEY_DROP_INSPECTION_STARTED", bookingId, details: { keyDropId: fresh.id, withoutCustomerConfirmation: Boolean(keyDrop.exception) } });
+      }
+    }
+
     const sketch = await resolveSketch(tx, tenantId, booking.vehicle.group);
     const number = await nextHandoverNumber(tx, tenantId, type);
     const handover = await tx.handover.create({
@@ -91,6 +121,7 @@ export async function startHandover(tenantId: string, bookingId: string, type: H
         sketchId: sketch?.id ?? null,
         sketchVersion: sketch?.version ?? null,
         sketchAssetHash: sketch?.assetHash ?? null,
+        ...(type === "RETURN" ? { returnMode: keyDrop ? "KEY_DROP" : "IN_PERSON", keyDropId: keyDrop?.id ?? null, customerDropOffAt: keyDrop?.customerDropOffAt ?? null, keyDropExceptionReason: keyDrop?.exception ?? null } : {}),
       },
     });
 
@@ -181,6 +212,10 @@ async function handoverContent(tx: Tx, tenantId: string, handoverId: string) {
     photos: h.photos.map((p) => ({ category: p.category, storageKey: p.storageKey, checksum: p.checksum })),
     extraCharges: h.extraCharges.map((e) => ({ type: e.type, description: e.description, formula: e.formula, amount: String(e.amount), source: e.source, handoverDamageId: e.handoverDamageId })),
   };
+  if (h.returnMode === "KEY_DROP") {
+    const kd = h.keyDropId ? await tx.keyDropReturn.findFirst({ where: { id: h.keyDropId, tenantId }, select: { confirmationHash: true } }) : null;
+    Object.assign(content, { keyDrop: { id: h.keyDropId, customerDropOffAt: h.customerDropOffAt?.toISOString() ?? null, customerConfirmationHash: kd?.confirmationHash ?? null, exceptionReason: h.keyDropExceptionReason } });
+  }
   return { handover: h, hash: contentHash(content) };
 }
 
@@ -227,6 +262,7 @@ export async function saveHandoverSignature(tenantId: string, actor: Actor | nul
 
   return db.$transaction(async (tx) => {
     const h = await loadDraft(tx, tenantId, handoverId);
+    if (h.returnMode === "KEY_DROP" && input.role === "RENTER") throw new DomainError("Bei der kontaktlosen Rückgabe unterschreibt der Kunde nicht unter die Feststellungen der Kontrolle. Seine Rückgabemeldung liegt gesondert vor.");
     const { hash } = await handoverContent(tx, tenantId, handoverId);
     if (hash !== input.seenHash) throw new DomainError("Das Protokoll wurde seit der Anzeige geändert. Bitte die Angaben erneut prüfen und dann unterschreiben.");
     await tx.signature.deleteMany({ where: { tenantId, handoverId, role: input.role } });
@@ -589,8 +625,9 @@ async function collectIssues(tx: Tx, tenantId: string, handoverId: string, opts:
     const returned = parseInt(h.checklistItems.find((c) => c.itemKey === "keys_returned")?.result ?? "", 10);
     if (Number.isFinite(given) && Number.isFinite(returned) && returned < given) warn("CHECKLIST", "ACCESSORY_MISSING", `Bei der Übergabe wurden ${given} Schlüssel dokumentiert, zurück kamen ${returned}. Falls etwas fehlt, kann in Schritt 7 eine Position „Fehlendes Zubehör“ erfasst werden.`);
     for (const c of h.checklistItems.filter(isAttention)) warn("CHECKLIST", "CHECKLIST_ATTENTION", `Auffällig: ${c.label}${c.note ? ` (${c.note})` : ""}.`);
-    if (booking.endAt.getTime() < Date.now() - 15 * 60_000) {
-      const minutes = Math.round((Date.now() - booking.endAt.getTime()) / 60_000);
+    const effectiveEnd = h.customerDropOffAt ?? new Date(); // kontaktlos: Abgabe laut Kunde, nicht der Kontrollzeitpunkt
+    if (booking.endAt.getTime() < effectiveEnd.getTime() - 15 * 60_000) {
+      const minutes = Math.round((effectiveEnd.getTime() - booking.endAt.getTime()) / 60_000);
       warn("BOOKING", "LATE_RETURN", `Die Rückgabe liegt ${Math.floor(minutes / 60)} Std. ${minutes % 60} Min. nach der vereinbarten Zeit. Eine Gebühr entsteht nur, wenn sie in Schritt 7 bewusst erfasst wird.`);
     }
   }
@@ -618,10 +655,18 @@ async function collectIssues(tx: Tx, tenantId: string, handoverId: string, opts:
   if (open.length > 0) err("CHECKLIST", "CHECKLIST_OPEN", `Es fehlen noch ${open.length} Pflichtpunkte der Checkliste, zuerst: ${open[0].label}`);
   for (const c of h.checklistItems.filter((x) => isAttention(x) && !x.note)) err("CHECKLIST", "CHECKLIST_NOTE", `Checkliste „${c.label}“: bitte kurz notieren, was aufgefallen ist.`);
 
+  // Befehl 20.6: Bei kontaktloser Rückgabe ersetzt die Kundenmeldung die Anwesenheitsunterschrift – ausschließlich für die Abgabe.
+  // Ohne Kundenmeldung nur mit dokumentiertem Ausnahmegrund (beim Start gesetzt).
+  if (h.type === "RETURN" && h.returnMode === "KEY_DROP") {
+    const kd = h.keyDropId ? await tx.keyDropReturn.findFirst({ where: { id: h.keyDropId, tenantId }, select: { status: true } }) : null;
+    if (!h.keyDropExceptionReason && kd?.status !== "CUSTOMER_CONFIRMED") err("SIGNATURE", "KEY_DROP_NOT_CONFIRMED", "Die Rückgabemeldung des Kunden liegt nicht vor.");
+  }
   if (opts.requireSignature) {
     const signatures = await tx.signature.findMany({ where: { tenantId, handoverId }, select: { role: true, contentHash: true } });
     const renter = signatures.find((s) => s.role === "RENTER");
-    if (!renter) err("SIGNATURE", "SIGNATURE_MISSING", "Die Unterschrift des Mieters fehlt.");
+    if (h.returnMode === "KEY_DROP") {
+      if (renter) err("SIGNATURE", "KEY_DROP_RENTER_SIGNATURE", "Bei der kontaktlosen Rückgabe unterschreibt der Kunde nicht unter die Feststellungen der Kontrolle.");
+    } else if (!renter) err("SIGNATURE", "SIGNATURE_MISSING", "Die Unterschrift des Mieters fehlt.");
     else if (renter.contentHash !== hash) err("SIGNATURE", "SIGNATURE_STALE", "Das Protokoll wurde nach der Unterschrift geändert. Der Mieter muss erneut unterschreiben.");
     if (signatures.some((s) => s.role === "EMPLOYEE" && s.contentHash !== hash)) err("SIGNATURE", "SIGNATURE_STALE_EMPLOYEE", "Die Unterschrift des Mitarbeiters passt nicht mehr zum Protokoll.");
   }
@@ -662,7 +707,8 @@ export async function finalizeHandover(tenantId: string, handoverId: string, act
     // Statuswechsel der Buchung: bestehende Statuswerte, keine zweite Logik. Nur hier entsteht "Unterwegs".
     const now = new Date();
     if (h.type === "PICKUP") await tx.booking.update({ where: { id: booking.id }, data: { status: "ACTIVE", actualPickupAt: now } });
-    else await tx.booking.update({ where: { id: booking.id }, data: { status: "RETURNED", actualReturnAt: now } });
+    // Kontaktlos: Mietende ist die vom Kunden gemeldete Abgabe, nicht der (spätere) Kontrollzeitpunkt – beide bleiben getrennt gespeichert
+    else await tx.booking.update({ where: { id: booking.id }, data: { status: "RETURNED", actualReturnAt: h.customerDropOffAt ?? now } });
 
     // Neue Schäden in die Schadenakte übernehmen. Die Kopie im Protokoll bleibt davon unabhängig.
     for (const d of h.damages.filter((x) => x.marker === "NEW" && !x.damageId)) {
@@ -692,13 +738,20 @@ export async function finalizeHandover(tenantId: string, handoverId: string, act
         await tx.damage.update({ where: { id: damage.id }, data: { settlementReview: true } });
         await tx.extraCharge.updateMany({ where: { tenantId, handoverId: h.id, handoverDamageId: d.id }, data: { damageId: damage.id } });
       }
-      await recordVehicleEvent(tx, { tenantId, vehicleId: h.vehicleId, type: "DAMAGE_DISCOVERED", occurredAt: now, mileage, bookingId: h.bookingId, damageId: damage.id, handoverId: h.id, actor, description: h.type === "PICKUP" ? `Vorschaden bei Übergabe: ${d.description}` : `Bei Rückgabe festgestellt: ${d.description}` });
+      await recordVehicleEvent(tx, { tenantId, vehicleId: h.vehicleId, type: "DAMAGE_DISCOVERED", occurredAt: now, mileage, bookingId: h.bookingId, damageId: damage.id, handoverId: h.id, actor, description: h.type === "PICKUP" ? `Vorschaden bei Übergabe: ${d.description}` : h.returnMode === "KEY_DROP" ? `Bei nachträglicher Kontrolle nach kontaktloser Rückgabe festgestellt: ${d.description}` : `Bei Rückgabe festgestellt: ${d.description}` });
     }
 
     // Kilometerstand erst jetzt fortschreiben, nie zurückdrehen
     if (mileage > vehicle.mileage) await tx.vehicle.update({ where: { id: vehicle.id }, data: { mileage } });
     await recordVehicleEvent(tx, { tenantId, vehicleId: h.vehicleId, type: h.type as "PICKUP" | "RETURN", occurredAt: now, mileage, bookingId: h.bookingId, handoverId: h.id, actor, description: `${h.type === "PICKUP" ? "Übergabe" : "Rückgabe"} ${h.number}` });
     await recordVehicleEvent(tx, { tenantId, vehicleId: h.vehicleId, type: "MILEAGE", occurredAt: now, mileage, bookingId: h.bookingId, handoverId: h.id, actor });
+
+    // Befehl 20.6: Kontrolle abgeschlossen – Kontrollzeitpunkt und Mitarbeiter getrennt von der Kundenmeldung; Link endgültig ungültig
+    if (h.type === "RETURN" && h.returnMode === "KEY_DROP" && h.keyDropId) {
+      await tx.keyDropAccess.updateMany({ where: { tenantId, keyDropId: h.keyDropId, revokedAt: null }, data: { revokedAt: now, revokedReason: "Kontrolle abgeschlossen" } });
+      await tx.keyDropReturn.update({ where: { id: h.keyDropId }, data: { status: "INSPECTED", inspectedAt: now, inspectedById: actor.id, inspectedByName: actor.name, exceptionReason: h.keyDropExceptionReason } });
+      await recordAudit(tx, tenantId, actor, { action: "KEY_DROP_INSPECTION_COMPLETED", bookingId: h.bookingId, details: { keyDropId: h.keyDropId, handoverNumber: h.number, withoutCustomerConfirmation: Boolean(h.keyDropExceptionReason) } });
+    }
 
     // Ganz zum Schluss versiegeln. Ab hier greifen die Sperren.
     return tx.handover.update({ where: { id: h.id }, data: { status: "FINALIZED", finalizedAt: now, contentHash: hash, wizardStep: HANDOVER_STEPS } });
