@@ -32,13 +32,14 @@ export type CustomerFormValues = {
   blockReason: string;
   discountPercent: string;
   notes: string;
+  legacyNumber: string;
 };
 
 export const emptyCustomer: CustomerFormValues = {
   type: "PRIVATE", companyName: "", firstName: "", lastName: "", email: "", phone: "", street: "", zip: "", city: "", country: "DE",
   birthDate: "", birthPlace: "", nationality: "deutsch", idType: "PERSONALAUSWEIS", idNumber: "", idIssuedBy: "", idIssuedAt: "", idValidUntil: "",
   licenseNumber: "", licenseClass: "B", licenseIssuedBy: "", licenseIssuedAt: "", licenseValidUntil: "",
-  blocked: false, blockReason: "", discountPercent: "0", notes: "",
+  blocked: false, blockReason: "", discountPercent: "0", notes: "", legacyNumber: "",
 };
 
 function H({ children }: { children: React.ReactNode }) {
@@ -151,7 +152,9 @@ export function CustomerFields({ values, prefix = "", compact = false, disabled 
           <Field label="Rabatt in %" htmlFor={n("discountPercent")} hint="Für Stammkunden, wird bei Buchungen abgezogen">
             <input id={n("discountPercent")} name={n("discountPercent")} type="number" min={0} max={100} defaultValue={v.discountPercent} className="input tnum" />
           </Field>
-          <div className="hidden md:block" />
+          <Field label="Alte Kundennummer" htmlFor={n("legacyNumber")} hint="Nur Referenz, z. B. aus der Vorsoftware">
+            <input id={n("legacyNumber")} name={n("legacyNumber")} defaultValue={v.legacyNumber} className="input font-mono" autoComplete="off" />
+          </Field>
           <div className="md:col-span-2 flex items-center gap-2">
             <input id={n("blocked")} name={n("blocked")} type="checkbox" checked={blocked} onChange={(e) => setBlocked(e.target.checked)} className="size-4" />
             <label htmlFor={n("blocked")} className="font-medium">Kunde gesperrt, keine neuen Buchungen möglich</label>

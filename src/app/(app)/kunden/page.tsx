@@ -22,7 +22,7 @@ function idChip(c: { idNumber: string | null; idValidUntil: Date | null }) {
 
 /** Kundenliste: Suche (Nummer, Name, Firma, E-Mail, Telefon – case-insensitiv, Telefon normalisiert) und Serverseiten. */
 export default async function CustomersPage({ searchParams }: PageProps<"/kunden">) {
-  const { tenant } = await requireSession();
+  const { tenant, user } = await requireSession();
   const params = await searchParams;
   const q = typeof params.q === "string" ? params.q.trim().slice(0, SEARCH_MAX) : "";
   const page = Math.max(1, parseInt(typeof params.seite === "string" ? params.seite : "1", 10) || 1);
@@ -50,6 +50,7 @@ export default async function CustomersPage({ searchParams }: PageProps<"/kunden
           <button className="btn">Suchen</button>
           {q && <Link href="/kunden" className="btn">Zurücksetzen</Link>}
         </form>
+        {user.role === "OWNER" && <Link href="/kunden/import" className="btn">Importieren</Link>}
         <Link href="/kunden/neu" className="btn btn-primary">+ Kunde</Link>
       </PageHeader>
       <Content>

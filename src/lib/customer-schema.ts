@@ -34,6 +34,7 @@ export const customerSchema = z
     blockReason: optStr,
     discountPercent: z.preprocess((v) => (v === "" || v === undefined ? 0 : v), z.coerce.number().int().min(0).max(100)),
     notes: optStr,
+    legacyNumber: optStr,
   })
   .refine((d) => d.type !== "COMPANY" || d.companyName, { message: "Bei Firmenkunden bitte den Firmennamen eingeben.", path: ["companyName"] });
 
@@ -69,6 +70,7 @@ export function customerToData(d: CustomerInput) {
     blockReason: d.blocked ? d.blockReason ?? null : null,
     discountPercent: d.discountPercent,
     notes: d.notes ?? null,
+    legacyNumber: d.legacyNumber ?? null,
   };
 }
 

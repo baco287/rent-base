@@ -33,5 +33,6 @@ export function customerToFormValues(c: Prisma.CustomerGetPayload<object>): Cust
     blockReason: c.blockReason ?? "",
     discountPercent: c.discountPercent.toString(),
     notes: c.notes ?? "",
+    legacyNumber: c.legacyNumber ?? "",
   };
 }

@@ -407,6 +407,7 @@ model Customer {
   id                String    @id @default(cuid())
   tenantId          String
   number            String? // Kundennummer, z. B. K-00001, fortlaufend je Mandant
+  legacyNumber      String? // Kundennummer aus der Alt-Software (Datenübernahme); nur Referenz, keine eigene Eindeutigkeit
   type              String    @default("PRIVATE") // PRIVATE | COMPANY
   companyName       String?
   firstName         String
@@ -448,6 +449,7 @@ model Customer {
   @@unique([tenantId, number])
   @@index([tenantId, lastName])
   @@index([tenantId, email])
+  @@index([tenantId, legacyNumber])
 }
 
 model Booking {
