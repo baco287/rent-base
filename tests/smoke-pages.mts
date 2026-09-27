@@ -36,6 +36,7 @@ import { setMailTransport, type MailMessage, type MailTransport } from "../src/l
 import { saveMailSettings } from "../src/lib/tenant-mail";
 import { authorizeKeyDrop, confirmKeyDrop, saveKeyDropSettings, sendKeyDropLink } from "../src/lib/key-drop";
 import { pickedUpWorld } from "./rental-flow";
+import { discardEmptyReturnDraft } from "../src/lib/handovers";
 
 const args = process.argv.slice(2);
 const keep = args.includes("--keep");
@@ -994,6 +995,29 @@ const kdStart = await plain(await fetch(`${base}/buchungen/${kdw.bookingId}/ruec
 report(kdStart.includes("Kontaktlos zurückgegeben – Kontrolle ausstehend") && kdStart.includes("Schlüsselbox-Rückgabe prüfen"), "Rückgabe: Kontrolle nach kontaktloser Rückgabe startbar");
 const kdDone = await plain(await fetch(`${base}/rueckgabe/${kdToken}`));
 report(kdDone.includes("Rückgabe gemeldet") && !kdDone.includes("Rückgabe verbindlich melden"), "Kundenseite nach Meldung: nur noch Eingangsbestätigung");
+
+// Befehl 20.6 (Nachbesserung): laufender Rückgabeentwurf – Grund sichtbar, leerer Entwurf verwerfbar (nur Inhaber/Disposition)
+const kdd = await pickedUpWorld("smoke-kd-draft");
+platformTenants.push(kdd.tenantId);
+await db.user.update({ where: { id: kdd.userId }, data: { role: "OWNER" } });
+await saveKeyDropSettings(kdd.tenantId, kdd.actor, { enabled: true, label: "Schlüsselbox" });
+const kddSession = randomBytes(32).toString("base64url");
+await db.session.create({ data: { id: kddSession, userId: kdd.userId, expiresAt: new Date(Date.now() + 3600_000) } });
+const kddYard = await db.user.create({ data: { tenantId: kdd.tenantId, email: `kdd-yard-${Date.now()}@example.test`, name: "Hof D", passwordHash: "x", role: "YARD" } });
+const kddYardSession = randomBytes(32).toString("base64url");
+await db.session.create({ data: { id: kddYardSession, userId: kddYard.id, expiresAt: new Date(Date.now() + 3600_000) } });
+const kddDraft = await startHandover(kdd.tenantId, kdd.bookingId, "RETURN", kdd.actor);
+const kddOwner = await plain(await fetch(`${base}/buchungen/${kdd.bookingId}`, { headers: { cookie: `rb_session=${kddSession}` } }));
+report(kddOwner.includes("bereits eine persönliche Rückgabe begonnen") && kddOwner.includes(kddDraft.number) && kddOwner.includes("Leeren Rückgabeentwurf verwerfen") && !kddOwner.includes("Kontaktlose Rückgabe vereinbaren"), "Laufender Rückgabeentwurf: Grund sichtbar, Inhaber kann leeren Entwurf verwerfen");
+const kddYardPage = await plain(await fetch(`${base}/buchungen/${kdd.bookingId}`, { headers: { cookie: `rb_session=${kddYardSession}` } }));
+report(kddYardPage.includes("bereits eine persönliche Rückgabe begonnen") && !kddYardPage.includes("Leeren Rückgabeentwurf verwerfen") && !kddYardPage.includes("Kontaktlose Rückgabe vereinbaren"), "Hofmitarbeiter: sieht den Grund, kann nicht verwerfen und nicht vereinbaren");
+await updateHandoverDraft(kdd.tenantId, kddDraft.id, { mileage: 45_300 });
+const kddFilled = await plain(await fetch(`${base}/buchungen/${kdd.bookingId}`, { headers: { cookie: `rb_session=${kddSession}` } }));
+report(kddFilled.includes("kann nicht verworfen werden") && !kddFilled.includes("Leeren Rückgabeentwurf verwerfen"), "Nicht leerer Rückgabeentwurf: kein Verwerfen, Hinweis auf persönliche Rückgabe");
+await db.handover.update({ where: { id: kddDraft.id }, data: { mileage: null } });
+await discardEmptyReturnDraft(kdd.tenantId, kdd.bookingId, kddDraft.id, kdd.actor);
+const kddAfter = await plain(await fetch(`${base}/buchungen/${kdd.bookingId}`, { headers: { cookie: `rb_session=${kddSession}` } }));
+report(kddAfter.includes("Kontaktlose Rückgabe vereinbaren") && !kddAfter.includes("bereits eine persönliche Rückgabe begonnen"), "Nach dem Verwerfen: kontaktlose Rückgabe vereinbar");
 
 const settingsWithCards = await plain(await fetch(`${base}/einstellungen`, { headers: { cookie } }));
 report(settingsWithCards.includes("E-Mail-Versand einrichten") && settingsWithCards.includes("Logo ersetzen") && settingsWithCards.includes("Website (optional)"), "Einstellungen: E-Mail-Versand, Logo und Website");

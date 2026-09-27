@@ -8,7 +8,8 @@ import { keyDropForBooking, keyDropSettingsOf, keyDropStatusLabel, nextBookingOf
 import { isValidEmail } from "@/lib/mail";
 import { fmtDateTime, fmtInt } from "@/lib/format";
 import { toDateTimeInputValue } from "@/lib/time";
-import { KeyDropAuthorizeForm, KeyDropCancelForm, KeyDropRevokeButton, KeyDropSendButton } from "./key-drop-forms";
+import { DiscardEmptyReturnDraftButton, KeyDropAuthorizeForm, KeyDropCancelForm, KeyDropRevokeButton, KeyDropSendButton } from "./key-drop-forms";
+import { returnDraftBlockers } from "@/lib/handovers";
 
 type Props = { tenantId: string; booking: { id: string; status: string; endAt: Date; vehicleId: string }; role: string; supportMode: boolean; returnStarted: boolean };
 
@@ -24,6 +25,9 @@ export async function KeyDropPanel({ tenantId, booking, role, supportMode, retur
   const senderIds = [...new Set(mails.map((m) => m.createdById).filter((x): x is string => !!x))];
   const senders = new Map((await db.user.findMany({ where: { tenantId, id: { in: senderIds } }, select: { id: true, name: true } })).map((u) => [u.id, u.name]));
   const next = kd && kd.status !== "INSPECTED" ? await nextBookingOfVehicle(tenantId, booking.vehicleId, booking.id) : null;
+  // Befehl 20.6 (Nachbesserung): läuft bereits eine persönliche Rückgabe, den Grund zeigen und – falls leer – Verwerfen anbieten
+  const returnDraft = !kd && returnStarted ? await db.handover.findFirst({ where: { tenantId, bookingId: booking.id, type: "RETURN", status: "DRAFT", correctsId: null }, select: { id: true, number: true, startedAt: true, employeeName: true } }) : null;
+  const draftBlockers = returnDraft ? await returnDraftBlockers(db, tenantId, returnDraft.id) : [];
   const tone = !kd ? "grey" : kd.status === "CUSTOMER_CONFIRMED" ? "amber" : kd.status === "INSPECTED" ? "good" : "info";
 
   return (
@@ -32,6 +36,16 @@ export async function KeyDropPanel({ tenantId, booking, role, supportMode, retur
         {!kd && (
           <>
             <p className="text-ink-2">Nicht vereinbart. Die Rückgabe läuft persönlich über „Rückgabe starten“.</p>
+            {returnDraft && (
+              <div className="rounded-md bg-amber-soft text-amber px-3 py-2 flex flex-col gap-2">
+                <p className="font-medium">Für diese Miete wurde bereits eine persönliche Rückgabe begonnen ({returnDraft.number}, am {fmtDateTime(returnDraft.startedAt)} von {returnDraft.employeeName}). Eine kontaktlose Rückgabe kann nur vereinbart werden, solange keine Rückgabe läuft.</p>
+                {draftBlockers.length === 0 ? (
+                  canManage ? <DiscardEmptyReturnDraftButton bookingId={booking.id} handoverId={returnDraft.id} number={returnDraft.number} /> : <p className="text-xs">Der Entwurf ist noch leer. Verwerfen kann ihn Inhaber oder Disposition.</p>
+                ) : (
+                  <p className="text-xs">Der Entwurf enthält bereits Rückgabedaten ({draftBlockers.join(" ")}) und kann nicht verworfen werden. Bitte die Rückgabe persönlich abschließen.</p>
+                )}
+              </div>
+            )}
             {canManage && !returnStarted && <KeyDropAuthorizeForm bookingId={booking.id} defaults={{ expectedReturnAt: toDateTimeInputValue(booking.endAt), instructions: settings.defaultInstructions ?? "", label: settings.label }} />}
             {canManage && <p className="text-xs text-ink-3">{KEY_DROP_LEGAL_HINT}</p>}
           </>

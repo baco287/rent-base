@@ -322,10 +322,10 @@ test("Mandantentrennung, Rollen und Sicherheit im Code", async () => {
   const read = (p: string) => readFileSync(path.join(process.cwd(), p), "utf8");
   const actions = read("src/app/(app)/buchungen/[id]/key-drop-actions.ts");
   const bodies = [...actions.matchAll(/export async function (\w+)[\s\S]*?\n}/g)];
-  assert.equal(bodies.length, 4);
+  assert.equal(bodies.length, 5);
   for (const m of bodies) {
     assert.match(m[0], /requireRole\("DISPO"\)/, `${m[1]}: nur Inhaber/Disposition (kein Hofmitarbeiter, kein Supportmodus)`);
-    if (m[1] !== "authorizeKeyDropAction") assert.match(m[0], /ownKeyDrop\(tenant\.id, bookingId, keyDropId\)/, `${m[1]}: gehört zum Mandanten und zur Buchung`);
+    if (m[1] !== "authorizeKeyDropAction" && m[1] !== "discardEmptyReturnDraftAction") assert.match(m[0], /ownKeyDrop\(tenant\.id, bookingId, keyDropId\)/, `${m[1]}: gehört zum Mandanten und zur Buchung`);
   }
   assert.match(read("src/app/(app)/buchungen/[id]/rueckgabe/actions.ts"), /export async function startKeyDropExceptionAction[\s\S]*?requireRole\("DISPO"\)/, "Ausnahme nur Inhaber/Disposition");
   assert.match(read("src/app/(app)/einstellungen/geschaeftsregeln/actions.ts"), /export async function updateKeyDropSettingsAction[\s\S]*?requireRole\("OWNER"\)/, "Einstellung nur Inhaber");
@@ -406,4 +406,88 @@ test("Kontrolle mit Abweichungen: Hinweise blockieren nicht; Mietende nur mit Gr
 test("Korrektur des Mietendes nur Inhaber/Disposition (Code)", () => {
   const src = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/rueckgabe/actions.ts"), "utf8");
   assert.match(src, /export async function setReturnTimeOverrideAction[\s\S]*?requireRole\("DISPO"\)/);
+});
+
+// ---------------------------------------------------------------------------
+// Nachbesserung: leeren Rückgabeentwurf verwerfen
+// ---------------------------------------------------------------------------
+
+test("Leerer Rückgabeentwurf: nur wirklich leer verwerfbar, protokolliert, danach kontaktlose Rückgabe vereinbar", async () => {
+  const { discardEmptyReturnDraft, returnDraftBlockers, setHandoverStep, addNewDamage: addDamage } = await import("../src/lib/handovers");
+  const { addManualCharge } = await import("../src/lib/returns");
+  const w = await world("kd-discard");
+  const draft = await startHandover(w.tenantId, w.bookingId, "RETURN", w.actor);
+  await setHandoverStep(w.tenantId, draft.id, 3); // reine Navigation zählt nicht als Daten
+  assert.deepEqual(await returnDraftBlockers(db, w.tenantId, draft.id), []);
+  await assert.rejects(agree(w), /bereits begonnen/, "solange der Entwurf besteht: keine Vereinbarung");
+  const templates = await db.handoverChecklistItem.count({ where: { handoverId: draft.id } });
+  assert.ok(templates > 0, "Vorlagen wurden beim Start kopiert");
+  await discardEmptyReturnDraft(w.tenantId, w.bookingId, draft.id, w.actor);
+  assert.equal(await db.handover.count({ where: { id: draft.id } }), 0);
+  const audit = await db.auditLog.findFirstOrThrow({ where: { tenantId: w.tenantId, action: "RETURN_DRAFT_DISCARDED" } });
+  assert.match(JSON.stringify(audit.details), new RegExp(draft.number));
+  assert.equal(audit.bookingId, w.bookingId);
+  assert.equal((await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } })).status, "ACTIVE", "Miete läuft weiter");
+  const kd = await agree(w);
+  assert.equal(kd.status, "AUTHORIZED", "danach vereinbar");
+  await assert.rejects(discardEmptyReturnDraft(w.tenantId, w.bookingId, draft.id, w.actor), /nicht gefunden/, "zweites Verwerfen: nichts mehr da");
+
+  // Jede Art fachlicher Daten macht den Entwurf „nicht leer“ – und bleibt beim Versuch vollständig erhalten
+  const cases: [string, (tenantId: string, id: string) => Promise<unknown>, RegExp][] = [
+    ["Kilometer", (t, id) => updateHandoverDraft(t, id, { mileage: 45_300 }), /Kilometerstand erfasst/],
+    ["Tank", (t, id) => updateHandoverDraft(t, id, { fuelLevelEighths: 5 }), /Tankstand erfasst/],
+    ["Bemerkung", (t, id) => updateHandoverDraft(t, id, { notes: "Kratzer gesehen" }), /Bemerkung erfasst/],
+    ["Checkliste", async (t, id) => { const item = await db.handoverChecklistItem.findFirstOrThrow({ where: { handoverId: id, answerType: { not: "TEXT" } } }); await answerChecklist(t, id, [{ itemId: item.id, result: item.answerType === "YES_NO" ? "YES" : "OK" }]); }, /Checkliste bereits bearbeitet/],
+    ["Foto", async (t, id) => { const key = buildStorageKey({ tenantId: t, area: "photos", contentType: "image/jpeg" }); await registerPhoto(t, { id: "x", name: "x" }, { handoverId: id, storageKey: key, category: "FRONT", contentType: "image/jpeg", sizeBytes: 10, checksum: sha256(key) }); }, /Fotos vorhanden/],
+    ["Schaden", (t, id) => addDamage(t, id, { view: "LEFT", posX: 0.5, posY: 0.5, kind: "SCRATCH", severity: "MINOR", description: "neu" }), /Neue Schäden erfasst/],
+    ["Zusatzkosten", (t, id) => addManualCharge(t, id, null, { type: "CLEANING", description: "Reinigung", quantity: 1, unit: "pauschal", unitPrice: 20 }), /Zusatzkosten erfasst/],
+    ["Unterschrift", async (t, id) => saveHandoverSignature(t, null, id, { role: "EMPLOYEE", signerName: "Mitarbeiter", imageDataUrl: fakeSignaturePng(), seenHash: await getHandoverContentHash(t, id) }), /Unterschriften vorhanden/],
+  ];
+  for (const [label, fill, expected] of cases) {
+    const x = await world(`kd-nd-${label}`);
+    const d = await startHandover(x.tenantId, x.bookingId, "RETURN", x.actor);
+    await fill(x.tenantId, d.id);
+    const blockers = await returnDraftBlockers(db, x.tenantId, d.id);
+    assert.ok(blockers.some((b) => expected.test(b)), `${label}: ${blockers.join(" ")}`);
+    const before = { photos: await db.photo.count({ where: { handoverId: d.id } }), items: await db.handoverChecklistItem.count({ where: { handoverId: d.id } }) };
+    await assert.rejects(discardEmptyReturnDraft(x.tenantId, x.bookingId, d.id, x.actor), /nicht leer/, `${label}: nicht verwerfbar`);
+    assert.equal(await db.handover.count({ where: { id: d.id } }), 1, `${label}: Entwurf bleibt`);
+    assert.deepEqual({ photos: await db.photo.count({ where: { handoverId: d.id } }), items: await db.handoverChecklistItem.count({ where: { handoverId: d.id } }) }, before, `${label}: nichts gelöscht`);
+  }
+});
+
+test("Verwerfen: nie bei kontaktloser Kontrolle, fremder Buchung/Mandant; Race mit Eingabe konsistent", async () => {
+  const { discardEmptyReturnDraft } = await import("../src/lib/handovers");
+  // Kontrolle einer kontaktlosen Rückgabe ist kein „leerer persönlicher Entwurf“
+  const k = await world("kd-discard-kd");
+  const kd = await agree(k);
+  const { token } = await sendLink(k, kd.id);
+  await confirmKeyDrop(token!, confirmInput());
+  const insp = await startHandover(k.tenantId, k.bookingId, "RETURN", k.actor);
+  await assert.rejects(discardEmptyReturnDraft(k.tenantId, k.bookingId, insp.id, k.actor), /kontaktlosen Rückgabe/);
+  // anderer Mandant / andere Buchung
+  const a = await world("kd-discard-a");
+  const b = await world("kd-discard-b");
+  const da = await startHandover(a.tenantId, a.bookingId, "RETURN", a.actor);
+  await assert.rejects(discardEmptyReturnDraft(b.tenantId, b.bookingId, da.id, b.actor), /nicht gefunden/);
+  await assert.rejects(discardEmptyReturnDraft(a.tenantId, b.bookingId, da.id, a.actor), /nicht gefunden/);
+  assert.equal(await db.handover.count({ where: { id: da.id } }), 1);
+  // Race: Verwerfen gleichzeitig mit einer Eingabe im Assistenten – nie eine verlorene Eingabe
+  for (let i = 0; i < 3; i++) {
+    const r = await world(`kd-race-${i}`);
+    const d = await startHandover(r.tenantId, r.bookingId, "RETURN", r.actor);
+    const [dis, upd] = await Promise.allSettled([discardEmptyReturnDraft(r.tenantId, r.bookingId, d.id, r.actor), updateHandoverDraft(r.tenantId, d.id, { mileage: 45_400 })]);
+    const still = await db.handover.findUnique({ where: { id: d.id } });
+    if (dis.status === "fulfilled") assert.ok(!still && upd.status === "rejected", "verworfen: Eingabe danach abgelehnt, nichts halb gespeichert");
+    else assert.ok(still?.mileage === 45_400 && upd.status === "fulfilled", "Eingabe zuerst: Entwurf bleibt mit Wert");
+  }
+});
+
+test("Verwerfen nur Inhaber/Disposition; Hofmitarbeiter sieht nur den Grund (Code)", () => {
+  const actions = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/key-drop-actions.ts"), "utf8");
+  assert.match(actions, /export async function discardEmptyReturnDraftAction[\s\S]*?requireRole\("DISPO"\)/);
+  const panel = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/key-drop-panel.tsx"), "utf8");
+  assert.match(panel, /canManage \? <DiscardEmptyReturnDraftButton/, "Knopf nur für canManage (nicht YARD, nicht Supportmodus)");
+  assert.match(panel, /const canManage = role !== "YARD" && !supportMode/);
+  assert.match(panel, /bereits eine persönliche Rückgabe begonnen/, "Grund wird allen angezeigt");
 });

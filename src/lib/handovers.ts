@@ -356,6 +356,86 @@ export async function setReturnTimeOverride(tenantId: string, handoverId: string
   }, TX);
 }
 
+// ---------------------------------------------------------------------------
+// Befehl 20.6 (Nachbesserung): leeren Rückgabeentwurf verwerfen
+// ---------------------------------------------------------------------------
+
+/**
+ * „Leer“ heißt: ein persönlicher Rückgabeentwurf, in dem noch NICHTS fachlich erfasst wurde. Geprüft wird jede Stelle,
+ * an der eine Rückgabe Daten tragen kann – ist auch nur eine davon belegt, ist der Entwurf nicht leer:
+ * Kilometer, Tank, Batterie, Literpreis, Zubehör, Bemerkung; beantwortete oder kommentierte Checklistenpunkte; neu erfasste
+ * Schäden; Fotos; Zusatzkosten; Unterschriften; Dokumente; Fahrzeughistorie; in die Schadenakte übernommene Schäden;
+ * Schadenakten; Rechnungen; Fahrerprüfungen/Dokumentkopien; Nachträge; Rückgabeart-Bezug (kontaktlos, Korrektur).
+ * Nicht als Daten zählen nur die beim Start automatisch kopierten Vorlagen (unbeantwortete Checkliste, Kopien bereits
+ * bekannter Schäden) und die reine Schrittnavigation.
+ */
+export async function returnDraftBlockers(client: Tx | typeof db, tenantId: string, handoverId: string): Promise<string[]> {
+  const h = await client.handover.findFirst({ where: { id: handoverId, tenantId } });
+  if (!h) return ["Protokoll nicht gefunden."];
+  const out: string[] = [];
+  if (h.type !== "RETURN") out.push("Kein Rückgabeprotokoll.");
+  if (h.status !== "DRAFT") out.push("Die Rückgabe ist bereits abgeschlossen.");
+  if (h.correctsId) out.push("Nachtragsprotokoll.");
+  if (h.returnMode === "KEY_DROP" || h.keyDropId || h.keyDropExceptionReason || h.returnTimeOverrideAt) out.push("Kontrolle einer kontaktlosen Rückgabe.");
+  if (h.mileage != null) out.push("Kilometerstand erfasst.");
+  if (h.fuelLevelEighths != null) out.push("Tankstand erfasst.");
+  if (h.batteryPercent != null) out.push("Batteriestand erfasst.");
+  if (h.fuelPricePerLiter != null) out.push("Literpreis erfasst.");
+  if (h.accessories != null) out.push("Zubehör erfasst.");
+  if (h.notes && h.notes.trim()) out.push("Bemerkung erfasst.");
+  const w = { tenantId, handoverId };
+  const [answered, newDamages, photos, charges, signatures, documents, events, discovered, cases, invoices, verifications, copies, corrections] = await Promise.all([
+    client.handoverChecklistItem.count({ where: { ...w, OR: [{ result: { not: null } }, { note: { not: null } }] } }),
+    client.handoverDamage.count({ where: { ...w, OR: [{ marker: "NEW" }, { damageId: null, marker: { not: "EXISTING" } }] } }),
+    client.photo.count({ where: w }),
+    client.extraCharge.count({ where: w }),
+    client.signature.count({ where: w }),
+    client.document.count({ where: w }),
+    client.vehicleEvent.count({ where: w }),
+    client.damage.count({ where: { tenantId, discoveredInHandoverId: handoverId } }),
+    client.damageCase.count({ where: { tenantId, returnHandoverId: handoverId } }),
+    client.invoice.count({ where: { tenantId, returnHandoverId: handoverId } }),
+    client.driverVerification.count({ where: w }),
+    client.driverDocumentCopy.count({ where: w }),
+    client.handover.count({ where: { tenantId, correctsId: handoverId } }),
+  ]);
+  if (answered > 0) out.push("Checkliste bereits bearbeitet.");
+  if (newDamages > 0) out.push("Neue Schäden erfasst.");
+  if (photos > 0) out.push("Fotos vorhanden.");
+  if (charges > 0) out.push("Zusatzkosten erfasst.");
+  if (signatures > 0) out.push("Unterschriften vorhanden.");
+  if (documents > 0) out.push("Dokumente vorhanden.");
+  if (events > 0 || discovered > 0 || cases > 0 || invoices > 0) out.push("Folgedaten zu diesem Protokoll vorhanden.");
+  if (verifications > 0 || copies > 0) out.push("Prüfdaten vorhanden.");
+  if (corrections > 0) out.push("Nachträge vorhanden.");
+  return out;
+}
+
+/**
+ * Verwirft einen LEEREN persönlichen Rückgabeentwurf (danach ist z. B. die kontaktlose Rückgabe vereinbar).
+ * Nur Inhaber/Disposition (Aufrufer prüft die Rolle). Unter Zeilensperren (Buchung, Protokoll, Checkliste, Schadenkopien)
+ * wird die Leere erneut geprüft – parallele Eingaben im Assistenten gewinnen, dann wird nichts verworfen.
+ * Gelöscht werden ausschließlich das leere Protokoll und seine automatisch kopierten Vorlagen; die Nummer bleibt frei.
+ */
+export async function discardEmptyReturnDraft(tenantId: string, bookingId: string, handoverId: string, actor: Actor) {
+  return db.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Booking" WHERE "id" = ${bookingId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+    if (locked.length === 0) throw new DomainError("Buchung nicht gefunden.");
+    const rows = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Handover" WHERE "id" = ${handoverId} AND "tenantId" = ${tenantId} AND "bookingId" = ${bookingId} FOR UPDATE`;
+    if (rows.length === 0) throw new DomainError("Rückgabeentwurf nicht gefunden.");
+    await tx.$queryRaw`SELECT "id" FROM "HandoverChecklistItem" WHERE "handoverId" = ${handoverId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "HandoverDamage" WHERE "handoverId" = ${handoverId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+    const blockers = await returnDraftBlockers(tx, tenantId, handoverId);
+    if (blockers.length > 0) throw new DomainError(`Der Rückgabeentwurf ist nicht leer und wird nicht verworfen: ${blockers.join(" ")}`);
+    const h = await tx.handover.findUniqueOrThrow({ where: { id: handoverId } });
+    const checklist = await tx.handoverChecklistItem.deleteMany({ where: { tenantId, handoverId } });
+    const copies = await tx.handoverDamage.deleteMany({ where: { tenantId, handoverId } });
+    await tx.handover.delete({ where: { id: handoverId } });
+    await recordAudit(tx, tenantId, actor, { action: "RETURN_DRAFT_DISCARDED", bookingId, details: { handoverNumber: h.number, startedAt: h.startedAt.toISOString(), startedBy: h.employeeName, checklistTemplateItems: checklist.count, copiedDamages: copies.count } });
+    return { number: h.number };
+  }, TX);
+}
+
 export async function setHandoverStep(tenantId: string, handoverId: string, step: number) {
   await db.handover.updateMany({ where: { id: handoverId, tenantId, status: "DRAFT" }, data: { wizardStep: Math.min(HANDOVER_STEPS, Math.max(1, Math.round(step))) } });
 }

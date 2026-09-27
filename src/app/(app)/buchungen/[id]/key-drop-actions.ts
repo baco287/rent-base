@@ -9,6 +9,7 @@ import { requireRole } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { DomainError, isImmutableError } from "@/lib/integrity";
 import { authorizeKeyDrop, cancelKeyDrop, revokeKeyDropLink, sendKeyDropLink } from "@/lib/key-drop";
+import { discardEmptyReturnDraft } from "@/lib/handovers";
 import { requestBaseUrl } from "@/lib/request-url";
 import { parseLocalDateTime } from "@/lib/time";
 
@@ -74,4 +75,15 @@ export async function cancelKeyDropAction(bookingId: string, keyDropId: string, 
   } catch (e) { return asState(e); }
   refresh(bookingId);
   return { ok: "Kontaktlose Rückgabe aufgehoben. Die normale Rückgabe ist wieder möglich." };
+}
+
+/** Leeren Rückgabeentwurf verwerfen (Befehl 20.6, Nachbesserung). Nur Inhaber/Disposition; der Server prüft die Leere erneut. */
+export async function discardEmptyReturnDraftAction(bookingId: string, handoverId: string, _prev: KeyDropState, _fd: FormData): Promise<KeyDropState> {
+  void _fd;
+  const { tenant, user } = await requireRole("DISPO");
+  try {
+    const res = await discardEmptyReturnDraft(tenant.id, bookingId, handoverId, { id: user.id, name: user.name });
+    refresh(bookingId);
+    return { ok: `Leerer Rückgabeentwurf ${res.number} verworfen. Die kontaktlose Rückgabe kann jetzt vereinbart werden.` };
+  } catch (e) { return asState(e); }
 }

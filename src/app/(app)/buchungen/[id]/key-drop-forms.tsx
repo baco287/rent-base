@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
-import { authorizeKeyDropAction, cancelKeyDropAction, revokeKeyDropLinkAction, sendKeyDropLinkAction, type KeyDropState } from "./key-drop-actions";
+import { authorizeKeyDropAction, cancelKeyDropAction, discardEmptyReturnDraftAction, revokeKeyDropLinkAction, sendKeyDropLinkAction, type KeyDropState } from "./key-drop-actions";
 
 function Msg({ state }: { state: KeyDropState }) {
   if (state?.error) return <p className="text-sm text-bad bg-bad-soft rounded-md px-3 py-2">{state.error}</p>;
@@ -66,5 +66,15 @@ export function KeyDropCancelForm({ bookingId, keyDropId }: { bookingId: string;
         <div><button disabled={pending} className="btn btn-danger">{pending ? "Wird aufgehoben…" : "Vereinbarung aufheben"}</button></div>
       </form>
     </details>
+  );
+}
+
+export function DiscardEmptyReturnDraftButton({ bookingId, handoverId, number }: { bookingId: string; handoverId: string; number: string }) {
+  const [state, action, pending] = useActionState<KeyDropState, FormData>(discardEmptyReturnDraftAction.bind(null, bookingId, handoverId), undefined);
+  return (
+    <form action={action} onSubmit={(e) => { if (!window.confirm(`Leeren Rückgabeentwurf ${number} verwerfen? Es wurden darin noch keine Rückgabedaten erfasst. Danach kann die kontaktlose Rückgabe vereinbart werden. Das Verwerfen wird protokolliert.`)) e.preventDefault(); }} className="flex flex-col gap-2">
+      <div><button disabled={pending} className="btn">{pending ? "Wird verworfen…" : "Leeren Rückgabeentwurf verwerfen"}</button></div>
+      <Msg state={state} />
+    </form>
   );
 }
