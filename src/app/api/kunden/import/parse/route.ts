@@ -1,12 +1,14 @@
 // Liest die hochgeladene Datei (CSV/Excel) serverseitig ein und liefert Kopfzeile, Zeilen und einen Vorschlag für die
 // Spaltenzuordnung zurück. Nur OWNER, da ein Massenimport weitreichend ist. Kein dauerhafter Upload: die Datei wird
 // nur für diese Anfrage geparst, nichts wird gespeichert.
-import { apiSession } from "@/lib/auth";
+import { apiSession, featureForApi } from "@/lib/auth";
 import { IMPORT_FIELDS, IMPORT_MAX_FILE_BYTES, IMPORT_MAX_ROWS, parseImportFile, suggestColumnMapping } from "@/lib/customer-import";
 
 export async function POST(req: Request) {
   const session = await apiSession("write");
   if (session instanceof Response) return session;
+  const featureBlocked = await featureForApi(session, "CUSTOMER_IMPORT");
+  if (featureBlocked) return featureBlocked;
   if (session.user.role !== "OWNER") return Response.json({ error: "Nur Inhaber können Kunden importieren." }, { status: 403 });
 
   const form = await req.formData().catch(() => null);

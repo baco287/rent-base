@@ -1,6 +1,6 @@
 // Posteingang: Behördenschreiben vor dem Anlegen eines Vorgangs hochladen. Die Datei wird privat gespeichert, bei PDFs mit
 // Textebene werden Vorschläge für das Erfassungsformular erkannt (lokal, ohne externen Dienst). OWNER und DISPO.
-import { apiSession } from "@/lib/auth";
+import { apiSession, featureForApi } from "@/lib/auth";
 import { roleAllows } from "@/lib/constants";
 import { DomainError } from "@/lib/integrity";
 import { uploadAuthorityLetter } from "@/lib/authority-intake";
@@ -11,6 +11,8 @@ const json = (status: number, body: Record<string, unknown>) => Response.json(bo
 export async function POST(req: Request) {
   const session = await apiSession("write");
   if (session instanceof Response) return session;
+  const featureBlocked = await featureForApi(session, "AUTHORITIES");
+  if (featureBlocked) return featureBlocked;
   if (!roleAllows(session.user.role, ["DISPO"])) return json(403, { error: "Behördenschreiben erfasst die Disposition." });
   let form: FormData;
   try {

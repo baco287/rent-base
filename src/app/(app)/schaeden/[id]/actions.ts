@@ -7,7 +7,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requireFeature, requireRole } from "@/lib/auth";
 import { DAMAGE_CASE_PRIORITY, DAMAGE_CASE_STATUS, DAMAGE_TAX_TREATMENTS, LIABILITY_STATUS } from "@/lib/constants";
 import { addCaseNote, blockVehicleForCase, changeCaseStatus, chargeCustomer, closeCase, openDamageCase, releaseVehicleForCase, reopenCase, setCaseCosts, setCasePriority, setCaseRepair, setInternalNote, setLiability } from "@/lib/damage-cases";
 import { DomainError, isImmutableError } from "@/lib/integrity";
@@ -20,6 +20,7 @@ const keys = <T extends object>(o: T) => Object.keys(o) as [string, ...string[]]
 
 async function ctx(caseId: string, ...roles: ("DISPO" | "YARD")[]) {
   const { tenant, user } = roles.length ? await requireRole(...roles) : await requireRole("DISPO");
+  await requireFeature("DAMAGE_CASES");
   const c = await db.damageCase.findFirst({ where: { id: caseId, tenantId: tenant.id }, select: { id: true, bookingId: true, vehicleId: true } });
   if (!c) return null;
   return { tenant, user, c, actor: { id: user.id, name: user.name } };
@@ -41,6 +42,7 @@ function asState(e: unknown): CaseState {
 export async function openDamageCaseAction(damageId: string, _prev: CaseState, _fd: FormData): Promise<CaseState> {
   void _fd;
   const { tenant, user } = await requireRole("DISPO", "YARD");
+  await requireFeature("DAMAGE_CASES");
   let target: string;
   try {
     const { damageCase } = await openDamageCase(tenant.id, damageId, { id: user.id, name: user.name });

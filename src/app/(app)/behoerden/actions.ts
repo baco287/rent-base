@@ -10,7 +10,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requireFeature, requireRole } from "@/lib/auth";
 import { AUTHORITY_CASE_TYPES, AUTHORITY_RESPONSE_TYPES, SUBMISSION_METHODS } from "@/lib/constants";
 import { DomainError, isImmutableError } from "@/lib/integrity";
 import { addAuthorityNote, approveResponse, archiveAuthorityDocument, assignBooking, assignVehicle, cancelAuthorityCase, closeAuthorityCase, createAuthorityCase, prepareResponse, rematchCase, reopenAuthorityCase, setDriver, setInternalNote, submitResponse, updateAuthorityCase, type CaseInput } from "@/lib/authority";
@@ -46,6 +46,7 @@ function asState(e: unknown): AuthState {
 /** Nur OWNER/DISPO; liefert den Vorgang des eigenen Mandanten. */
 async function ctx(caseId: string) {
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("AUTHORITIES");
   const c = await db.authorityCase.findFirst({ where: { id: caseId, tenantId: tenant.id }, select: { id: true, vehicleId: true, bookingId: true, driverCustomerId: true } });
   if (!c) return null;
   return { tenant, user, c, actor: { id: user.id, name: user.name } };
@@ -84,6 +85,7 @@ function toInput(d: z.infer<typeof caseSchema>): CaseInput {
 /** Schreiben manuell erfassen – danach automatische Zuordnung; leitet zum Vorgang weiter. */
 export async function createCaseAction(_prev: AuthState, fd: FormData): Promise<AuthState> {
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("AUTHORITIES");
   const p = caseSchema.safeParse(Object.fromEntries(fd));
   if (!p.success) return { error: p.error.issues[0].message };
   let id: string;
@@ -403,6 +405,7 @@ const contactSchema = z.object({ name: z.string().trim().min(2, "Bitte den Namen
 
 export async function updateContactAction(contactId: string, _prev: AuthState, fd: FormData): Promise<AuthState> {
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("AUTHORITIES");
   const p = contactSchema.safeParse(Object.fromEntries(fd));
   if (!p.success) return { error: p.error.issues[0].message };
   try {
@@ -417,6 +420,7 @@ export async function updateContactAction(contactId: string, _prev: AuthState, f
 export async function deleteContactAction(contactId: string, _prev: AuthState, _fd: FormData): Promise<AuthState> {
   void _fd;
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("AUTHORITIES");
   try {
     await deleteContact(tenant.id, contactId, { id: user.id, name: user.name });
     revalidatePath("/behoerden/einstellungen");
@@ -431,6 +435,7 @@ const reminderSchema = z.object({ days: z.coerce.number().int().min(0).max(30), 
 /** Fristen-Erinnerung: Tage vor Ablauf (0 = aus) und optional eine feste Empfängeradresse. Nur Inhaber. */
 export async function saveReminderSettingsAction(_prev: AuthState, fd: FormData): Promise<AuthState> {
   const { tenant, user } = await requireRole("OWNER");
+  await requireFeature("AUTHORITIES");
   const p = reminderSchema.safeParse(Object.fromEntries(fd));
   if (!p.success) return { error: "Bitte eine Zahl zwischen 0 und 30 angeben." };
   const email = p.data.email?.trim() || null;
@@ -447,6 +452,7 @@ export async function saveReminderSettingsAction(_prev: AuthState, fd: FormData)
 export async function sendReminderNowAction(_prev: AuthState, _fd: FormData): Promise<AuthState> {
   void _fd;
   const { tenant } = await requireRole("OWNER");
+  await requireFeature("AUTHORITIES");
   const res = await sendAuthorityReminders({ tenantId: tenant.id });
   if (res.length === 0) return { error: "Die Erinnerung ist ausgeschaltet." };
   if (res.some((r) => r.status === "NOTHING_DUE")) return { ok: "Heute steht keine Frist an – es wurde nichts gesendet." };

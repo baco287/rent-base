@@ -5,7 +5,7 @@
 // Der Mandant kommt aus der Sitzung; jede Aktion prüft zusätzlich, dass die Rückgabe zu dieser Buchung gehört.
 
 import { revalidatePath } from "next/cache";
-import { requireRole } from "@/lib/auth";
+import { requireFeature, requireRole } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { DomainError, isImmutableError } from "@/lib/integrity";
 import { authorizeKeyDrop, cancelKeyDrop, revokeKeyDropLink, sendKeyDropLink } from "@/lib/key-drop";
@@ -31,6 +31,7 @@ const refresh = (bookingId: string) => { revalidatePath(`/buchungen/${bookingId}
 
 export async function authorizeKeyDropAction(bookingId: string, _prev: KeyDropState, fd: FormData): Promise<KeyDropState> {
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("KEY_DROP");
   try {
     await authorizeKeyDrop(tenant.id, { id: user.id, name: user.name }, bookingId, {
       location: String(fd.get("location") ?? ""),
@@ -46,6 +47,7 @@ export async function authorizeKeyDropAction(bookingId: string, _prev: KeyDropSt
 
 export async function sendKeyDropLinkAction(bookingId: string, keyDropId: string, _prev: KeyDropState, fd: FormData): Promise<KeyDropState> {
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("KEY_DROP");
   try {
     await ownKeyDrop(tenant.id, bookingId, keyDropId);
     const res = await sendKeyDropLink(tenant.id, { id: user.id, name: user.name }, keyDropId, { nonce: String(fd.get("nonce") ?? ""), baseUrl: await requestBaseUrl() });
@@ -59,6 +61,7 @@ export async function sendKeyDropLinkAction(bookingId: string, keyDropId: string
 export async function revokeKeyDropLinkAction(bookingId: string, keyDropId: string, _prev: KeyDropState, _fd: FormData): Promise<KeyDropState> {
   void _fd;
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("KEY_DROP");
   try {
     await ownKeyDrop(tenant.id, bookingId, keyDropId);
     const n = await revokeKeyDropLink(tenant.id, { id: user.id, name: user.name }, keyDropId);
@@ -69,6 +72,7 @@ export async function revokeKeyDropLinkAction(bookingId: string, keyDropId: stri
 
 export async function cancelKeyDropAction(bookingId: string, keyDropId: string, _prev: KeyDropState, fd: FormData): Promise<KeyDropState> {
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("KEY_DROP");
   try {
     await ownKeyDrop(tenant.id, bookingId, keyDropId);
     await cancelKeyDrop(tenant.id, { id: user.id, name: user.name }, keyDropId, String(fd.get("reason") ?? ""));
@@ -81,6 +85,7 @@ export async function cancelKeyDropAction(bookingId: string, keyDropId: string, 
 export async function discardEmptyReturnDraftAction(bookingId: string, handoverId: string, _prev: KeyDropState, _fd: FormData): Promise<KeyDropState> {
   void _fd;
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("KEY_DROP");
   try {
     const res = await discardEmptyReturnDraft(tenant.id, bookingId, handoverId, { id: user.id, name: user.name });
     refresh(bookingId);

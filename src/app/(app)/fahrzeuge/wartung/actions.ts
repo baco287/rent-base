@@ -8,7 +8,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requireFeature, requireRole } from "@/lib/auth";
 import { MAINTENANCE_PRIORITY, MAINTENANCE_STATUS, MAINTENANCE_TYPES } from "@/lib/constants";
 import { DomainError, isImmutableError } from "@/lib/integrity";
 import { addMaintenanceNote, adoptCostsIntoDamageCase, archiveVehicleDocument, blockVehicleForMaintenance, cancelMaintenance, changeMaintenanceStatus, completeMaintenance, createMaintenance, createPlan, documentMileage, linkDamageCase, linkDamageDocument, releaseVehicleAfterMaintenance, setMaintenanceCosts, setPlanActive, updateMaintenance, updatePlan } from "@/lib/maintenance";
@@ -36,6 +36,7 @@ function asState(e: unknown): MaintState {
 
 async function ctx(maintenanceId: string, ...roles: ("DISPO" | "YARD")[]) {
   const { tenant, user } = roles.length ? await requireRole(...roles) : await requireRole("DISPO");
+  await requireFeature("MAINTENANCE");
   const r = await db.maintenanceRecord.findFirst({ where: { id: maintenanceId, tenantId: tenant.id }, select: { id: true, vehicleId: true, damageCaseId: true } });
   if (!r) return null;
   return { tenant, user, r, actor: { id: user.id, name: user.name } };
@@ -59,6 +60,7 @@ const planSchema = z.object({
 
 export async function createPlanAction(vehicleId: string, _prev: MaintState, fd: FormData): Promise<MaintState> {
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("MAINTENANCE");
   const p = planSchema.safeParse(Object.fromEntries(fd));
   if (!p.success) return { error: p.error.issues[0].message };
   try {
@@ -72,6 +74,7 @@ export async function createPlanAction(vehicleId: string, _prev: MaintState, fd:
 
 export async function updatePlanAction(planId: string, _prev: MaintState, fd: FormData): Promise<MaintState> {
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("MAINTENANCE");
   const p = planSchema.extend({ isActive: z.preprocess((v) => v === "1" || v === "on" || v === true, z.boolean()).optional() }).safeParse(Object.fromEntries(fd));
   if (!p.success) return { error: p.error.issues[0].message };
   try {
@@ -86,6 +89,7 @@ export async function updatePlanAction(planId: string, _prev: MaintState, fd: Fo
 export async function setPlanActiveAction(planId: string, isActive: boolean, _prev: MaintState, _fd: FormData): Promise<MaintState> {
   void _fd;
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("MAINTENANCE");
   try {
     const plan = await setPlanActive(tenant.id, planId, { id: user.id, name: user.name }, isActive);
     refresh(plan.vehicleId);
@@ -119,6 +123,7 @@ const createSchema = z.object({
 /** „Wartung / Werkstatt hinzufügen“ – leitet danach zum Vorgang weiter; Warnungen (Überschneidung, Buchungen) zeigt die Vorgangsseite. */
 export async function createMaintenanceAction(vehicleId: string, _prev: MaintState, fd: FormData): Promise<MaintState> {
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("MAINTENANCE");
   const p = createSchema.safeParse(Object.fromEntries(fd));
   if (!p.success) return { error: p.error.issues[0].message };
   const scheduledAt = dateTime(p.data.scheduledAt);
@@ -341,6 +346,7 @@ export async function addNoteAction(maintenanceId: string, _prev: MaintState, fd
 /** Dokument archivieren statt löschen: Disposition vor Abschluss, nach Abschluss nur der Inhaber. */
 export async function archiveDocumentAction(documentId: string, _prev: MaintState, fd: FormData): Promise<MaintState> {
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("MAINTENANCE");
   const p = reasonSchema.safeParse(Object.fromEntries(fd));
   if (!p.success) return { error: p.error.issues[0].message };
   try {

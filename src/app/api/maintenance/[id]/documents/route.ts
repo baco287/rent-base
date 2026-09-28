@@ -1,7 +1,7 @@
 // Beleg-Upload zu einem Wartungsvorgang (Werkstattrechnung, Kostenvoranschlag, Prüfbericht …): PDF oder Bild, Typ am
 // Dateiinhalt erkannt, Größe begrenzt, Prüfsumme, privater Speicher. Alle Rollen (auch Hof) dürfen Belege hochladen.
 import { db } from "@/lib/db";
-import { apiSession } from "@/lib/auth";
+import { apiSession, featureForApi } from "@/lib/auth";
 import { VEHICLE_DOCUMENT_TYPES } from "@/lib/constants";
 import { DomainError, isImmutableError, sha256 } from "@/lib/integrity";
 import { registerVehicleDocument } from "@/lib/maintenance";
@@ -13,6 +13,8 @@ const json = (status: number, body: Record<string, unknown>) => Response.json(bo
 export async function POST(req: Request, ctx: RouteContext<"/api/maintenance/[id]/documents">) {
   const session = await apiSession("write");
   if (session instanceof Response) return session;
+  const featureBlocked = await featureForApi(session, "MAINTENANCE");
+  if (featureBlocked) return featureBlocked;
   const { id } = await ctx.params;
   const tenantId = session.tenant.id;
   const record = await db.maintenanceRecord.findFirst({ where: { id, tenantId }, select: { id: true, vehicleId: true, status: true } });

@@ -44,6 +44,8 @@ export function Sidebar(props: {
   userName: string;
   userRole: string;
   logoutAction: () => Promise<void>;
+  /** Control Center: Pfade gesperrter Features (nur Anzeige – die Sperre selbst ist serverseitig) */
+  hiddenPaths?: readonly string[];
 }) {
   const logoSrc = props.logoVersion != null ? `/api/branding/logo?v=${encodeURIComponent(props.logoVersion)}` : null;
   const pathname = usePathname();
@@ -54,10 +56,12 @@ export function Sidebar(props: {
   const closeSearch = useCallback(() => setSearchOpen(false), []);
   useGlobalSearchShortcut(openSearch);
 
+  const hidden = new Set(props.hiddenPaths ?? []);
+  const visibleNav = NAV.filter((n) => !hidden.has(n.href));
   const nav = (
     <nav className="flex flex-col gap-0.5">
-      {NAV.map((n) => {
-        const matches = NAV.filter((x) => pathname === x.href || pathname.startsWith(x.href + "/")).sort((a, b) => b.href.length - a.href.length);
+      {visibleNav.map((n) => {
+        const matches = visibleNav.filter((x) => pathname === x.href || pathname.startsWith(x.href + "/")).sort((a, b) => b.href.length - a.href.length);
         const active = matches[0]?.href === n.href;
         return (
           <Link

@@ -6,7 +6,7 @@
 
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requireFeature, requireRole } from "@/lib/auth";
 import { recordAudit } from "@/lib/audit";
 import { DEFAULT_BUSINESS_RULES, RuleError, RULE_KEYS, ruleConsistencyIssues, sanitizeRules, type BusinessRules, type RuleKey } from "@/lib/business-rules";
 import { RULE_SECTIONS, rulesFromForm } from "@/lib/business-rules-form";
@@ -53,6 +53,7 @@ export async function updatePrivacyReferenceAction(_prev: RulesState, fd: FormDa
 /** Befehl 20.6: kontaktlose Rückgabe / Schlüsselbox erlauben und konfigurieren (Mandanten-Funktion, kein Vertragsbestandteil). Nur Inhaber. */
 export async function updateKeyDropSettingsAction(_prev: RulesState, fd: FormData): Promise<RulesState> {
   const { tenant, user } = await requireRole("OWNER");
+  await requireFeature("KEY_DROP");
   const { saveKeyDropSettings } = await import("@/lib/key-drop");
   await saveKeyDropSettings(tenant.id, { id: user.id, name: user.name }, {
     enabled: fd.get("enabled") === "on",

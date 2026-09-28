@@ -1,7 +1,7 @@
 // Nachweis zu einer Auszahlung hochladen (Überweisungsbeleg, Terminalbeleg, unterschriebene Barauszahlungsbestätigung):
 // PDF oder Bild, privat, geprüft (Typ am Inhalt, Größe, Prüfsumme), nur Inhaber und Disponent, nur eigener Mandant.
 import { db } from "@/lib/db";
-import { apiSession } from "@/lib/auth";
+import { apiSession, featureForApi } from "@/lib/auth";
 import { roleAllows } from "@/lib/constants";
 import { DomainError, isImmutableError, sha256 } from "@/lib/integrity";
 import { registerPayoutAttachment } from "@/lib/payouts";
@@ -12,6 +12,8 @@ const json = (status: number, body: Record<string, unknown>) => Response.json(bo
 export async function POST(req: Request, ctx: RouteContext<"/api/payouts/[id]/documents">) {
   const session = await apiSession("write");
   if (session instanceof Response) return session;
+  const featureBlocked = await featureForApi(session, "PAYOUTS");
+  if (featureBlocked) return featureBlocked;
   if (!roleAllows(session.user.role, ["DISPO"])) return json(403, { error: "Keine Berechtigung." });
   const { id } = await ctx.params;
   const tenantId = session.tenant.id;

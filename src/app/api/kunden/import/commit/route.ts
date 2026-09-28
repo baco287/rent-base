@@ -1,12 +1,14 @@
 // Führt den Import aus: legt jede gültige, nicht als Dublette erkannte (oder ausdrücklich bestätigte) Zeile als
 // Kunden an. Validiert serverseitig erneut (der Client könnte manipuliert sein) – dieselbe Logik wie /validate.
 import { revalidatePath } from "next/cache";
-import { apiSession } from "@/lib/auth";
+import { apiSession, featureForApi } from "@/lib/auth";
 import { IMPORT_MAX_ROWS, processImportRows, type ImportRowInput } from "@/lib/customer-import";
 
 export async function POST(req: Request) {
   const session = await apiSession("write");
   if (session instanceof Response) return session;
+  const featureBlocked = await featureForApi(session, "CUSTOMER_IMPORT");
+  if (featureBlocked) return featureBlocked;
   if (session.user.role !== "OWNER") return Response.json({ error: "Nur Inhaber können Kunden importieren." }, { status: 403 });
 
   const body = (await req.json().catch(() => null)) as { rows?: ImportRowInput[] } | null;

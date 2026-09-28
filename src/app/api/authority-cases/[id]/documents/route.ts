@@ -2,7 +2,7 @@
 // erkannt, Größe begrenzt, Prüfsumme, privater Speicher. OWNER und DISPO; Hofmitarbeiter sehen Vorgänge nur.
 // Es findet keine Texterkennung statt – die Daten des Schreibens werden manuell erfasst.
 import { db } from "@/lib/db";
-import { apiSession } from "@/lib/auth";
+import { apiSession, featureForApi } from "@/lib/auth";
 import { AUTHORITY_DOCUMENT_TYPES, roleAllows } from "@/lib/constants";
 import { DomainError, isImmutableError, sha256 } from "@/lib/integrity";
 import { registerAuthorityDocument } from "@/lib/authority";
@@ -13,6 +13,8 @@ const json = (status: number, body: Record<string, unknown>) => Response.json(bo
 export async function POST(req: Request, ctx: RouteContext<"/api/authority-cases/[id]/documents">) {
   const session = await apiSession("write");
   if (session instanceof Response) return session;
+  const featureBlocked = await featureForApi(session, "AUTHORITIES");
+  if (featureBlocked) return featureBlocked;
   if (!roleAllows(session.user.role, ["DISPO"])) return json(403, { error: "Dokumente zu Behördenvorgängen fügt die Disposition hinzu." });
   const { id } = await ctx.params;
   const tenantId = session.tenant.id;

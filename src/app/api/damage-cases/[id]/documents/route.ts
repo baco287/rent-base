@@ -1,7 +1,7 @@
 // Dokument-Upload zur Schadenakte: Kostenvoranschlag, Werkstattrechnung oder Sonstiges als PDF oder Bild.
 // Typ wird am Dateiinhalt erkannt, keine Texterkennung, keine automatische Kostenübernahme – Beträge trägt der Mitarbeiter ein.
 import { db } from "@/lib/db";
-import { apiSession } from "@/lib/auth";
+import { apiSession, featureForApi } from "@/lib/auth";
 import { DomainError, isImmutableError, sha256 } from "@/lib/integrity";
 import { registerCaseDocument } from "@/lib/damage-cases";
 import { MAX_DOCUMENT_BYTES, buildStorageKey, getStorage, sniffDocumentType } from "@/lib/storage";
@@ -11,6 +11,8 @@ const json = (status: number, body: Record<string, unknown>) => Response.json(bo
 export async function POST(req: Request, ctx: RouteContext<"/api/damage-cases/[id]/documents">) {
   const session = await apiSession("write");
   if (session instanceof Response) return session;
+  const featureBlocked = await featureForApi(session, "DAMAGE_CASES");
+  if (featureBlocked) return featureBlocked;
   const { id } = await ctx.params;
   const tenantId = session.tenant.id;
 

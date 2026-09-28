@@ -4,7 +4,7 @@
 // lehnt requireRole ohnehin jede Aktion ab. Der Mandant kommt ausschließlich aus der Sitzung, nie aus dem Formular.
 
 import { revalidatePath } from "next/cache";
-import { requireRole } from "@/lib/auth";
+import { requireFeature, requireRole } from "@/lib/auth";
 import { DomainError } from "@/lib/integrity";
 import { disableTenantSmtp, enableTenantSmtp, saveMailSettings, sendSmtpTestMail, testMailConnection } from "@/lib/tenant-mail";
 
@@ -19,6 +19,7 @@ function asState(e: unknown): MailFormState {
 
 export async function saveMailSettingsAction(_prev: MailFormState, fd: FormData): Promise<MailFormState> {
   const { tenant, user } = await requireRole("OWNER");
+  await requireFeature("TENANT_SMTP");
   try {
     const view = await saveMailSettings(tenant.id, { id: user.id, name: user.name }, {
       host: str(fd, "host"),
@@ -40,6 +41,7 @@ export async function saveMailSettingsAction(_prev: MailFormState, fd: FormData)
 export async function testConnectionAction(_prev: MailFormState, _fd: FormData): Promise<MailFormState> {
   void _fd;
   const { tenant, user } = await requireRole("OWNER");
+  await requireFeature("TENANT_SMTP");
   try {
     const res = await testMailConnection(tenant.id, { id: user.id, name: user.name });
     revalidatePath("/einstellungen/e-mail");
@@ -51,6 +53,7 @@ export async function testConnectionAction(_prev: MailFormState, _fd: FormData):
 
 export async function sendTestMailAction(_prev: MailFormState, fd: FormData): Promise<MailFormState> {
   const { tenant, user } = await requireRole("OWNER");
+  await requireFeature("TENANT_SMTP");
   try {
     // Ziel ist immer das eigene Konto des angemeldeten Inhabers – kein frei wählbarer Empfänger (kein offenes Relay)
     const res = await sendSmtpTestMail(tenant.id, { id: user.id, name: user.name, email: user.email }, str(fd, "nonce"));
@@ -64,6 +67,7 @@ export async function sendTestMailAction(_prev: MailFormState, fd: FormData): Pr
 export async function enableTenantSmtpAction(_prev: MailFormState, _fd: FormData): Promise<MailFormState> {
   void _fd;
   const { tenant, user } = await requireRole("OWNER");
+  await requireFeature("TENANT_SMTP");
   try {
     await enableTenantSmtp(tenant.id, { id: user.id, name: user.name });
     revalidatePath("/einstellungen/e-mail");
@@ -77,6 +81,7 @@ export async function enableTenantSmtpAction(_prev: MailFormState, _fd: FormData
 export async function disableTenantSmtpAction(_prev: MailFormState, _fd: FormData): Promise<MailFormState> {
   void _fd;
   const { tenant, user } = await requireRole("OWNER");
+  await requireFeature("TENANT_SMTP");
   try {
     await disableTenantSmtp(tenant.id, { id: user.id, name: user.name });
     revalidatePath("/einstellungen/e-mail");

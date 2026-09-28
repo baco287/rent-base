@@ -6,7 +6,7 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { requireRole } from "@/lib/auth";
+import { requireFeature, requireRole } from "@/lib/auth";
 import { PAYOUT_METHODS } from "@/lib/constants";
 import { ensurePayoutDocument } from "@/lib/documents";
 import { DomainError, isImmutableError } from "@/lib/integrity";
@@ -56,6 +56,7 @@ function toInput(d: z.infer<typeof inputSchema>): PayoutInput & { executedAtInva
 /** Vorschau (serverseitig gerechnet, bucht nichts). Betragsgrenzen kommen aus der zentralen Summierung. */
 export async function previewPayoutAction(ref: unknown, payload: unknown): Promise<PayoutPreview | { error: string }> {
   const { tenant } = await requireRole("DISPO");
+  await requireFeature("PAYOUTS");
   const r = refSchema.safeParse(ref);
   const p = inputSchema.safeParse(payload);
   if (!r.success) return { error: "Unbekannte Quelle." };
@@ -72,6 +73,7 @@ export async function previewPayoutAction(ref: unknown, payload: unknown): Promi
 /** Anlegen: als Entwurf (kein Geldfluss) oder direkt als tatsächlich erfolgt (mit Nummer, Beleg). */
 export async function createPayoutAction(ref: unknown, bookingId: string, _prev: PayoutState, formData: FormData): Promise<PayoutState> {
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("PAYOUTS");
   const r = refSchema.safeParse(ref);
   const p = inputSchema.safeParse(Object.fromEntries(formData));
   if (!r.success) return { error: "Unbekannte Quelle." };
@@ -92,6 +94,7 @@ export async function createPayoutAction(ref: unknown, bookingId: string, _prev:
 
 export async function updatePayoutDraftAction(payoutId: string, bookingId: string, _prev: PayoutState, formData: FormData): Promise<PayoutState> {
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("PAYOUTS");
   const p = inputSchema.safeParse(Object.fromEntries(formData));
   if (!p.success) return { error: p.error.issues[0].message };
   const input = toInput(p.data);
@@ -117,6 +120,7 @@ const completeSchema = z.object({ confirmed: z.preprocess((v) => v === "1" || v 
 /** Entwurf als tatsächlich erfolgt erfassen (Sperre auf der Quelle, Rest neu gerechnet, Nummer, Beleg). */
 export async function completePayoutAction(payoutId: string, bookingId: string, _prev: PayoutState, formData: FormData): Promise<PayoutState> {
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("PAYOUTS");
   const p = completeSchema.safeParse(Object.fromEntries(formData));
   if (!p.success) return { error: "Ungültige Eingabe." };
   const executedAt = p.data.executedAt ? parseLocalDateTime(p.data.executedAt) : undefined;
@@ -135,6 +139,7 @@ const cancelSchema = z.object({ reason: z.string().trim().min(3, "Bitte den Grun
 
 export async function cancelPayoutAction(payoutId: string, bookingId: string, _prev: PayoutState, formData: FormData): Promise<PayoutState> {
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("PAYOUTS");
   const p = cancelSchema.safeParse(Object.fromEntries(formData));
   if (!p.success) return { error: p.error.issues[0].message };
   try {
@@ -150,6 +155,7 @@ export async function cancelPayoutAction(payoutId: string, bookingId: string, _p
 export async function generatePayoutPdfAction(payoutId: string, bookingId: string, _prev: PayoutState, _formData: FormData): Promise<PayoutState> {
   void _formData;
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("PAYOUTS");
   try {
     const res = await ensurePayoutDocument(tenant.id, payoutId, user.id);
     refresh(bookingId);
@@ -162,6 +168,7 @@ export async function generatePayoutPdfAction(payoutId: string, bookingId: strin
 /** Auszahlungsbeleg per E-Mail senden: bewusst manuell, einmaliger nonce, EmailLog. */
 export async function sendPayoutReceiptAction(payoutId: string, bookingId: string, _prev: PayoutState, formData: FormData): Promise<PayoutState> {
   const { tenant, user } = await requireRole("DISPO");
+  await requireFeature("PAYOUTS");
   try {
     const res = await sendPayoutReceipt(tenant.id, { id: user.id, name: user.name }, payoutId, { nonce: String(formData.get("nonce") ?? "") });
     refresh(bookingId);

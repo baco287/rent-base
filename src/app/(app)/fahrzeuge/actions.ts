@@ -10,6 +10,8 @@ import { recordAudit } from "@/lib/audit";
 import { RuleError } from "@/lib/business-rules";
 import { overridesFromForm } from "@/lib/business-rules-form";
 import { FUELS, VEHICLE_STATUS } from "@/lib/constants";
+import { assertVehicleLimit } from "@/lib/subscriptions";
+import { DomainError } from "@/lib/integrity";
 import { normalizePlate } from "@/lib/format";
 
 export type FormState = { error?: string } | undefined;
@@ -67,6 +69,13 @@ export async function createVehicleAction(_prev: FormState, formData: FormData):
   const parsed = vehicleSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   if (!(await groupBelongsToTenant(parsed.data.groupId, tenant.id))) return { error: "Fahrzeuggruppe nicht gefunden." };
+  // Control Center: Fahrzeuglimit des Tarifs (null = unbegrenzt)
+  try {
+    await assertVehicleLimit(tenant.id);
+  } catch (e) {
+    if (e instanceof DomainError) return { error: e.message };
+    throw e;
+  }
 
   let id: string;
   try {

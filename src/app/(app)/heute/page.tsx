@@ -80,6 +80,7 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
       </PageHeader>
       <Content>
         {sp.fehler === "rechte" && <Chip tone="bad">Dafür fehlen deiner Rolle die Rechte.</Chip>}
+        {sp.fehler === "funktion" && <Chip tone="amber">Diese Funktion ist für {tenant.name} nicht freigeschaltet. Bitte an RentBase wenden.</Chip>}
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <KPI label="Abholungen heute" value={c.pickupsToday} detail={d.events.find((e) => e.kind === "PICKUP") ? `nächste um ${fmtTime(d.events.find((e) => e.kind === "PICKUP")!.at)}` : "keine"} hot={c.pickupsToday > 0} />

@@ -2,7 +2,7 @@
 // Sitzung und Mandant geprüft, Bildtyp am Inhalt erkannt, Größe begrenzt, Prüfsumme gebildet, privater Speicher.
 // Alle Rollen dürfen Fotos ergänzen (auch Hof); Protokollfotos bleiben unberührt.
 import { db } from "@/lib/db";
-import { apiSession } from "@/lib/auth";
+import { apiSession, featureForApi } from "@/lib/auth";
 import { DomainError, isImmutableError, sha256 } from "@/lib/integrity";
 import { registerCasePhoto } from "@/lib/damage-cases";
 import { MAX_PHOTO_BYTES, buildStorageKey, getStorage, sniffImageType } from "@/lib/storage";
@@ -12,6 +12,8 @@ const json = (status: number, body: Record<string, unknown>) => Response.json(bo
 export async function POST(req: Request, ctx: RouteContext<"/api/damage-cases/[id]/photos">) {
   const session = await apiSession("write");
   if (session instanceof Response) return session;
+  const featureBlocked = await featureForApi(session, "DAMAGE_CASES");
+  if (featureBlocked) return featureBlocked;
   const { id } = await ctx.params;
   const tenantId = session.tenant.id;
 

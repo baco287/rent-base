@@ -4,9 +4,12 @@ import { ROLES, type Role } from "@/lib/constants";
 import { Sidebar } from "@/components/sidebar";
 import { logoutAction } from "@/app/(auth)/actions";
 import { endSupportSessionAction } from "@/app/admin/actions";
+import { hiddenNavPaths, tenantFeatures } from "@/lib/features";
 
 export default async function AppLayout({ children }: LayoutProps<"/">) {
   const { user, tenant, supportSession } = await requireSession();
+  // Control Center: gesperrte Module verschwinden aus der Navigation; die eigentliche Sperre ist requireFeature() serverseitig
+  const hiddenPaths = hiddenNavPaths(await tenantFeatures(tenant.id));
 
   return (
     <div className="flex-1 grid grid-cols-1 md:grid-cols-[220px_1fr] min-h-screen">
@@ -18,6 +21,7 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
         userName={user.name}
         userRole={ROLES[user.role as Role] ?? user.role}
         logoutAction={logoutAction}
+        hiddenPaths={hiddenPaths}
       />
       <main className="min-w-0 flex flex-col">
         {supportSession && (
