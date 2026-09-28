@@ -1,94 +1,113 @@
 import Link from "next/link";
-import { requirePlatform } from "@/lib/platform-auth";
+import { can, requirePlatform } from "@/lib/platform-auth";
 import { listTenantsForPlatform } from "@/lib/platform-tenants";
-import { Content, PageHeader, Chip } from "@/components/ui";
-import { TENANT_STATUS, type TenantStatus } from "@/lib/constants";
-import { fmtDate } from "@/lib/format";
+import { Content, PageHeader } from "@/components/ui";
+import { PLANS, SUBSCRIPTION_STATUS, TENANT_STATUS } from "@/lib/constants";
+import { fmtDate, fmtDateTime } from "@/lib/format";
+import { EmptyRow, Notice, Pagination, PlanChip, SubscriptionStatusChip, Td, TenantStatusChip, Th, withParams } from "../ui";
 
-export const metadata = { title: "Mandanten" };
+export const metadata = { title: "Kunden" };
 export const dynamic = "force-dynamic";
 
 const PAGE_SIZE = 25;
-
-function statusTone(status: string): "good" | "amber" | "bad" | "grey" {
-  return status === "ACTIVE" ? "good" : status === "SUSPENDED" ? "bad" : "amber";
-}
+const str = (v: string | string[] | undefined) => (typeof v === "string" && v ? v : undefined);
 
 export default async function TenantListPage({ searchParams }: PageProps<"/admin/mandanten">) {
-  await requirePlatform();
+  const session = await requirePlatform("PLATFORM_VIEW");
   const sp = await searchParams;
-  const query = typeof sp.q === "string" ? sp.q : undefined;
+  const filter = { query: str(sp.q), status: str(sp.status), plan: str(sp.tarif), subscriptionStatus: str(sp.abo), sort: (str(sp.sort) as "newest" | "name" | "activity" | undefined) ?? "newest" };
   const page = Math.max(1, Number(sp.seite) || 1);
-  const { rows, total } = await listTenantsForPlatform({ query, page, pageSize: PAGE_SIZE });
-  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const { rows, total } = await listTenantsForPlatform({ ...filter, page, pageSize: PAGE_SIZE });
+  const href = (p: number) => withParams("/admin/mandanten", { q: filter.query, status: filter.status, tarif: filter.plan, abo: filter.subscriptionStatus, sort: filter.sort === "newest" ? undefined : filter.sort, seite: p > 1 ? p : undefined });
 
   return (
     <>
-      <PageHeader title="Mandanten" sub={`${total} Autovermietungen`}>
-        <Link href="/admin/mandanten/neu" className="btn btn-primary">Neue Autovermietung</Link>
+      <PageHeader title="Kunden" sub={`${total} Mandanten`}>
+        {can(session, "TENANT_CREATE") && <Link href="/admin/mandanten/neu" className="btn btn-primary">Neue Autovermietung</Link>}
       </PageHeader>
       <Content>
-        <form className="mb-4 flex gap-2" action="/admin/mandanten">
-          <input name="q" defaultValue={query ?? ""} placeholder="Firmenname, Owner-E-Mail oder Kurzname" className="input flex-1 max-w-md" />
-          <button type="submit" className="btn">Suchen</button>
+        <Notice sp={sp} />
+        <form className="card p-3 grid grid-cols-2 md:grid-cols-[1fr_auto_auto_auto_auto_auto] gap-2 items-end" action="/admin/mandanten">
+          <label className="flex flex-col gap-1 col-span-2 md:col-span-1">
+            <span className="label-xs">Suche</span>
+            <input name="q" defaultValue={filter.query ?? ""} placeholder="Firmenname, Kurzname oder Benutzer-E-Mail" className="input" />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="label-xs">Status</span>
+            <select name="status" defaultValue={filter.status ?? ""} className="input">
+              <option value="">Alle</option>
+              {Object.entries(TENANT_STATUS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="label-xs">Tarif</span>
+            <select name="tarif" defaultValue={filter.plan ?? ""} className="input">
+              <option value="">Alle</option>
+              <option value="NONE">Kein Tarif</option>
+              {Object.entries(PLANS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="label-xs">Abo-Status</span>
+            <select name="abo" defaultValue={filter.subscriptionStatus ?? ""} className="input">
+              <option value="">Alle</option>
+              {Object.entries(SUBSCRIPTION_STATUS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="label-xs">Sortierung</span>
+            <select name="sort" defaultValue={filter.sort} className="input">
+              <option value="newest">Neueste zuerst</option>
+              <option value="name">Firmenname</option>
+              <option value="activity">Letzte Aktivität</option>
+            </select>
+          </label>
+          <div className="flex gap-2">
+            <button type="submit" className="btn btn-primary">Filtern</button>
+            <Link href="/admin/mandanten" className="btn">Zurücksetzen</Link>
+          </div>
         </form>
 
-        <div className="card">
-          {rows.length === 0 ? (
-            <div className="px-4 py-8 text-center text-ink-3">Keine Mandanten gefunden.</div>
-          ) : (
-            <>
-              {/* Smartphone: Karten statt breiter Tabelle */}
-              <ul className="md:hidden divide-y divide-line-soft">
-                {rows.map((t) => (
-                  <li key={t.id} className="px-4 py-3 flex flex-col gap-1">
-                    <div className="flex justify-between items-baseline gap-2">
-                      <Link href={`/admin/mandanten/${t.id}`} className="font-medium text-brand hover:underline">{t.name}</Link>
-                      <Chip tone={statusTone(t.status)}>{TENANT_STATUS[t.status as TenantStatus] ?? t.status}</Chip>
-                    </div>
-                    <div className="text-xs text-ink-3">{t.slug} · angelegt {fmtDate(t.createdAt)}</div>
-                    <div className="text-sm">{t.owner ? `${t.owner.name} · ${t.owner.email}` : t.pendingOwnerInvite ? <span className="text-amber">Einladung offen: {t.pendingOwnerInvite.email}</span> : <span className="text-ink-3">Kein Inhaber</span>}</div>
-                    <div className="text-xs text-ink-3">{t.userCount} Benutzer · {t.vehicleCount} Fahrzeuge</div>
-                  </li>
-                ))}
-              </ul>
-              <div className="hidden md:block overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-surface-2 text-ink-3 text-left">
-                    <tr>
-                      <th className="px-4 py-2 font-medium">Firma</th>
-                      <th className="px-4 py-2 font-medium">Status</th>
-                      <th className="px-4 py-2 font-medium">Inhaber</th>
-                      <th className="px-4 py-2 font-medium">Benutzer</th>
-                      <th className="px-4 py-2 font-medium">Fahrzeuge</th>
-                      <th className="px-4 py-2 font-medium">Angelegt</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-line-soft">
-                    {rows.map((t) => (
-                      <tr key={t.id} className="hover:bg-surface-2">
-                        <td className="px-4 py-2.5"><Link href={`/admin/mandanten/${t.id}`} className="font-medium text-brand hover:underline">{t.name}</Link><div className="text-xs text-ink-3">{t.slug}</div></td>
-                        <td className="px-4 py-2.5"><Chip tone={statusTone(t.status)}>{TENANT_STATUS[t.status as TenantStatus] ?? t.status}</Chip></td>
-                        <td className="px-4 py-2.5">{t.owner ? <>{t.owner.name}<div className="text-xs text-ink-3">{t.owner.email}</div></> : t.pendingOwnerInvite ? <span className="text-amber">Einladung offen: {t.pendingOwnerInvite.email}</span> : <span className="text-ink-3">–</span>}</td>
-                        <td className="px-4 py-2.5">{t.userCount}</td>
-                        <td className="px-4 py-2.5">{t.vehicleCount}</td>
-                        <td className="px-4 py-2.5 text-ink-3">{fmtDate(t.createdAt)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
+        <div className="card overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-surface-2 text-ink-3">
+              <tr>
+                <Th>Firma</Th>
+                <Th>Kundennr.</Th>
+                <Th>Status</Th>
+                <Th>Tarif</Th>
+                <Th className="text-right">Benutzer</Th>
+                <Th className="text-right">Fahrzeuge</Th>
+                <Th className="text-right">Buchungen</Th>
+                <Th>Registriert</Th>
+                <Th>Letzte Aktivität</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line-soft">
+              {rows.map((t) => (
+                <tr key={t.id} className="hover:bg-surface-2">
+                  <Td>
+                    <Link href={`/admin/mandanten/${t.id}`} className="font-medium text-brand hover:underline">{t.name}</Link>
+                    <div className="text-xs text-ink-3">{t.owner ? `${t.owner.name} · ${t.owner.email}` : t.pendingOwnerInvite ? <span className="text-amber">Einladung offen: {t.pendingOwnerInvite.email}</span> : "Kein Inhaber"}</div>
+                  </Td>
+                  <Td><span className="font-mono text-xs">{t.slug}</span></Td>
+                  <Td><TenantStatusChip status={t.status} /></Td>
+                  <Td>
+                    <div className="flex flex-col gap-1 items-start"><PlanChip plan={t.plan} /><SubscriptionStatusChip status={t.subscriptionStatus} /></div>
+                    {t.subscriptionStatus === "TRIAL" && t.trialEndsAt && <div className="text-xs text-ink-3 mt-1">bis {fmtDate(t.trialEndsAt)}</div>}
+                  </Td>
+                  <Td className="text-right tnum">{t.userCount}</Td>
+                  <Td className="text-right tnum">{t.vehicleCount}</Td>
+                  <Td className="text-right tnum">{t.bookingCount}</Td>
+                  <Td className="text-ink-3 whitespace-nowrap">{fmtDate(t.createdAt)}</Td>
+                  <Td className="text-ink-3 whitespace-nowrap">{t.lastActivityAt ? fmtDateTime(t.lastActivityAt) : "noch keine Anmeldung"}</Td>
+                </tr>
+              ))}
+              {rows.length === 0 && <EmptyRow colSpan={9}>Keine Mandanten gefunden.</EmptyRow>}
+            </tbody>
+          </table>
         </div>
-
-        {pages > 1 && (
-          <div className="mt-4 flex gap-2 items-center text-sm">
-            {Array.from({ length: pages }, (_, i) => i + 1).map((p) => (
-              <Link key={p} href={`/admin/mandanten?${query ? `q=${encodeURIComponent(query)}&` : ""}seite=${p}`} className={`px-2.5 py-1 rounded-md ${p === page ? "bg-brand text-white" : "hover:bg-surface-2"}`}>{p}</Link>
-            ))}
-          </div>
-        )}
+        <Pagination page={page} total={total} pageSize={PAGE_SIZE} href={href} />
       </Content>
     </>
   );

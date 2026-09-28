@@ -6,7 +6,7 @@ export const metadata = { title: "Neue Autovermietung" };
 export const dynamic = "force-dynamic";
 
 export default async function NewTenantPage() {
-  await requirePlatform();
+  await requirePlatform("TENANT_CREATE");
   return (
     <>
       <PageHeader title="Neue Autovermietung" sub="Legt den Mandanten an und lädt den ersten Inhaber ein" />
