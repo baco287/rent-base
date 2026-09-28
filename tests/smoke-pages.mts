@@ -32,6 +32,8 @@ import { createTenantByPlatform, suspendTenant, reactivateTenant } from "../src/
 import { acceptInvitation } from "../src/lib/invitations";
 import { requestPasswordReset } from "../src/lib/password-reset";
 import { startSupportSession } from "../src/lib/support-sessions";
+import { setTenantFeature } from "../src/lib/features";
+import { upsertSubscription } from "../src/lib/subscriptions";
 import { setMailTransport, type MailMessage, type MailTransport } from "../src/lib/mail";
 import { saveMailSettings } from "../src/lib/tenant-mail";
 import { authorizeKeyDrop, confirmKeyDrop, saveKeyDropSettings, sendKeyDropLink } from "../src/lib/key-drop";
@@ -850,7 +852,7 @@ const adminCookie = `rb_session=${adminSessionId}`;
 const notAdmin = await fetch(`${base}/admin`, { headers: { cookie }, redirect: "manual" });
 report(notAdmin.status === 307, `${notAdmin.status} normaler Inhaber kommt nicht auf /admin`);
 const adminHome = await plain(await fetch(`${base}/admin`, { headers: { cookie: adminCookie } }));
-report(adminHome.includes("RentBase Administration"), "Super-Admin: Plattformdashboard erreichbar");
+report(adminHome.includes("RentBase Control Center"), "Super-Admin: Plattformdashboard erreichbar");
 
 mail.sent = [];
 const newTenant = await createTenantByPlatform({ id: admin.id, name: admin.name }, { companyName: `Smoke Neu ${Date.now()}`, ownerFirstName: "Neu", ownerLastName: "Inhaber", ownerEmail: `neu-inhaber-${Date.now()}@example.test`, baseUrl: base });
@@ -904,6 +906,95 @@ const supportUpload = await fetch(`${base}/api/vehicles/${w.vehicleId}/documents
 report(supportUpload.status === 403, `${supportUpload.status} Supportmodus: API-Upload abgelehnt`);
 const foreignSupportSession = await db.supportSession.findFirst({ where: { superAdminId: admin.id, tenantId: newTenant.id } });
 report(foreignSupportSession === null, "Supportmodus: keine Session für einen anderen Mandanten entstanden");
+
+// ---------------------------------------------------------------------------
+// Control Center: Navigation je interner Rolle, alle Bereiche erreichbar, Berechtigungen serverseitig, Feature-Gating,
+// Mandantendetail mit Tarif/Features/Diagnose. Nutzt den bereits angelegten SUPER_ADMIN (adminCookie) und w.tenantId.
+// ---------------------------------------------------------------------------
+{
+  const ccPages: [string, string][] = [
+    ["/admin", "RentBase Control Center"], ["/admin/mandanten", "Kunden"], ["/admin/benutzer", "mandantenübergreifend"], ["/admin/benutzer?tab=einladungen", "Offene Einladungen"],
+    ["/admin/abos", "Tarife &amp; Abonnements"], ["/admin/features", "Feature Management"], ["/admin/support", "Support &amp; Diagnose"], ["/admin/audit", "Audit Log"], ["/admin/system", "Berechtigungsmatrix"],
+    [`/admin/mandanten/${w.tenantId}`, "Tarif &amp; Abo"], [`/admin/benutzer/${w.userId}`, "Interne Plattformrolle"],
+  ];
+  for (const [p, needle] of ccPages) {
+    const res = await fetch(`${base}${p}`, { headers: { cookie: adminCookie } });
+    const html = await plain(res);
+    report(res.status === 200 && html.includes(needle), `${res.status} Control Center ${p} zeigt „${needle}“`);
+  }
+  const ccHome = await plain(await fetch(`${base}/admin`, { headers: { cookie: adminCookie } }));
+  report(!/(passwordHash|DATABASE_URL=|SMTP_PASSWORD=|RENTBASE_SECRET_KEY=)/.test(ccHome), "Control Center: keine Geheimnisse im HTML");
+  const ccSystem = await plain(await fetch(`${base}/admin/system`, { headers: { cookie: adminCookie } }));
+  report(ccSystem.includes("nur gesetzt / fehlt") && !/postgres:\/\//.test(ccSystem), "Systemseite: nur gesetzt/fehlt, keine Verbindungszeichenfolge");
+
+  // Interne Rollen: READ_ONLY sieht alles, ändert nichts; BILLING kommt nicht auf Benutzer/System; SUPPORT darf keinen Mandanten sperren
+  const mkAdmin = async (label: string, role: string) => {
+    const u = await db.user.create({ data: { tenantId: w.tenantId, email: `${label}-${Date.now()}@example.test`, name: `${label} Test`, passwordHash: await hashPassword("internpasswort1"), role: "DISPO" } });
+    await db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL rentbase.allow_platform_role_change = 'on'`);
+      await tx.user.update({ where: { id: u.id }, data: { platformRole: role } });
+    });
+    const sid = randomBytes(32).toString("base64url");
+    await db.session.create({ data: { id: sid, userId: u.id, expiresAt: new Date(Date.now() + 3600_000) } });
+    return { id: u.id, cookie: `rb_session=${sid}` };
+  };
+  const readOnly = await mkAdmin("readonly", "READ_ONLY_ADMIN");
+  const billing = await mkAdmin("billing", "BILLING_ADMIN");
+  const supportAdmin = await mkAdmin("support", "SUPPORT_ADMIN");
+  const roHome = await fetch(`${base}/admin`, { headers: { cookie: readOnly.cookie } });
+  const roHtml = await plain(roHome);
+  report(roHome.status === 200 && roHtml.includes("Nur-Lese-Admin") && !roHtml.includes("Neue Autovermietung"), `${roHome.status} READ_ONLY_ADMIN: Dashboard sichtbar, keine Anlage-Schaltfläche`);
+  const roNew = await fetch(`${base}/admin/mandanten/neu`, { headers: { cookie: readOnly.cookie }, redirect: "manual" });
+  report(roNew.status === 307 && (roNew.headers.get("location") ?? "").includes("fehler=rechte"), `${roNew.status} READ_ONLY_ADMIN: Mandantenanlage serverseitig abgelehnt`);
+  const roDetail = await plain(await fetch(`${base}/admin/mandanten/${w.tenantId}`, { headers: { cookie: readOnly.cookie } }));
+  report(!roDetail.includes("Mandant sperren") && !roDetail.includes("Supportmodus öffnen") && roDetail.includes("Tarif &amp; Abo"), "READ_ONLY_ADMIN: Detailseite ohne Sperr-/Support-Aktionen");
+  const billingUsers = await fetch(`${base}/admin/benutzer`, { headers: { cookie: billing.cookie }, redirect: "manual" });
+  report(billingUsers.status === 307 && (billingUsers.headers.get("location") ?? "").includes("fehler=rechte"), `${billingUsers.status} BILLING_ADMIN: Benutzerbereich gesperrt`);
+  const billingSystem = await fetch(`${base}/admin/system`, { headers: { cookie: billing.cookie }, redirect: "manual" });
+  report(billingSystem.status === 307, `${billingSystem.status} BILLING_ADMIN: Systembereich gesperrt`);
+  const billingAbos = await fetch(`${base}/admin/abos`, { headers: { cookie: billing.cookie } });
+  report(billingAbos.status === 200 && (await plain(billingAbos)).includes("Tarife &amp; Abonnements"), `${billingAbos.status} BILLING_ADMIN: Abo-Bereich erreichbar`);
+  const supportDetail = await plain(await fetch(`${base}/admin/mandanten/${w.tenantId}`, { headers: { cookie: supportAdmin.cookie } }));
+  report(supportDetail.includes("Supportmodus") && !supportDetail.includes("Mandant sperren"), "SUPPORT_ADMIN: Supportmodus ja, Sperrung nein");
+  const supportAsCustomer = await startSupportSession({ id: supportAdmin.id, name: "Support Test" }, w.tenantId, "Smoke Control Center Support-Admin");
+  const supportAdminHome = await plain(await fetch(`${base}/heute`, { headers: { cookie: `${supportAdmin.cookie}; rb_support=${supportAsCustomer.id}` } }));
+  report(supportAdminHome.includes("SUPPORTMODUS"), "SUPPORT_ADMIN: „Als Kunde öffnen“ funktioniert über die Matrix");
+  const billingAsCustomer = await fetch(`${base}/heute`, { headers: { cookie: `${billing.cookie}; rb_support=${supportAsCustomer.id}` } });
+  report(!(await plain(billingAsCustomer)).includes("SUPPORTMODUS"), "BILLING_ADMIN: fremder Support-Cookie wirkt nicht");
+  const normalUserAdmin = await fetch(`${base}/admin/features`, { headers: { cookie }, redirect: "manual" });
+  report(normalUserAdmin.status === 307 && (normalUserAdmin.headers.get("location") ?? "").includes("/heute"), `${normalUserAdmin.status} Mandanten-Inhaber kommt in keinen Control-Center-Bereich`);
+
+  // Feature-Gating: Behörden sperren → Navigation, Seite, Aktion, API; danach wieder freischalten
+  await setTenantFeature({ id: admin.id, name: admin.name }, w.tenantId, "AUTHORITIES", false, "Smoke");
+  const gatedNav = await plain(await fetch(`${base}/heute`, { headers: { cookie } }));
+  const gatedAside = /<aside[\s\S]*?<\/aside>/.exec(gatedNav)?.[0] ?? "";
+  report(!gatedAside.includes('href="/behoerden"') && gatedAside.includes('href="/schaeden"'), "Feature gesperrt: Behörden aus der Navigation, Schäden bleibt");
+  const gatedPage = await fetch(`${base}/behoerden`, { headers: { cookie }, redirect: "manual" });
+  report(gatedPage.status === 307 && (gatedPage.headers.get("location") ?? "").includes("fehler=funktion"), `${gatedPage.status} Feature gesperrt: Seite leitet mit Hinweis um`);
+  const gatedHint = await plain(await fetch(`${base}/heute?fehler=funktion`, { headers: { cookie } }));
+  report(gatedHint.includes("nicht freigeschaltet"), "Feature gesperrt: Hinweis auf der Startseite");
+  const gatedApi = await fetch(`${base}/api/authority-uploads`, { method: "POST", headers: { cookie }, body: new FormData() });
+  report(gatedApi.status === 403 && (await gatedApi.text()).includes("nicht freigeschaltet"), `${gatedApi.status} Feature gesperrt: API-Upload abgelehnt`);
+  const otherStillOpen = await fetch(`${base}/behoerden`, { headers: { cookie: `rb_session=${foreignSession}` }, redirect: "manual" });
+  report(otherStillOpen.status === 200, `${otherStillOpen.status} Feature gesperrt: anderer Mandant unberührt`);
+  const gatedAdminDetail = await plain(await fetch(`${base}/admin/mandanten/${w.tenantId}`, { headers: { cookie: adminCookie } }));
+  report(gatedAdminDetail.includes("6 von 7 aktiv"), "Mandantendetail zeigt Feature-Zustand");
+  await setTenantFeature({ id: admin.id, name: admin.name }, w.tenantId, "AUTHORITIES", true);
+  const ungated = await fetch(`${base}/behoerden`, { headers: { cookie }, redirect: "manual" });
+  report(ungated.status === 200, `${ungated.status} Feature freigeschaltet: Seite wieder erreichbar`);
+  const featureAudit = await db.auditLog.count({ where: { tenantId: w.tenantId, action: { in: ["FEATURE_DISABLED", "FEATURE_ENABLED"] } } });
+  report(featureAudit === 2, `Feature-Änderungen protokolliert (${featureAudit})`);
+
+  // Tarif/Abo mit Limit: Detailseite zeigt den Tarif, Einladung über Limit wird abgelehnt
+  await upsertSubscription({ id: admin.id, name: admin.name }, w.tenantId, { plan: "STARTER", status: "ACTIVE", monthlyPriceCents: 4900, maxUsers: 1 });
+  const aboDetail = await plain(await fetch(`${base}/admin/mandanten/${w.tenantId}`, { headers: { cookie: adminCookie } }));
+  report(aboDetail.includes("Starter") && aboDetail.includes("49,00"), "Mandantendetail zeigt Tarif und Monatspreis");
+  const aboList = await plain(await fetch(`${base}/admin/abos`, { headers: { cookie: adminCookie } }));
+  report(aboList.includes("MRR") && aboList.includes("49,00"), "Abo-Übersicht zeigt MRR aus erfassten Preisen");
+  const auditPage = await plain(await fetch(`${base}/admin/audit?mandant=${w.tenantId}`, { headers: { cookie: adminCookie } }));
+  report(auditPage.includes("Tarif/Abo angelegt") && auditPage.includes("Feature gesperrt"), "Audit Log zeigt Plattform-Aktionen des Mandanten mit Filter");
+  await db.tenantSubscription.delete({ where: { tenantId: w.tenantId } });
+}
 
 // ---------------------------------------------------------------------------
 // Befehl 20.5: E-Mail-Versand und Branding (Seiten, Rollen, Supportmodus, Mandantentrennung, kein Geheimnis im HTML)

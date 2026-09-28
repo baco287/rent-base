@@ -104,7 +104,7 @@ test("Jede Server-Action-Datei und jede Prozessseite prüft die Rolle serverseit
   for (const fn of ["saveReminderSettingsAction", "sendReminderNowAction"]) assert.match(authBody(fn), /requireRole\("OWNER"\)/, `${fn}: nur Inhaber`);
   assert.match(readFileSync(path.join(process.cwd(), "src/app/api/authority-uploads/route.ts"), "utf8"), /roleAllows\(session\.user\.role, \["DISPO"\]\)/, "Posteingang-Upload nur Disposition");
   for (const fn of ["setDriverAction", "approveResponseAction", "submitResponseAction", "closeCaseAction", "reopenCaseAction"]) assert.match(authBody(fn), /await ctx\(caseId\)/, `${fn}: Fahrerfreigabe, Antwortfreigabe, Übermittlung, Abschluss nur Disposition`);
-  assert.match(auth, /const \{ tenant, user \} = await requireRole\("DISPO"\);\r?\n  const c = await db\.authorityCase\.findFirst/, "ctx: nur DISPO und eigener Mandant");
+  assert.match(auth, /const \{ tenant, user \} = await requireRole\("DISPO"\);\r?\n  await requireFeature\("AUTHORITIES"\);\r?\n  const c = await db\.authorityCase\.findFirst/, "ctx: nur DISPO, freigeschaltetes Modul und eigener Mandant");
   const upload = readFileSync(path.join(process.cwd(), "src/app/api/authority-cases/[id]/documents/route.ts"), "utf8");
   assert.match(upload, /roleAllows\(session\.user\.role, \["DISPO"\]\)/, "Upload zu Behördenvorgängen nur DISPO");
 });
@@ -183,4 +183,52 @@ test("Phase 19.5: Fahrerprüfung nur mit Sitzung und Rolle, Kundendaten-Übernah
 
   const pdfLib = readFileSync(path.join(process.cwd(), "src/lib/pdf/handover-pdf.ts"), "utf8");
   assert.ok(!/licenseNumberSnapshot|identityDocumentNumber/.test(pdfLib), "PDF enthält keine vollständige Ausweis- oder Führerscheinnummer");
+});
+
+/** Control Center: jede Plattform-Aktion prüft requirePlatform(<Berechtigung>) serverseitig; freischaltbare Module prüfen requireFeature/featureForApi. */
+test("Control Center: Plattform-Aktionen prüfen requirePlatform mit Berechtigung, Feature-Module prüfen requireFeature serverseitig", () => {
+  const admin = readFileSync(path.join(process.cwd(), "src/app/admin/actions.ts"), "utf8");
+  const actions = (admin.match(/export async function (\w+)/g) ?? []).map((m) => m.replace("export async function ", ""));
+  assert.ok(actions.length >= 12, `Plattform-Aktionen gefunden: ${actions.length}`);
+  const body = (name: string) => new RegExp(`export async function ${name}[\\s\\S]*?\\n}`).exec(admin)?.[0] ?? "";
+  for (const fn of actions) assert.match(body(fn), /await requirePlatform\(/, `${fn}: ohne requirePlatform`);
+  assert.ok(!/requireRole\(/.test(admin), "Plattform-Aktionen nutzen nie die Mandantenrolle");
+  const expected: [string, string][] = [
+    ["createTenantAction", "TENANT_CREATE"], ["suspendTenantAction", "TENANT_SUSPEND"], ["reactivateTenantAction", "TENANT_SUSPEND"],
+    ["startSupportSessionAction", "SUPPORT_SESSION"], ["toggleUserActiveAction", "USER_MANAGE"], ["resendInvitationPlatformAction", "USER_MANAGE"],
+    ["resendOwnerInvitationAction", "USER_MANAGE"], ["revokeOwnerInvitationAction", "USER_MANAGE"],
+    ["setPlatformRoleAction", "PLATFORM_ROLE_MANAGE"], ["setFeatureAction", "FEATURE_MANAGE"], ["saveSubscriptionAction", "BILLING_MANAGE"],
+  ];
+  for (const [fn, perm] of expected) assert.match(body(fn), new RegExp(`requirePlatform\\("${perm}"\\)`), `${fn}: braucht ${perm}`);
+  // kritische Aktionen verlangen eine ausdrückliche Bestätigung im Formular
+  assert.match(admin, /const suspendSchema = z\.object\(\{[^\n]*confirm: z\.literal\("SPERREN"/, "Sperrung: Tippbestätigung");
+  assert.match(admin, /const startSupportSchema = z\.object\(\{[^\n]*confirm: z\.literal\("on"/, "Supportmodus: Bestätigung");
+  assert.match(admin, /const roleSchema = z\.object\(\{[\s\S]*?confirm: z\.literal\("on"/, "Rollenvergabe: Bestätigung");
+  assert.match(body("toggleUserActiveAction"), /formData\.get\("confirm"\) !== "on"/, "Benutzersperre: Bestätigung");
+  // Jede /admin-Seite ruft requirePlatform auf
+  const pages: string[] = [];
+  const walkAdmin = (dir: string) => { for (const f of readdirSync(dir)) { const p = path.join(dir, f); if (statSync(p).isDirectory()) walkAdmin(p); else if (/page\.tsx$/.test(f)) pages.push(p); } };
+  walkAdmin(path.join(process.cwd(), "src", "app", "admin"));
+  assert.ok(pages.length >= 10, `Control-Center-Seiten: ${pages.length}`);
+  for (const p of pages) assert.match(readFileSync(p, "utf8"), /await requirePlatform\(/, `${path.relative(process.cwd(), p)} ohne requirePlatform`);
+  // Plattform-Auth kennt nur die Matrix, nie einzelne Rollennamen; Supportmodus über die Matrix
+  const platformAuth = readFileSync(path.join(process.cwd(), "src/lib/platform-auth.ts"), "utf8");
+  assert.match(platformAuth, /isInternalRole\(session\.user\.platformRole\)/);
+  assert.match(platformAuth, /platformAllows\(session\.user\.platformRole, permission\)/);
+  assert.match(readFileSync(path.join(process.cwd(), "src/lib/auth.ts"), "utf8"), /platformAllows\(user\.platformRole, "SUPPORT_SESSION"\)/, "Supportmodus nur für Rollen mit SUPPORT_SESSION");
+  // Feature-Gating: Modul-Layouts und alle Aktionen der freischaltbaren Module
+  const gated: [string, string][] = [
+    ["src/app/(app)/behoerden", "AUTHORITIES"], ["src/app/(app)/schaeden", "DAMAGE_CASES"], ["src/app/(app)/fahrzeuge/wartung", "MAINTENANCE"],
+    ["src/app/(app)/auszahlungen", "PAYOUTS"], ["src/app/(app)/einstellungen/e-mail", "TENANT_SMTP"], ["src/app/(app)/kunden/import", "CUSTOMER_IMPORT"],
+  ];
+  for (const [dir, key] of gated) assert.match(readFileSync(path.join(process.cwd(), dir, "layout.tsx"), "utf8"), new RegExp(`requireFeature\\("${key}"\\)`), `${dir}: Layout ohne requireFeature`);
+  for (const [file, key] of [["src/app/(app)/behoerden/actions.ts", "AUTHORITIES"], ["src/app/(app)/schaeden/[id]/actions.ts", "DAMAGE_CASES"], ["src/app/(app)/fahrzeuge/wartung/actions.ts", "MAINTENANCE"], ["src/app/(app)/auszahlungen/actions.ts", "PAYOUTS"], ["src/app/(app)/einstellungen/e-mail/actions.ts", "TENANT_SMTP"], ["src/app/(app)/buchungen/[id]/key-drop-actions.ts", "KEY_DROP"]] as const) {
+    const src = readFileSync(path.join(process.cwd(), file), "utf8");
+    const roleCalls = (src.match(/^[ \t]+.*await requireRole\(/gm) ?? []).length; // Zeilen, nicht Aufrufe (ctx mit Ternär zählt einmal)
+    const featureCalls = (src.match(new RegExp(`await requireFeature\\("${key}"\\)`, "g")) ?? []).length;
+    assert.equal(featureCalls, roleCalls, `${file}: jede Rollenprüfung wird von requireFeature("${key}") begleitet`);
+  }
+  for (const [file, key] of [["src/app/api/authority-uploads/route.ts", "AUTHORITIES"], ["src/app/api/damage-cases/[id]/documents/route.ts", "DAMAGE_CASES"], ["src/app/api/maintenance/[id]/documents/route.ts", "MAINTENANCE"], ["src/app/api/payouts/[id]/documents/route.ts", "PAYOUTS"], ["src/app/api/kunden/import/commit/route.ts", "CUSTOMER_IMPORT"]] as const) {
+    assert.match(readFileSync(path.join(process.cwd(), file), "utf8"), new RegExp(`featureForApi\\(session, "${key}"\\)`), `${file}: API-Route ohne Feature-Prüfung`);
+  }
 });
