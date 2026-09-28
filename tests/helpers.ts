@@ -39,8 +39,9 @@ export async function purgeTenants(tenantIds: string[]) {
         await tx.auditLog.deleteMany(w);
         await tx.document.deleteMany({ where: { tenantId: t, payoutId: { not: null } } });
         await tx.payout.deleteMany(w);
-        await tx.payment.deleteMany(w);
+        // Kautionsbewegungen vor Zahlungen: eine OFFSET-Bewegung verweist auf ihre Verrechnungszahlung (Befehl 20.7)
         await tx.securityDepositEvent.deleteMany(w);
+        await tx.payment.deleteMany(w);
         await tx.securityDeposit.deleteMany(w);
         await tx.vehicleEvent.deleteMany(w);
         await tx.extraCharge.deleteMany(w);

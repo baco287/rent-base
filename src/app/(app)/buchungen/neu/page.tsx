@@ -5,6 +5,7 @@ import { toDateTimeInput } from "@/lib/format";
 import { Card, Content, PageHeader } from "@/components/ui";
 import { createBookingAction } from "../actions";
 import { BookingForm } from "../booking-form";
+import { loadCustomerOption } from "../customer-option";
 import { loadBookingOptions } from "../options";
 
 export const metadata = { title: "Neue Buchung" };
@@ -12,10 +13,11 @@ export const metadata = { title: "Neue Buchung" };
 export default async function NewBookingPage({ searchParams }: PageProps<"/buchungen/neu">) {
   const { tenant } = await requireRole("DISPO");
   const sp = await searchParams;
-  const { vehicles, customers } = await loadBookingOptions(tenant.id);
+  const { vehicles } = await loadBookingOptions(tenant.id);
 
   const vehicleId = typeof sp.fahrzeug === "string" ? sp.fahrzeug : "";
   const customerId = typeof sp.kunde === "string" ? sp.kunde : "";
+  const initialCustomer = await loadCustomerOption(tenant.id, customerId);
   const v = vehicles.find((x) => x.id === vehicleId);
 
   // Vorschlag: morgen 09:00 bis übermorgen 09:00, oder der Tag aus dem Kalender
@@ -44,10 +46,12 @@ export default async function NewBookingPage({ searchParams }: PageProps<"/buchu
               endAt: toDateTimeInput(end),
               dailyRate: v?.dailyRate ?? "",
               deposit: v?.deposit ?? "",
+              kmIncludedPerDay: v?.kmIncludedPerDay ?? "",
+              extraKmRate: v?.extraKmRate ?? "",
               notes: "",
             }}
             vehicles={vehicles}
-            customers={customers}
+            initialCustomer={initialCustomer}
             allowNewCustomer
             initialPayment={{ nonce: randomUUID(), defaultWhen: toDateTimeInputValue(new Date()) }}
             submitLabel="Buchung anlegen"

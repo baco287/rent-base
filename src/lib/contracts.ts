@@ -170,8 +170,9 @@ export async function ensureContractDraft(tenantId: string, bookingId: string, a
             totalAmount: price.finalTotal,
             discountPercent: price.discountPercent,
             deposit: initialDeposit(booking, depositRule),
-            kmIncludedPerDay: booking.vehicle.kmIncludedPerDay,
-            extraKmRate: booking.vehicle.extraKmRate,
+            // Befehl 20.7: Kilometervereinbarung der Buchung (sonst Fahrzeugwert) – eine Quelle bis zur Rückgabe
+            kmIncludedPerDay: booking.kmIncludedPerDay ?? booking.vehicle.kmIncludedPerDay,
+            extraKmRate: booking.extraKmRate ?? booking.vehicle.extraKmRate,
             deductible: (resolved.values.deductibleCents ?? 0) / 100,
             fuelPolicy: resolved.values.fuelRule,
             conditions: rules as unknown as Prisma.InputJsonValue,
@@ -267,8 +268,11 @@ export async function refreshContractDraft(tx: Tx, tenantId: string, contractId:
       endAt: booking.endAt,
       totalAmount: price.finalTotal,
       discountPercent: price.discountPercent,
-      // Kilometer-Konditionen gehören zum Fahrzeug: bei Fahrzeugwechsel neu übernehmen
-      ...(vehicleChanged ? { kmIncludedPerDay: booking.vehicle.kmIncludedPerDay, extraKmRate: booking.vehicle.extraKmRate, deductible: (rules.values.deductibleCents ?? 0) / 100, fuelPolicy: rules.values.fuelRule, deposit: depositRule.cents / 100 } : {}),
+      // Kilometer-Konditionen: die Buchung ist vor Vertragsabschluss die führende Quelle (Befehl 20.7); ohne Angabe dort
+      // gilt das Fahrzeug – bei Fahrzeugwechsel entsprechend neu übernehmen
+      ...(booking.kmIncludedPerDay != null ? { kmIncludedPerDay: booking.kmIncludedPerDay } : vehicleChanged ? { kmIncludedPerDay: booking.vehicle.kmIncludedPerDay } : {}),
+      ...(booking.extraKmRate != null ? { extraKmRate: booking.extraKmRate } : vehicleChanged ? { extraKmRate: booking.vehicle.extraKmRate } : {}),
+      ...(vehicleChanged ? { deductible: (rules.values.deductibleCents ?? 0) / 100, fuelPolicy: rules.values.fuelRule, deposit: depositRule.cents / 100 } : {}),
       conditions: rules as unknown as Prisma.InputJsonValue,
       ...terms,
     },
@@ -540,7 +544,8 @@ export async function saveConditions(tenantId: string, contractId: string, input
       const conflicts = await findConflicts(tx, tenantId, booking.vehicleId, input.startAt, input.endAt, booking.id);
       if (conflicts.length > 0) throw new DomainError(`Der neue Zeitraum überschneidet sich mit Buchung ${conflicts[0].number}. ${booking.vehicle.plate} ist dann bereits vergeben.`);
     }
-    await tx.booking.update({ where: { id: booking.id }, data: { startAt: input.startAt, endAt: input.endAt, deposit: input.deposit } });
+    // Zeitraum, Kaution und Kilometervereinbarung gehören zur Buchung: dort mitschreiben, damit Buchung, Vertrag, Übergabe und Rückgabe dieselben Werte tragen
+    await tx.booking.update({ where: { id: booking.id }, data: { startAt: input.startAt, endAt: input.endAt, deposit: input.deposit, kmIncludedPerDay: Math.round(input.kmIncludedPerDay), extraKmRate: input.extraKmRate } });
     // Geschäftsregeln des Vertrags: erlaubte Schlüssel anpassen, Herkunft „Individuell angepasst“ bei Abweichung, Audit je Änderung
     const withContext = await tx.booking.findFirstOrThrow({ where: { id: c.bookingId, tenantId }, include: { customer: true, vehicle: { include: { group: true } }, tenant: true } });
     const resolved = resolveFor(withContext);

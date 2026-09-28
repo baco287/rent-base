@@ -70,9 +70,35 @@ export function ChargesTable({ doc }: { doc: HandoverDocument }) {
   );
 }
 
-/** Prüfergebnis: Fehler verhindern den Abschluss, Hinweise nicht. */
-export function HandoverIssueList({ issues, areas, okText }: { issues: HandoverIssue[]; areas?: HandoverIssue["area"][]; okText?: string }) {
-  const list = areas ? issues.filter((i) => areas.includes(i.area)) : issues;
+/** Befehl 20.7: Schadenfotos im allgemeinen Fotoschritt sichtbar – nur Anzeige der beim Schaden gespeicherten Fotos, keine zweite Speicherung. */
+export function DamagePhotosGallery({ damages, stepHref, stepLabel }: { damages: HandoverDocument["damages"]; stepHref: string; stepLabel: string }) {
+  const withPhotos = damages.filter((d) => d.marker === "NEW");
+  if (withPhotos.length === 0) return null;
+  return (
+    <Card title="Schadenfotos" right={<span className="text-xs text-ink-3">aus {stepLabel}, je Schaden gespeichert</span>}>
+      <ul className="divide-y divide-line-soft">
+        {withPhotos.map((d) => (
+          <li key={d.id} className="px-4 py-3 flex flex-col gap-2">
+            <div className="text-sm"><span className="font-medium">Schaden {d.index}</span> · {d.kindLabel} · {d.viewLabel}{d.photos.length === 0 && <span className="ml-2 chip bg-amber-soft text-amber">Foto fehlt</span>}</div>
+            {d.photos.length > 0 && (
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                {d.photos.map((p) => (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <a key={p.id} href={p.url} target="_blank" rel="noopener noreferrer"><img src={p.url} alt={`Schaden ${d.index}`} loading="lazy" className="w-full aspect-[4/3] object-cover rounded-md border border-line bg-panel-2" /></a>
+                ))}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+      <p className="px-4 pb-3 text-xs text-ink-3">Aufnehmen, ändern oder löschen: beim jeweiligen Schaden in <a href={stepHref} className="underline">{stepLabel}</a>.</p>
+    </Card>
+  );
+}
+
+/** Prüfergebnis: Fehler verhindern den Abschluss, Hinweise nicht. `codes` grenzt innerhalb der Bereiche weiter ein (Befehl 20.7: nur im passenden Schritt). */
+export function HandoverIssueList({ issues, areas, codes, okText }: { issues: HandoverIssue[]; areas?: HandoverIssue["area"][]; codes?: (code: string) => boolean; okText?: string }) {
+  const list = issues.filter((i) => (!areas || areas.includes(i.area)) && (!codes || codes(i.code)));
   const errors = list.filter((i) => i.severity === "error");
   const warnings = list.filter((i) => i.severity === "warning");
   if (list.length === 0) return okText ? <p className="rounded-md bg-good-soft text-good px-3 py-2 text-sm font-medium">{okText}</p> : null;

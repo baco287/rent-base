@@ -26,6 +26,8 @@ export type PayoutSourceSnapshot = {
   receivedCents?: number;
   retainedCents?: number;
   releasedCents?: number;
+  /** Befehl 20.7: mit einer Forderung verrechnet (Rechnung: Teil von paidCents; Kaution: verbraucht). Ältere Belege: nicht gesetzt. */
+  offsetCents?: number;
 };
 
 export type PayoutDocumentData = {

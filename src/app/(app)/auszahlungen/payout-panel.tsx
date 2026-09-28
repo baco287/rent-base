@@ -34,8 +34,10 @@ export async function PayoutPanel({ tenantId, role, sourceRef, bookingId, title 
   const heading = title ?? (kind === "INVOICE" ? "Erstattungen an den Kunden" : "Kautionsauszahlung");
   const sourceLabel = kind === "INVOICE" ? `Rechnung ${source.snapshot.invoiceNumber ?? ""}` : `Kaution zu Buchung ${source.snapshot.bookingNumber ?? ""}`;
   const paidOut = source.sourceType === "INVOICE_REFUND" ? source.invoice.completedRefundCents : source.deposit.completedPayoutCents;
-  const claim = source.sourceType === "INVOICE_REFUND" ? source.invoice.customerCreditCents : Math.max(0, Math.min(source.deposit.releasedCents, source.deposit.receivedCents - source.deposit.retainedCents));
+  const claim = source.sourceType === "INVOICE_REFUND" ? source.invoice.customerCreditCents : Math.max(0, Math.min(source.deposit.releasedCents, source.deposit.receivedCents - source.deposit.retainedCents - source.deposit.offsetCents));
   const excess = source.sourceType === "INVOICE_REFUND" ? source.invoice.refundExcessCents : source.deposit.payoutExcessCents;
+  // Befehl 20.7: Guthaben, das (auch) aus einer Kautionsverrechnung stammt – hier nur Hinweis, keine neue Regel (offene Entscheidung im Bericht)
+  const creditFromOffset = source.sourceType === "INVOICE_REFUND" && source.invoice.customerCreditCents > 0 ? Math.min(source.invoice.offsetCents, source.invoice.customerCreditCents) : 0;
 
   return (
     <Card title={heading} right={source.remainingCents > 0 ? <Chip tone="bad">noch auszuzahlen {fmtCents(source.remainingCents)}</Chip> : paidOut > 0 ? <Chip tone="good">ausgezahlt {fmtCents(paidOut)}</Chip> : <Chip>nichts auszuzahlen</Chip>}>
@@ -46,6 +48,7 @@ export async function PayoutPanel({ tenantId, role, sourceRef, bookingId, title 
           <div className={`rounded-md p-3 ${source.remainingCents > 0 ? "bg-bad-soft" : "bg-panel-2"}`}><div className="label-xs">Noch auszuzahlen</div><div className={`font-mono tnum text-lg font-semibold ${source.remainingCents > 0 ? "text-bad" : ""}`}>{fmtCents(source.remainingCents)}</div></div>
         </div>
         {excess > 0 && <p role="alert" className="rounded-md bg-amber-soft text-amber px-3 py-2 text-sm">Es wurden {fmtCents(excess)} mehr ausgezahlt, als nach heutigem Stand {kind === "INVOICE" ? "Guthaben" : "auszahlbar"} ist. Der Geldfluss bleibt historisch wahr; bitte den Fall prüfen.</p>}
+        {creditFromOffset > 0 && <p role="note" className="rounded-md bg-amber-soft text-amber px-3 py-2 text-sm">Zu dieser Rechnung wurden {fmtCents(source.sourceType === "INVOICE_REFUND" ? source.invoice.offsetCents : 0)} aus der Kaution verrechnet. Bis zu {fmtCents(creditFromOffset)} des Guthabens stammen also aus der Kaution, nicht aus einer Zahlung des Kunden. Rent-Base entscheidet nicht automatisch, ob dieser Teil als Erstattung ausgezahlt oder die Verrechnung storniert wird (Kaution wird dann wieder verfügbar) – bitte bewusst wählen.</p>}
         <p className="text-xs text-ink-3">{kind === "INVOICE" ? PAYOUT_HELP.REFUND + " " + PAYOUT_HELP.REVERSAL : PAYOUT_HELP.DEPOSIT}</p>
         {canManage && source.remainingCents > 0 && drafts.length === 0 && (
           <PayoutForm action={createPayoutAction.bind(null, sourceRef, bookingId)} preview={previewPayoutAction.bind(null, sourceRef)} sourceLabel={sourceLabel} remaining={fmtCents(source.remainingCents)} remainingCents={source.remainingCents} customerName={source.customerName} nonce={randomUUID()} defaultWhen={toDateTimeInputValue(new Date())} kind={kind} />

@@ -186,6 +186,8 @@ export type CustomerFinance = {
     /** davon Schadenabrechnungen (Schadenersatz ist kein gewöhnlicher Umsatz) */
     effectiveDamageCents: Cents;
     paidCents: Cents; openCents: Cents; creditCents: Cents; refundOpenCents: Cents; refundedCents: Cents; payoutsCompletedCents: Cents;
+    /** davon aus Kautionen verrechnet (Befehl 20.7) – Teil von paidCents, kein Geldeingang */
+    offsetCents: Cents;
   };
 };
 
@@ -199,12 +201,12 @@ export async function customerFinance(tenantId: string, customerId: string): Pro
   const finalized = invoices.filter((i) => i.status === "FINALIZED" && i.currentVersion);
   const originals = finalized.filter((i) => i.documentType === "INVOICE");
   const fin = await financialsFor(tenantId, originals.map((i) => ({ id: i.id, grossTotal: i.currentVersion!.grossTotal })));
-  const sums = { effectiveInvoiceCents: 0, invoiceCents: 0, creditedCents: 0, cancelledCents: 0, effectiveDamageCents: 0, paidCents: 0, openCents: 0, creditCents: 0, refundOpenCents: 0, refundedCents: 0, payoutsCompletedCents: 0 };
+  const sums = { effectiveInvoiceCents: 0, invoiceCents: 0, creditedCents: 0, cancelledCents: 0, effectiveDamageCents: 0, paidCents: 0, openCents: 0, creditCents: 0, refundOpenCents: 0, refundedCents: 0, payoutsCompletedCents: 0, offsetCents: 0 };
   for (const i of originals) {
     const f = fin.get(i.id)!;
     sums.invoiceCents += f.invoiceCents; sums.creditedCents += f.creditedCents; sums.cancelledCents += f.cancelledCents; sums.effectiveInvoiceCents += f.effectiveCents;
     if (i.kind === "DAMAGE") sums.effectiveDamageCents += f.effectiveCents;
-    sums.paidCents += f.paidCents; sums.openCents += f.openCents; sums.creditCents += f.customerCreditCents; sums.refundOpenCents += f.refundRemainingCents; sums.refundedCents += f.completedRefundCents;
+    sums.paidCents += f.paidCents; sums.offsetCents += f.offsetCents; sums.openCents += f.openCents; sums.creditCents += f.customerCreditCents; sums.refundOpenCents += f.refundRemainingCents; sums.refundedCents += f.completedRefundCents;
   }
   sums.payoutsCompletedCents = payouts.filter((p) => p.status === "COMPLETED").reduce((a, p) => a + p.amountCents, 0);
   return {

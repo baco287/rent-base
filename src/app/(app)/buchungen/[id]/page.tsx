@@ -11,8 +11,10 @@ import { bookingStage, canCancel } from "@/lib/booking-status";
 import { startContractAction } from "./vertrag/actions";
 import { setBookingStatusAction, updateBookingAction } from "../actions";
 import { BookingForm } from "../booking-form";
+import { customerOptionOf } from "../customer-option";
 import { loadBookingOptions } from "../options";
 import { DocumentsPanel } from "./dokumente/documents-panel";
+import { MoneyOverview } from "./finanzen/money-overview";
 import { DepositPanel, RentalPaymentsPanel } from "./finanzen/panels";
 import { DamageCasesPanel } from "../../schaeden/damages-panel";
 import { AuthorityCasesPanel } from "../../behoerden/authority-panel";
@@ -27,7 +29,8 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
 
   // Mit unterschriebenem Vertrag sind Zeitraum, Fahrzeug und Preis festgeschrieben
   const editable = (b.status === "RESERVED" || b.status === "ACTIVE") && b.contract?.status !== "SIGNED";
-  const { vehicles, customers } = editable ? await loadBookingOptions(tenant.id) : { vehicles: [], customers: [] };
+  const { vehicles } = editable ? await loadBookingOptions(tenant.id) : { vehicles: [] };
+  const initialCustomer = editable ? customerOptionOf(b.customer) : null;
   const price = calculateRentalPrice({ start: b.startAt, end: b.endAt, rates: rateCardFrom(b), discountPercent: b.customer.discountPercent });
   const overdue = b.status === "ACTIVE" && b.endAt < new Date();
 
@@ -142,11 +145,13 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                   endAt: toDateTimeInput(b.endAt),
                   dailyRate: b.dailyRate.toString().replace(".", ","),
                   deposit: b.deposit.toString().replace(".", ","),
+                  kmIncludedPerDay: String(b.kmIncludedPerDay ?? b.vehicle.kmIncludedPerDay),
+                  extraKmRate: (b.extraKmRate ?? b.vehicle.extraKmRate).toString().replace(".", ","),
                   notes: b.notes ?? "",
                   tiers: { workWeekRate: b.workWeekRate?.toString() ?? null, weeklyRate: b.weeklyRate?.toString() ?? null, monthlyRate: b.monthlyRate?.toString() ?? null },
                 }}
                 vehicles={vehicles}
-                customers={customers}
+                initialCustomer={initialCustomer}
                 submitLabel="Änderungen speichern"
                 cancelHref="/buchungen"
               />
@@ -157,11 +162,13 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                 <dt className="label-xs self-center">Fahrzeug</dt><dd><Link href={`/fahrzeuge/${b.vehicleId}`} className="hover:underline">{b.vehicle.make} {b.vehicle.model}</Link></dd>
                 <dt className="label-xs self-center">Abholung</dt><dd className="font-mono tnum">{fmtDateTime(b.startAt)}</dd>
                 <dt className="label-xs self-center">Rückgabe</dt><dd className="font-mono tnum">{fmtDateTime(b.endAt)}</dd>
+                <dt className="label-xs self-center">Kilometer</dt><dd className="font-mono tnum">{(b.kmIncludedPerDay ?? b.vehicle.kmIncludedPerDay).toLocaleString("de-DE")} km/Tag frei · {fmtEur(Number(b.extraKmRate ?? b.vehicle.extraKmRate))} je Mehrkilometer{contractSigned ? " (laut Vertrag)" : ""}</dd>
                 <dt className="label-xs self-center">Notizen</dt><dd>{b.notes || "–"}</dd>
               </dl>
             )}
           </Card>
-          {/* Mietzahlung und Kaution bleiben getrennt: eigene Bereiche, keine Verrechnung */}
+          {/* Mietzahlung und Kaution bleiben getrennt: gemeinsamer Überblick (Befehl 20.7), eigene Bereiche, keine automatische Verrechnung */}
+          <MoneyOverview tenantId={tenant.id} bookingId={b.id} role={user.role} />
           <RentalPaymentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
           {contractSigned && (
             <div id="kaution">

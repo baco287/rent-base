@@ -287,7 +287,7 @@ export const INVOICE_UNITS = ["pauschal", "Tag", "km", "l", "kWh", "h", "Stk"] a
 export const PAYMENT_METHODS = { CASH: "Barzahlung", CARD: "Kartenzahlung (extern)", BANK_TRANSFER: "Überweisung (extern)", OTHER: "Sonstige" } as const;
 export type PaymentMethod = keyof typeof PAYMENT_METHODS;
 // RENTAL_PAYMENT: Mietzahlung vor der Rechnung (an der Buchung erfasst), beim Abschluss der Mietrechnung ihr zugeordnet
-export const PAYMENT_TYPES = { INVOICE_PAYMENT: "Rechnungszahlung", OTHER_PAYMENT: "Sonstige Zahlung", RENTAL_PAYMENT: "Mietzahlung" } as const;
+export const PAYMENT_TYPES = { INVOICE_PAYMENT: "Rechnungszahlung", OTHER_PAYMENT: "Sonstige Zahlung", RENTAL_PAYMENT: "Mietzahlung", DEPOSIT_OFFSET: "Kautionsverrechnung" } as const;
 /** Mietzahlungsstatus einer Buchung, abgeleitet aus den Mietzahlungen; nie gespeichert. */
 export const RENTAL_PAYMENT_STATUS = { OPEN: "Offen", PARTIAL: "Teilweise bezahlt", PAID: "Vollständig bezahlt", OVERPAID: "Überzahlt – Erstattung klären" } as const;
 /** Auswahl im Buchungsformular. Gespeichert wird nur die Zahlungsbewegung; der Status wird daraus berechnet. */
@@ -312,8 +312,15 @@ export const INVOICE_VERSION_KINDS = { ORIGINAL: "Original", REVISION: "Neufassu
 export type InvoicePaymentStatus = keyof typeof INVOICE_PAYMENT_STATUS;
 export const DEPOSIT_STATUS = { EXPECTED: "Noch nicht erhalten", RECEIVED: "Erhalten", PARTIALLY_RELEASED: "Teilweise freigegeben", RELEASED: "Freigegeben", RETAINED: "Einbehalten" } as const;
 export type DepositStatus = keyof typeof DEPOSIT_STATUS;
-export const DEPOSIT_EVENT_TYPES = { RECEIVED: "Erhalten", RELEASED: "Freigegeben", RETAINED: "Einbehalten" } as const;
+export const DEPOSIT_EVENT_TYPES = { RECEIVED: "Erhalten", RELEASED: "Freigegeben", RETAINED: "Einbehalten", OFFSET: "Mit Forderung verrechnet" } as const;
 export type DepositEventType = keyof typeof DEPOSIT_EVENT_TYPES;
+/**
+ * Befehl 20.7: Kautionsverrechnung. Bewusst KEINE Zahlungsart in PAYMENT_METHODS (nie in Zahlungsformularen wählbar):
+ * eine Verrechnung bringt kein Geld herein, sie dokumentiert, dass bereits vereinnahmte Kaution eine Forderung deckt.
+ * Payment.type und Payment.method tragen beide diesen Wert; die Kautionsbewegung dazu ist vom Typ OFFSET.
+ */
+export const DEPOSIT_OFFSET_METHOD = "DEPOSIT_OFFSET" as const;
+export const DEPOSIT_OFFSET_LABEL = "Kautionsverrechnung";
 export const AUDIT_ACTIONS = {
   PAYMENT_RECORDED: "Zahlung erfasst",
   PAYMENT_CANCELLED: "Zahlung storniert",
@@ -322,6 +329,9 @@ export const AUDIT_ACTIONS = {
   DEPOSIT_RELEASED: "Kaution vollständig freigegeben",
   DEPOSIT_PARTIALLY_RELEASED: "Kaution teilweise freigegeben",
   DEPOSIT_RETAINED: "Kaution einbehalten",
+  // Befehl 20.7: bewusste Verrechnung erhaltener Kaution mit einer konkreten Forderung (kein Geldeingang)
+  DEPOSIT_OFFSET_APPLIED: "Kaution mit Forderung verrechnet",
+  DEPOSIT_OFFSET_CANCELLED: "Kautionsverrechnung storniert",
   DEPOSIT_CORRECTION: "Kautionsbewegung storniert",
   INVOICE_VERSION_CREATED: "Rechnungsbearbeitung begonnen",
   INVOICE_REVISED: "Rechnung neu gefasst",

@@ -11,6 +11,7 @@ import { z } from "zod";
 import { requireRole } from "@/lib/auth";
 import { PAYMENT_METHODS } from "@/lib/constants";
 import { cancelDepositEvent, previewDepositSettlement, recordDepositReceived, settleDeposit, type SettlePreview } from "@/lib/deposits";
+import { applyDepositOffset, cancelDepositOffset, previewDepositOffset, type DepositOffsetPreview } from "@/lib/deposit-offset";
 import { DomainError, isImmutableError } from "@/lib/integrity";
 import { fmtCents } from "@/lib/money";
 import { cancelPayment, previewInvoicePayment, recordInvoicePayment, type PaymentPreview } from "@/lib/payments";
@@ -145,6 +146,46 @@ export async function settleDepositAction(bookingId: string, _prev: MoneyState, 
     const released = res.events.find((e) => e.type === "RELEASED")?.amountCents ?? 0;
     const retained = res.events.find((e) => e.type === "RETAINED")?.amountCents ?? 0;
     return { ok: res.kind === "RELEASE" ? `Kaution über ${fmtCents(released)} als freigegeben dokumentiert.` : res.kind === "RETAIN" ? `Einbehalt über ${fmtCents(retained)} dokumentiert.` : `${fmtCents(released)} freigegeben, ${fmtCents(retained)} einbehalten – dokumentiert.` };
+  } catch (e) {
+    return failure(e);
+  }
+}
+
+// Befehl 20.7: Kautionsverrechnung – bewusst, bestätigt, nur Inhaber und Disposition. Kein Geldeingang.
+export async function previewDepositOffsetAction(bookingId: string, invoiceId: string, amount: string): Promise<DepositOffsetPreview | { error: string }> {
+  const { tenant } = await requireRole("DISPO");
+  try {
+    return await previewDepositOffset(tenant.id, bookingId, invoiceId, amount);
+  } catch (e) {
+    return { error: e instanceof DomainError ? e.message : "Vorschau nicht möglich." };
+  }
+}
+
+const offsetSchema = z.object({ invoiceId: z.string().min(1, "Bitte eine Rechnung wählen."), amount: z.string().trim().max(20).optional(), occurredAt: when, note: text(500), nonce });
+
+export async function applyDepositOffsetAction(bookingId: string, _prev: MoneyState, formData: FormData): Promise<MoneyState> {
+  const { tenant, user } = await requireRole("DISPO");
+  const parsed = offsetSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const occurredAt = parseLocalDateTime(parsed.data.occurredAt);
+  if (!occurredAt) return { error: "Bitte einen gültigen Zeitpunkt angeben." };
+  try {
+    const res = await applyDepositOffset(tenant.id, { id: user.id, name: user.name }, { bookingId, invoiceId: parsed.data.invoiceId, amount: parsed.data.amount || null, occurredAt, note: parsed.data.note, idempotencyKey: parsed.data.nonce });
+    refresh(bookingId);
+    return { ok: res.created ? `${fmtCents(res.payment.amountCents)} aus der Kaution mit der Forderung verrechnet. Es ist kein Geld geflossen.` : "Diese Verrechnung war bereits dokumentiert. Es wurde nichts doppelt gebucht." };
+  } catch (e) {
+    return failure(e);
+  }
+}
+
+export async function cancelDepositOffsetAction(bookingId: string, _prev: MoneyState, formData: FormData): Promise<MoneyState> {
+  const { tenant, user } = await requireRole("DISPO");
+  const parsed = cancelSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  try {
+    const res = await cancelDepositOffset(tenant.id, { id: user.id, name: user.name }, parsed.data.id, parsed.data.reason);
+    refresh(bookingId);
+    return { ok: `Verrechnung über ${fmtCents(res.payment.amountCents)} storniert. Forderung und Kaution wurden neu berechnet.` };
   } catch (e) {
     return failure(e);
   }

@@ -466,6 +466,9 @@ model Booking {
   weeklyRate     Decimal? // Snapshot Kalenderwoche (7 Tage)
   monthlyRate    Decimal? // Snapshot Monat (30 Tage)
   deposit        Decimal   @default(0)
+  // Befehl 20.7: Kilometervereinbarung bereits auf der Buchung (null = Wert des Fahrzeugs); der Vertrag friert sie ein
+  kmIncludedPerDay Int?
+  extraKmRate      Decimal?
   actualPickupAt DateTime? // gesetzt beim Finalisieren der Übergabe
   actualReturnAt DateTime? // gesetzt beim Finalisieren der Rückgabe
   notes          String?
@@ -1155,6 +1158,8 @@ model Payment {
   tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   booking Booking  @relation(fields: [bookingId], references: [id])
   invoice Invoice? @relation(fields: [invoiceId], references: [id])
+  // Befehl 20.7: Kautionsverrechnung (type DEPOSIT_OFFSET) – die Kautionsbewegung OFFSET derselben Operation
+  depositOffsetEvent SecurityDepositEvent?
 
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, invoiceId, status])
@@ -1193,15 +1198,16 @@ model SecurityDepositEvent {
   id             String   @id @default(cuid())
   tenantId       String
   depositId      String
-  type           String // RECEIVED | RELEASED | RETAINED
+  type           String // RECEIVED | RELEASED | RETAINED | OFFSET (Befehl 20.7: bewusst mit einer Forderung verrechnet)
   amountCents    Int
-  method         String? // CASH | CARD | BANK_TRANSFER | OTHER (bei RECEIVED und RELEASED)
+  method         String? // CASH | CARD | BANK_TRANSFER | OTHER (bei RECEIVED und RELEASED); OFFSET: null
   reference      String?
   reason         String? // Pflicht bei RETAINED
   note           String?
   occurredAt     DateTime
   status         String   @default("CONFIRMED") // CONFIRMED | CANCELLED
   idempotencyKey String?
+  paymentId      String?  @unique // nur OFFSET: das Payment (type DEPOSIT_OFFSET) derselben Verrechnung
   createdById    String?
   createdByName  String?
   createdAt      DateTime @default(now())
@@ -1213,6 +1219,8 @@ model SecurityDepositEvent {
 
   tenant  Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   deposit SecurityDeposit @relation(fields: [depositId], references: [id])
+  // Cascade nur für das Löschen ganzer Mandanten (Purge): eine Verrechnungszahlung wird sonst nie gelöscht (Trigger)
+  payment Payment?        @relation(fields: [paymentId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, depositId, status])

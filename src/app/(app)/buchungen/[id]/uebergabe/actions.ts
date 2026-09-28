@@ -113,16 +113,19 @@ function asResult(e: unknown): Result {
   throw e;
 }
 
-export async function addDamageAction(bookingId: string, payload: unknown): Promise<Result> {
+/** Gibt die ID des neuen Schadens zurück, damit Fotos direkt bei der Erfassung zugeordnet werden können (Befehl 20.7). */
+export async function addDamageAction(bookingId: string, payload: unknown): Promise<Result | { id: string }> {
   const { tenant, handover } = await context(bookingId);
   const parsed = damageSchema.safeParse(payload);
   if (!parsed.success) return { error: parsed.error.issues[0].message };
+  let id: string;
   try {
-    await addNewDamage(tenant.id, handover.id, parsed.data);
+    id = (await addNewDamage(tenant.id, handover.id, parsed.data)).id;
   } catch (e) {
     return asResult(e);
   }
   revalidatePath(base(bookingId));
+  return { id };
 }
 
 export async function updateDamageAction(bookingId: string, damageId: string, payload: unknown): Promise<Result> {

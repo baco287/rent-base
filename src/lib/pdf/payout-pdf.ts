@@ -63,6 +63,7 @@ export async function renderPayoutPdf(data: PayoutDocumentData, logo: Uint8Array
       { label: "Rechnungsbetrag", value: eur(s.invoiceCents) },
       { label: "Wirksame Forderung", value: eur(s.effectiveCents) },
       { label: "Zahlungen des Kunden", value: eur(s.paidCents) },
+      ...(s.offsetCents ? [{ label: "Davon aus der Kaution verrechnet", value: eur(s.offsetCents) }] : []),
       { label: "Kundenguthaben", value: eur(s.customerCreditCents) },
       { label: "Bereits ausgezahlt", value: eur(s.paidOutBeforeCents) },
     ], 2);
@@ -71,6 +72,7 @@ export async function renderPayoutPdf(data: PayoutDocumentData, logo: Uint8Array
       { label: "Vereinbarte Kaution", value: eur(s.expectedCents) },
       { label: "Erhalten", value: eur(s.receivedCents) },
       { label: "Einbehalten", value: eur(s.retainedCents) },
+      ...(s.offsetCents ? [{ label: "Mit Forderung verrechnet", value: eur(s.offsetCents) }] : []),
       { label: "Zur Rückzahlung freigegeben", value: eur(s.releasedCents) },
       { label: "Bereits ausgezahlt", value: eur(s.paidOutBeforeCents) },
     ], 2);

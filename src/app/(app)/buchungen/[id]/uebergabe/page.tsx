@@ -23,7 +23,7 @@ import {
   updateDamageAction,
 } from "./actions";
 import { DamageMap } from "./damage-map";
-import { FuelGauge, HandoverDocumentView, HandoverIssueList, PICKUP_STEPS } from "./handover-parts";
+import { DamagePhotosGallery, FuelGauge, HandoverDocumentView, HandoverIssueList, PICKUP_STEPS } from "./handover-parts";
 import { DocumentsPanel } from "../dokumente/documents-panel";
 import { FollowUpNotice } from "../dokumente/follow-up-notice";
 import { DepositNotice } from "../finanzen/panels";
@@ -227,7 +227,8 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
               ))}
               <PhotoUploader handoverId={handover.id} category="OTHER" label="Weitere Fotos" photos={generalByCategory("OTHER")} editable />
             </div>
-            <p className="text-xs text-ink-3">Die Fotos liegen in einem privaten Speicher und sind nur für angemeldete Mitarbeiter Ihrer Vermietung sichtbar. Fotos einzelner Schäden gehören in Schritt 3 zum jeweiligen Schaden.</p>
+            <DamagePhotosGallery damages={doc.damages} stepHref={`/buchungen/${b.id}/uebergabe?schritt=3`} stepLabel="Schritt 3" />
+            <p className="text-xs text-ink-3">Die Fotos liegen in einem privaten Speicher und sind nur für angemeldete Mitarbeiter Ihrer Vermietung sichtbar. Fotos einzelner Schäden gehören in Schritt 3 zum jeweiligen Schaden und werden hier nur angezeigt, nicht doppelt gespeichert.</p>
             <Card className="p-4 md:p-5"><StepForm action={navigateStepAction.bind(null, b.id, 4)} step={4} nextLabel="Weiter zur Checkliste"><span className="sr-only">Navigation</span></StepForm></Card>
           </>
         )}

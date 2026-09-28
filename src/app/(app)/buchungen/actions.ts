@@ -55,6 +55,9 @@ const bookingSchema = z
     endAt: z.preprocess(parseLocalDateTime, z.date({ message: "Bitte Rückgabe mit Datum und Uhrzeit angeben." })),
     dailyRate: num,
     deposit: num,
+    // Befehl 20.7: Kilometervereinbarung der Buchung (Vorschlag aus dem Fahrzeug, hier änderbar)
+    kmIncludedPerDay: z.preprocess((v) => (typeof v === "string" ? v.replace(/\./g, "").trim() : v), z.coerce.number({ message: "Freikilometer: bitte eine Zahl ab 0 eingeben." }).int("Freikilometer: bitte eine ganze Zahl eingeben.").min(0, "Freikilometer: bitte einen Wert ab 0 eingeben.")),
+    extraKmRate: z.preprocess((v) => (typeof v === "string" ? v.replace(",", ".").trim() : v), z.coerce.number({ message: "Mehrkilometerpreis: bitte eine Zahl ab 0 eingeben." }).min(0, "Mehrkilometerpreis: bitte einen Wert ab 0 eingeben.")),
     notes: optStr,
   })
   .refine((d) => d.endAt > d.startAt, { message: "Die Rückgabe muss nach der Abholung liegen.", path: ["endAt"] });
@@ -115,6 +118,7 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
     const b = await tx.booking.create({
       data: {
         tenantId: tenant.id, number, vehicleId: d.vehicleId, customerId, startAt: d.startAt, endAt: d.endAt, dailyRate: d.dailyRate, deposit: d.deposit, notes: d.notes ?? null,
+        kmIncludedPerDay: d.kmIncludedPerDay, extraKmRate: d.extraKmRate,
         // Preisstufen des Fahrzeugs zum Buchungszeitpunkt festhalten
         workWeekRate: refs.vehicle.workWeekRate, weeklyRate: refs.vehicle.weeklyRate, monthlyRate: refs.vehicle.monthlyRate,
       },
@@ -157,6 +161,8 @@ export async function updateBookingAction(id: string, _prev: FormState, formData
       where: { id },
       data: {
         vehicleId: d.vehicleId, customerId: d.customerId!, startAt: d.startAt, endAt: d.endAt, dailyRate: d.dailyRate, deposit: d.deposit, notes: d.notes ?? null,
+        // Kilometervereinbarung: immer der eingegebene Wert (auch bei Fahrzeugwechsel – das Formular schlägt die Fahrzeugwerte nur vor)
+        kmIncludedPerDay: d.kmIncludedPerDay, extraKmRate: d.extraKmRate,
         // Nur bei Fahrzeugwechsel die Stufen des neuen Fahrzeugs übernehmen, sonst bleibt der Snapshot der Buchung
         ...(existing.vehicleId !== d.vehicleId ? { workWeekRate: refs.vehicle.workWeekRate, weeklyRate: refs.vehicle.weeklyRate, monthlyRate: refs.vehicle.monthlyRate } : {}),
       },

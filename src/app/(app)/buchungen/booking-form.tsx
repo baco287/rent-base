@@ -6,6 +6,7 @@ import { Field, FormError } from "@/components/ui";
 import { submitWithoutReset } from "@/components/submit-without-reset";
 import type { FormState } from "./actions";
 import { CustomerFields, emptyCustomer } from "../kunden/customer-fields";
+import { CustomerPicker } from "./customer-picker";
 import { calculateRentalPrice, describePrice, toNumber } from "@/lib/pricing";
 import { PAYMENT_METHODS, RENTAL_PAYMENT_INTENTS, type RentalPaymentIntent } from "@/lib/constants";
 import { fmtCents, toCents } from "@/lib/money";
@@ -77,8 +78,9 @@ function PaymentSection({ totalCents, config }: { totalCents: number; config: In
 }
 
 export type TierRates = { workWeekRate: string | null; weeklyRate: string | null; monthlyRate: string | null };
-export type VehicleOption = { id: string; plate: string; label: string; group: string; dailyRate: string; deposit: string; status: string } & TierRates;
-export type CustomerOption = { id: string; label: string; blocked: boolean; discountPercent: number };
+export type VehicleOption = { id: string; plate: string; label: string; group: string; dailyRate: string; deposit: string; kmIncludedPerDay: string; extraKmRate: string; status: string } & TierRates;
+/** Treffer der Kundensuche bzw. vorbelegter Kunde: eindeutig durch Nummer + Name/Firma + Kontaktdaten. */
+export type CustomerOption = { id: string; label: string; number: string | null; context: string; blocked: boolean; discountPercent: number };
 
 export type BookingFormValues = {
   vehicleId: string;
@@ -87,6 +89,9 @@ export type BookingFormValues = {
   endAt: string;
   dailyRate: string;
   deposit: string;
+  /** Befehl 20.7: Kilometervereinbarung der Buchung (leer = Vorschlag aus dem Fahrzeug) */
+  kmIncludedPerDay: string;
+  extraKmRate: string;
   notes: string;
   /** Bei bestehender Buchung: die dort eingefrorenen Stufen, solange das Fahrzeug gleich bleibt. */
   tiers?: TierRates;
@@ -96,7 +101,7 @@ export function BookingForm({
   action,
   values,
   vehicles,
-  customers,
+  initialCustomer,
   submitLabel,
   cancelHref,
   allowNewCustomer = false,
@@ -105,7 +110,8 @@ export function BookingForm({
   action: (prev: FormState, fd: FormData) => Promise<FormState>;
   values: BookingFormValues;
   vehicles: VehicleOption[];
-  customers: CustomerOption[];
+  /** Vorbelegter Kunde (bestehende Buchung oder ?kunde=…); die Auswahl selbst läuft über die serverseitige Suche. */
+  initialCustomer: CustomerOption | null;
   submitLabel: string;
   cancelHref: string;
   /** Nur bei neuer Buchung: Bereich „Zahlung“ im Formular. Bestehende Buchungen erfassen Zahlungen unter „Mietzahlung“. */
@@ -115,15 +121,16 @@ export function BookingForm({
 }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   const [vehicleId, setVehicleId] = useState(values.vehicleId);
-  const [customerId, setCustomerId] = useState(values.customerId);
-  const [customerMode, setCustomerMode] = useState<"existing" | "new">(allowNewCustomer && customers.length === 0 ? "new" : "existing");
+  const [customer, setCustomer] = useState<CustomerOption | null>(initialCustomer);
+  const [customerMode, setCustomerMode] = useState<"existing" | "new">("existing");
   const [startAt, setStartAt] = useState(values.startAt);
   const [endAt, setEndAt] = useState(values.endAt);
   const [dailyRate, setDailyRate] = useState(values.dailyRate);
   const [deposit, setDeposit] = useState(values.deposit);
+  const [kmIncludedPerDay, setKmIncludedPerDay] = useState(values.kmIncludedPerDay);
+  const [extraKmRate, setExtraKmRate] = useState(values.extraKmRate);
 
   const vehicle = useMemo(() => vehicles.find((v) => v.id === vehicleId), [vehicles, vehicleId]);
-  const customer = useMemo(() => customers.find((c) => c.id === customerId), [customers, customerId]);
   const discount = customerMode === "new" ? 0 : customer?.discountPercent ?? 0;
   // Stufen: bei unverändertem Fahrzeug die der Buchung, sonst die des gewählten Fahrzeugs
   const tiers: TierRates | undefined = values.tiers && vehicleId === values.vehicleId ? values.tiers : vehicle;
@@ -141,6 +148,8 @@ export function BookingForm({
     if (v) {
       setDailyRate(v.dailyRate);
       setDeposit(v.deposit);
+      setKmIncludedPerDay(v.kmIncludedPerDay);
+      setExtraKmRate(v.extraKmRate);
     }
   }
 
@@ -171,14 +180,7 @@ export function BookingForm({
         {customerMode === "new" ? (
           <p className="text-xs text-ink-3">Die Kundendaten stehen unten im Formular und werden zusammen mit der Buchung gespeichert.</p>
         ) : (
-        <select id="customerId" name="customerId" value={customerId} onChange={(e) => setCustomerId(e.target.value)} required className="input">
-          <option value="">Bitte wählen…</option>
-          {customers.map((c) => (
-            <option key={c.id} value={c.id} disabled={c.blocked}>
-              {c.label}{c.blocked ? " (gesperrt)" : c.discountPercent ? ` · ${c.discountPercent} % Rabatt` : ""}
-            </option>
-          ))}
-        </select>
+          <CustomerPicker value={customer} onChange={setCustomer} />
         )}
       </Field>
       <Field label="Abholung" htmlFor="startAt">
@@ -192,6 +194,12 @@ export function BookingForm({
       </Field>
       <Field label="Kaution €" htmlFor="deposit">
         <input id="deposit" name="deposit" inputMode="decimal" value={deposit} onChange={(e) => setDeposit(e.target.value)} required className="input tnum" />
+      </Field>
+      <Field label="Freikilometer pro Tag" htmlFor="kmIncludedPerDay" hint="Vereinbarung dieser Buchung; wird in den Mietvertrag übernommen und bei der Rückgabe zugrunde gelegt">
+        <input id="kmIncludedPerDay" name="kmIncludedPerDay" inputMode="numeric" value={kmIncludedPerDay} onChange={(e) => setKmIncludedPerDay(e.target.value)} required className="input tnum" />
+      </Field>
+      <Field label="Preis je Mehrkilometer €" htmlFor="extraKmRate" hint="Der tatsächliche Kilometerstand wird erst bei der Übergabe erfasst">
+        <input id="extraKmRate" name="extraKmRate" inputMode="decimal" value={extraKmRate} onChange={(e) => setExtraKmRate(e.target.value)} required className="input tnum" />
       </Field>
       <Field label="Notizen" htmlFor="notes" full>
         <textarea id="notes" name="notes" defaultValue={values.notes} rows={2} className="input" placeholder="z. B. Abholung am Nebeneingang, Zusatzfahrer folgt" />

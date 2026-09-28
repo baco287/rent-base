@@ -24,7 +24,7 @@ export type PaymentRow = Prisma.PaymentGetPayload<object>;
  * grossCents = wirksame Forderung (Rechnungsbetrag − abgeschlossene Gutschriften − Storno). overpaidCents = Kundenguthaben:
  * Zahlungen über der wirksamen Forderung → Erstattung erforderlich, nie ein negativer offener Betrag (Phase 17).
  */
-export type PaymentSummary = { grossCents: Cents; paidCents: Cents; openCents: Cents; overpaidCents: Cents; status: InvoicePaymentStatus; invoiceCents: Cents; creditedCents: Cents; cancelledCents: Cents; chain: InvoiceFinancials["chain"] };
+export type PaymentSummary = { grossCents: Cents; paidCents: Cents; /** davon aus der Kaution verrechnet (Befehl 20.7), Teil von paidCents */ offsetCents: Cents; openCents: Cents; overpaidCents: Cents; status: InvoicePaymentStatus; invoiceCents: Cents; creditedCents: Cents; cancelledCents: Cents; chain: InvoiceFinancials["chain"] };
 
 /** Offen / teilbezahlt / bezahlt / überzahlt – immer aus Bruttobetrag der aktuellen Fassung und bestätigten Zahlungen. */
 export function paymentStatusOf(grossCents: Cents, paidCents: Cents): InvoicePaymentStatus {
@@ -33,11 +33,11 @@ export function paymentStatusOf(grossCents: Cents, paidCents: Cents): InvoicePay
   return paidCents >= grossCents ? "PAID" : "PARTIAL";
 }
 
-export function summarizePayment(grossCents: Cents, paidCents: Cents, extra: { invoiceCents?: Cents; creditedCents?: Cents; cancelledCents?: Cents; chain?: InvoiceFinancials["chain"] } = {}): PaymentSummary {
-  return { grossCents, paidCents, openCents: Math.max(0, grossCents - paidCents), overpaidCents: Math.max(0, paidCents - grossCents), status: paymentStatusOf(grossCents, paidCents), invoiceCents: extra.invoiceCents ?? grossCents, creditedCents: extra.creditedCents ?? 0, cancelledCents: extra.cancelledCents ?? 0, chain: extra.chain ?? "NONE" };
+export function summarizePayment(grossCents: Cents, paidCents: Cents, extra: { invoiceCents?: Cents; creditedCents?: Cents; cancelledCents?: Cents; chain?: InvoiceFinancials["chain"]; offsetCents?: Cents } = {}): PaymentSummary {
+  return { grossCents, paidCents, offsetCents: extra.offsetCents ?? 0, openCents: Math.max(0, grossCents - paidCents), overpaidCents: Math.max(0, paidCents - grossCents), status: paymentStatusOf(grossCents, paidCents), invoiceCents: extra.invoiceCents ?? grossCents, creditedCents: extra.creditedCents ?? 0, cancelledCents: extra.cancelledCents ?? 0, chain: extra.chain ?? "NONE" };
 }
 
-const fromFinancials = (f: InvoiceFinancials): PaymentSummary => summarizePayment(f.effectiveCents, f.paidCents, { invoiceCents: f.invoiceCents, creditedCents: f.creditedCents, cancelledCents: f.cancelledCents, chain: f.chain });
+const fromFinancials = (f: InvoiceFinancials): PaymentSummary => summarizePayment(f.effectiveCents, f.paidCents, { invoiceCents: f.invoiceCents, creditedCents: f.creditedCents, cancelledCents: f.cancelledCents, chain: f.chain, offsetCents: f.offsetCents });
 
 /** Wirksame Forderung, bezahlt, offen, Guthaben und Status – zentral aus Fassung, Gegenbelegen und bestätigten Zahlungen. */
 export async function invoicePaymentSummary(tenantId: string, invoiceId: string, tx: Tx | typeof db = db): Promise<PaymentSummary> {
@@ -181,6 +181,8 @@ export async function cancelPayment(tenantId: string, actor: Actor, paymentId: s
     if (locked.length === 0) throw new DomainError("Zahlung nicht gefunden.");
     if (locked[0].status !== "CONFIRMED") throw new DomainError("Diese Zahlung ist bereits storniert.");
     const row = await tx.payment.findUniqueOrThrow({ where: { id: paymentId } });
+    // Befehl 20.7: eine Kautionsverrechnung hat zwei Seiten und wird nur gemeinsam storniert (deposit-offset.ts)
+    if (row.type === "DEPOSIT_OFFSET") throw new DomainError("Dieser Eintrag ist eine Kautionsverrechnung. Bitte „Verrechnung stornieren“ verwenden; damit werden Rechnung und Kaution gemeinsam korrigiert.");
     if (row.invoiceId) {
       // Zahlung = Geld rein, Erstattung = Geld raus: ein Storno der Zahlung darf bereits ausgezahlte Erstattungen nicht ohne Deckung lassen
       await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${row.invoiceId} FOR UPDATE`;

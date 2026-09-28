@@ -1,15 +1,17 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { DAMAGE_KINDS, DAMAGE_SEVERITY } from "@/lib/constants";
 import { SKETCH_CANVAS_WIDTH, type DamageSymbol, type DocDamage, type SketchInfo } from "@/lib/handover-view";
-import { PhotoUploader } from "./photo-uploader";
+import { PhotoUploader, uploadHandoverPhoto } from "./photo-uploader";
 
 export type DamagePayload = { view: string; posX: number; posY: number; kind: string; severity: string; size: string; description: string };
 type Result = { error?: string } | undefined;
 
 export type DamageActions = {
-  add: (payload: DamagePayload) => Promise<Result>;
+  /** liefert die ID des neuen Schadens, damit Fotos direkt bei der Erfassung zugeordnet werden (Befehl 20.7) */
+  add: (payload: DamagePayload) => Promise<Result | { id: string }>;
   update: (damageId: string, payload: Partial<DamagePayload>) => Promise<Result>;
   remove: (damageId: string) => Promise<Result>;
 };
@@ -44,15 +46,24 @@ export function legendFor(type: "PICKUP" | "RETURN"): { symbol: DamageSymbol; te
  * Kreis = vor der Miete bekannt, Raute = bei Übergabe dokumentierter Vorschaden, Dreieck = bei Rückgabe festgestellt.
  * So sind die Einstufungen auch ohne Farbe unterscheidbar.
  */
-export function DamageMap({ sketch, damages, handoverId, editable, actions, pickup, type, title }: { sketch: SketchInfo | null; damages: DocDamage[]; handoverId: string; editable: boolean; actions?: DamageActions; pickup?: boolean; type?: "PICKUP" | "RETURN"; title?: string }) {
+/**
+ * activeView/onViewChange (Befehl 20.7): die gewählte Fahrzeugansicht kann von außen geführt werden, damit der Vergleich
+ * „Übergabe vorher / Rückgabe jetzt“ auf beiden Skizzen dieselbe Ansicht zeigt.
+ */
+export function DamageMap({ sketch, damages, handoverId, editable, actions, pickup, type, title, activeView, onViewChange }: { sketch: SketchInfo | null; damages: DocDamage[]; handoverId: string; editable: boolean; actions?: DamageActions; pickup?: boolean; type?: "PICKUP" | "RETURN"; title?: string; activeView?: string; onViewChange?: (key: string) => void }) {
+  const router = useRouter();
   const kind: "PICKUP" | "RETURN" = type ?? (pickup === false ? "RETURN" : "PICKUP");
   const views = sketch?.views ?? [];
-  const [viewKey, setViewKey] = useState(views[0]?.key ?? "FRONT");
+  const [internalView, setInternalView] = useState(views[0]?.key ?? "FRONT");
+  const viewKey = activeView ?? internalView;
+  const setViewKey = (key: string) => { setInternalView(key); onViewChange?.(key); };
   const [selected, setSelected] = useState<string | null>(null);
   const [pending, setPending] = useState<{ view: string; posX: number; posY: number } | null>(null);
   const [moving, setMoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, startTransition] = useTransition();
+  // Fotos, die beim Speichern eines neuen Schadens nicht hochgeladen werden konnten: bleiben zum erneuten Versuch erhalten
+  const [retry, setRetry] = useState<{ damageId: string; files: File[] } | null>(null);
 
   const view = views.find((v) => v.key === viewKey) ?? views[0];
   const current = damages.find((d) => d.id === selected) ?? null;
@@ -65,6 +76,35 @@ export function DamageMap({ sketch, damages, handoverId, editable, actions, pick
       const res = await fn();
       if (res?.error) setError(res.error);
       else after?.();
+    });
+  }
+
+  /** Fotos nacheinander dem Schaden zuordnen; scheitert eines, bleibt der Schaden gespeichert und die Dateien bleiben zum erneuten Versuch. */
+  async function uploadDamagePhotos(damageId: string, files: File[]) {
+    const failed: File[] = [];
+    let lastError = "";
+    for (const f of files) {
+      try { await uploadHandoverPhoto(handoverId, f, "DAMAGE", damageId); } catch (e) { failed.push(f); lastError = (e as Error).message; }
+    }
+    if (failed.length > 0) {
+      setRetry({ damageId, files: failed });
+      setError(`Der Schaden ist gespeichert, aber ${failed.length === 1 ? "ein Foto konnte" : `${failed.length} Fotos konnten`} nicht hochgeladen werden: ${lastError} Die Aufnahmen sind nicht verloren – bitte „Fotos erneut hochladen“.`);
+    } else setRetry(null);
+    router.refresh();
+  }
+
+  function addWithPhotos(values: { kind: string; severity: string; size: string; description: string }, files: File[]) {
+    if (!pending || !actions) return;
+    setError(null);
+    startTransition(async () => {
+      const res = await actions.add({ ...pending, ...values });
+      if (res && "error" in res && res.error) { setError(res.error); return; }
+      const id = res && "id" in res ? res.id : null;
+      setPending(null);
+      if (id) {
+        setSelected(id);
+        if (files.length > 0) await uploadDamagePhotos(id, files);
+      }
     });
   }
 
@@ -89,13 +129,18 @@ export function DamageMap({ sketch, damages, handoverId, editable, actions, pick
     <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-4 items-start">
       <div className="flex flex-col gap-2.5">
         {title && <div className="font-semibold text-sm">{title}</div>}
-        <div role="tablist" aria-label="Fahrzeugansicht" className="flex gap-1.5 overflow-x-auto pb-0.5">
-          {views.map((v) => (
-            <button key={v.key} type="button" role="tab" aria-selected={v.key === view.key} onClick={() => { setViewKey(v.key); setPending(null); }} className={`btn !py-2 shrink-0 ${v.key === view.key ? "!bg-brand !text-brand-ink !border-brand" : ""}`}>
-              {v.label}
-              {countFor(v.key) > 0 && <span className={`ml-1 rounded-full px-1.5 text-[11px] ${v.key === view.key ? "bg-white/25" : "bg-panel-2"}`}>{countFor(v.key)}</span>}
-            </button>
-          ))}
+        {/* Fahrzeugbereiche als Raster: sofort erkennbar und mit dem Daumen erreichbar (kein seitliches Scrollen), Anzahl je Bereich */}
+        <div role="tablist" aria-label="Fahrzeugansicht" className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+          {views.map((v) => {
+            const n = countFor(v.key);
+            const on = v.key === view.key;
+            return (
+              <button key={v.key} type="button" role="tab" aria-selected={on} onClick={() => { setViewKey(v.key); setPending(null); }} className={`flex flex-col items-center justify-center gap-0.5 rounded-md border px-2 py-2 min-h-[52px] text-sm font-medium ${on ? "bg-brand text-brand-ink border-brand" : "bg-panel border-line hover:bg-panel-2/60"}`}>
+                <span>{v.label}</span>
+                <span className={`text-[11px] font-normal ${on ? "text-brand-ink/80" : n > 0 ? "text-ink-2" : "text-ink-3"}`}>{n === 0 ? "keine Schäden" : n === 1 ? "1 Schaden" : `${n} Schäden`}</span>
+              </button>
+            );
+          })}
         </div>
 
         <div className="rounded-lg border border-line bg-white p-2">
@@ -167,8 +212,17 @@ export function DamageMap({ sketch, damages, handoverId, editable, actions, pick
             busy={busy}
             submitLabel="Schaden speichern"
             onCancel={() => setPending(null)}
-            onSubmit={(v) => run(() => actions.add({ ...pending, ...v }), () => setPending(null))}
+            withPhotos
+            onSubmit={(v, files) => addWithPhotos(v, files ?? [])}
           />
+        )}
+
+        {retry && current && retry.damageId === current.id && (
+          <div className="rounded-md bg-amber-soft px-3 py-2.5 text-sm flex flex-wrap items-center gap-2">
+            <span className="text-amber">{retry.files.length === 1 ? "1 Foto" : `${retry.files.length} Fotos`} noch nicht hochgeladen.</span>
+            <button type="button" className="btn !py-1.5" disabled={busy} onClick={() => startTransition(async () => { await uploadDamagePhotos(retry.damageId, retry.files); })}>Fotos erneut hochladen</button>
+            <button type="button" className="text-xs underline text-ink-3" onClick={() => setRetry(null)}>Verwerfen</button>
+          </div>
         )}
 
         {current && !pending && (
@@ -210,8 +264,9 @@ export function DamageMap({ sketch, damages, handoverId, editable, actions, pick
           </div>
         )}
 
-        <div className="card">
-          <div className="px-3.5 py-2.5 border-b border-line-soft font-semibold text-sm">Alle Schäden ({damages.length})</div>
+        {/* Liste aller Schäden – bewusst von den Fahrzeugansichten abgesetzt: sie ist keine Fahrzeugseite */}
+        <div className="card border-dashed">
+          <div className="px-3.5 py-2.5 border-b border-line-soft bg-panel-2/60 flex items-center gap-2"><span className="font-semibold text-sm">Liste aller Schäden</span><span className="chip bg-panel-2 text-ink-2">{damages.length}</span><span className="text-[11px] text-ink-3">alle Ansichten</span></div>
           {damages.length === 0 ? (
             <p className="px-3.5 py-3 text-sm text-ink-3">Keine Schäden dokumentiert.</p>
           ) : (
@@ -236,16 +291,24 @@ export function DamageMap({ sketch, damages, handoverId, editable, actions, pick
   );
 }
 
-function DamageEditor({ title, initial, busy, submitLabel, onSubmit, onCancel, bare = false }: { title?: string; initial?: { kind: string; severity: string; size: string; description: string }; busy: boolean; submitLabel: string; onSubmit: (v: { kind: string; severity: string; size: string; description: string }) => void; onCancel?: () => void; bare?: boolean }) {
+/**
+ * withPhotos (Befehl 20.7): bei der Neuanlage können Fotos direkt aufgenommen oder ausgewählt werden; sie werden nach dem
+ * Speichern des Schadens diesem zugeordnet (dieselbe Speicherlogik wie „Fotos des Schadens“, keine doppelte Ablage).
+ */
+function DamageEditor({ title, initial, busy, submitLabel, onSubmit, onCancel, bare = false, withPhotos = false }: { title?: string; initial?: { kind: string; severity: string; size: string; description: string }; busy: boolean; submitLabel: string; onSubmit: (v: { kind: string; severity: string; size: string; description: string }, files?: File[]) => void; onCancel?: () => void; bare?: boolean; withPhotos?: boolean }) {
   const [kind, setKind] = useState(initial?.kind ?? "SCRATCH");
   const [severity, setSeverity] = useState(initial?.severity ?? "MINOR");
   const [size, setSize] = useState(initial?.size ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
+  const [files, setFiles] = useState<File[]>([]);
+  const cameraInput = useRef<HTMLInputElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const addFiles = (list: FileList | null) => { if (list) setFiles((f) => [...f, ...Array.from(list)]); };
   const body = (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        onSubmit({ kind, severity, size, description });
+        onSubmit({ kind, severity, size, description }, withPhotos ? files : undefined);
       }}
       className="flex flex-col gap-2.5"
     >
@@ -264,6 +327,32 @@ function DamageEditor({ title, initial, busy, submitLabel, onSubmit, onCancel, b
       <label className="flex flex-col gap-1"><span className="label-xs">Beschreibung</span>
         <textarea value={description} onChange={(e) => setDescription(e.target.value)} required minLength={3} rows={2} className="input" placeholder="z. B. Kratzer an der Stoßstange unten links" />
       </label>
+      {withPhotos && (
+        <div className={`rounded-lg border p-2.5 flex flex-col gap-2 ${files.length === 0 ? "border-amber bg-amber-soft/40" : "border-line bg-panel"}`}>
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium text-[13px]">Fotos <span className="text-ink-3 font-normal">· mindestens ein Foto ist Pflicht</span></span>
+            {files.length > 0 ? <span className="chip bg-good-soft text-good">{files.length}</span> : <span className="chip bg-amber-soft text-amber">fehlt</span>}
+          </div>
+          {files.length > 0 && (
+            <ul className="grid grid-cols-3 gap-2">
+              {files.map((f, i) => (
+                <li key={`${f.name}-${i}`} className="relative">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={URL.createObjectURL(f)} alt={`Foto ${i + 1}`} className="w-full aspect-[4/3] object-cover rounded-md border border-line bg-panel-2" onLoad={(e) => URL.revokeObjectURL((e.target as HTMLImageElement).src)} />
+                  <button type="button" onClick={() => setFiles((all) => all.filter((_, j) => j !== i))} aria-label={`Foto ${i + 1} entfernen`} className="absolute top-1 right-1 size-7 rounded-full bg-black/60 text-white text-sm leading-none">×</button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <input ref={cameraInput} type="file" accept="image/*" capture="environment" className="sr-only" onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} aria-label="Foto aufnehmen" />
+          <input ref={fileInput} type="file" accept="image/*" multiple className="sr-only" onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} aria-label="Foto auswählen" />
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" onClick={() => cameraInput.current?.click()} disabled={busy} className="btn justify-center !py-2.5">Foto aufnehmen</button>
+            <button type="button" onClick={() => fileInput.current?.click()} disabled={busy} className="btn justify-center !py-2.5">Foto auswählen</button>
+          </div>
+          <p className="text-[11px] text-ink-3">Die Fotos werden beim Speichern direkt diesem Schaden zugeordnet. Ohne Foto kann das Protokoll nicht abgeschlossen werden; die Schadendaten gehen bei einem Uploadproblem nicht verloren.</p>
+        </div>
+      )}
       <div className="flex gap-2">
         <button type="submit" disabled={busy} className="btn btn-primary">{busy ? "Wird gespeichert…" : submitLabel}</button>
         {onCancel && <button type="button" onClick={onCancel} className="btn">Abbrechen</button>}

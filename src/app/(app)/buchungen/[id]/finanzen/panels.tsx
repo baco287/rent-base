@@ -4,18 +4,20 @@ import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { Card, Chip } from "@/components/ui";
-import { DEPOSIT_EVENT_TYPES, DEPOSIT_STATUS, INVOICE_PAYMENT_STATUS, PAYMENT_METHODS, RENTAL_PAYMENT_STATUS, type DepositEventType, type PaymentMethod, invoiceKindWord, isSideInvoice } from "@/lib/constants";
+import { DEPOSIT_EVENT_TYPES, DEPOSIT_OFFSET_LABEL, DEPOSIT_OFFSET_METHOD, DEPOSIT_STATUS, INVOICE_PAYMENT_STATUS, PAYMENT_METHODS, RENTAL_PAYMENT_STATUS, type DepositEventType, type PaymentMethod, invoiceKindWord, isSideInvoice } from "@/lib/constants";
 import { depositView } from "@/lib/deposits";
+import { depositOffsetOptions } from "@/lib/deposit-offset";
 import { fmtDateTime, fmtEur } from "@/lib/format";
 import { fmtCents } from "@/lib/money";
 import { invoicePaymentSummary, listInvoicePayments, type PaymentSummary } from "@/lib/payments";
 import { listRentalPayments, rentalPaymentSummary, type RentalPaymentSummary } from "@/lib/rental-payments";
 import { toDateTimeInputValue } from "@/lib/time";
-import { cancelDepositEventAction, cancelPaymentAction, previewDepositSettleAction, previewPaymentAction, previewRentalPaymentAction, recordDepositReceivedAction, recordPaymentAction, recordRentalPaymentAction, settleDepositAction } from "./actions";
-import { DepositReceiveForm, DepositSettleForm, PaymentForm, ReasonForm } from "./money-forms";
+import { applyDepositOffsetAction, cancelDepositEventAction, cancelDepositOffsetAction, cancelPaymentAction, previewDepositOffsetAction, previewDepositSettleAction, previewPaymentAction, previewRentalPaymentAction, recordDepositReceivedAction, recordPaymentAction, recordRentalPaymentAction, settleDepositAction } from "./actions";
+import { DepositOffsetForm, DepositReceiveForm, DepositSettleForm, PaymentForm, ReasonForm } from "./money-forms";
 import { PayoutPanel } from "../../../auszahlungen/payout-panel";
 
-const methodLabel = (m: string | null) => (m ? PAYMENT_METHODS[m as PaymentMethod] ?? m : "–");
+// Befehl 20.7: eine Kautionsverrechnung ist keine Bar-/Bankzahlung – eigene Bezeichnung in jeder Historie
+const methodLabel = (m: string | null) => (m ? (m === DEPOSIT_OFFSET_METHOD ? DEPOSIT_OFFSET_LABEL : PAYMENT_METHODS[m as PaymentMethod] ?? m) : "–");
 
 export function PaymentStatusChip({ status }: { status: PaymentSummary["status"] }) {
   const tone = status === "PAID" ? "good" : status === "PARTIAL" ? "amber" : "bad";
@@ -51,7 +53,7 @@ export async function PaymentsPanel({ tenantId, bookingId, role, compact = false
         )}
         <div className="grid grid-cols-3 gap-2 text-sm">
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">{summary.chain === "NONE" ? "Rechnungsbetrag" : "Forderung nach Gegenbelegen"}</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(summary.grossCents)}</div></div>
-          <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Bezahlt</div><div className="font-mono tnum text-lg font-semibold text-good">{fmtCents(summary.paidCents)}</div></div>
+          <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Bezahlt</div><div className="font-mono tnum text-lg font-semibold text-good">{fmtCents(summary.paidCents)}</div>{summary.offsetCents > 0 && <div className="text-[11px] text-ink-3">davon {fmtCents(summary.offsetCents)} aus Kaution verrechnet</div>}</div>
           {summary.status === "OVERPAID" ? (
             <div className="rounded-md bg-bad-soft p-3"><div className="label-xs">Kundenguthaben</div><div className="font-mono tnum text-lg font-semibold text-bad">{fmtCents(summary.overpaidCents)}</div></div>
           ) : (
@@ -73,17 +75,19 @@ export async function PaymentsPanel({ tenantId, bookingId, role, compact = false
                 <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
                   <div className="flex flex-wrap items-baseline gap-x-2">
                     <span className="font-mono tnum text-xs text-ink-3">{fmtDateTime(p.paidAt)}</span>
-                    <span>{methodLabel(p.method)}</span>
+                    {p.type === "DEPOSIT_OFFSET" ? <Chip tone="info">{DEPOSIT_OFFSET_LABEL}</Chip> : <span>{methodLabel(p.method)}</span>}
                     {p.reference && <span className="text-ink-3">· {p.reference}</span>}
                   </div>
                   <span className={`font-mono tnum font-semibold ${p.status === "CANCELLED" ? "line-through text-ink-3" : ""}`}>{fmtCents(p.amountCents)}</span>
                 </div>
                 <div className="text-xs text-ink-3 flex flex-wrap gap-x-2">
-                  <span>erfasst von {p.createdByName ?? "–"} am {fmtDateTime(p.createdAt)}</span>
+                  <span>{p.type === "DEPOSIT_OFFSET" ? "verrechnet" : "erfasst"} von {p.createdByName ?? "–"} am {fmtDateTime(p.createdAt)}</span>
+                  {p.type === "DEPOSIT_OFFSET" && <span>· kein Geldeingang, aus der erhaltenen Kaution</span>}
                   {p.note && <span>· {p.note}</span>}
                 </div>
                 {p.status === "CANCELLED" && <div className="text-xs text-bad">Storniert am {fmtDateTime(p.cancelledAt)} von {p.cancelledByName ?? "–"}: {p.cancellationReason}</div>}
-                {p.status === "CONFIRMED" && canManage && <ReasonForm action={cancelPaymentAction.bind(null, bookingId)} id={p.id} label="Zahlung stornieren" question={`Zahlung über ${fmtCents(p.amountCents)} (${methodLabel(p.method)}) stornieren?`} />}
+                {p.status === "CONFIRMED" && canManage && p.type !== "DEPOSIT_OFFSET" && <ReasonForm action={cancelPaymentAction.bind(null, bookingId)} id={p.id} label="Zahlung stornieren" question={`Zahlung über ${fmtCents(p.amountCents)} (${methodLabel(p.method)}) stornieren?`} />}
+                {p.status === "CONFIRMED" && canManage && p.type === "DEPOSIT_OFFSET" && <ReasonForm action={cancelDepositOffsetAction.bind(null, bookingId)} id={p.id} label="Verrechnung stornieren" question={`Kautionsverrechnung über ${fmtCents(p.amountCents)} stornieren? Die Forderung ist danach wieder offen, die Kaution wieder verfügbar.`} />}
               </li>
             ))}
           </ul>
@@ -176,14 +180,17 @@ export async function DepositPanel({ tenantId, bookingId, role, charges }: { ten
   const afterReturn = v.bookingStatus === "RETURNED" || v.bookingStatus === "CANCELLED";
   const nonce = randomUUID();
   const now = toDateTimeInputValue(new Date());
+  // Befehl 20.7: bewusste Verrechnung mit einer offenen Forderung – nur nach Rückgabe, nur mit verfügbarer Kaution
+  const offset = afterReturn && canDecide && v.remainingCents > 0 ? await depositOffsetOptions(tenantId, bookingId) : null;
   return (
     <Card title="Kaution" right={<Chip tone={depositTone(v.status)}>{DEPOSIT_STATUS[v.status]}</Chip>}>
       <div className="p-4 flex flex-col gap-4">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
+        <div className={`grid grid-cols-2 ${v.offsetCents > 0 ? "sm:grid-cols-5" : "sm:grid-cols-4"} gap-2 text-sm`}>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Vereinbart</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(v.expectedCents)}</div><div className="text-[11px] text-ink-3">laut {v.contractNumber}</div></div>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Erhalten</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(v.receivedCents)}</div></div>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Freigegeben</div><div className="font-mono tnum text-lg font-semibold text-good">{fmtCents(v.releasedCents)}</div></div>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Einbehalten</div><div className="font-mono tnum text-lg font-semibold text-bad">{fmtCents(v.retainedCents)}</div></div>
+          {v.offsetCents > 0 && <div className="rounded-md bg-info-soft p-3"><div className="label-xs">Verrechnet</div><div className="font-mono tnum text-lg font-semibold text-info">{fmtCents(v.offsetCents)}</div><div className="text-[11px] text-ink-3">mit Forderungen, kein Einbehalt</div></div>}
         </div>
         {(v.releasedCents > 0 || v.completedPayoutCents > 0) && (
           <div className="grid grid-cols-3 gap-2 text-sm">
@@ -207,7 +214,13 @@ export async function DepositPanel({ tenantId, bookingId, role, charges }: { ten
             <div className="label-xs">Zur Einordnung (keine Verrechnung)</div>
             {charges && <div className="flex justify-between"><span>Bestätigte Zusatzkosten der Rückgabe ({charges.count})</span><span className="font-mono tnum">{fmtEur(charges.total)}</span></div>}
             {invoices.map((i) => <div key={i.id} className="flex justify-between"><span>{invoiceKindWord(i.kind)} {i.number}</span><span className="font-mono tnum">{fmtEur(Number(i.currentVersion?.grossTotal ?? i.grossTotal))}</span></div>)}
-            <p className="text-xs text-ink-3">Rent-Base verrechnet die Kaution nicht automatisch mit Zusatzkosten, Rechnungen oder Schadenabrechnungen. Freigabe und Einbehalt sind eine dokumentierte Entscheidung des Mitarbeiters.</p>
+            <p className="text-xs text-ink-3">Rent-Base verrechnet die Kaution nie automatisch mit Zusatzkosten, Rechnungen oder Schadenabrechnungen. Eine Verrechnung gibt es nur als bewusste Aktion „Aus Kaution verrechnen“ gegen eine konkrete Rechnung; Freigabe und Einbehalt sind davon getrennte, dokumentierte Entscheidungen.</p>
+          </div>
+        )}
+        {offset && !offset.blockedReason && offset.invoices.length > 0 && (
+          <div className="flex flex-col gap-2">
+            <div className="text-sm">Offene Forderung{offset.invoices.length > 1 ? "en" : ""}: {offset.invoices.map((i) => `${i.number} (${fmtCents(i.openCents)})`).join(", ")} · verfügbare Kaution <span className="font-mono tnum font-semibold">{fmtCents(offset.availableCents)}</span></div>
+            <DepositOffsetForm action={applyDepositOffsetAction.bind(null, bookingId)} preview={previewDepositOffsetAction} bookingId={bookingId} nonce={`${nonce}-offset`} invoices={offset.invoices} availableCents={offset.availableCents} defaultWhen={now} />
           </div>
         )}
         {afterReturn && v.remainingCents > 0 && canDecide && (
@@ -231,12 +244,12 @@ export async function DepositPanel({ tenantId, bookingId, role, charges }: { ten
                     {e.method && <span className="text-ink-3">· {methodLabel(e.method)}</span>}
                     {e.reference && <span className="text-ink-3">· {e.reference}</span>}
                   </div>
-                  <span className={`font-mono tnum font-semibold ${e.status === "CANCELLED" ? "line-through text-ink-3" : e.type === "RETAINED" ? "text-bad" : e.type === "RELEASED" ? "text-good" : ""}`}>{fmtCents(e.amountCents)}</span>
+                  <span className={`font-mono tnum font-semibold ${e.status === "CANCELLED" ? "line-through text-ink-3" : e.type === "RETAINED" ? "text-bad" : e.type === "RELEASED" ? "text-good" : e.type === "OFFSET" ? "text-info" : ""}`}>{fmtCents(e.amountCents)}</span>
                 </div>
                 {e.reason && <div className="text-xs">Grund: {e.reason}</div>}
-                <div className="text-xs text-ink-3 flex flex-wrap gap-x-2"><span>dokumentiert von {e.createdByName ?? "–"} am {fmtDateTime(e.createdAt)}</span>{e.note && <span>· {e.note}</span>}</div>
+                <div className="text-xs text-ink-3 flex flex-wrap gap-x-2"><span>dokumentiert von {e.createdByName ?? "–"} am {fmtDateTime(e.createdAt)}</span>{e.type === "OFFSET" && <span>· kein Geldfluss, Storno unter „Zahlungen“</span>}{e.note && <span>· {e.note}</span>}</div>
                 {e.status === "CANCELLED" && <div className="text-xs text-bad">Storniert am {fmtDateTime(e.cancelledAt)} von {e.cancelledByName ?? "–"}: {e.cancellationReason}</div>}
-                {e.status === "CONFIRMED" && canDecide && <ReasonForm action={cancelDepositEventAction.bind(null, bookingId)} id={e.id} label="Bewegung korrigieren (Storno)" question={`${DEPOSIT_EVENT_TYPES[e.type as DepositEventType]} über ${fmtCents(e.amountCents)} stornieren?`} />}
+                {e.status === "CONFIRMED" && canDecide && e.type !== "OFFSET" && <ReasonForm action={cancelDepositEventAction.bind(null, bookingId)} id={e.id} label="Bewegung korrigieren (Storno)" question={`${DEPOSIT_EVENT_TYPES[e.type as DepositEventType]} über ${fmtCents(e.amountCents)} stornieren?`} />}
               </li>
             ))}
           </ul>

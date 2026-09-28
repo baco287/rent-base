@@ -17,7 +17,8 @@ import { FUELS, PHOTO_CATEGORIES, REQUIRED_PHOTO_CATEGORIES, energyRequirements,
 import { customerName, fmtDateTime, fmtEur, fmtInt } from "@/lib/format";
 import { BookingStageChip, Card, Chip, Content, Field, PageHeader, Plate } from "@/components/ui";
 import { FinalizeForm, SignatureForm, StepForm, WizardProgress } from "../vertrag/wizard-ui";
-import { FuelGauge, HandoverDocumentView, HandoverIssueList, KeyDropCustomerCard, RETURN_STEPS } from "../uebergabe/handover-parts";
+import { DamagePhotosGallery, FuelGauge, HandoverDocumentView, HandoverIssueList, KeyDropCustomerCard, RETURN_STEPS } from "../uebergabe/handover-parts";
+import { ReadingsIssueList } from "../uebergabe/readings-issues";
 import { PhotoUploader } from "../uebergabe/photo-uploader";
 import { DocumentsPanel } from "../dokumente/documents-panel";
 import { DamageCasesPanel } from "../../../schaeden/damages-panel";
@@ -243,7 +244,8 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
                 </div>
               </Card>
             )}
-            <HandoverIssueList issues={issues} areas={["READINGS"]} />
+            {/* Befehl 20.7: nur Kilometer-Punkte in diesem Schritt; Tank/Batterie gehören zu Schritt 3 */}
+            <ReadingsIssueList issues={issues.filter((i) => i.area === "READINGS" && i.code.startsWith("MILEAGE"))} watch={["mileage"]} />
             <Card className="p-4 md:p-5">
               <StepForm action={saveMileageAction.bind(null, b.id)} step={2}>
                 <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr] gap-4 items-start">
@@ -279,7 +281,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
 
         {step === 3 && (
           <>
-            <HandoverIssueList issues={issues} areas={["READINGS"]} />
+            <ReadingsIssueList issues={issues.filter((i) => i.area === "READINGS" && (i.code.startsWith("FUEL") || i.code.startsWith("BATTERY")))} watch={["fuel", "battery"]} />
             {isKeyDrop && findingList(["ENERGY"])}
             {isKeyDrop && (kdRaw?.customerFuelEighths != null || kdRaw?.customerBatteryPercent != null) && customerSays([kdRaw?.customerFuelEighths != null ? `Tank ${kdRaw.customerFuelEighths}/8` : null, kdRaw?.customerBatteryPercent != null ? `Batterie ${kdRaw.customerBatteryPercent} %` : null].filter(Boolean).join(", "))}
             <Card className="p-4 md:p-5">
@@ -360,7 +362,8 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
               returnPhotos={Object.fromEntries(REQUIRED_PHOTO_CATEGORIES.map((c) => [c, byCategory(doc, c)]))}
             />
             <div className="max-w-sm"><PhotoUploader handoverId={handover.id} category="OTHER" label="Weitere Fotos" photos={byCategory(doc, "OTHER")} editable /></div>
-            <p className="text-xs text-ink-3">Fotos einzelner Schäden gehören in Schritt 4 zum jeweiligen Schaden.</p>
+            <DamagePhotosGallery damages={doc.damages} stepHref={`/buchungen/${b.id}/rueckgabe?schritt=4`} stepLabel="Schritt 4" />
+            <p className="text-xs text-ink-3">Fotos einzelner Schäden gehören in Schritt 4 zum jeweiligen Schaden und werden hier nur angezeigt, nicht doppelt gespeichert.</p>
             <Card className="p-4 md:p-5"><StepForm action={navigateStepAction.bind(null, b.id, 5)} step={5} nextLabel="Weiter zur Checkliste"><span className="sr-only">Navigation</span></StepForm></Card>
           </>
         )}

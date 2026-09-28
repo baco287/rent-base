@@ -86,7 +86,7 @@ export async function invoiceRefundSource(client: Client, tenantId: string, invo
   const snapshot: PayoutSourceSnapshot = {
     sourceType: "INVOICE_REFUND", bookingNumber: inv.booking.number, contractNumber: inv.contract?.number ?? null, invoiceNumber: inv.number, invoiceDate: dateFmt(inv.currentVersion.issueDate),
     chain: inv.counterDocuments.map((c) => c.number).filter((n): n is string => !!n), customerName: nameOf(c), customerEmail: typeof c.email === "string" && c.email.trim() ? c.email.trim() : null,
-    invoiceCents: f.invoiceCents, effectiveCents: f.effectiveCents, paidCents: f.paidCents, customerCreditCents: f.customerCreditCents, paidOutBeforeCents: f.completedRefundCents,
+    invoiceCents: f.invoiceCents, effectiveCents: f.effectiveCents, paidCents: f.paidCents, offsetCents: f.offsetCents, customerCreditCents: f.customerCreditCents, paidOutBeforeCents: f.completedRefundCents,
   };
   return { sourceType: "INVOICE_REFUND", invoiceId: inv.id, bookingId: inv.bookingId, customerId: inv.customerId, customerName: snapshot.customerName, customerEmail: snapshot.customerEmail, remainingCents: f.refundRemainingCents, snapshot, invoice: f };
 }
@@ -101,7 +101,7 @@ export async function depositRefundSource(client: Client, tenantId: string, book
   const snapshot: PayoutSourceSnapshot = {
     sourceType: "SECURITY_DEPOSIT_REFUND", bookingNumber: booking.number, contractNumber: booking.contract?.number ?? null, invoiceNumber: null, invoiceDate: null, chain: [],
     customerName: nameOf(c), customerEmail: typeof c?.email === "string" && c.email.trim() ? c.email.trim() : null,
-    expectedCents: d.expectedCents, receivedCents: d.receivedCents, retainedCents: d.retainedCents, releasedCents: d.releasedCents, paidOutBeforeCents: d.completedPayoutCents,
+    expectedCents: d.expectedCents, receivedCents: d.receivedCents, retainedCents: d.retainedCents, offsetCents: d.offsetCents, releasedCents: d.releasedCents, paidOutBeforeCents: d.completedPayoutCents,
   };
   return { sourceType: "SECURITY_DEPOSIT_REFUND", securityDepositId: booking.securityDeposit.id, bookingId: booking.id, customerId: booking.customerId, customerName: snapshot.customerName, customerEmail: snapshot.customerEmail, remainingCents: d.payoutRemainingCents, snapshot, deposit: d };
 }

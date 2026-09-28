@@ -18,6 +18,8 @@ type Result = { error?: string } | undefined;
  */
 export function CompareDamages({ pickup, current, handoverId, actions }: { pickup: HandoverDocument; current: HandoverDocument; handoverId: string; actions: DamageActions }) {
   const [side, setSide] = useState<"pickup" | "return">("return");
+  // Befehl 20.7: dieselbe Fahrzeugansicht auf beiden Skizzen (vorher/jetzt), damit der Vergleich Bereich für Bereich klappt
+  const [view, setView] = useState<string | undefined>(undefined);
   const tab = (key: "pickup" | "return", label: string) => (
     <button type="button" role="tab" aria-selected={side === key} onClick={() => setSide(key)} className={`btn flex-1 !py-2.5 ${side === key ? "!bg-brand !text-brand-ink !border-brand" : ""}`}>{label}</button>
   );
@@ -30,11 +32,11 @@ export function CompareDamages({ pickup, current, handoverId, actions }: { picku
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
         <div className={`card p-4 ${side === "pickup" ? "" : "hidden xl:block"}`}>
           <div className="mb-2 flex items-center gap-2"><span className="chip bg-panel-2 text-ink-2">Übergabe · vorher</span><span className="text-xs text-ink-3">Protokoll {pickup.number}, unveränderlich</span></div>
-          <DamageMap sketch={pickup.sketch} damages={pickup.damages} handoverId={pickup.number} editable={false} type="PICKUP" />
+          <DamageMap sketch={pickup.sketch} damages={pickup.damages} handoverId={pickup.number} editable={false} type="PICKUP" activeView={view} onViewChange={setView} />
         </div>
         <div className={`card p-4 ${side === "return" ? "" : "hidden xl:block"}`}>
           <div className="mb-2 flex items-center gap-2"><span className="chip bg-amber-soft text-amber">Rückgabe · jetzt</span><span className="text-xs text-ink-3">Auf die Skizze tippen, um einen neuen Schaden zu markieren</span></div>
-          <DamageMap sketch={current.sketch} damages={current.damages} handoverId={handoverId} editable type="RETURN" actions={actions} />
+          <DamageMap sketch={current.sketch} damages={current.damages} handoverId={handoverId} editable type="RETURN" actions={actions} activeView={view} onViewChange={setView} />
         </div>
       </div>
     </div>

@@ -250,8 +250,8 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
                     <Field label="Rückgabeort" htmlFor="returnLocation" hint="Leer bedeutet: wie Abholort"><input id="returnLocation" name="returnLocation" defaultValue={contract.returnLocation ?? ""} className="input" /></Field>
                     <Field label="Kaution €" htmlFor="deposit"><input id="deposit" name="deposit" inputMode="decimal" defaultValue={dec(contract.deposit)} required className="input tnum" /><span className="text-[11px] text-ink-3">Quelle: {sourceText(depositSource, { groupName: rules.resolved.groupName, vehiclePlate: rules.resolved.vehiclePlate })}</span></Field>
                     <Field label="Selbstbeteiligung €" htmlFor="deductible"><input id="deductible" name="deductible" inputMode="decimal" defaultValue={dec(contract.deductible)} required className="input tnum" />{badge("deductibleCents")}</Field>
-                    <Field label="Freikilometer pro Tag" htmlFor="kmIncludedPerDay"><input id="kmIncludedPerDay" name="kmIncludedPerDay" inputMode="numeric" defaultValue={contract.kmIncludedPerDay} required className="input tnum" /><span className="text-[11px] text-ink-3">Quelle: {Number(booking.vehicle.kmIncludedPerDay) === contract.kmIncludedPerDay ? sourceText("VEHICLE", { vehiclePlate: rules.resolved.vehiclePlate }) : RULE_SOURCES.CONTRACT}</span></Field>
-                    <Field label="Mehrkilometer € je km" htmlFor="extraKmRate"><input id="extraKmRate" name="extraKmRate" inputMode="decimal" defaultValue={dec(contract.extraKmRate)} required className="input tnum" /><span className="text-[11px] text-ink-3">Quelle: {Number(booking.vehicle.extraKmRate) === Number(contract.extraKmRate) ? sourceText("VEHICLE", { vehiclePlate: rules.resolved.vehiclePlate }) : RULE_SOURCES.CONTRACT}</span></Field>
+                    <Field label="Freikilometer pro Tag" htmlFor="kmIncludedPerDay"><input id="kmIncludedPerDay" name="kmIncludedPerDay" inputMode="numeric" defaultValue={contract.kmIncludedPerDay} required className="input tnum" /><span className="text-[11px] text-ink-3">Quelle: {Number(booking.vehicle.kmIncludedPerDay) === contract.kmIncludedPerDay ? sourceText("VEHICLE", { vehiclePlate: rules.resolved.vehiclePlate }) : booking.kmIncludedPerDay === contract.kmIncludedPerDay ? "Buchung" : RULE_SOURCES.CONTRACT}</span></Field>
+                    <Field label="Mehrkilometer € je km" htmlFor="extraKmRate"><input id="extraKmRate" name="extraKmRate" inputMode="decimal" defaultValue={dec(contract.extraKmRate)} required className="input tnum" /><span className="text-[11px] text-ink-3">Quelle: {Number(booking.vehicle.extraKmRate) === Number(contract.extraKmRate) ? sourceText("VEHICLE", { vehiclePlate: rules.resolved.vehiclePlate }) : Number(booking.extraKmRate ?? NaN) === Number(contract.extraKmRate) ? "Buchung" : RULE_SOURCES.CONTRACT}</span></Field>
                     <RuleFields
                       sources={ruleSources}
                       v={{
@@ -323,7 +323,9 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
 
         {step === 6 && (
           <>
-            <IssueList issues={issues} okText="Alle Pflichtangaben sind vollständig. Der Vertrag kann unterschrieben werden." />
+            {/* Befehl 20.7: nur Punkte, die hier behebbar sind – Mietbedingungen und Unterschrift folgen bestimmungsgemäß in Schritt 7 */}
+            <IssueList issues={issues} areas={["CUSTOMER", "DRIVER", "ADDITIONAL_DRIVER", "VEHICLE", "PERIOD", "PRICE", "CONDITIONS"]} okText="Alle Pflichtangaben sind vollständig. Der Vertrag kann unterschrieben werden." />
+            {issues.some((i) => i.area === "SIGNATURE") && <p className="rounded-md bg-panel-2 text-ink-2 px-3.5 py-2.5 text-sm">Die Kenntnisnahme der Mietbedingungen und die Unterschrift folgen im nächsten Schritt.</p>}
             {sp.fassung === "1" && <p role="status" className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Mietbedingungen-Fassung {contract.termsVersion} übernommen. Die Kenntnisnahme muss erneut bestätigt werden.</p>}
             {termsHint(6)}
             <ContractDocumentView doc={doc} showSignatures={false} />

@@ -484,8 +484,10 @@ export type InvoiceFinancials = {
   cancelledCents: Cents;
   /** wirksame Forderung = Rechnung − Gutschriften − Storno (nie negativ) */
   effectiveCents: Cents;
-  /** bestätigte Zahlungen (unverändert durch Gegenbelege) */
+  /** bestätigte Zahlungen (unverändert durch Gegenbelege); enthält Kautionsverrechnungen (Befehl 20.7) */
   paidCents: Cents;
+  /** davon aus der Kaution verrechnet – kein Geldeingang, Teil von paidCents */
+  offsetCents: Cents;
   openCents: Cents;
   /** Kundenguthaben = Zahlungen über der wirksamen Forderung (wirtschaftlicher Anspruch, vor Auszahlungen) */
   customerCreditCents: Cents;
@@ -506,7 +508,7 @@ export type InvoiceFinancials = {
   fullyNeutralized: boolean;
 };
 
-export function computeFinancials(invoiceId: string, invoiceCents: Cents, creditedCents: Cents, cancelledCents: Cents, paidCents: Cents, hasDraftCounter = false, completedRefundCents: Cents = 0): InvoiceFinancials {
+export function computeFinancials(invoiceId: string, invoiceCents: Cents, creditedCents: Cents, cancelledCents: Cents, paidCents: Cents, hasDraftCounter = false, completedRefundCents: Cents = 0, offsetCents: Cents = 0): InvoiceFinancials {
   const effectiveCents = Math.max(0, invoiceCents - creditedCents - cancelledCents);
   const openCents = Math.max(0, effectiveCents - paidCents);
   const customerCreditCents = Math.max(0, paidCents - effectiveCents);
@@ -514,19 +516,24 @@ export function computeFinancials(invoiceId: string, invoiceCents: Cents, credit
   const refundExcessCents = Math.max(0, completedRefundCents - customerCreditCents);
   const chain: InvoiceChainStatus = cancelledCents > 0 ? "CANCELLED" : creditedCents > 0 && effectiveCents === 0 ? "CREDITED" : creditedCents > 0 ? "PARTIALLY_CREDITED" : "NONE";
   const paymentStatus = openCents === 0 ? "PAID" : paidCents > 0 ? "PARTIAL" : "OPEN";
-  return { invoiceId, invoiceCents, creditedCents, cancelledCents, effectiveCents, paidCents, openCents, customerCreditCents, refundRequiredBeforePayoutsCents: customerCreditCents, completedRefundCents, refundRemainingCents, refundExcessCents, chain, paymentStatus, refundRequired: customerCreditCents > 0, refundOpen: refundRemainingCents > 0, hasDraftCounter, fullyNeutralized: chain === "CANCELLED" || chain === "CREDITED" };
+  return { invoiceId, invoiceCents, creditedCents, cancelledCents, effectiveCents, paidCents, offsetCents, openCents, customerCreditCents, refundRequiredBeforePayoutsCents: customerCreditCents, completedRefundCents, refundRemainingCents, refundExcessCents, chain, paymentStatus, refundRequired: customerCreditCents > 0, refundOpen: refundRemainingCents > 0, hasDraftCounter, fullyNeutralized: chain === "CANCELLED" || chain === "CREDITED" };
 }
 
-/** Finanzstand mehrerer Rechnungen in zwei Abfragen (Listen, Kennzahlen). Gegenbelege in der Liste erhalten den Stand ihres Originals nicht – sie sind keine Forderung. */
+/** Finanzstand mehrerer Rechnungen in drei Abfragen (Listen, Kennzahlen). Gegenbelege in der Liste erhalten den Stand ihres Originals nicht – sie sind keine Forderung. */
 export async function financialsFor(tenantId: string, invoices: { id: string; grossTotal: unknown }[], client: Client = db): Promise<Map<string, InvoiceFinancials>> {
   const ids = invoices.map((i) => i.id);
   if (ids.length === 0) return new Map();
   const [pay, counters, payouts] = await Promise.all([
-    client.payment.groupBy({ by: ["invoiceId"], where: { tenantId, invoiceId: { in: ids }, status: "CONFIRMED" }, _sum: { amountCents: true } }),
+    client.payment.groupBy({ by: ["invoiceId", "type"], where: { tenantId, invoiceId: { in: ids }, status: "CONFIRMED" }, _sum: { amountCents: true } }),
     client.invoice.findMany({ where: { tenantId, originalInvoiceId: { in: ids }, status: { in: ["DRAFT", "FINALIZED"] } }, select: { originalInvoiceId: true, documentType: true, status: true, currentVersion: { select: { grossTotal: true } } } }),
     client.payout.groupBy({ by: ["invoiceId"], where: { tenantId, invoiceId: { in: ids }, status: "COMPLETED" }, _sum: { amountCents: true } }),
   ]);
-  const paid = new Map(pay.map((g) => [g.invoiceId, g._sum.amountCents ?? 0]));
+  // bezahlt = alle bestätigten Zahlungen; davon Kautionsverrechnungen getrennt ausgewiesen (Befehl 20.7)
+  const paid = new Map<string | null, Cents>(), offset = new Map<string | null, Cents>();
+  for (const g of pay) {
+    paid.set(g.invoiceId, (paid.get(g.invoiceId) ?? 0) + (g._sum.amountCents ?? 0));
+    if (g.type === "DEPOSIT_OFFSET") offset.set(g.invoiceId, (offset.get(g.invoiceId) ?? 0) + (g._sum.amountCents ?? 0));
+  }
   const refunded = new Map(payouts.map((g) => [g.invoiceId, g._sum.amountCents ?? 0]));
   const credited = new Map<string, Cents>(), cancelled = new Map<string, Cents>(), drafts = new Set<string>();
   for (const c of counters) {
@@ -536,7 +543,7 @@ export async function financialsFor(tenantId: string, invoices: { id: string; gr
     if (c.documentType === "CANCELLATION") cancelled.set(oid, (cancelled.get(oid) ?? 0) + g);
     else credited.set(oid, (credited.get(oid) ?? 0) + g);
   }
-  return new Map(invoices.map((i) => [i.id, computeFinancials(i.id, toCents(i.grossTotal), credited.get(i.id) ?? 0, cancelled.get(i.id) ?? 0, paid.get(i.id) ?? 0, drafts.has(i.id), refunded.get(i.id) ?? 0)]));
+  return new Map(invoices.map((i) => [i.id, computeFinancials(i.id, toCents(i.grossTotal), credited.get(i.id) ?? 0, cancelled.get(i.id) ?? 0, paid.get(i.id) ?? 0, drafts.has(i.id), refunded.get(i.id) ?? 0, offset.get(i.id) ?? 0)]));
 }
 
 export async function invoiceFinancials(tenantId: string, invoiceId: string, client: Client = db): Promise<InvoiceFinancials> {

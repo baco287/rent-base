@@ -22,6 +22,19 @@ async function downscale(file: File): Promise<Blob> {
   }
 }
 
+/** Ein Foto verkleinern und über die bestehende Route in den geschützten Speicher laden; optional einem Schaden zugeordnet. */
+export async function uploadHandoverPhoto(handoverId: string, file: File, category: string, handoverDamageId?: string | null): Promise<void> {
+  const body = new FormData();
+  body.set("file", await downscale(file), "foto.jpg");
+  body.set("category", category);
+  if (handoverDamageId) body.set("handoverDamageId", handoverDamageId);
+  const res = await fetch(`/api/handovers/${handoverId}/photos`, { method: "POST", body });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(data?.error ?? "Das Foto konnte nicht gespeichert werden.");
+  }
+}
+
 /**
  * Foto aufnehmen oder auswählen und direkt in den geschützten Speicher hochladen.
  * Auf dem Smartphone öffnet "capture" die Rückkamera. Angezeigt werden Fotos nur über die geschützte Adresse der App.
@@ -55,17 +68,7 @@ export function PhotoUploader({
     setBusy(true);
     setError(null);
     try {
-      for (const file of Array.from(files)) {
-        const body = new FormData();
-        body.set("file", await downscale(file), "foto.jpg");
-        body.set("category", category);
-        if (handoverDamageId) body.set("handoverDamageId", handoverDamageId);
-        const res = await fetch(`/api/handovers/${handoverId}/photos`, { method: "POST", body });
-        if (!res.ok) {
-          const data = (await res.json().catch(() => null)) as { error?: string } | null;
-          throw new Error(data?.error ?? "Das Foto konnte nicht gespeichert werden.");
-        }
-      }
+      for (const file of Array.from(files)) await uploadHandoverPhoto(handoverId, file, category, handoverDamageId);
       router.refresh();
     } catch (e) {
       setError((e as Error).message);

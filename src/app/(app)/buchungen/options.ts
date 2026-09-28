@@ -1,14 +1,15 @@
 import "server-only";
 import { db } from "@/lib/db";
 import { resolveDeposit } from "@/lib/business-rules";
-import { customerName } from "@/lib/format";
-import type { CustomerOption, VehicleOption } from "./booking-form";
+import type { VehicleOption } from "./booking-form";
 
-/** Auswahllisten für das Buchungsformular. Fahrzeuge sortiert nach Gruppe, dann Kennzeichen. */
-export async function loadBookingOptions(tenantId: string): Promise<{ vehicles: VehicleOption[]; customers: CustomerOption[] }> {
-  const [vehicles, customers, tenant] = await Promise.all([
+/**
+ * Auswahllisten für das Buchungsformular. Fahrzeuge sortiert nach Gruppe, dann Kennzeichen.
+ * Kunden werden nicht mehr als Liste geladen (Befehl 20.7): die Auswahl läuft über die serverseitige Kundensuche.
+ */
+export async function loadBookingOptions(tenantId: string): Promise<{ vehicles: VehicleOption[] }> {
+  const [vehicles, tenant] = await Promise.all([
     db.vehicle.findMany({ where: { tenantId }, include: { group: true }, orderBy: [{ group: { sortOrder: "asc" } }, { plate: "asc" }] }),
-    db.customer.findMany({ where: { tenantId }, orderBy: [{ lastName: "asc" }, { firstName: "asc" }] }),
     db.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { businessRules: true } }),
   ]);
   return {
@@ -23,13 +24,10 @@ export async function loadBookingOptions(tenantId: string): Promise<{ vehicles: 
       monthlyRate: v.monthlyRate?.toString() ?? null,
       // Vorschlag: Fahrzeug → Fahrzeuggruppe → Mandantenstandard (Geschäftsregeln); im Formular änderbar
       deposit: (resolveDeposit(tenant.businessRules, v.group, v).cents / 100).toFixed(2).replace(".", ","),
+      // Befehl 20.7: Kilometervereinbarung wird aus dem Fahrzeug vorgeschlagen und auf der Buchung festgehalten
+      kmIncludedPerDay: String(v.kmIncludedPerDay),
+      extraKmRate: v.extraKmRate.toString().replace(".", ","),
       status: v.status,
-    })),
-    customers: customers.map((c) => ({
-      id: c.id,
-      label: c.type === "COMPANY" ? `${customerName(c)} (${c.firstName} ${c.lastName})` : `${c.lastName}, ${c.firstName}${c.city ? ` · ${c.city}` : ""}`,
-      blocked: c.blocked,
-      discountPercent: c.discountPercent,
     })),
   };
 }

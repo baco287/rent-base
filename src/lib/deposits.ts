@@ -2,6 +2,10 @@
 // abgeschlossenen Mietvertrag. Erhalten, freigegeben und einbehalten ergeben sich nur aus bestätigten Bewegungen.
 // Harte Regel dieser Phase: keine automatische Verrechnung mit Rechnungen, Zusatzkosten oder Schäden. Ein Einbehalt ist
 // ein dokumentierter Kautionsstatus, keine Forderung, keine Einnahme und keine Haftungsfeststellung.
+// Befehl 20.7: Eine Verrechnung mit einer konkreten Forderung gibt es nur als bewusste, bestätigte Aktion des Mitarbeiters
+// (deposit-offset.ts). Sie erscheint hier als Bewegung OFFSET und verbraucht Kaution wie ein Einbehalt – bleibt aber
+// fachlich davon getrennt (Einbehalt = ungeklärt zurückgehalten, Verrechnung = gegen eine Rechnung verwendet).
+// Sperr-Reihenfolge aller Geldaktionen (gegen Verklemmung): Booking → SecurityDeposit → Invoice → Payment/Payout.
 
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
@@ -16,28 +20,35 @@ const TX = { timeout: 20_000, maxWait: 10_000 };
 export type DepositRow = Prisma.SecurityDepositGetPayload<object>;
 export type DepositEventRow = Prisma.SecurityDepositEventGetPayload<object>;
 
-export type DepositBalance = { expectedCents: Cents; receivedCents: Cents; releasedCents: Cents; retainedCents: Cents; remainingCents: Cents; status: DepositStatus };
+/** offsetCents (Befehl 20.7): mit Forderungen verrechnete Kaution – verbraucht, nicht mehr verfügbar, kein Einbehalt. */
+export type DepositBalance = { expectedCents: Cents; receivedCents: Cents; releasedCents: Cents; retainedCents: Cents; offsetCents: Cents; remainingCents: Cents; status: DepositStatus };
 
-/** Status aus den Summen. Nach einer Entscheidung (Freigabe/Einbehalt) ist immer die ganze erhaltene Kaution zugeordnet. */
-export function deriveDepositStatus(receivedCents: Cents, releasedCents: Cents, retainedCents: Cents): DepositStatus {
+/**
+ * Status aus den Summen. Nach einer Entscheidung (Freigabe/Einbehalt/Verrechnung) ist immer die ganze erhaltene Kaution
+ * zugeordnet. Verrechnete Kaution zählt für den Status wie einbehalten (kein sechster Status – alle Anzeigen schalten auf
+ * die fünf bekannten Werte); die Anzeige unterscheidet über offsetCents.
+ */
+export function deriveDepositStatus(receivedCents: Cents, releasedCents: Cents, retainedCents: Cents, offsetCents: Cents = 0): DepositStatus {
   if (receivedCents <= 0) return "EXPECTED";
-  const settled = releasedCents + retainedCents;
+  const kept = retainedCents + offsetCents;
+  const settled = releasedCents + kept;
   if (settled <= 0) return "RECEIVED";
   if (settled < receivedCents) return "PARTIALLY_RELEASED";
-  if (retainedCents === 0) return "RELEASED";
+  if (kept === 0) return "RELEASED";
   if (releasedCents === 0) return "RETAINED";
   return "PARTIALLY_RELEASED";
 }
 
 export function balanceOf(expectedCents: Cents, events: { type: string; amountCents: number; status: string }[]): DepositBalance {
-  let receivedCents = 0, releasedCents = 0, retainedCents = 0;
+  let receivedCents = 0, releasedCents = 0, retainedCents = 0, offsetCents = 0;
   for (const e of events) {
     if (e.status !== "CONFIRMED") continue;
     if (e.type === "RECEIVED") receivedCents += e.amountCents;
     else if (e.type === "RELEASED") releasedCents += e.amountCents;
     else if (e.type === "RETAINED") retainedCents += e.amountCents;
+    else if (e.type === "OFFSET") offsetCents += e.amountCents;
   }
-  return { expectedCents, receivedCents, releasedCents, retainedCents, remainingCents: receivedCents - releasedCents - retainedCents, status: deriveDepositStatus(receivedCents, releasedCents, retainedCents) };
+  return { expectedCents, receivedCents, releasedCents, retainedCents, offsetCents, remainingCents: receivedCents - releasedCents - retainedCents - offsetCents, status: deriveDepositStatus(receivedCents, releasedCents, retainedCents, offsetCents) };
 }
 
 /**
@@ -48,7 +59,8 @@ export function balanceOf(expectedCents: Cents, events: { type: string; amountCe
 export type DepositFinancials = DepositBalance & { completedPayoutCents: Cents; payoutRemainingCents: Cents; payoutExcessCents: Cents; releasedWithoutPayoutCents: Cents };
 
 export function computeDepositFinancials(balance: DepositBalance, completedPayoutCents: Cents): DepositFinancials {
-  const payable = Math.max(0, Math.min(balance.releasedCents, balance.receivedCents - balance.retainedCents));
+  // verrechnete Kaution ist verbraucht: nie auszahlbar (gleiche Formel wie rb_deposit_payout_remaining in der Datenbank)
+  const payable = Math.max(0, Math.min(balance.releasedCents, balance.receivedCents - balance.retainedCents - balance.offsetCents));
   return { ...balance, completedPayoutCents, payoutRemainingCents: Math.max(0, payable - completedPayoutCents), payoutExcessCents: Math.max(0, completedPayoutCents - payable), releasedWithoutPayoutCents: Math.max(0, balance.releasedCents - completedPayoutCents) };
 }
 
@@ -93,7 +105,7 @@ export async function depositView(tenantId: string, bookingId: string): Promise<
 }
 
 /** Legt die Kaution aus dem abgeschlossenen Vertrag an oder gibt die vorhandene zurück (innerhalb einer Transaktion, gesperrt). */
-async function lockOrCreateDeposit(tx: Tx, tenantId: string, bookingId: string, actor: Actor) {
+export async function lockOrCreateDeposit(tx: Tx, tenantId: string, bookingId: string, actor: Actor) {
   const bookingLock = await tx.$queryRaw<{ id: string; status: string }[]>`SELECT "id", "status" FROM "Booking" WHERE "id" = ${bookingId} AND "tenantId" = ${tenantId} FOR UPDATE`;
   if (bookingLock.length === 0) throw new DomainError("Buchung nicht gefunden.");
   let row = await tx.securityDeposit.findFirst({ where: { tenantId, bookingId } });
@@ -107,7 +119,7 @@ async function lockOrCreateDeposit(tx: Tx, tenantId: string, bookingId: string, 
   return { row, balance: balanceOf(row.expectedAmountCents, events), bookingStatus: bookingLock[0].status };
 }
 
-async function syncStatus(tx: Tx, tenantId: string, depositId: string) {
+export async function syncStatus(tx: Tx, tenantId: string, depositId: string) {
   const row = await tx.securityDeposit.findFirstOrThrow({ where: { id: depositId, tenantId } });
   const events = await tx.securityDepositEvent.findMany({ where: { tenantId, depositId } });
   const b = balanceOf(row.expectedAmountCents, events);
@@ -115,7 +127,7 @@ async function syncStatus(tx: Tx, tenantId: string, depositId: string) {
   return b;
 }
 
-function parseAmount(v: string | number, what = "Der Betrag"): Cents {
+export function parseAmount(v: string | number, what = "Der Betrag"): Cents {
   let cents: Cents;
   try {
     cents = toCents(v);
@@ -132,13 +144,13 @@ function checkMethod(m: string | null | undefined): PaymentMethod {
   return m as PaymentMethod;
 }
 
-function checkKey(key: string | null | undefined) {
+export function checkKey(key: string | null | undefined) {
   const k = key?.trim() || null;
   if (k && !/^[A-Za-z0-9-]{8,64}$/.test(k)) throw new DomainError("Die Seite ist veraltet. Bitte neu laden.");
   return k;
 }
 
-function checkDate(d: Date, what: string) {
+export function checkDate(d: Date, what: string) {
   if (!(d instanceof Date) || Number.isNaN(d.getTime())) throw new DomainError(`Bitte ${what} angeben.`);
   if (d.getTime() > Date.now() + 5 * 60_000) throw new DomainError(`${what} darf nicht in der Zukunft liegen.`);
 }
@@ -146,7 +158,7 @@ function checkDate(d: Date, what: string) {
 const byKey = (tenantId: string, key: string) => db.securityDepositEvent.findUnique({ where: { tenantId_idempotencyKey: { tenantId, idempotencyKey: key } } });
 
 /** Fehler des Datenbank-Triggers in eine Fachmeldung übersetzen. */
-function domainFromDb(e: unknown): never {
+export function domainFromDb(e: unknown): never {
   const msg = String((e as { message?: string })?.message ?? "");
   const m = /RB_DOMAIN: ([^\n"]+)/.exec(msg);
   if (m) throw new DomainError(`${m[1].trim()}.`);
@@ -288,6 +300,8 @@ export async function cancelDepositEvent(tenantId: string, actor: Actor, eventId
       await tx.$queryRaw`SELECT "id" FROM "SecurityDeposit" WHERE "id" = ${ev.depositId} FOR UPDATE`;
       const fresh = await tx.securityDepositEvent.findFirstOrThrow({ where: { id: eventId, tenantId } });
       if (fresh.status !== "CONFIRMED") throw new DomainError("Diese Bewegung ist bereits storniert.");
+      // Eine Verrechnung hat zwei Seiten (Rechnung und Kaution); sie wird nur gemeinsam storniert (deposit-offset.ts)
+      if (fresh.type === "OFFSET") throw new DomainError("Diese Bewegung ist eine Kautionsverrechnung. Bitte die Verrechnung unter „Zahlungen“ stornieren; damit werden Rechnung und Kaution gemeinsam korrigiert.");
       if (fresh.type !== "RETAINED") {
         const others = await tx.securityDepositEvent.findMany({ where: { tenantId, depositId: ev.depositId, status: "CONFIRMED", id: { not: eventId } }, select: { type: true, amountCents: true, status: true } });
         const dep0 = await tx.securityDeposit.findFirstOrThrow({ where: { id: ev.depositId, tenantId } });

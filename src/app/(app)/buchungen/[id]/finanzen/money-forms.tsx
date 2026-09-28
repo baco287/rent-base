@@ -9,6 +9,7 @@ import { submitWithoutReset } from "@/components/submit-without-reset";
 import { PAYMENT_METHODS } from "@/lib/constants";
 import { fmtCents } from "@/lib/money";
 import type { SettlePreview } from "@/lib/deposits";
+import type { DepositOffsetPreview, OffsetInvoiceOption } from "@/lib/deposit-offset";
 import type { PaymentPreview } from "@/lib/payments";
 import type { MoneyState } from "./actions";
 
@@ -172,6 +173,81 @@ export function DepositReceiveForm({ action, nonce, defaultAmount, defaultWhen }
           <div className="flex flex-wrap gap-2 mt-1">
             <button type="submit" disabled={pending} className="btn btn-primary !py-2.5">{pending ? "Wird dokumentiert…" : "Ja, als erhalten dokumentieren"}</button>
             <button type="button" className="btn" onClick={() => setConfirm(null)}>Zurück</button>
+          </div>
+        </div>
+      )}
+      <Feedback state={state} />
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Befehl 20.7: Kaution mit einer offenen Forderung verrechnen (kein Geldeingang, ausdrückliche Bestätigung)
+// ---------------------------------------------------------------------------
+
+export function DepositOffsetForm({ action, preview, bookingId, nonce, invoices, availableCents, defaultWhen }: { action: Action; preview: (bookingId: string, invoiceId: string, amount: string) => Promise<DepositOffsetPreview | { error: string }>; bookingId: string; nonce: string; invoices: OffsetInvoiceOption[]; availableCents: number; defaultWhen: string }) {
+  const { state, formAction, pending, done } = useMoneyAction(action);
+  const [open, setOpen] = useState(false);
+  const [invoiceId, setInvoiceId] = useState(invoices[0]?.id ?? "");
+  const [pv, setPv] = useState<DepositOffsetPreview | { error: string } | null>(null);
+  const [checking, start] = useTransition();
+  const [form, setForm] = useState<HTMLFormElement | null>(null);
+  const invoice = invoices.find((i) => i.id === invoiceId) ?? invoices[0];
+  const suggested = invoice ? Math.max(0, Math.min(invoice.openCents, availableCents)) : 0;
+  const eur = (c: number) => (c / 100).toFixed(2).replace(".", ",");
+  if (done) return <Feedback state={state} />;
+  if (!open) return <div><button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>Aus Kaution verrechnen</button></div>;
+  const check = () => {
+    if (!form || !form.reportValidity()) return;
+    const fd = new FormData(form);
+    start(async () => setPv(await preview(bookingId, String(fd.get("invoiceId") ?? ""), String(fd.get("amount") ?? ""))));
+  };
+  const pvError = pv?.error ?? null;
+  const full = pv && "availableCents" in pv && !pv.error ? pv : null;
+  return (
+    <form ref={setForm} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
+      <input type="hidden" name="nonce" value={nonce} />
+      <div className="font-medium">Offene Forderung aus der Kaution begleichen</div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label className="flex flex-col gap-1 sm:col-span-2"><span className="label-xs">Forderung</span>
+          <select name="invoiceId" value={invoiceId} onChange={(e) => { setInvoiceId(e.target.value); setPv(null); }} className="input" required>
+            {invoices.map((i) => <option key={i.id} value={i.id}>{i.number} · offen {fmtCents(i.openCents)}{i.kind === "DAMAGE" ? " · Schadenabrechnung" : i.kind === "AUTHORITY_FEE" ? " · Bearbeitungsentgelt" : ""}</option>)}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1"><span className="label-xs">Verrechnungsbetrag in €</span><input key={invoiceId} name="amount" inputMode="decimal" defaultValue={eur(suggested)} required className="input text-xl tnum" onChange={() => setPv(null)} /><span className="text-[11px] text-ink-3">Vorschlag: {fmtCents(suggested)} (höchstens offene Forderung und verfügbare Kaution). Teilbetrag möglich.</span></label>
+        <label className="flex flex-col gap-1"><span className="label-xs">Datum und Uhrzeit</span><input name="occurredAt" type="datetime-local" defaultValue={defaultWhen} required className="input" /></label>
+        <label className="flex flex-col gap-1 sm:col-span-2"><span className="label-xs">Notiz (optional)</span><input name="note" maxLength={500} className="input" placeholder="z. B. Mehrkilometer laut Rückgabe" /></label>
+      </div>
+      <p className="text-xs text-ink-3">Bei der Verrechnung fließt kein Geld: Die bereits erhaltene Kaution deckt die Forderung. Sie erscheint in der Zahlungshistorie als „Kautionsverrechnung“ und in der Kautionshistorie als „Mit Forderung verrechnet“ – nie als Bar- oder Bankzahlung. Ein bloßer Einbehalt (ungeklärter Schaden) ist keine Verrechnung.</p>
+      {!full && (
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className="btn btn-primary" disabled={checking} onClick={check}>{checking ? "Wird geprüft…" : "Weiter zur Bestätigung"}</button>
+          <button type="button" className="btn" onClick={() => { setOpen(false); setPv(null); }}>Abbrechen</button>
+        </div>
+      )}
+      {pvError && <p role="alert" className="text-bad bg-bad-soft rounded-md px-3 py-2 text-sm">{pvError}</p>}
+      {full && (
+        <div className="rounded-lg border-2 border-brand bg-panel p-4 flex flex-col gap-2">
+          <div className="text-sm font-medium">Aus der Kaution verrechnen</div>
+          <Big>{fmtCents(full.amountCents)}</Big>
+          <div className="text-sm">mit der Forderung <span className="font-medium">{full.invoiceNumber}</span>?</div>
+          <div className="text-sm flex flex-col gap-0.5 mt-1 border-t border-line-soft pt-2">
+            <Row label="Offene Forderung" value={fmtCents(full.openCents)} />
+            <Row label="Kaution tatsächlich erhalten" value={fmtCents(full.receivedCents)} />
+            {full.releasedCents > 0 && <Row label="Davon zur Rückzahlung freigegeben" value={fmtCents(full.releasedCents)} />}
+            {full.paidOutCents > 0 && <Row label="Davon bereits ausgezahlt" value={fmtCents(full.paidOutCents)} />}
+            {full.retainedCents > 0 && <Row label="Davon einbehalten (ungeklärt)" value={fmtCents(full.retainedCents)} />}
+            {full.offsetCents > 0 && <Row label="Davon bereits verrechnet" value={fmtCents(full.offsetCents)} />}
+            <Row label="Tatsächlich verfügbare Kaution" value={fmtCents(full.availableCents)} />
+            <Row label="Vorgeschlagener Verrechnungsbetrag" value={fmtCents(full.suggestedCents)} />
+            <Row label="Verrechnung" value={fmtCents(full.amountCents)} strong />
+            <Row label="Verbleibende Forderung" value={fmtCents(full.claimAfterCents)} strong />
+            <Row label="Verbleibende Kaution" value={fmtCents(full.depositAfterCents)} strong />
+          </div>
+          <div className="text-xs text-ink-3">Danach: Rechnung {full.invoiceStatusAfter === "PAID" ? "vollständig ausgeglichen" : "teilweise ausgeglichen"}. Eine verbleibende Kaution wird wie bisher freigegeben und ausgezahlt.</div>
+          <div className="flex flex-wrap gap-2 mt-1">
+            <button type="submit" disabled={pending} className="btn btn-primary !py-2.5">{pending ? "Wird verrechnet…" : "Ja, aus Kaution verrechnen"}</button>
+            <button type="button" className="btn" onClick={() => setPv(null)}>Zurück</button>
           </div>
         </div>
       )}

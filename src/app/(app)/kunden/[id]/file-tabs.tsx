@@ -4,7 +4,7 @@
 import Link from "next/link";
 import { BookingStatusChip, Card, Chip, Empty, KPI, Plate } from "@/components/ui";
 import { DocumentThumb } from "@/components/document-thumb";
-import { AUTHORITY_DOCUMENT_TYPES, CONTRACT_STATUS, DAMAGE_CASE_DOCUMENT_TYPES, DEPOSIT_EVENT_TYPES, DEPOSIT_STATUS, DOCUMENT_TYPES, DRIVER_ROLES, DRIVER_VERIFICATION_STATUS, EMAIL_STATUS, INVOICE_CHAIN_STATUS, INVOICE_DOCUMENT_TYPES, PAYMENT_METHODS, PAYOUT_METHODS, PAYOUT_SOURCE_TYPES, PAYOUT_STATUS, type AuthorityDocumentType, type DamageCaseDocumentType, type DepositEventType, type DepositStatus, type DocumentType, type DriverRole, type DriverVerificationStatus, type EmailStatus, type InvoiceDocumentTypeKey, type PaymentMethod, type PayoutMethod, type PayoutSourceType, type PayoutStatus, isSideInvoice, invoiceKindWord } from "@/lib/constants";
+import { AUTHORITY_DOCUMENT_TYPES, CONTRACT_STATUS, DAMAGE_CASE_DOCUMENT_TYPES, DEPOSIT_EVENT_TYPES, DEPOSIT_OFFSET_LABEL, DEPOSIT_OFFSET_METHOD, DEPOSIT_STATUS, DOCUMENT_TYPES, DRIVER_ROLES, DRIVER_VERIFICATION_STATUS, EMAIL_STATUS, INVOICE_CHAIN_STATUS, INVOICE_DOCUMENT_TYPES, PAYMENT_METHODS, PAYOUT_METHODS, PAYOUT_SOURCE_TYPES, PAYOUT_STATUS, type AuthorityDocumentType, type DamageCaseDocumentType, type DepositEventType, type DepositStatus, type DocumentType, type DriverRole, type DriverVerificationStatus, type EmailStatus, type InvoiceDocumentTypeKey, type PaymentMethod, type PayoutMethod, type PayoutSourceType, type PayoutStatus, isSideInvoice, invoiceKindWord } from "@/lib/constants";
 import { casesForCustomer } from "@/lib/authority";
 import { driverDocumentHistoryForCustomer } from "@/lib/driver-verification";
 import { BOOKINGS_PAGE, customerBookings, customerDamageCases, customerDeposits, customerDocuments, customerDriverRoles, customerEmails, customerFinance, customerTimeline, type CustomerOverview } from "@/lib/customer-file";
@@ -110,7 +110,7 @@ export async function FinanceTab({ tenantId, customerId }: { tenantId: string; c
     <>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <KPI label="Wirksames Rechnungsvolumen" value={<span className="text-xl">{fmtCents(s.effectiveInvoiceCents)}</span>} detail={`Rechnungen ${fmtCents(s.invoiceCents)} − Gutschriften ${fmtCents(s.creditedCents)} − Storno ${fmtCents(s.cancelledCents)}`} />
-        <KPI label="Bezahlt" value={<span className="text-xl">{fmtCents(s.paidCents)}</span>} detail="bestätigte Zahlungen" />
+        <KPI label="Bezahlt" value={<span className="text-xl">{fmtCents(s.paidCents)}</span>} detail={s.offsetCents > 0 ? `bestätigte Zahlungen · davon ${fmtCents(s.offsetCents)} aus Kaution verrechnet` : "bestätigte Zahlungen"} />
         <KPI label="Offen" value={<span className="text-xl">{fmtCents(s.openCents)}</span>} detail="Forderung nach Gegenbelegen" hot={s.openCents > 0} />
         <KPI label="Erstattung offen" value={<span className="text-xl">{fmtCents(s.refundOpenCents)}</span>} detail={`Guthaben ${fmtCents(s.creditCents)} · erstattet ${fmtCents(s.refundedCents)}`} hot={s.refundOpenCents > 0} />
       </div>
@@ -155,7 +155,7 @@ export async function FinanceTab({ tenantId, customerId }: { tenantId: string; c
         <Card title="Zahlungen" right={<Chip>{f.payments.filter((p) => p.status === "CONFIRMED").length}</Chip>}>
           {f.payments.length === 0 ? <p className="p-4 text-sm text-ink-3">Keine Zahlungen erfasst.</p> : (
             <ul className="divide-y divide-line-soft">
-              {f.payments.map((p) => <Row key={p.id}><span className="font-mono tnum text-xs text-ink-3">{fmtDateTime(p.paidAt)}</span><span className={`font-mono tnum font-semibold ${p.status === "CANCELLED" ? "line-through text-ink-3" : ""}`}>{fmtCents(p.amountCents)}</span><span className="text-ink-2">{PAYMENT_METHODS[p.method as PaymentMethod] ?? p.method}</span>{p.invoiceNumber && <Link href={`/buchungen/${p.bookingId}/finanzen`} className="text-xs underline">zu {p.invoiceNumber}</Link>}{p.reference && <span className="text-xs text-ink-3">{p.reference}</span>}{p.status === "CANCELLED" && <Chip tone="bad">Storniert{p.cancellationReason ? ` · ${p.cancellationReason}` : ""}</Chip>}</Row>)}
+              {f.payments.map((p) => <Row key={p.id}><span className="font-mono tnum text-xs text-ink-3">{fmtDateTime(p.paidAt)}</span><span className={`font-mono tnum font-semibold ${p.status === "CANCELLED" ? "line-through text-ink-3" : ""}`}>{fmtCents(p.amountCents)}</span><span className="text-ink-2">{p.method === DEPOSIT_OFFSET_METHOD ? <Chip tone="info">{DEPOSIT_OFFSET_LABEL}</Chip> : PAYMENT_METHODS[p.method as PaymentMethod] ?? p.method}</span>{p.invoiceNumber && <Link href={`/buchungen/${p.bookingId}/finanzen`} className="text-xs underline">zu {p.invoiceNumber}</Link>}{p.reference && <span className="text-xs text-ink-3">{p.reference}</span>}{p.status === "CANCELLED" && <Chip tone="bad">Storniert{p.cancellationReason ? ` · ${p.cancellationReason}` : ""}</Chip>}</Row>)}
             </ul>
           )}
         </Card>
