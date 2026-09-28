@@ -39,10 +39,13 @@ function Icon({ name }: { name: (typeof NAV)[number]["icon"] | "search" }) {
 export function Sidebar(props: {
   tenantName: string;
   tenantCity: string | null;
+  /** Version des Mandantenlogos (Cache-Schlüssel) oder null, wenn kein Logo hinterlegt ist – dann nur Name + Ort */
+  logoVersion?: string | null;
   userName: string;
   userRole: string;
   logoutAction: () => Promise<void>;
 }) {
+  const logoSrc = props.logoVersion != null ? `/api/branding/logo?v=${encodeURIComponent(props.logoVersion)}` : null;
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -76,8 +79,12 @@ export function Sidebar(props: {
   return (
     <>
       {/* Mobile-Kopfzeile */}
-      <div className="md:hidden bg-brand text-brand-ink flex items-center justify-between px-4 py-3">
-        <div className="font-display font-semibold text-lg">{props.tenantName}</div>
+      <div className="md:hidden bg-brand text-brand-ink flex items-center justify-between gap-3 px-4 py-2.5">
+        <div className="flex items-center gap-2.5 min-w-0">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          {logoSrc && <img src={logoSrc} alt="" className="h-8 max-w-[96px] w-auto object-contain rounded-sm bg-white/90 p-0.5 shrink-0" />}
+          <div className="font-display font-semibold text-lg truncate">{props.tenantName}</div>
+        </div>
         <div className="flex items-center gap-2">
           <button type="button" onClick={openSearch} aria-label="Suche öffnen" className="px-2.5 py-1.5 rounded border border-white/30 inline-flex items-center gap-1.5"><Icon name="search" /><span className="text-sm">Suche</span></button>
           <button onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-label="Menü" className="px-2 py-1 rounded border border-white/30">
@@ -87,6 +94,9 @@ export function Sidebar(props: {
       </div>
       <aside className={`${open ? "block" : "hidden"} md:flex bg-brand text-brand-ink p-3.5 md:min-h-screen flex-col gap-1`}>
         <div className="hidden md:block px-2.5 pt-1.5 pb-4 mb-2.5 border-b border-white/20">
+          {/* Mandantenlogo (falls hinterlegt) über Name + Ort: proportional, begrenzt, die Seitenleiste bleibt 220 px breit */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          {logoSrc && <img src={logoSrc} alt={`Logo ${props.tenantName}`} className="mb-2 max-h-12 max-w-[160px] w-auto h-auto object-contain rounded-sm bg-white/90 p-1" />}
           <div className="font-display text-lg font-semibold leading-tight">{props.tenantName}</div>
           {props.tenantCity && <div className="text-xs opacity-75">{props.tenantCity}</div>}
         </div>

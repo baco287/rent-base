@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState, type ReactNode } from "react";
+import { useActionState, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { ADDITIONAL_DRIVER_FEE_TYPES, COUNTRIES, FUEL_POLICIES, KM_POLICIES, PETS_POLICIES, TERMS_ACKNOWLEDGEMENT_TEXT } from "@/lib/constants";
 import { Field, FormError } from "@/components/ui";
@@ -50,6 +50,17 @@ export function WizardProgress({ bookingId, current, reached, steps = WIZARD_STE
  * Rahmen für einen Schritt: speichert beim Klick auf "Zurück" und "Speichern & weiter",
  * behält Eingaben bei Fehlermeldungen und sperrt die Knöpfe während des Speicherns.
  */
+/** Einzelner Weiter-Knopf ohne Fußleiste, z. B. „Nein, nur der Hauptfahrer“ (Befehl 20.8); nutzt dieselbe Navigations-Action. */
+export function NavButton({ action, label, className = "btn btn-primary justify-center !py-2.5" }: { action: StepAction; label: string; className?: string }) {
+  const [state, formAction, pending] = useActionState(action, undefined);
+  return (
+    <form action={formAction} className="flex flex-col gap-1">
+      <button type="submit" name="nav" value="next" disabled={pending} className={className}>{pending ? "Bitte warten…" : label}</button>
+      <FormError error={state?.error} />
+    </form>
+  );
+}
+
 export function StepForm({ action, children, step, nextLabel = "Speichern & weiter", hideNext = false }: { action: StepAction; children: ReactNode; step: number; nextLabel?: string; hideNext?: boolean }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   return (
@@ -202,19 +213,29 @@ export function RuleFields({ v, sources }: { v: RuleFieldValues; sources: Record
   );
 }
 
-/** Kenntnisnahme der Mietbedingungen: Häkchen nie vorausgewählt; der Server verlangt sie vor der Mieterunterschrift. */
+/**
+ * Kenntnisnahme der Mietbedingungen: Häkchen nie vorausgewählt; der Server verlangt sie vor der Mieterunterschrift.
+ * Befehl 20.8: Häkchen setzen löst die Bestätigung sofort aus (ein Schritt statt zwei); bis der Server geantwortet hat,
+ * zeigt die UI „wird bestätigt“ – sie behauptet nie, die Kenntnisnahme sei schon dokumentiert. Danach lädt die Seite den
+ * Serverstand (Chip „Kenntnisnahme bestätigt“, roter Punkt verschwindet). Der Knopf bleibt als Ersatz erhalten.
+ */
 export function AcknowledgeForm({ action, version }: { action: StepAction; version: string }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   const [checked, setChecked] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
   return (
-    <form action={formAction} className="flex flex-col gap-3">
-      <label className="flex items-start gap-2 rounded-md border-2 border-brand px-3 py-2 text-sm">
-        <input type="checkbox" name="acknowledged" value="1" checked={checked} onChange={(e) => setChecked(e.target.checked)} required className="mt-1" aria-describedby="ack-hint" />
+    <form ref={formRef} action={formAction} className="flex flex-col gap-3">
+      <label className={`flex items-start gap-2 rounded-md border-2 px-3 py-2 text-sm ${pending ? "border-line bg-panel-2" : "border-brand"}`}>
+        <input type="checkbox" name="acknowledged" value="1" checked={checked} disabled={pending} onChange={(e) => { setChecked(e.target.checked); if (e.target.checked) setTimeout(() => formRef.current?.requestSubmit(), 0); }} required className="mt-1" aria-describedby="ack-hint" />
         <span>{TERMS_ACKNOWLEDGEMENT_TEXT.replace("{version}", version)}</span>
       </label>
-      <p id="ack-hint" className="text-xs text-ink-3">Bitte die Bedingungen oben öffnen und dem Mieter zur Kenntnis bringen. Zeitpunkt, Person und Fassung werden dokumentiert.</p>
+      {pending ? (
+        <p role="status" className="rounded-md bg-info-soft text-info px-3 py-2 text-sm">Kenntnisnahme wird bestätigt …</p>
+      ) : (
+        <p id="ack-hint" className="text-xs text-ink-3">Bitte die Bedingungen oben öffnen und dem Mieter zur Kenntnis bringen. Mit dem Häkchen wird die Kenntnisnahme dokumentiert (Zeitpunkt, Person, Fassung).</p>
+      )}
       <FormError error={state?.error} />
-      <div><button type="submit" disabled={pending || !checked} className="btn btn-primary">{pending ? "Wird gespeichert…" : "Kenntnisnahme bestätigen"}</button></div>
+      {state?.error && <div><button type="submit" disabled={pending || !checked} className="btn btn-primary">Kenntnisnahme erneut bestätigen</button></div>}
     </form>
   );
 }

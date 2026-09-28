@@ -83,16 +83,20 @@ export async function DocumentsPanel({ tenantId, bookingId, role, invoiceId = nu
                       <a href={`/api/documents/${doc.id}`} target="_blank" rel="noopener noreferrer" className="btn">Anzeigen</a>
                       <a href={`/api/documents/${doc.id}?download=1`} className="btn">Herunterladen</a>
                     </div>
-                    <div className="text-[11px] text-ink-3 font-mono break-all">SHA-256 {doc.checksum}</div>
-                    {older.map((o) => (
-                      <div key={o.id} className="text-xs text-ink-3">Frühere Version {o.version} vom {fmtDateTime(o.createdAt)}: <a className="underline" href={`/api/documents/${o.id}`} target="_blank" rel="noopener noreferrer">anzeigen</a></div>
-                    ))}
-                    {isOwner && r.regenerate && (
+                    {/* Prüfsumme bleibt in Datenbank und Integritätsprüfung; im Tagesgeschäft wird sie nicht angezeigt (Befehl 20.8) */}
+                    {(older.length > 0 || (isOwner && r.regenerate)) && (
                       <details className="text-xs text-ink-3">
-                        <summary className="cursor-pointer">PDF neu erzeugen (nur Inhaber)</summary>
+                        <summary className="cursor-pointer">Weitere Aktionen</summary>
                         <div className="mt-2 flex flex-col gap-2">
-                          <p>Erzeugt aus demselben versiegelten Protokollinhalt eine neue PDF-Version, z. B. nach einer Verbesserung der PDF-Darstellung. Die bisherige Datei bleibt als frühere Version erhalten; es wird nichts versendet.</p>
-                          <DocActionButton action={r.regenerate} label="Neue PDF-Version erzeugen" pendingLabel="PDF wird erzeugt…" />
+                          {older.map((o) => (
+                            <div key={o.id}>Frühere Version {o.version} vom {fmtDateTime(o.createdAt)}: <a className="underline" href={`/api/documents/${o.id}`} target="_blank" rel="noopener noreferrer">anzeigen</a></div>
+                          ))}
+                          {isOwner && r.regenerate && (
+                            <>
+                              <p>PDF neu erzeugen (nur Inhaber): erzeugt aus demselben versiegelten Inhalt eine neue PDF-Version, z. B. nach einer Verbesserung der PDF-Darstellung. Die bisherige Datei bleibt als frühere Version erhalten; es wird nichts versendet.</p>
+                              <DocActionButton action={r.regenerate} label="Neue PDF-Version erzeugen" pendingLabel="PDF wird erzeugt…" />
+                            </>
+                          )}
                         </div>
                       </details>
                     )}

@@ -345,7 +345,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
             {isKeyDrop && kdRaw?.customerNewDamages != null && customerSays(kdRaw.customerNewDamages ? `Neue Schäden bekannt – ${kdRaw.customerDamageNote ?? ""}` : "keine neuen Schäden bekannt")}
             {isKeyDrop && <p className="text-xs text-ink-3">Neu festgestellte Schäden werden als „bei nachträglicher Kontrolle nach kontaktloser Rückgabe festgestellt“ geführt. Die Schadenakte startet neutral; über Verantwortung und Kosten wird gesondert entschieden.</p>}
             <HandoverIssueList issues={issues} areas={["DAMAGES"]} />
-            <p className="text-sm text-ink-2 max-w-[80ch]">Der dokumentierte Zustand bei der Übergabe und der Zustand jetzt stehen nebeneinander, auf dem Smartphone schalten Sie zwischen „Übergabe (vorher)“ und „Rückgabe (jetzt)“ um. Alles, was neu ist, markieren Sie auf der Rückgabeskizze. Ein bei der Rückgabe festgestellter Schaden wird der Miete zugeordnet und in die Fahrzeugakte übernommen. Ob und was berechnet wird, entscheiden Sie gesondert in Schritt 7.</p>
+            <p className="text-sm text-ink-2">Zustand bei Übergabe und Rückgabe vergleichen. Neue Schäden auf der Rückgabeskizze markieren – ob etwas berechnet wird, entscheiden Sie in Schritt 7.</p>
             {pickupDoc && <CompareDamages pickup={pickupDoc} current={doc} handoverId={handover.id} actions={damageActions} />}
             <Card className="p-4 md:p-5"><StepForm action={navigateStepAction.bind(null, b.id, 4)} step={4} nextLabel="Weiter zu den Fotos"><span className="sr-only">Navigation</span></StepForm></Card>
           </>

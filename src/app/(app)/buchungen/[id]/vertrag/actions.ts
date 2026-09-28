@@ -293,6 +293,9 @@ export async function saveSignatureAction(bookingId: string, _prev: StepState, f
       userAgent: h.get("user-agent"),
     });
   } catch (e) {
+    // Befehl 20.8: war der angezeigte Vertragsstand veraltet, wird die Seite (und damit der mitgeschickte Hash) sofort
+    // erneuert – sonst scheiterte jeder weitere Versuch mit derselben Meldung, bis der Nutzer manuell neu lud.
+    revalidatePath(base(bookingId));
     return asState(e);
   }
   revalidatePath(base(bookingId));

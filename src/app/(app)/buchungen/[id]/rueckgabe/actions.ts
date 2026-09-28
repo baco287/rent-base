@@ -229,7 +229,7 @@ export async function saveSignatureAction(bookingId: string, _prev: StepState, f
   try {
     const h = await headers();
     await saveHandoverSignature(tenant.id, actor, handover.id, { ...parsed.data, ipAddress: h.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null, userAgent: h.get("user-agent") });
-  } catch (e) { return asState(e); }
+  } catch (e) { revalidatePath(base(bookingId)); return asState(e); } // veralteter Stand: Anzeige samt Hash erneuern (Befehl 20.8)
   revalidatePath(base(bookingId));
   redirect(`${base(bookingId)}?schritt=8`);
 }

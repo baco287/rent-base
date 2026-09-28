@@ -169,7 +169,8 @@ export async function saveChecklistAction(bookingId: string, _prev: StepState, f
   return go(bookingId, handover.id, tenant.id, 5, formData);
 }
 
-// Schritt 6: Unterschrift, gebunden an den angezeigten Protokollstand
+// Schritt 7: Unterschrift, gebunden an den angezeigten Protokollstand. Nach dem Speichern bleibt der Assistent auf
+// Schritt 7 (Befehl 20.8: der frühere Sprung auf Schritt 6 „Fahrer & Dokumente“ ließ Nutzer mehrfach unterschreiben).
 const signatureSchema = z.object({
   role: z.enum(["RENTER", "EMPLOYEE"]),
   signerName: z.string().trim().min(2, "Bitte den Namen des Unterzeichners angeben."),
@@ -185,10 +186,11 @@ export async function saveSignatureAction(bookingId: string, _prev: StepState, f
     const h = await headers();
     await saveHandoverSignature(tenant.id, actor, handover.id, { ...parsed.data, ipAddress: h.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null, userAgent: h.get("user-agent") });
   } catch (e) {
+    revalidatePath(base(bookingId)); // veralteter Protokollstand: Anzeige samt Hash sofort erneuern (Befehl 20.8)
     return asState(e);
   }
   revalidatePath(base(bookingId));
-  redirect(`${base(bookingId)}?schritt=6`);
+  redirect(`${base(bookingId)}?schritt=7`);
 }
 
 export async function removeSignatureAction(bookingId: string, role: "RENTER" | "EMPLOYEE") {
@@ -199,7 +201,7 @@ export async function removeSignatureAction(bookingId: string, role: "RENTER" | 
     if (!(e instanceof DomainError) && !isImmutableError(e)) throw e;
   }
   revalidatePath(base(bookingId));
-  redirect(`${base(bookingId)}?schritt=6`);
+  redirect(`${base(bookingId)}?schritt=7`);
 }
 
 // Schritt 7: Abschluss. Der Server prüft alles erneut; erst hier geht die Buchung auf "Unterwegs".

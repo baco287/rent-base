@@ -13,6 +13,8 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
       <Sidebar
         tenantName={tenant.name}
         tenantCity={tenant.city}
+        // Befehl 20.8: dieselbe Logoquelle wie PDFs und Geschäftsmails (Befehl 20.5), geschützt ausgeliefert je Sitzung/Mandant
+        logoVersion={tenant.logoStorageKey && tenant.logoChecksum ? (tenant.logoUpdatedAt?.toISOString() ?? "0") : null}
         userName={user.name}
         userRole={ROLES[user.role as Role] ?? user.role}
         logoutAction={logoutAction}

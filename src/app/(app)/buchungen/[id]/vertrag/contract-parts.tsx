@@ -161,7 +161,7 @@ export function ContractDocumentView({ doc, showSignatures = true }: { doc: Cont
           </div>
         </Card>
       )}
-      {doc.contentHash && <p className="text-[11px] text-ink-3 font-mono break-all">Prüfsumme des unterschriebenen Inhalts: {doc.contentHash}</p>}
+      {/* Prüfsumme des unterschriebenen Inhalts bleibt gespeichert und geprüft; im Tagesgeschäft nicht angezeigt (Befehl 20.8) */}
     </div>
   );
 }

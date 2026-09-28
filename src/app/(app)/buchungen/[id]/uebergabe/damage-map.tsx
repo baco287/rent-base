@@ -126,18 +126,21 @@ export function DamageMap({ sketch, damages, handoverId, editable, actions, pick
   const r = bw * 0.032;
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-4 items-start">
-      <div className="flex flex-col gap-2.5">
+    // Einspaltig (Befehl 20.8): Bereiche → große Skizze → Bearbeitung → Schäden der Ansicht → alle Schäden aufklappbar.
+    // So bleibt die Skizze auch neben der Vergleichsskizze groß, und nichts wird seitlich zusammengedrückt.
+    <div className="flex flex-col gap-3 min-w-0">
+      <div className="flex flex-col gap-2.5 min-w-0">
         {title && <div className="font-semibold text-sm">{title}</div>}
-        {/* Fahrzeugbereiche als Raster: sofort erkennbar und mit dem Daumen erreichbar (kein seitliches Scrollen), Anzahl je Bereich */}
-        <div role="tablist" aria-label="Fahrzeugansicht" className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+        {/* Fahrzeugbereiche: Name + Anzahl, responsives Raster (3 Spalten, ab md 6), große Touch-Ziele, keine Kollisionen */}
+        <div role="tablist" aria-label="Fahrzeugansicht" className="grid grid-cols-3 md:grid-cols-6 gap-1.5">
           {views.map((v) => {
             const n = countFor(v.key);
             const on = v.key === view.key;
+            const short = v.label.replace(/\s*\(.*\)\s*$/, "");
             return (
-              <button key={v.key} type="button" role="tab" aria-selected={on} onClick={() => { setViewKey(v.key); setPending(null); }} className={`flex flex-col items-center justify-center gap-0.5 rounded-md border px-2 py-2 min-h-[52px] text-sm font-medium ${on ? "bg-brand text-brand-ink border-brand" : "bg-panel border-line hover:bg-panel-2/60"}`}>
-                <span>{v.label}</span>
-                <span className={`text-[11px] font-normal ${on ? "text-brand-ink/80" : n > 0 ? "text-ink-2" : "text-ink-3"}`}>{n === 0 ? "keine Schäden" : n === 1 ? "1 Schaden" : `${n} Schäden`}</span>
+              <button key={v.key} type="button" role="tab" aria-selected={on} title={v.label} onClick={() => { setViewKey(v.key); setPending(null); }} className={`flex items-center justify-center gap-1.5 rounded-md border px-2 min-h-[44px] text-[13px] font-medium min-w-0 ${on ? "bg-brand text-brand-ink border-brand" : "bg-panel border-line hover:bg-panel-2/60"}`}>
+                <span className="truncate">{short}</span>
+                <span className={`shrink-0 rounded-full px-1.5 min-w-[1.4rem] text-center text-[11px] font-semibold ${on ? "bg-white/25" : n > 0 ? "bg-panel-2 text-ink-2" : "bg-panel-2 text-ink-3"}`}>{n}</span>
               </button>
             );
           })}
@@ -202,7 +205,7 @@ export function DamageMap({ sketch, damages, handoverId, editable, actions, pick
         </div>
       </div>
 
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-3 min-w-0">
         {error && <p role="alert" className="text-bad bg-bad-soft rounded-md px-3 py-2 text-sm">{error}</p>}
 
         {pending && editable && actions && (
@@ -264,30 +267,39 @@ export function DamageMap({ sketch, damages, handoverId, editable, actions, pick
           </div>
         )}
 
-        {/* Liste aller Schäden – bewusst von den Fahrzeugansichten abgesetzt: sie ist keine Fahrzeugseite */}
-        <div className="card border-dashed">
-          <div className="px-3.5 py-2.5 border-b border-line-soft bg-panel-2/60 flex items-center gap-2"><span className="font-semibold text-sm">Liste aller Schäden</span><span className="chip bg-panel-2 text-ink-2">{damages.length}</span><span className="text-[11px] text-ink-3">alle Ansichten</span></div>
-          {damages.length === 0 ? (
-            <p className="px-3.5 py-3 text-sm text-ink-3">Keine Schäden dokumentiert.</p>
+        {/* Primär: Schäden der gewählten Ansicht; die vollständige Liste ist aufklappbar (keine Fahrzeugseite) */}
+        <div className="card">
+          <div className="px-3.5 py-2.5 border-b border-line-soft flex items-center gap-2"><span className="font-semibold text-sm">{view.label}</span><span className="text-xs text-ink-3">· {inView.length === 0 ? "keine Schäden" : inView.length === 1 ? "1 Schaden" : `${inView.length} Schäden`}</span></div>
+          {inView.length === 0 ? (
+            <p className="px-3.5 py-2.5 text-sm text-ink-3">In dieser Ansicht ist kein Schaden dokumentiert.</p>
           ) : (
-            <ul className="divide-y divide-line-soft">
-              {damages.map((d) => (
-                <li key={d.id}>
-                  <button type="button" onClick={() => { setViewKey(d.view); setPending(null); setMoving(false); setSelected(d.id); }} className={`w-full text-left px-3.5 py-2 flex items-start gap-2.5 hover:bg-panel-2/60 ${d.id === selected ? "bg-panel-2" : ""}`}>
-                    <span className="mt-0.5 shrink-0"><MarkerIcon symbol={d.symbol} index={d.index} size={20} /></span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-sm font-medium truncate">{d.kindLabel} · {d.viewLabel}</span>
-                      <span className="block text-xs text-ink-3 truncate">{d.description}</span>
-                    </span>
-                    {d.marker === "NEW" && d.photos.length === 0 && <span className="chip bg-amber-soft text-amber">Foto fehlt</span>}
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <ol className="divide-y divide-line-soft">{inView.map((d) => <DamageRow key={d.id} d={d} selected={d.id === selected} onPick={() => { setPending(null); setMoving(false); setSelected(d.id); }} />)}</ol>
           )}
         </div>
+        {damages.length > inView.length && (
+          <details className="card">
+            <summary className="cursor-pointer select-none px-3.5 py-2.5 text-sm font-medium">Alle {damages.length} Schäden anzeigen</summary>
+            <ol className="divide-y divide-line-soft border-t border-line-soft">{damages.map((d) => <DamageRow key={d.id} d={d} selected={d.id === selected} showView onPick={() => { setViewKey(d.view); setPending(null); setMoving(false); setSelected(d.id); }} />)}</ol>
+          </details>
+        )}
       </div>
     </div>
+  );
+}
+
+/** Eine Zeile der Schadenliste: Symbol (Herkunft), Art, Beschreibung; wählt den Schaden aus und springt ggf. in seine Ansicht. */
+function DamageRow({ d, selected, showView = false, onPick }: { d: DocDamage; selected: boolean; showView?: boolean; onPick: () => void }) {
+  return (
+    <li>
+      <button type="button" onClick={onPick} className={`w-full text-left px-3.5 py-2 flex items-start gap-2.5 min-h-[44px] hover:bg-panel-2/60 ${selected ? "bg-panel-2" : ""}`}>
+        <span className="mt-0.5 shrink-0"><MarkerIcon symbol={d.symbol} index={d.index} size={20} /></span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-medium truncate">{d.kindLabel}{showView ? ` · ${d.viewLabel}` : ""}</span>
+          <span className="block text-xs text-ink-3 truncate">{d.description}</span>
+        </span>
+        {d.marker === "NEW" && d.photos.length === 0 && <span className="chip bg-amber-soft text-amber shrink-0">Foto fehlt</span>}
+      </button>
+    </li>
   );
 }
 

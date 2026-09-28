@@ -139,7 +139,7 @@ const pages: [string, string][] = [
   [`/buchungen/${retBooking.id}`, "Rückgabeprotokoll anzeigen"],
   [`/buchungen/${retBooking.id}`, "Zusatzkosten"],
   [`/buchungen/${retBooking.id}/rueckgabe`, "Vergleich mit der Übergabe"],
-  [`/buchungen/${retBooking.id}/rueckgabe`, "Prüfsumme des versiegelten Protokolls"],
+  [`/buchungen/${retBooking.id}/rueckgabe`, "Rückgabeprotokoll"],
   [`/fahrzeuge/${v4.id}`, "Nächste Fälligkeiten"],
   [`/fahrzeuge/${v4.id}?tab=schaeden`, "Schadenakte"],
   [`/fahrzeuge/${v4.id}?tab=historie`, "Rückgabe"],
@@ -180,7 +180,7 @@ const pages: [string, string][] = [
   ["/buchungen", "Bereit zur Übergabe"],
   ["/buchungen?filter=alle", "ALT-1"],
   ["/buchungen/neu", "Neuer Kunde"],
-  ["/buchungen/neu", "Zahlung (Miete)"],
+  ["/buchungen/neu", "Miete &amp; Kaution"],
   ["/buchungen/neu", "Teilweise bezahlt"],
   [`/buchungen/${w.bookingId}`, "Mietvertrag fortsetzen"],
   [`/buchungen/${w.bookingId}`, "Gesamtpreis (voraussichtlich)"],
@@ -199,7 +199,7 @@ const pages: [string, string][] = [
   [`/buchungen/${w.bookingId}/vertrag?schritt=6`, "Gesamtmietpreis (brutto)"],
   [`/buchungen/${w.bookingId}/vertrag?schritt=7`, "Mietvertrag verbindlich abschließen"],
   // abgeschlossener Vertrag und vorbereitete Übergabeseite
-  [`/buchungen/${signedBooking.id}/vertrag`, "Prüfsumme des unterschriebenen Inhalts"],
+  [`/buchungen/${signedBooking.id}/vertrag`, "Unterschriften"],
   // Übergabe-Assistent, alle sieben Schritte
   [`/buchungen/${signedBooking.id}/uebergabe?schritt=1`, "Bekannte Schäden"],
   [`/buchungen/${signedBooking.id}/uebergabe?schritt=2`, "Tankstand in Achteln"],
@@ -210,7 +210,7 @@ const pages: [string, string][] = [
   [`/buchungen/${signedBooking.id}/uebergabe?schritt=7`, "Unterschrift Mieter"],
   [`/buchungen/${signedBooking.id}/uebergabe?schritt=8`, "Übergabe verbindlich abschließen"],
   // finalisiertes Protokoll eines Elektrofahrzeugs
-  [`/buchungen/${doneBooking.id}/uebergabe`, "Prüfsumme des versiegelten Protokolls"],
+  [`/buchungen/${doneBooking.id}/uebergabe`, "Übergabeprotokoll"],
   [`/buchungen/${doneBooking.id}/uebergabe`, "Batteriestand"],
   [`/buchungen/${doneBooking.id}/uebergabe`, "Fahrer- und Führerscheinprüfung"],
   [`/buchungen/${doneBooking.id}/uebergabe`, "Identität im Original geprüft: Ja"],
@@ -228,6 +228,12 @@ for (const [path, expect] of pages) {
   const body = res.status === 200 ? (await res.text()).replace(/<!-- -->/g, "") : "";
   const ok = res.status === 200 && body.includes(expect);
   report(ok, `${res.status} ${path}${ok ? "" : `  (erwartet: "${expect}")`}`);
+}
+
+// Befehl 20.8: Prüfsummen bleiben in Datenbank und Integritätsprüfung, erscheinen aber nicht in der normalen Oberfläche
+for (const path of [`/buchungen/${retBooking.id}`, `/buchungen/${retBooking.id}/vertrag`, `/buchungen/${retBooking.id}/rueckgabe`, `/buchungen/${retBooking.id}/uebergabe`]) {
+  const html = await (await fetch(base + path, { headers: { cookie }, redirect: "manual" })).text();
+  report(!/SHA-256|Prüfsumme des/.test(html), `Keine Prüfsumme in der normalen Oberfläche: ${path}`);
 }
 
 // Foto-Upload über die geschützte Adresse: echtes JPEG hoch, wieder abrufen, fremder Mandant und anonym abgewiesen
@@ -305,8 +311,8 @@ const direct: [string, string][] = [
   [`/buchungen/${old.id}/uebergabe`, "kein Übergabeprotokoll"],
   [`/buchungen/${old.id}/rueckgabe`, "Zurückgegeben"],
   [`/buchungen/${w.bookingId}/vertrag?schritt=7`, "Mietvertrag"],
-  [`/buchungen/${doneBooking.id}/uebergabe?schritt=3`, "Prüfsumme des versiegelten Protokolls"],
-  [`/buchungen/${retBooking.id}/rueckgabe?schritt=2`, "Prüfsumme des versiegelten Protokolls"],
+  [`/buchungen/${doneBooking.id}/uebergabe?schritt=3`, "Übergabeprotokoll"],
+  [`/buchungen/${retBooking.id}/rueckgabe?schritt=2`, "Rückgabeprotokoll"],
 ];
 for (const [path, expected] of direct) {
   const r = await fetch(base + path, { headers: { cookie } });
@@ -339,7 +345,7 @@ const finalVersion = await finalizeInvoice(w.tenantId, invoice.id, w.actor);
 const finalInvoice = { number: (await db.invoice.findUniqueOrThrow({ where: { id: invoice.id } })).number!, versionId: finalVersion.id };
 const invoicePdf = await ensureInvoiceDocument(w.tenantId, finalVersion.id, w.actor.id);
 const invFinal = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung?abgeschlossen=1`, { headers: { cookie } }));
-report([`Rechnung ${finalInvoice.number}`, "Finalisiert", "Aktuelle Fassung 1", "Noch nicht übermittelt", "Fassungsverlauf", "Rechnung bearbeiten", "Als an Kunden übergeben markieren", "Prüfsumme (SHA-256)", "Rechnungsbetrag", `Rechnung_${finalInvoice.number}_Fassung1.pdf`, "Herunterladen", "E-Mail mit Rechnung", "Rechnung jetzt senden", "Interne Notiz"].every((t) => invFinal.includes(t)) && !invFinal.includes("Entwurf speichern"), "Rechnung: abgeschlossene Ansicht mit Fassungsverlauf, Dokument und E-Mail-Bereich");
+report([`Rechnung ${finalInvoice.number}`, "Finalisiert", "Aktuelle Fassung 1", "Noch nicht übermittelt", "Fassungsverlauf", "Rechnung bearbeiten", "Als an Kunden übergeben markieren", "Rechnungsbetrag", `Rechnung_${finalInvoice.number}_Fassung1.pdf`, "Herunterladen", "E-Mail mit Rechnung", "Rechnung jetzt senden", "Interne Notiz"].every((t) => invFinal.includes(t)) && !invFinal.includes("Entwurf speichern"), "Rechnung: abgeschlossene Ansicht mit Fassungsverlauf, Dokument und E-Mail-Bereich");
 const invDoc = await fetch(`${base}/api/documents/${invoicePdf.document.id}?download=1`, { headers: { cookie } });
 report(invDoc.status === 200 && (invDoc.headers.get("content-disposition") ?? "").includes(`Rechnung_${finalInvoice.number}_Fassung1.pdf`) && (await invDoc.arrayBuffer()).byteLength === invoicePdf.document.sizeBytes, `${invDoc.status} Rechnungs-PDF herunterladen`);
 const retBookingHtml2 = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
@@ -498,7 +504,7 @@ report(yardSettings.status === 200, `${yardSettings.status} Einstellungen lesbar
 const yardDraft = await fetch(`${base}/buchungen/${w.bookingId}/vertrag`, { headers: { cookie: `rb_session=${yardSession}` }, redirect: "manual" });
 report(yardDraft.status === 307 && decodeURIComponent(yardDraft.headers.get("location") ?? "").includes("nur Inhaber und Disponenten"), `${yardDraft.status} Hofmitarbeiter: Vertragsentwurf nicht bearbeitbar`);
 const yardSigned = await fetch(`${base}/buchungen/${doneBooking.id}/vertrag`, { headers: { cookie: `rb_session=${yardSession}` } });
-report(yardSigned.status === 200 && (await yardSigned.text()).includes("Prüfsumme"), `${yardSigned.status} Hofmitarbeiter: abgeschlossenen Vertrag ansehen`);
+report(yardSigned.status === 200 && (await yardSigned.text()).includes("Unterschriften"), `${yardSigned.status} Hofmitarbeiter: abgeschlossenen Vertrag ansehen`);
 const yardReturn = await fetch(`${base}/buchungen/${retBooking.id}/rueckgabe`, { headers: { cookie: `rb_session=${yardSession}` } });
 const yardReturnHtml = await yardReturn.text();
 report(yardReturn.status === 200 && yardReturnHtml.includes("Herunterladen") && /Unterlagen (jetzt|erneut) senden|E-Mail erneut senden/.test(yardReturnHtml), `${yardReturn.status} Hofmitarbeiter: Rückgabeprotokoll, Dokumente und E-Mail erneut senden`);
@@ -630,7 +636,7 @@ report(termsContract.rentalTermsVersionId === termsPub.id && termsContract.terms
 const step4 = await plain(await fetch(`${base}/buchungen/${termsBooking.id}/vertrag?schritt=4`, { headers: { cookie } }));
 report(step4.includes("Kilometerregel") && step4.includes("Quelle:") && step4.includes("Individuelle Vereinbarungen") && step4.includes("Auslandsfahrten gestattet") && step4.includes("Zusatzfahrer-Preisregel"), "Vertragsassistent: Geschäftsregeln mit Herkunft und individuelle Vereinbarungen");
 const step7a = await plain(await fetch(`${base}/buchungen/${termsBooking.id}/vertrag?schritt=7`, { headers: { cookie } }));
-report(step7a.includes("Kenntnisnahme fehlt") && step7a.includes("Die Mietbedingungen Version 1.0 wurden zur Kenntnisnahme bereitgestellt") && step7a.includes("erst nach der Kenntnisnahme") && step7a.includes("Kenntnisnahme bestätigen"), "Vertragsassistent: Kenntnisnahme vor der Mieterunterschrift verlangt");
+report(step7a.includes("Kenntnisnahme fehlt") && step7a.includes("Die Mietbedingungen Version 1.0 wurden zur Kenntnisnahme bereitgestellt") && step7a.includes("erst nach der Kenntnisnahme") && step7a.includes("Mit dem Häkchen wird die Kenntnisnahme dokumentiert"), "Vertragsassistent: Kenntnisnahme vor der Mieterunterschrift verlangt");
 await acknowledgeTerms(w.tenantId, termsContract.id, w.actor, { confirmed: true });
 const step7b = await plain(await fetch(`${base}/buchungen/${termsBooking.id}/vertrag?schritt=7`, { headers: { cookie } }));
 report(step7b.includes("Kenntnisnahme bestätigt") && step7b.includes("Unterschrift Mieter") && !step7b.includes("erst nach der Kenntnisnahme"), "Vertragsassistent: nach Kenntnisnahme ist die Mieterunterschrift möglich");

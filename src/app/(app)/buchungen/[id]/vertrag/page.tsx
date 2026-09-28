@@ -28,7 +28,7 @@ import {
   startContractAction,
 } from "./actions";
 import { ContractDocumentView, DriverFields, IssueList, emptyDriver, type DriverValues } from "./contract-parts";
-import { AcknowledgeForm, ActionButton, DriverModeSection, FinalizeForm, InlineForm, RuleFields, SignatureForm, StepForm, WizardProgress } from "./wizard-ui";
+import { AcknowledgeForm, ActionButton, DriverModeSection, FinalizeForm, InlineForm, NavButton, RuleFields, SignatureForm, StepForm, WizardProgress } from "./wizard-ui";
 import { WIZARD_STEPS } from "./steps";
 
 export const metadata = { title: "Mietvertrag" };
@@ -289,37 +289,55 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
           </>
         )}
 
-        {step === 5 && (
-          <>
-            <IssueList issues={issues} areas={["ADDITIONAL_DRIVER"]} />
-            <Card title="Zusatzfahrer" right={<Chip>{additional.length}</Chip>}>
-              {additional.length === 0 ? (
-                <p className="px-4 py-3 text-sm text-ink-3">Keine Zusatzfahrer. Das ist in Ordnung: dann darf nur der Fahrer aus Schritt 2 das Fahrzeug führen.</p>
-              ) : (
-                <ul className="divide-y divide-line-soft">
-                  {additional.map((d) => (
-                    <li key={d.id} className="px-4 py-2.5 flex items-center gap-3">
-                      <div className="flex-1 min-w-0">
-                        <div className="font-medium">{d.firstName} {d.lastName} <span className="text-ink-3 font-normal">· {DRIVER_ROLES.ADDITIONAL_DRIVER}</span></div>
-                        <div className="text-xs text-ink-3">geb. {fmtDate(d.birthDate)} · Führerschein {d.licenseNumber}, Klasse {d.licenseClass}, gültig bis {d.licenseValidUntil ? fmtDate(d.licenseValidUntil) : "?"}</div>
-                      </div>
-                      <form action={removeDriverAction.bind(null, booking.id, d.id)}><button className="btn btn-danger !py-1">Entfernen</button></form>
-                    </li>
-                  ))}
-                </ul>
+        {step === 5 && (() => {
+          // Befehl 20.8: Standard ist „kein Zusatzfahrer“ – das Formular erscheint erst auf Wunsch (?zusatzfahrer=1 oder Kundenübernahme).
+          // Vorhandene Zusatzfahrer (ContractDriver) bleiben immer sichtbar und maßgeblich.
+          const wantsAdd = sp.zusatzfahrer === "1" || !!fromCustomer;
+          const addHref = `/buchungen/${booking.id}/vertrag?schritt=5&zusatzfahrer=1`;
+          return (
+            <>
+              <IssueList issues={issues} areas={["ADDITIONAL_DRIVER"]} />
+              {additional.length > 0 && (
+                <Card title="Zusatzfahrer" right={<Chip>{additional.length}</Chip>}>
+                  <ul className="divide-y divide-line-soft">
+                    {additional.map((d) => (
+                      <li key={d.id} className="px-4 py-2.5 flex items-center gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium">{d.firstName} {d.lastName} <span className="text-ink-3 font-normal">· {DRIVER_ROLES.ADDITIONAL_DRIVER}</span></div>
+                          <div className="text-xs text-ink-3">geb. {fmtDate(d.birthDate)} · Führerschein {d.licenseNumber}, Klasse {d.licenseClass}, gültig bis {d.licenseValidUntil ? fmtDate(d.licenseValidUntil) : "?"}</div>
+                        </div>
+                        <form action={removeDriverAction.bind(null, booking.id, d.id)}><button className="btn btn-danger !py-1">Entfernen</button></form>
+                      </li>
+                    ))}
+                  </ul>
+                  {!wantsAdd && <div className="px-4 py-3 border-t border-line-soft"><Link href={addHref} className="btn">+ Weiteren Zusatzfahrer hinzufügen</Link></div>}
+                </Card>
               )}
-            </Card>
-            <Card title="Zusatzfahrer hinzufügen">
-              <div className="p-4 md:p-5 flex flex-col gap-4">
-                {pickCustomerForm("Daten aus bestehendem Kunden übernehmen (optional)")}
-                <InlineForm key={prefill?.customerId ?? "leer"} action={addDriverAction.bind(null, booking.id)} submitLabel="Zusatzfahrer hinzufügen">
-                  <DriverFields values={prefill ?? emptyDriver} prefix="a_" />
-                </InlineForm>
-              </div>
-            </Card>
-            <Card className="p-4 md:p-5"><StepForm action={navigateStepAction.bind(null, booking.id, 5)} step={5} nextLabel="Weiter zur Zusammenfassung"><span className="sr-only">Navigation</span></StepForm></Card>
-          </>
-        )}
+              {additional.length === 0 && !wantsAdd && (
+                <Card title="Gibt es einen Zusatzfahrer?">
+                  <div className="p-4 md:p-5 flex flex-col gap-3">
+                    <p className="text-sm text-ink-2">Standard: Nur der Hauptfahrer darf das Fahrzeug führen. Ein Zusatzfahrer wird nur bei Bedarf mit seinen Führerscheindaten in den Vertrag aufgenommen.</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <Link href={addHref} className="btn justify-center !py-2.5">+ Zusatzfahrer hinzufügen</Link>
+                      <NavButton action={navigateStepAction.bind(null, booking.id, 5)} label="Nein, nur der Hauptfahrer" />
+                    </div>
+                  </div>
+                </Card>
+              )}
+              {wantsAdd && (
+                <Card title={additional.length > 0 ? "Weiteren Zusatzfahrer hinzufügen" : "Zusatzfahrer hinzufügen"} right={<Link href={`/buchungen/${booking.id}/vertrag?schritt=5`} className="text-xs underline">Abbrechen</Link>}>
+                  <div className="p-4 md:p-5 flex flex-col gap-4">
+                    {pickCustomerForm("Daten aus bestehendem Kunden übernehmen (optional)")}
+                    <InlineForm key={prefill?.customerId ?? "leer"} action={addDriverAction.bind(null, booking.id)} submitLabel="Zusatzfahrer hinzufügen">
+                      <DriverFields values={prefill ?? emptyDriver} prefix="a_" />
+                    </InlineForm>
+                  </div>
+                </Card>
+              )}
+              <Card className="p-4 md:p-5"><StepForm action={navigateStepAction.bind(null, booking.id, 5)} step={5} nextLabel="Weiter zur Zusammenfassung"><span className="sr-only">Navigation</span></StepForm></Card>
+            </>
+          );
+        })()}
 
         {step === 6 && (
           <>

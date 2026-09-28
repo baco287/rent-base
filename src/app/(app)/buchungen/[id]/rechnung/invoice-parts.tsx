@@ -129,7 +129,7 @@ export function InvoiceDocumentView({ doc }: { doc: InvoiceDocumentData }) {
           </div>
         </Card>
       </div>
-      {doc.contentHash && <div className="text-[11px] text-ink-3 font-mono break-all">Prüfsumme (SHA-256) {doc.contentHash}</div>}
+      {/* Prüfsumme (SHA-256) bleibt gespeichert und geprüft; im Tagesgeschäft nicht angezeigt (Befehl 20.8) */}
     </div>
   );
 }

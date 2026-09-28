@@ -24,55 +24,67 @@ function centsOf(input: string): number | null {
 }
 
 /**
- * Bereich „Zahlung“ im Formular. Gespeichert wird nur die tatsächliche Zahlungsbewegung; „Offen / Teilweise /
- * Vollständig“ ist die Absicht, der Status der Buchung wird danach immer aus den Zahlungen berechnet.
- * Die Kaution gehört nicht hierher und zählt nicht als Mietzahlung.
+ * Bereich „Miete & Kaution“ im Formular (Befehl 20.8): Miete und Kaution nebeneinander, finanziell getrennt.
+ * Gespeichert wird nur die tatsächliche Mietzahlung; „Offen / Teilweise / Vollständig“ ist die Absicht, der Status der
+ * Buchung wird danach immer aus den Zahlungen berechnet. Die Kaution wird hier nur angezeigt (vereinbart, noch nicht
+ * erhalten) – ihr Eingang wird nach der Anlage auf der Buchungsseite dokumentiert; sie ist nie eine Mietzahlung.
  */
-function PaymentSection({ totalCents, config }: { totalCents: number; config: InitialPaymentConfig }) {
+function PaymentSection({ totalCents, depositCents, config }: { totalCents: number; depositCents: number; config: InitialPaymentConfig }) {
   const [intent, setIntent] = useState<RentalPaymentIntent>("NONE");
   const [amount, setAmount] = useState("");
   const paid = intent === "FULL" ? totalCents : intent === "PARTIAL" ? centsOf(amount) ?? 0 : 0;
   const open = Math.max(0, totalCents - paid);
   const fullAmount = (totalCents / 100).toFixed(2).replace(".", ",");
+  const status = intent === "FULL" || (intent === "PARTIAL" && paid >= totalCents && totalCents > 0) ? "Vollständig bezahlt" : intent === "PARTIAL" && paid > 0 ? "Teilweise bezahlt" : "Offen";
   return (
     <fieldset className="md:col-span-2 rounded-lg border border-line p-4 flex flex-col gap-3">
-      <legend className="label-xs px-1">Zahlung (Miete)</legend>
+      <legend className="label-xs px-1">Miete & Kaution</legend>
       <input type="hidden" name="payNonce" value={config.nonce} />
-      <div className="flex rounded-md border border-line overflow-hidden text-[13px] font-medium" role="radiogroup" aria-label="Zahlungsstatus">
-        {(Object.keys(RENTAL_PAYMENT_INTENTS) as RentalPaymentIntent[]).map((k) => (
-          <label key={k} className={`flex-1 px-3 py-1.5 text-center cursor-pointer ${intent === k ? "bg-brand text-brand-ink" : "bg-panel text-ink-2"}`}>
-            <input type="radio" name="payIntent" value={k} checked={intent === k} onChange={() => setIntent(k)} className="sr-only" />
-            {RENTAL_PAYMENT_INTENTS[k]}
-          </label>
-        ))}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <section className="flex flex-col gap-2.5" aria-label="Miete">
+          <div className="flex items-center gap-2"><span className="font-semibold text-sm">Miete</span><span className={`chip ${status === "Vollständig bezahlt" ? "bg-good-soft text-good" : status === "Teilweise bezahlt" ? "bg-amber-soft text-amber" : "bg-panel-2 text-ink-2"}`}>{status}</span></div>
+          <div className="grid grid-cols-3 gap-2 text-sm tnum">
+            <div className="rounded-md bg-panel-2 p-2.5"><div className="label-xs">Gesamtmietpreis</div><div className="font-mono font-semibold">{fmtCents(totalCents)}</div></div>
+            <div className="rounded-md bg-panel-2 p-2.5"><div className="label-xs">Bereits bezahlt</div><div className="font-mono font-semibold text-good">{fmtCents(paid)}</div></div>
+            <div className="rounded-md bg-panel-2 p-2.5"><div className="label-xs">Noch offen</div><div className={`font-mono font-semibold ${open > 0 ? "text-bad" : ""}`}>{fmtCents(open)}</div></div>
+          </div>
+          <div className="flex rounded-md border border-line overflow-hidden text-[13px] font-medium" role="radiogroup" aria-label="Zahlungsstatus">
+            {(Object.keys(RENTAL_PAYMENT_INTENTS) as RentalPaymentIntent[]).map((k) => (
+              <label key={k} className={`flex-1 px-3 py-1.5 text-center cursor-pointer ${intent === k ? "bg-brand text-brand-ink" : "bg-panel text-ink-2"}`}>
+                <input type="radio" name="payIntent" value={k} checked={intent === k} onChange={() => setIntent(k)} className="sr-only" />
+                {RENTAL_PAYMENT_INTENTS[k]}
+              </label>
+            ))}
+          </div>
+          {intent !== "NONE" && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <label className="flex flex-col gap-1">
+                <span className="label-xs">Tatsächlich gezahlter Betrag €</span>
+                {intent === "FULL" ? (
+                  <input name="payAmount" value={fullAmount} readOnly className="input tnum bg-panel-2" />
+                ) : (
+                  <input name="payAmount" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0,00" required className="input tnum" />
+                )}
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="label-xs">Zahlungsart</span>
+                <select name="payMethod" defaultValue="CASH" className="input">
+                  {Object.entries(PAYMENT_METHODS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1"><span className="label-xs">Zahlungsdatum</span><input name="payPaidAt" type="datetime-local" defaultValue={config.defaultWhen} required className="input tnum" /></label>
+              <label className="flex flex-col gap-1"><span className="label-xs">Referenz (optional)</span><input name="payReference" maxLength={120} placeholder="z. B. Belegnummer" className="input" /></label>
+              <label className="flex flex-col gap-1 sm:col-span-2"><span className="label-xs">Notiz (optional)</span><input name="payNote" maxLength={500} className="input" /></label>
+            </div>
+          )}
+          <p className="text-xs text-ink-3">Nur dokumentiert, nicht eingezogen. Weitere Teilzahlungen später auf der Buchung unter „Mietzahlung“.</p>
+        </section>
+        <section className="flex flex-col gap-2.5 md:border-l md:border-line-soft md:pl-4" aria-label="Kaution">
+          <div className="flex items-center gap-2"><span className="font-semibold text-sm">Kaution</span><span className="chip bg-amber-soft text-amber">Noch nicht erhalten</span></div>
+          <div className="rounded-md bg-panel-2 p-2.5 text-sm tnum"><div className="label-xs">Vereinbarte Kaution</div><div className="font-mono font-semibold">{fmtCents(depositCents)}</div></div>
+          <p className="text-xs text-ink-3">Der Eingang der Kaution wird nach der Anlage auf der Buchungsseite unter „Kaution erhalten“ dokumentiert. Kaution und Mietzahlung werden getrennt geführt – die Kaution ist keine Mietzahlung.</p>
+        </section>
       </div>
-      <div className="grid grid-cols-3 gap-2 text-sm tnum">
-        <div className="rounded-md bg-panel-2 p-2.5"><div className="label-xs">Gesamtpreis</div><div className="font-mono font-semibold">{fmtCents(totalCents)}</div></div>
-        <div className="rounded-md bg-panel-2 p-2.5"><div className="label-xs">Bereits bezahlt</div><div className="font-mono font-semibold text-good">{fmtCents(paid)}</div></div>
-        <div className="rounded-md bg-panel-2 p-2.5"><div className="label-xs">Noch offen</div><div className={`font-mono font-semibold ${open > 0 ? "text-bad" : ""}`}>{fmtCents(open)}</div></div>
-      </div>
-      {intent !== "NONE" && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <label className="flex flex-col gap-1">
-            <span className="label-xs">Tatsächlich gezahlter Betrag €</span>
-            {intent === "FULL" ? (
-              <input name="payAmount" value={fullAmount} readOnly className="input tnum bg-panel-2" />
-            ) : (
-              <input name="payAmount" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0,00" required className="input tnum" />
-            )}
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="label-xs">Zahlungsart</span>
-            <select name="payMethod" defaultValue="CASH" className="input">
-              {Object.entries(PAYMENT_METHODS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1"><span className="label-xs">Zahlungsdatum</span><input name="payPaidAt" type="datetime-local" defaultValue={config.defaultWhen} required className="input tnum" /></label>
-          <label className="flex flex-col gap-1"><span className="label-xs">Referenz (optional)</span><input name="payReference" maxLength={120} placeholder="z. B. Belegnummer, Verwendungszweck" className="input" /></label>
-          <label className="flex flex-col gap-1 sm:col-span-2"><span className="label-xs">Notiz (optional)</span><input name="payNote" maxLength={500} className="input" /></label>
-        </div>
-      )}
-      <p className="text-xs text-ink-3">Jede Zahlung wird als eigene Bewegung gespeichert; weitere Teilzahlungen später auf der Buchung unter „Mietzahlung“. Karten- und Überweisungszahlungen werden außerhalb von Rent-Base ausgeführt und hier nur dokumentiert. Die Kaution ist keine Mietzahlung und wird getrennt erfasst.</p>
     </fieldset>
   );
 }
@@ -220,7 +232,7 @@ export function BookingForm({
         {vehicle && <span className="text-ink-3">Fahrzeug {vehicle.plate}</span>}
       </div>
 
-      {initialPayment && <PaymentSection totalCents={Math.round(price.total * 100)} config={initialPayment} />}
+      {initialPayment && <PaymentSection totalCents={Math.round(price.total * 100)} depositCents={Math.round((parseFloat(deposit.replace(",", ".")) || 0) * 100)} config={initialPayment} />}
 
       <FormError error={state?.error} />
       <div className="md:col-span-2 flex items-center gap-2 mt-1">

@@ -280,7 +280,7 @@ export function HandoverDocumentView({ doc, handoverId, showSignatures = true }:
           </div>
         </Card>
       )}
-      {doc.contentHash && <p className="text-[11px] text-ink-3 font-mono break-all">Prüfsumme des versiegelten Protokolls: {doc.contentHash}</p>}
+      {/* Prüfsumme des versiegelten Protokolls bleibt gespeichert und geprüft; im Tagesgeschäft nicht angezeigt (Befehl 20.8) */}
     </div>
   );
 }
