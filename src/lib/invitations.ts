@@ -15,6 +15,7 @@ import { INVITATION_EXPIRY_HOURS, ROLES, type Role } from "@/lib/constants";
 import { claimEmail, markEmailFailed, markEmailSent } from "@/lib/email-log";
 import { deliveryMetaOf, isValidEmail } from "@/lib/mail";
 import { sendPlatformSystemMail } from "@/lib/tenant-mail";
+import { assertUserLimit } from "@/lib/subscriptions";
 
 function newToken() {
   return randomBytes(32).toString("base64url");
@@ -62,6 +63,8 @@ export async function createInvitation(tenantId: string, actor: Actor | null, in
 
   const { invitation, tenant } = await db.$transaction(async (tx) => {
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+    // Control Center: Benutzerlimit des Tarifs (null = unbegrenzt) – zählt aktive Benutzer und offene Einladungen
+    await assertUserLimit(tenantId, tx);
     let invitation: InvitationRow;
     try {
       invitation = await tx.invitation.create({ data: { tenantId, email, role: input.role, tokenHash, expiresAt, invitedById: actor?.id ?? null, invitedByName: actor?.name ?? null } });

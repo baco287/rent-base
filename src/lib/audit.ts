@@ -8,6 +8,11 @@ import type { AuditAction } from "@/lib/constants";
 type Tx = Prisma.TransactionClient;
 export type Actor = { id: string; name: string };
 
+// Control Center: Details dürfen zusätzlich genau eine Ebene `before`/`after` tragen (vorher/nachher-Werte einer Änderung).
+// Nie Passwörter, Hashes, Tokens oder Verbindungsdaten – das Protokoll ist für interne Admins lesbar.
+export type AuditDetailValue = string | number | boolean | null;
+export type AuditDetails = Record<string, AuditDetailValue | Record<string, AuditDetailValue>>;
+
 export type AuditInput = {
   action: AuditAction;
   bookingId?: string | null;
@@ -15,7 +20,7 @@ export type AuditInput = {
   paymentId?: string | null;
   depositId?: string | null;
   amountCents?: number | null;
-  details?: Record<string, string | number | boolean | null>;
+  details?: AuditDetails;
 };
 
 export function recordAudit(tx: Tx, tenantId: string, actor: Actor | null, input: AuditInput) {

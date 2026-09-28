@@ -26,8 +26,112 @@ export function roleAllows(role: string, allowed: readonly string[]) {
 export const PLATFORM_ROLES = {
   NONE: "Kein Plattformzugang",
   SUPER_ADMIN: "Super-Admin",
+  SUPPORT_ADMIN: "Support-Admin",
+  BILLING_ADMIN: "Billing-Admin",
+  READ_ONLY_ADMIN: "Nur-Lese-Admin",
 } as const;
 export type PlatformRole = keyof typeof PLATFORM_ROLES;
+/** Interne RentBase-Rollen (Control Center). NONE ist ausdrücklich keine interne Rolle. */
+export const INTERNAL_PLATFORM_ROLES = ["SUPER_ADMIN", "SUPPORT_ADMIN", "BILLING_ADMIN", "READ_ONLY_ADMIN"] as const satisfies readonly PlatformRole[];
+export type InternalPlatformRole = (typeof INTERNAL_PLATFORM_ROLES)[number];
+export function isInternalRole(role: string | null | undefined): role is InternalPlatformRole {
+  return (INTERNAL_PLATFORM_ROLES as readonly string[]).includes(role ?? "");
+}
+
+/**
+ * Control Center: Berechtigungen der internen Rollen. Die Matrix ist die einzige Stelle, an der entschieden wird,
+ * welche interne Rolle was darf – requirePlatform(permission) in lib/platform-auth.ts prüft ausschließlich hier.
+ *   SUPER_ADMIN      vollständige Plattformverwaltung
+ *   SUPPORT_ADMIN    Kunden ansehen, Supportmodus, Benutzer-Support (sperren/entsperren, Einladung erneut senden) – keine
+ *                    Systemeinstellungen, keine Sperrung von Mandanten, keine Tarife, keine Features, keine Rollenvergabe
+ *   BILLING_ADMIN    Kunden ansehen und Tarif/Abo pflegen – kein Support, keine Benutzeraktionen
+ *   READ_ONLY_ADMIN  alles ansehen, nichts verändern
+ */
+export const PLATFORM_PERMISSIONS = {
+  PLATFORM_VIEW: "Plattform, Kunden und Kennzahlen ansehen",
+  USERS_VIEW: "Benutzer mandantenübergreifend ansehen",
+  BILLING_VIEW: "Tarife und Abonnements ansehen",
+  FEATURES_VIEW: "Feature-Freischaltungen ansehen",
+  SUPPORT_VIEW: "Support-/Diagnoseinformationen ansehen",
+  AUDIT_VIEW: "Audit-Log ansehen",
+  SYSTEM_VIEW: "Systemstatus ansehen",
+  TENANT_CREATE: "Mandanten anlegen",
+  TENANT_SUSPEND: "Mandanten sperren und entsperren",
+  SUPPORT_SESSION: "Mandanten im Supportmodus öffnen",
+  USER_MANAGE: "Benutzer sperren/entsperren, Einladungen erneut senden",
+  BILLING_MANAGE: "Tarif und Abonnement ändern",
+  FEATURE_MANAGE: "Features je Mandant freischalten oder sperren",
+  PLATFORM_ROLE_MANAGE: "Interne Rollen vergeben und entziehen",
+} as const;
+export type PlatformPermission = keyof typeof PLATFORM_PERMISSIONS;
+
+const ALL_INTERNAL: readonly InternalPlatformRole[] = INTERNAL_PLATFORM_ROLES;
+export const PLATFORM_PERMISSION_MATRIX: Record<PlatformPermission, readonly InternalPlatformRole[]> = {
+  PLATFORM_VIEW: ALL_INTERNAL,
+  USERS_VIEW: ["SUPER_ADMIN", "SUPPORT_ADMIN", "READ_ONLY_ADMIN"],
+  BILLING_VIEW: ALL_INTERNAL,
+  FEATURES_VIEW: ["SUPER_ADMIN", "SUPPORT_ADMIN", "READ_ONLY_ADMIN"],
+  SUPPORT_VIEW: ["SUPER_ADMIN", "SUPPORT_ADMIN", "READ_ONLY_ADMIN"],
+  AUDIT_VIEW: ALL_INTERNAL,
+  SYSTEM_VIEW: ["SUPER_ADMIN", "SUPPORT_ADMIN", "READ_ONLY_ADMIN"],
+  TENANT_CREATE: ["SUPER_ADMIN"],
+  TENANT_SUSPEND: ["SUPER_ADMIN"],
+  SUPPORT_SESSION: ["SUPER_ADMIN", "SUPPORT_ADMIN"],
+  USER_MANAGE: ["SUPER_ADMIN", "SUPPORT_ADMIN"],
+  BILLING_MANAGE: ["SUPER_ADMIN", "BILLING_ADMIN"],
+  FEATURE_MANAGE: ["SUPER_ADMIN"],
+  PLATFORM_ROLE_MANAGE: ["SUPER_ADMIN"],
+};
+/** Darf diese Plattformrolle das? NONE und unbekannte Werte: nie. */
+export function platformAllows(role: string | null | undefined, permission: PlatformPermission): boolean {
+  if (!isInternalRole(role)) return false;
+  return PLATFORM_PERMISSION_MATRIX[permission].includes(role);
+}
+
+/**
+ * Control Center: Feature-Freischaltungen je Mandant. Ohne Eintrag gilt `defaultEnabled` – bestehende Mandanten
+ * verhalten sich dadurch exakt wie vor der Einführung. Neue Module ergänzen hier einen Schlüssel und rufen an
+ * ihren Einstiegspunkten requireFeature() (Seiten/Server Actions) bzw. featureForApi() (API-Routen) auf.
+ * `nav` = Sidebar-Pfade, die ohne das Feature ausgeblendet werden.
+ */
+export const FEATURES = {
+  AUTHORITIES: { label: "Behörden- & Bußgeldmanagement", description: "Behördenvorgänge, Fahrermeldungen, Fristen-Erinnerung, Posteingang-Erkennung", defaultEnabled: true, nav: ["/behoerden"] },
+  DAMAGE_CASES: { label: "Schadenmanagement", description: "Schadenakten, Haftung, Kosten, Kundenbelastung, Schadenabrechnung", defaultEnabled: true, nav: ["/schaeden"] },
+  MAINTENANCE: { label: "Flotten- & Wartungsmanagement", description: "Wartungspläne, Werkstattvorgänge, Fahrzeugdokumente", defaultEnabled: true, nav: ["/fahrzeuge/wartung"] },
+  PAYOUTS: { label: "Auszahlungen & Erstattungen", description: "Erstattungen, Kautionsrückzahlungen, Auszahlungsbelege", defaultEnabled: true, nav: ["/auszahlungen"] },
+  KEY_DROP: { label: "Kontaktlose Rückgabe / Schlüsselbox", description: "Rückgabelinks für Kunden, Kundenmeldung, nachgelagerte Kontrolle", defaultEnabled: true, nav: [] },
+  TENANT_SMTP: { label: "Eigener E-Mail-Versand (SMTP)", description: "Geschäftliche Mails über den SMTP-Server des Vermieters statt über RentBase", defaultEnabled: true, nav: [] },
+  CUSTOMER_IMPORT: { label: "Kundenimport (CSV/Excel)", description: "Kundenstammdaten aus einer Alt-Software importieren", defaultEnabled: true, nav: [] },
+} as const;
+export type FeatureKey = keyof typeof FEATURES;
+export const FEATURE_KEYS = Object.keys(FEATURES) as FeatureKey[];
+export function isFeatureKey(value: string): value is FeatureKey {
+  return Object.prototype.hasOwnProperty.call(FEATURES, value);
+}
+
+/**
+ * Control Center: Tarife und Abo-Status. Es gibt keine externe Abrechnung – dies ist die interne Verwaltung, die der
+ * BILLING_ADMIN pflegt. Preise werden je Mandant erfasst (monthlyPriceCents), MRR/ARR werden daraus nur berechnet,
+ * wenn Werte vorhanden sind (keine Schätzwerte).
+ */
+export const PLANS = {
+  TRIAL: "Testphase",
+  STARTER: "Starter",
+  BUSINESS: "Business",
+  ENTERPRISE: "Enterprise",
+  INTERNAL: "Intern / kostenfrei",
+} as const;
+export type PlanKey = keyof typeof PLANS;
+export const SUBSCRIPTION_STATUS = {
+  TRIAL: "Testphase",
+  ACTIVE: "Aktiv",
+  PAST_DUE: "Zahlung überfällig",
+  CANCELLED: "Gekündigt",
+  ENDED: "Beendet",
+} as const;
+export type SubscriptionStatus = keyof typeof SUBSCRIPTION_STATUS;
+/** Abo-Status, die als laufende Kunden gelten (MRR-Basis). */
+export const BILLABLE_SUBSCRIPTION_STATUS: SubscriptionStatus[] = ["ACTIVE", "PAST_DUE"];
 
 export const TENANT_STATUS = {
   PENDING_SETUP: "Einrichtung offen",
@@ -443,6 +547,12 @@ export const AUDIT_ACTIONS = {
   SUPPORT_SESSION_ENDED: "Supportzugriff beendet",
   SUPER_ADMIN_GRANTED: "Plattformrolle SUPER_ADMIN vergeben",
   USER_EMAIL_CHANGED: "Login-E-Mail geändert",
+  // Control Center: interne Rollen, Features, Tarife (Details mit before/after, nie Passwörter oder Tokens)
+  PLATFORM_ROLE_CHANGED: "Interne Plattformrolle geändert",
+  FEATURE_ENABLED: "Feature freigeschaltet",
+  FEATURE_DISABLED: "Feature gesperrt",
+  SUBSCRIPTION_CREATED: "Tarif/Abo angelegt",
+  SUBSCRIPTION_UPDATED: "Tarif/Abo geändert",
   // Befehl 20.5: mandanteneigener E-Mail-Versand und Branding (nie Passwort, Schlüssel oder Verbindungszeichenfolge)
   SMTP_SETTINGS_CREATED: "E-Mail-Versand eingerichtet",
   SMTP_SETTINGS_UPDATED: "E-Mail-Versand geändert",

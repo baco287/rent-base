@@ -4,8 +4,9 @@ import { redirect } from "next/navigation";
 import { cache } from "react";
 import { randomBytes } from "node:crypto";
 import { db } from "@/lib/db";
-import { SESSION_COOKIE, SESSION_DAYS, SUPPORT_COOKIE, roleAllows, type Role, type SupportBlockedKind } from "@/lib/constants";
+import { SESSION_COOKIE, SESSION_DAYS, SUPPORT_COOKIE, platformAllows, roleAllows, type FeatureKey, type Role, type SupportBlockedKind } from "@/lib/constants";
 import { supportBlockedMessage } from "@/lib/support-sessions";
+import { featureDisabledMessage, isFeatureEnabled } from "@/lib/features";
 
 export { hashPassword, verifyPassword } from "@/lib/password";
 
@@ -66,7 +67,8 @@ export const getSession = cache(async () => {
   const { tenant: realTenant, ...user } = session.user;
 
   const supportCookie = cookieStore.get(SUPPORT_COOKIE)?.value;
-  if (supportCookie && user.platformRole === "SUPER_ADMIN") {
+  // Control Center: welche interne Rolle den Supportmodus nutzen darf, entscheidet allein die Berechtigungsmatrix
+  if (supportCookie && platformAllows(user.platformRole, "SUPPORT_SESSION")) {
     const support = await db.supportSession.findFirst({ where: { id: supportCookie, superAdminId: user.id, endedAt: null, expiresAt: { gt: new Date() } }, include: { tenant: true } });
     if (support) {
       const supportSession: SupportSessionInfo = { id: support.id, tenantId: support.tenantId, reason: support.reason, startedAt: support.startedAt, expiresAt: support.expiresAt };
@@ -135,4 +137,23 @@ export async function requireRole(...roles: Role[]) {
   if (session.supportSession) redirect("/heute?fehler=support");
   if (!roleAllows(session.user.role, roles)) redirect("/heute?fehler=rechte");
   return session;
+}
+
+/**
+ * Control Center: Feature-Freischaltung je Mandant (FEATURES in lib/constants.ts, Zustand in lib/features.ts).
+ * Seiten eines freischaltbaren Moduls (über das Modul-Layout) und jede seiner Server Actions rufen dies zusätzlich zu
+ * requireSession()/requireRole() auf – serverseitig, nie nur über die ausgeblendete Navigation. Ist das Feature für den
+ * Mandanten gesperrt, gibt es keine Fachseite und keine Mutation; bestehende Daten bleiben unverändert erhalten.
+ */
+export async function requireFeature(key: FeatureKey) {
+  const session = await requireSession();
+  if (!(await isFeatureEnabled(session.tenant.id, key))) redirect("/heute?fehler=funktion");
+  return session;
+}
+
+/** Für API-Routen: fertige 403-Antwort, wenn das Feature für den Mandanten der Sitzung gesperrt ist, sonst null. */
+export async function featureForApi(session: AppSession, key: FeatureKey, mode: "read" | "write" = "write"): Promise<Response | null> {
+  if (await isFeatureEnabled(session.tenant.id, key)) return null;
+  const message = featureDisabledMessage(key);
+  return mode === "write" ? Response.json({ error: message }, { status: 403 }) : new Response(message, { status: 403 });
 }

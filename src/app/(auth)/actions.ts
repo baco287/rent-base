@@ -3,6 +3,7 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
+import { isInternalRole } from "@/lib/constants";
 import { db } from "@/lib/db";
 import { createSession, destroySession, hashPassword, verifyPassword } from "@/lib/auth";
 import { consume, hashKeyPart, LOGIN_LIMIT_PER_ACCOUNT, LOGIN_LIMIT_PER_ADDRESS, reset } from "@/lib/rate-limit";
@@ -45,7 +46,7 @@ export async function loginAction(_prev: AuthState, formData: FormData): Promise
   // Befehl 20, item 75: gesperrter Mandant landet klar auf der Sperrseite statt auf einem leeren Dashboard;
   // ein SUPER_ADMIN ohne eigenen Tenant-Kontext (kein weiter-Link) landet auf dem Plattformdashboard.
   if (user.tenant.status === "SUSPENDED") redirect("/gesperrt");
-  redirect(user.platformRole === "SUPER_ADMIN" ? "/admin" : "/heute");
+  redirect(isInternalRole(user.platformRole) ? "/admin" : "/heute");
 }
 
 export async function logoutAction() {

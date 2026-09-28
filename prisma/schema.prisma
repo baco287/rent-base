@@ -117,6 +117,8 @@ model Tenant {
   mailSettings             TenantMailSettings?
   keyDropReturns           KeyDropReturn[]
   keyDropAccesses          KeyDropAccess[]
+  featureFlags             TenantFeatureFlag[]
+  subscription             TenantSubscription?
 }
 
 model User {
@@ -127,7 +129,7 @@ model User {
   passwordHash String
   role         String    @default("OWNER") // OWNER | DISPO | YARD (Mandantenrolle)
   active       Boolean   @default(true)
-  platformRole String    @default("NONE") // NONE | SUPER_ADMIN (Plattformrolle, Befehl 20) – strikt getrennt von "role"
+  platformRole String    @default("NONE") // NONE | SUPER_ADMIN | SUPPORT_ADMIN | BILLING_ADMIN | READ_ONLY_ADMIN (Plattformrolle, Befehl 20 / Control Center) – strikt getrennt von "role"
   lastLoginAt  DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
@@ -313,6 +315,49 @@ model SupportSession {
 
   @@index([tenantId, startedAt])
   @@index([superAdminId])
+}
+
+// Control Center: Feature-Freischaltung je Mandant. Kein Eintrag = Standardwert aus FEATURES (src/lib/constants.ts),
+// dadurch verhalten sich Bestandsmandanten exakt wie vor der Einführung. Änderungen nur über lib/features.ts (Audit).
+model TenantFeatureFlag {
+  id            String   @id @default(cuid())
+  tenantId      String
+  key           String // FeatureKey (src/lib/constants.ts)
+  enabled       Boolean
+  note          String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  updatedById   String? // User.id des internen Admins, nur Referenz
+  updatedByName String?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, key])
+}
+
+// Control Center: interne Tarif-/Abo-Verwaltung (keine Zahlungsabwicklung, keine externe Abrechnung).
+// Kein Eintrag = noch kein Tarif hinterlegt. Limits null = unbegrenzt. Preise netto in Cent, nur wenn vereinbart.
+model TenantSubscription {
+  id                String    @id @default(cuid())
+  tenantId          String    @unique
+  plan              String // PLANS (src/lib/constants.ts)
+  status            String // SUBSCRIPTION_STATUS
+  startedAt         DateTime  @default(now())
+  trialEndsAt       DateTime?
+  cancelledAt       DateTime?
+  endsAt            DateTime? // Ende der Laufzeit nach Kündigung
+  monthlyPriceCents Int? // vereinbarter Monatspreis netto in Cent; null = nicht erfasst
+  maxUsers          Int? // null = unbegrenzt (aktive Benutzer + offene Einladungen)
+  maxVehicles       Int? // null = unbegrenzt (Fahrzeuge außer INACTIVE)
+  note              String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  updatedById       String?
+  updatedByName     String?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([status])
 }
 
 model Session {
@@ -1312,6 +1357,9 @@ model AuditLog {
 
   @@index([tenantId, createdAt])
   @@index([tenantId, bookingId])
+  // Control Center: mandantenübergreifendes Audit-Log (Plattform-Aktionen, neueste zuerst)
+  @@index([createdAt])
+  @@index([action, createdAt])
 }
 
 // ============================================================================
