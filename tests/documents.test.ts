@@ -75,7 +75,8 @@ async function pickedUpWorld(label: string, customer?: Record<string, unknown>) 
   await storage.put(storageKey, jpeg, "image/jpeg");
   await registerPhoto(w.tenantId, w.actor, { handoverId: h.id, handoverDamageId: fresh.id, storageKey, category: "DAMAGE", contentType: "image/jpeg", sizeBytes: jpeg.length, checksum: sha256(jpeg) });
   const items = await db.handoverChecklistItem.findMany({ where: { tenantId: w.tenantId, handoverId: h.id }, orderBy: { sortOrder: "asc" } });
-  await answerChecklist(w.tenantId, h.id, items.map((i, n) => ({ itemId: i.id, result: i.answerType === "TEXT" ? "2" : n === 0 ? "NA" : n === 3 ? "NOT_OK" : i.answerType === "YES_NO" ? "YES" : "OK", note: n === 3 ? "Profil vorne rechts gering" : null })));
+  // Befehl 20.9: Antworten je Schlüssel statt je Position (die Standard-Checkliste hat jetzt eigene Zubehörpunkte)
+  await answerChecklist(w.tenantId, h.id, items.map((i) => ({ itemId: i.id, result: i.answerType === "TEXT" ? "2" : i.itemKey === "documents" ? "NA" : i.itemKey === "tires" ? "NOT_OK" : i.answerType === "YES_NO" ? "YES" : "OK", note: i.itemKey === "tires" ? "Profil vorne rechts gering" : null })));
   await saveHandoverSignature(w.tenantId, w.actor, h.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: await pngDataUrl(), seenHash: await getHandoverContentHash(w.tenantId, h.id), ipAddress: null, userAgent: "test" });
   await verifyAllDriversForPickup(w.tenantId, w.actor, h.id, contractId);
   await finalizeHandover(w.tenantId, h.id, w.actor, { enforcePhotos: false });

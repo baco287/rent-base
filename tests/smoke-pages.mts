@@ -217,7 +217,7 @@ const pages: [string, string][] = [
   [`/buchungen/${doneBooking.id}/uebergabe`, "Batteriestand"],
   [`/buchungen/${doneBooking.id}/uebergabe`, "Fahrer- und Führerscheinprüfung"],
   [`/buchungen/${doneBooking.id}/uebergabe`, "Identität im Original geprüft: Ja"],
-  [`/buchungen/${signedBooking.id}/uebergabe?schritt=6`, "Prüfung für"],
+  [`/buchungen/${signedBooking.id}/uebergabe?schritt=6`, "Fahrer &amp; Dokumente"], // Befehl 20.9: bekannter Fahrer → Wiederholungsprüfung statt „Prüfung für … beginnen“
   [`/buchungen/${w.bookingId}/uebergabe`, "erst möglich, wenn der Mietvertrag abgeschlossen ist"],
 ];
 
