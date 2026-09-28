@@ -31,6 +31,7 @@ import { getHandoverCompletionStatus } from "@/lib/completion";
 import { CompletionCard } from "./completion-card";
 import { loadHandoverContext } from "@/lib/document-data";
 import { PhotoUploader } from "./photo-uploader";
+import { ReadingsIssueList } from "./readings-issues";
 import { DriverVerificationSection } from "./driver-verification-panel";
 import { driverCheckSummaries } from "@/lib/driver-verification";
 
@@ -164,7 +165,8 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
 
         {step === 2 && (
           <>
-            <HandoverIssueList issues={issues} areas={["READINGS"]} />
+            {/* Befehl 20.9: wie in der Rückgabe – „fehlt“-Hinweise verschwinden sofort bei gültiger Eingabe (nur Anzeige, Serverprüfung unverändert) */}
+            <ReadingsIssueList issues={issues.filter((i) => i.area === "READINGS")} watch={["mileage", ...(energy.fuel ? (["fuel"] as const) : []), ...(energy.battery ? (["battery"] as const) : [])]} />
             <Card className="p-4 md:p-5">
               <StepForm action={saveReadingsAction.bind(null, b.id)} step={2}>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-4">

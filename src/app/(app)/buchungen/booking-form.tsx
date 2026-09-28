@@ -24,14 +24,20 @@ function centsOf(input: string): number | null {
 }
 
 /**
- * Bereich „Miete & Kaution“ im Formular (Befehl 20.8): Miete und Kaution nebeneinander, finanziell getrennt.
+ * Bereich „Miete & Kaution“ im Formular (Befehl 20.8/20.9): Miete und Kaution nebeneinander, finanziell getrennt.
  * Gespeichert wird nur die tatsächliche Mietzahlung; „Offen / Teilweise / Vollständig“ ist die Absicht, der Status der
- * Buchung wird danach immer aus den Zahlungen berechnet. Die Kaution wird hier nur angezeigt (vereinbart, noch nicht
- * erhalten) – ihr Eingang wird nach der Anlage auf der Buchungsseite dokumentiert; sie ist nie eine Mietzahlung.
+ * Buchung wird danach immer aus den Zahlungen berechnet. Kaution: entweder „Noch nicht erhalten“ (Eingang später auf der
+ * Buchungsseite) oder „Kaution jetzt erhalten“ – dann wird der Eingang zusammen mit der Anlage gesendet und serverseitig
+ * erst nach dem Anlegen der Buchung über die bestehende Kautionserfassung dokumentiert. Die Kaution ist nie eine Mietzahlung.
  */
 function PaymentSection({ totalCents, depositCents, config }: { totalCents: number; depositCents: number; config: InitialPaymentConfig }) {
   const [intent, setIntent] = useState<RentalPaymentIntent>("NONE");
   const [amount, setAmount] = useState("");
+  const [depositNow, setDepositNow] = useState(false);
+  const [depositAmount, setDepositAmount] = useState<string | null>(null);
+  const depositDefault = (depositCents / 100).toFixed(2).replace(".", ",");
+  const depositEntered = depositAmount ?? depositDefault;
+  const depositEnteredCents = centsOf(depositEntered) ?? 0;
   const paid = intent === "FULL" ? totalCents : intent === "PARTIAL" ? centsOf(amount) ?? 0 : 0;
   const open = Math.max(0, totalCents - paid);
   const fullAmount = (totalCents / 100).toFixed(2).replace(".", ",");
@@ -80,9 +86,34 @@ function PaymentSection({ totalCents, depositCents, config }: { totalCents: numb
           <p className="text-xs text-ink-3">Nur dokumentiert, nicht eingezogen. Weitere Teilzahlungen später auf der Buchung unter „Mietzahlung“.</p>
         </section>
         <section className="flex flex-col gap-2.5 md:border-l md:border-line-soft md:pl-4" aria-label="Kaution">
-          <div className="flex items-center gap-2"><span className="font-semibold text-sm">Kaution</span><span className="chip bg-amber-soft text-amber">Noch nicht erhalten</span></div>
-          <div className="rounded-md bg-panel-2 p-2.5 text-sm tnum"><div className="label-xs">Vereinbarte Kaution</div><div className="font-mono font-semibold">{fmtCents(depositCents)}</div></div>
-          <p className="text-xs text-ink-3">Der Eingang der Kaution wird nach der Anlage auf der Buchungsseite unter „Kaution erhalten“ dokumentiert. Kaution und Mietzahlung werden getrennt geführt – die Kaution ist keine Mietzahlung.</p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-semibold text-sm">Kaution</span>
+            {depositNow && depositCents > 0 ? <span className="chip bg-good-soft text-good">{depositEnteredCents >= depositCents ? "Wird als erhalten dokumentiert" : "Wird als teilweise erhalten dokumentiert"}</span> : <span className="chip bg-amber-soft text-amber">Noch nicht erhalten</span>}
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-sm tnum">
+            <div className="rounded-md bg-panel-2 p-2.5"><div className="label-xs">Vereinbarte Kaution</div><div className="font-mono font-semibold">{fmtCents(depositCents)}</div></div>
+            <div className="rounded-md bg-panel-2 p-2.5"><div className="label-xs">Erhalten</div><div className="font-mono font-semibold">{fmtCents(depositNow ? Math.min(depositEnteredCents, depositCents) : 0)}</div></div>
+          </div>
+          <input type="hidden" name="depNonce" value={`${config.nonce}-dep`} />
+          <div className="flex rounded-md border border-line overflow-hidden text-[13px] font-medium" role="radiogroup" aria-label="Kautionsstatus">
+            {([["NONE", "Noch nicht erhalten"], ["RECEIVED", "Kaution jetzt erhalten"]] as const).map(([k, label]) => (
+              <label key={k} className={`flex-1 px-3 py-1.5 text-center cursor-pointer ${(depositNow ? "RECEIVED" : "NONE") === k ? "bg-brand text-brand-ink" : "bg-panel text-ink-2"} ${k === "RECEIVED" && depositCents <= 0 ? "opacity-50" : ""}`}>
+                <input type="radio" name="depIntent" value={k} checked={(depositNow ? "RECEIVED" : "NONE") === k} onChange={() => setDepositNow(k === "RECEIVED")} disabled={k === "RECEIVED" && depositCents <= 0} className="sr-only" />
+                {label}
+              </label>
+            ))}
+          </div>
+          {depositNow && depositCents > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <label className="flex flex-col gap-1"><span className="label-xs">Erhaltener Betrag €</span><input name="depAmount" inputMode="decimal" value={depositEntered} onChange={(e) => setDepositAmount(e.target.value)} required className="input tnum" /></label>
+              <label className="flex flex-col gap-1"><span className="label-xs">Zahlungsart</span><select name="depMethod" defaultValue="CASH" className="input">{Object.entries(PAYMENT_METHODS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
+              <label className="flex flex-col gap-1"><span className="label-xs">Datum und Uhrzeit</span><input name="depOccurredAt" type="datetime-local" defaultValue={config.defaultWhen} required className="input tnum" /></label>
+              <label className="flex flex-col gap-1"><span className="label-xs">Referenz (optional)</span><input name="depReference" maxLength={120} placeholder="z. B. Belegnummer" className="input" /></label>
+              <label className="flex flex-col gap-1 sm:col-span-2"><span className="label-xs">Notiz (optional)</span><input name="depNote" maxLength={500} className="input" /></label>
+              {depositEnteredCents > depositCents && <p role="alert" className="sm:col-span-2 text-xs text-bad bg-bad-soft rounded-md px-3 py-2">Mehr als die vereinbarte Kaution kann nicht als erhalten dokumentiert werden.</p>}
+            </div>
+          )}
+          <p className="text-xs text-ink-3">{depositNow ? "Der Eingang wird mit der Buchung dokumentiert – nur Dokumentation, keine Abbuchung." : "Der Eingang kann auch später auf der Buchungsseite unter „Kaution“ dokumentiert werden."} Die Kaution ist eine Sicherheitsleistung, keine Mietzahlung, und verringert den offenen Mietpreis nicht.</p>
         </section>
       </div>
     </fieldset>

@@ -184,6 +184,7 @@ const pages: [string, string][] = [
   ["/buchungen/neu", "Neuer Kunde"],
   ["/buchungen/neu", "Miete &amp; Kaution"],
   ["/buchungen/neu", "Teilweise bezahlt"],
+  ["/buchungen/neu", "Kaution jetzt erhalten"],
   [`/buchungen/${w.bookingId}`, "Mietvertrag fortsetzen"],
   [`/buchungen/${w.bookingId}`, "Gesamtpreis (voraussichtlich)"],
   [`/buchungen/${w.bookingId}`, "Noch keine Mietzahlung erfasst"],
@@ -361,6 +362,8 @@ report(pickupNotice.includes("noch nicht") && pickupNotice.includes("als erhalte
 const pay1 = await recordInvoicePayment(w.tenantId, w.actor, { invoiceId: invoice.id, amount: "100", method: "CASH", paidAt: new Date(Date.now() - 60_000), reference: "Beleg 77" });
 const invPage = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } }));
 report(invPage.includes("Teilbezahlt") && invPage.includes("100,00") && invPage.includes("Beleg 77") && invPage.includes("Zahlung stornieren") && invPage.includes("Zahlung erfassen"), "Rechnung: Saldo, Status Teilbezahlt, Historie, Storno-Möglichkeit");
+// Befehl 20.9: Karte „Kaution & Abrechnung“ auf der Rechnungsseite (Forderung + Kaution, Verrechnung nur bewusst)
+report(invPage.includes("Kaution &amp; Abrechnung") && invPage.includes("Aktuell verfügbar") && invPage.includes("Wirksame Forderung"), "Rechnung: Karte Kaution &amp; Abrechnung mit Forderungs- und Kautionsseite");
 await recordDepositReceived(w.tenantId, w.actor, { bookingId: retBooking.id, amount: "500", method: "CASH", occurredAt: new Date(Date.now() - 60_000) });
 await settleDeposit(w.tenantId, w.actor, { bookingId: retBooking.id, releaseAmount: "350", method: "CASH", reason: "Prüfung eines bei Rückgabe festgestellten Schadens", occurredAt: new Date(Date.now() - 30_000) });
 const bookingFin1 = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));

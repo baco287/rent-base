@@ -104,19 +104,51 @@ export async function depositView(tenantId: string, bookingId: string): Promise<
   return { ...fin, deposit, events, contractNumber: booking.contract?.number ?? null, contractSigned: signed, bookingStatus: booking.status };
 }
 
-/** Legt die Kaution aus dem abgeschlossenen Vertrag an oder gibt die vorhandene zurück (innerhalb einer Transaktion, gesperrt). */
-export async function lockOrCreateDeposit(tx: Tx, tenantId: string, bookingId: string, actor: Actor) {
-  const bookingLock = await tx.$queryRaw<{ id: string; status: string }[]>`SELECT "id", "status" FROM "Booking" WHERE "id" = ${bookingId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+/**
+ * Legt die Kaution an oder gibt die vorhandene zurück (innerhalb einer Transaktion, gesperrt). Vereinbart ist die Kaution des
+ * abgeschlossenen Vertrags. Befehl 20.9: Wird die Kaution schon bei der Buchungsanlage als erhalten dokumentiert
+ * (fromBooking), gilt der Kautionsbetrag der Buchung als vereinbart; der Vertrag wird später verknüpft (linkDepositToContract)
+ * und muss denselben Betrag tragen – die vereinbarte Kaution ist ab der ersten Bewegung fest (Datenbank-Trigger).
+ */
+export async function lockOrCreateDeposit(tx: Tx, tenantId: string, bookingId: string, actor: Actor, opts: { fromBooking?: boolean } = {}) {
+  const bookingLock = await tx.$queryRaw<{ id: string; status: string; deposit: Prisma.Decimal }[]>`SELECT "id", "status", "deposit" FROM "Booking" WHERE "id" = ${bookingId} AND "tenantId" = ${tenantId} FOR UPDATE`;
   if (bookingLock.length === 0) throw new DomainError("Buchung nicht gefunden.");
   let row = await tx.securityDeposit.findFirst({ where: { tenantId, bookingId } });
   if (!row) {
     const contract = await tx.rentalContract.findFirst({ where: { tenantId, bookingId }, select: { id: true, status: true, deposit: true } });
-    if (!contract || contract.status !== "SIGNED") throw new DomainError("Die Kaution ergibt sich aus dem abgeschlossenen Mietvertrag. Bitte zuerst den Vertrag abschließen.");
-    row = await tx.securityDeposit.create({ data: { tenantId, bookingId, contractId: contract.id, expectedAmountCents: toCents(contract.deposit), createdById: actor.id } });
+    if (contract && contract.status === "SIGNED") {
+      row = await tx.securityDeposit.create({ data: { tenantId, bookingId, contractId: contract.id, expectedAmountCents: toCents(contract.deposit), createdById: actor.id } });
+    } else if (opts.fromBooking) {
+      const expected = toCents(bookingLock[0].deposit);
+      if (expected <= 0) throw new DomainError("Zu dieser Buchung ist keine Kaution vereinbart. Bitte zuerst den Kautionsbetrag der Buchung eintragen.");
+      if (bookingLock[0].status === "CANCELLED") throw new DomainError("Die Buchung ist storniert. Es wird keine Kaution mehr dokumentiert.");
+      row = await tx.securityDeposit.create({ data: { tenantId, bookingId, contractId: null, expectedAmountCents: expected, createdById: actor.id } });
+    } else {
+      throw new DomainError("Die Kaution ergibt sich aus dem abgeschlossenen Mietvertrag. Bitte zuerst den Vertrag abschließen.");
+    }
   }
   await tx.$queryRaw`SELECT "id" FROM "SecurityDeposit" WHERE "id" = ${row.id} FOR UPDATE`;
   const events = await tx.securityDepositEvent.findMany({ where: { tenantId, depositId: row.id } });
   return { row, balance: balanceOf(row.expectedAmountCents, events), bookingStatus: bookingLock[0].status };
+}
+
+/**
+ * Befehl 20.9: Kautionsbetrag der Buchung ist fest, sobald eine Kautionszeile existiert (z. B. Eingang bei der Buchungsanlage).
+ * Liefert die Fachmeldung, falls `depositCents` davon abweicht – für Vertragskonditionen und Vertragsabschluss.
+ */
+export async function depositAgreedAmountConflict(tx: Tx, tenantId: string, bookingId: string, depositCents: Cents): Promise<string | null> {
+  const row = await tx.securityDeposit.findFirst({ where: { tenantId, bookingId }, select: { expectedAmountCents: true } });
+  if (!row || row.expectedAmountCents === depositCents) return null;
+  return `Zu dieser Buchung ist bereits eine Kaution über ${fmtCents(row.expectedAmountCents)} dokumentiert (Eingang bei der Buchung). Der vereinbarte Kautionsbetrag ist damit fest; ${fmtCents(depositCents)} können nicht mehr vereinbart werden. Bei Bedarf zuerst die Kautionsbewegung stornieren.`;
+}
+
+/** Beim Vertragsabschluss: eine bei der Buchung angelegte Kaution dem Vertrag zuordnen (nur die Zuordnung, der Betrag bleibt). */
+export async function linkDepositToContract(tx: Tx, tenantId: string, bookingId: string, contract: { id: string; deposit: Prisma.Decimal | number | string }) {
+  const row = await tx.securityDeposit.findFirst({ where: { tenantId, bookingId }, select: { id: true, contractId: true, expectedAmountCents: true } });
+  if (!row) return;
+  const conflict = await depositAgreedAmountConflict(tx, tenantId, bookingId, toCents(contract.deposit));
+  if (conflict) throw new DomainError(conflict);
+  if (!row.contractId) await tx.securityDeposit.update({ where: { id: row.id }, data: { contractId: contract.id } });
 }
 
 export async function syncStatus(tx: Tx, tenantId: string, depositId: string) {
@@ -167,32 +199,44 @@ export function domainFromDb(e: unknown): never {
 
 export type ReceiveInput = { bookingId: string; amount: string | number; method: string; occurredAt: Date; reference?: string | null; note?: string | null; idempotencyKey?: string | null };
 
-/** „Kaution als erhalten erfassen“: nur Dokumentation, keine Abbuchung. Erhalten darf die vereinbarte Kaution nicht übersteigen. */
-export async function recordDepositReceived(tenantId: string, actor: Actor, input: ReceiveInput): Promise<{ event: DepositEventRow; created: boolean }> {
+/** Eingabe prüfen, ohne Datenbank (auch für das Buchungsformular, bevor eine Buchung existiert). */
+export function checkReceiveInput(input: Omit<ReceiveInput, "bookingId">): { amountCents: Cents; method: PaymentMethod; key: string | null } {
   const amountCents = parseAmount(input.amount);
   if (amountCents <= 0) throw new DomainError("Der Betrag muss größer als 0,00 € sein.");
   const method = checkMethod(input.method);
   checkDate(input.occurredAt, "den Zeitpunkt");
-  const key = checkKey(input.idempotencyKey);
+  return { amountCents, method, key: checkKey(input.idempotencyKey) };
+}
+
+/**
+ * Kern: Kautionseingang in einer laufenden Transaktion dokumentieren (auch direkt beim Anlegen der Buchung, Befehl 20.9).
+ * Sperrt Buchung und Kaution, lehnt mehr als die vereinbarte Kaution ab; gleicher Schlüssel bucht nie doppelt.
+ * Nur Dokumentation, keine Abbuchung, keine Mietzahlung, kein Mietumsatz.
+ */
+export async function insertDepositReceived(tx: Tx, tenantId: string, actor: Actor, input: ReceiveInput, opts: { fromBooking?: boolean } = {}): Promise<{ event: DepositEventRow; created: boolean }> {
+  const { amountCents, method, key } = checkReceiveInput(input);
+  const { row, balance } = await lockOrCreateDeposit(tx, tenantId, input.bookingId, actor, opts);
+  // unter der Sperre erneut prüfen: ein paralleler Klick mit demselben Schlüssel war vielleicht schneller
+  if (key) {
+    const dup = await tx.securityDepositEvent.findUnique({ where: { tenantId_idempotencyKey: { tenantId, idempotencyKey: key } } });
+    if (dup) return { event: dup, created: false };
+  }
+  if (balance.receivedCents + amountCents > balance.expectedCents) throw new DomainError(`Vereinbart sind ${fmtCents(balance.expectedCents)}, erhalten bereits ${fmtCents(balance.receivedCents)}. Mehr als die vereinbarte Kaution kann nicht als erhalten dokumentiert werden.`);
+  const event = await tx.securityDepositEvent.create({ data: { tenantId, depositId: row.id, type: "RECEIVED", amountCents, method, occurredAt: input.occurredAt, reference: input.reference?.trim() || null, note: input.note?.trim() || null, idempotencyKey: key, createdById: actor.id, createdByName: actor.name } });
+  await syncStatus(tx, tenantId, row.id);
+  await recordAudit(tx, tenantId, actor, { action: "DEPOSIT_RECEIVED", bookingId: input.bookingId, depositId: row.id, amountCents, details: { method, expected: balance.expectedCents, receivedBefore: balance.receivedCents, ...(row.contractId ? {} : { agreedFrom: "BOOKING" }) } });
+  return { event, created: true };
+}
+
+/** „Kaution als erhalten erfassen“: nur Dokumentation, keine Abbuchung. Erhalten darf die vereinbarte Kaution nicht übersteigen. */
+export async function recordDepositReceived(tenantId: string, actor: Actor, input: ReceiveInput): Promise<{ event: DepositEventRow; created: boolean }> {
+  const { key } = checkReceiveInput(input);
   if (key) {
     const existing = await byKey(tenantId, key);
     if (existing) return { event: existing, created: false };
   }
   try {
-    const outcome = await db.$transaction(async (tx) => {
-      const { row, balance } = await lockOrCreateDeposit(tx, tenantId, input.bookingId, actor);
-      // unter der Sperre erneut prüfen: ein paralleler Klick mit demselben Schlüssel war vielleicht schneller
-      if (key) {
-        const dup = await tx.securityDepositEvent.findUnique({ where: { tenantId_idempotencyKey: { tenantId, idempotencyKey: key } } });
-        if (dup) return { event: dup, created: false };
-      }
-      if (balance.receivedCents + amountCents > balance.expectedCents) throw new DomainError(`Vereinbart sind ${fmtCents(balance.expectedCents)}, erhalten bereits ${fmtCents(balance.receivedCents)}. Mehr als die vereinbarte Kaution kann nicht als erhalten dokumentiert werden.`);
-      const event = await tx.securityDepositEvent.create({ data: { tenantId, depositId: row.id, type: "RECEIVED", amountCents, method, occurredAt: input.occurredAt, reference: input.reference?.trim() || null, note: input.note?.trim() || null, idempotencyKey: key, createdById: actor.id, createdByName: actor.name } });
-      await syncStatus(tx, tenantId, row.id);
-      await recordAudit(tx, tenantId, actor, { action: "DEPOSIT_RECEIVED", bookingId: input.bookingId, depositId: row.id, amountCents, details: { method, expected: balance.expectedCents, receivedBefore: balance.receivedCents } });
-      return { event, created: true };
-    }, TX);
-    return outcome;
+    return await db.$transaction((tx) => insertDepositReceived(tx, tenantId, actor, input), TX);
   } catch (e) {
     if (key && isUniqueViolation(e, "idempotencyKey")) {
       const winner = await byKey(tenantId, key);

@@ -12,7 +12,7 @@ import { getStorage } from "@/lib/storage";
 import { runReturnFollowUp } from "@/lib/followup";
 import { addNewDamage, answerChecklist, finalizeHandover, removeHandoverSignature, removeNewDamage, saveHandoverSignature, setHandoverStep, setReturnTimeOverride, startHandover, updateHandoverDraft, updateNewDamage } from "@/lib/handovers";
 import { parseLocalDateTime } from "@/lib/time";
-import { addManualCharge, confirmProposal, removeCharge } from "@/lib/returns";
+import { addManualCharge, confirmProposal, dismissProposal, removeCharge, type ProposalKey } from "@/lib/returns";
 
 export type StepState = { error?: string } | undefined;
 type Result = { error?: string } | undefined;
@@ -185,9 +185,15 @@ export async function saveChecklistAction(bookingId: string, _prev: StepState, f
 }
 
 // Schritt 7: Zusatzkosten. Vorschläge bestätigen, manuelle Positionen, löschen. Beträge rechnet der Server.
-export async function confirmProposalAction(bookingId: string, key: "EXTRA_MILEAGE" | "FUEL"): Promise<Result> {
+export async function confirmProposalAction(bookingId: string, key: ProposalKey): Promise<Result> {
   const { tenant, handover, actor } = await context(bookingId);
   try { await confirmProposal(tenant.id, handover.id, actor.id, key); } catch (e) { return asResult(e); }
+  revalidatePath(base(bookingId));
+}
+/** Befehl 20.9: „Nicht berechnen“ (bzw. wieder öffnen) – bewusste, dokumentierte Entscheidung ohne Position. */
+export async function dismissProposalAction(bookingId: string, key: ProposalKey, undo: boolean): Promise<Result> {
+  const { tenant, handover, actor } = await context(bookingId);
+  try { await dismissProposal(tenant.id, handover.id, actor, key, undo); } catch (e) { return asResult(e); }
   revalidatePath(base(bookingId));
 }
 const chargeSchema = z.object({

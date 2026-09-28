@@ -257,10 +257,120 @@ export async function confirmVerification(tenantId: string, actor: Actor, verifi
 }
 
 // ---------------------------------------------------------------------------
+// Befehl 20.9: Wiederholungsprüfung bekannter Fahrer (dokumentierte Sichtprüfung, keine blinde Wiederverwendung)
+// ---------------------------------------------------------------------------
+//
+// Ein Fahrer, der bei einer früheren Übergabe vollständig geprüft wurde, muss seine Stammdaten nicht erneut erfassen. Die
+// konkrete Übergabe braucht trotzdem einen eigenen Prüfvermerk: der Mitarbeiter bestätigt, dass die Originale vorgelegt
+// wurden, die gespeicherten Daten unverändert sind, die erforderliche Klasse vorliegt und die Dokumente gültig sind.
+// Der Server prüft dieselben Regeln wie bei der vollständigen Prüfung (Ablauf, Klasse, manuelle Prüfung ausländischer
+// Führerscheine, Konsistenz mit Vertrag und Kundenstammdaten) und legt einen NEUEN Vermerk (checkKind REPEAT) an, der auf
+// den Referenzvermerk verweist. Der alte Vermerk bleibt unverändert.
+
+export type RepeatReference = {
+  verificationId: string;
+  verifiedAt: Date | null;
+  verifiedByName: string | null;
+  bookingNumber: string;
+  identityDocumentType: string | null;
+  licenseClasses: string[];
+  licenseValidUntil: Date | null;
+  licenseCountry: string | null;
+  /** Schnellbestätigung möglich; sonst die Gründe (werden beim Bestätigen serverseitig erneut geprüft) */
+  eligible: boolean;
+  reasons: string[];
+};
+
+type ReferenceRow = Prisma.DriverVerificationGetPayload<{ include: { booking: { select: { number: true } } } }>;
+
+/** Jüngster vollständig bestätigter Prüfvermerk desselben Fahrers aus einer anderen Übergabe (per Kunde, sonst per Name + Geburtsdatum). */
+async function latestConfirmedReference(client: Tx | typeof db, tenantId: string, driver: Pick<RequiredDriver, "customerId" | "firstName" | "lastName" | "birthDate">, excludeHandoverId: string): Promise<ReferenceRow | null> {
+  const where: Prisma.DriverVerificationWhereInput = driver.customerId
+    ? { tenantId, customerId: driver.customerId, status: "CONFIRMED", handoverId: { not: excludeHandoverId } }
+    : { tenantId, status: "CONFIRMED", handoverId: { not: excludeHandoverId }, driverFirstNameSnapshot: driver.firstName, driverLastNameSnapshot: driver.lastName, driverBirthDateSnapshot: driver.birthDate };
+  return client.driverVerification.findFirst({ where, orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }], include: { booking: { select: { number: true } } } });
+}
+
+const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase();
+
+/** Gründe, aus denen die Schnellbestätigung NICHT zulässig ist. Leer = zulässig. Reine Regeln, keine Datenbank. */
+export function repeatCheckReasons(ref: VerificationRow, driver: Pick<RequiredDriver, "firstName" | "lastName" | "birthDate" | "licenseNumber">, requiredClass: string | null, bookingEnd: Date, customer: { licenseNumber: string | null; licenseValidUntil: Date | null } | null, now = new Date()): string[] {
+  const reasons: string[] = [];
+  if (ref.status !== "CONFIRMED") reasons.push("Die letzte Prüfung ist nicht bestätigt.");
+  if (norm(ref.driverFirstNameSnapshot) !== norm(driver.firstName) || norm(ref.driverLastNameSnapshot) !== norm(driver.lastName) || ref.driverBirthDateSnapshot.getTime() !== driver.birthDate.getTime()) reasons.push("Name oder Geburtsdatum weichen von der letzten Prüfung ab.");
+  if (!ref.identityOriginalSeen || ref.identityNameMatched !== true || ref.identityBirthDateMatched !== true) reasons.push("Die letzte Identitätsprüfung ist nicht vollständig gespeichert.");
+  if (!ref.licenseOriginalSeen || ref.licenseDocumentValid !== true || ref.licenseNameMatched !== true || !ref.licenseNumberSnapshot || ref.licenseClassesSnapshot.length === 0) reasons.push("Die letzte Führerscheinprüfung ist nicht vollständig gespeichert.");
+  if (ref.licenseValidUntilSnapshot && ref.licenseValidUntilSnapshot < now) reasons.push("Der zuletzt geprüfte Führerschein ist abgelaufen.");
+  else if (ref.licenseValidUntilSnapshot && ref.licenseValidUntilSnapshot < bookingEnd) reasons.push("Der zuletzt geprüfte Führerschein läuft vor der geplanten Rückgabe ab.");
+  if (!requiredClass) reasons.push("Für dieses Fahrzeug ist keine erforderliche Fahrerlaubnisklasse hinterlegt.");
+  else if (!classSatisfiesRequirement(requiredClass, ref.licenseClassesSnapshot)) reasons.push(`Die für dieses Fahrzeug erforderliche Fahrerlaubnisklasse ${requiredClass} fehlt in der letzten Prüfung.`);
+  if (ref.manualReviewRequired && ref.manualReviewConfirmed !== true) reasons.push("Ausländischer Führerschein: die manuelle Prüfung ist nicht bestätigt.");
+  if (ref.licenseNumberSnapshot && driver.licenseNumber && norm(ref.licenseNumberSnapshot) !== norm(driver.licenseNumber)) reasons.push("Die Führerscheinnummer im Vertrag weicht von der letzten Prüfung ab.");
+  if (customer && (norm(customer.licenseNumber) !== norm(ref.licenseNumberSnapshot) || (customer.licenseValidUntil?.getTime() ?? null) !== (ref.licenseValidUntilSnapshot?.getTime() ?? null))) reasons.push("Die Kundenstammdaten stimmen nicht mit der letzten Prüfung überein.");
+  return reasons;
+}
+
+function toReference(ref: ReferenceRow, reasons: string[]): RepeatReference {
+  return { verificationId: ref.id, verifiedAt: ref.verifiedAt, verifiedByName: ref.verifiedByName, bookingNumber: ref.booking.number, identityDocumentType: ref.identityDocumentType, licenseClasses: ref.licenseClassesSnapshot, licenseValidUntil: ref.licenseValidUntilSnapshot, licenseCountry: ref.licenseCountrySnapshot, eligible: reasons.length === 0, reasons };
+}
+
+export type RepeatConfirmations = { originalsPresented: boolean; identityChecked: boolean; licensePresented: boolean; dataUnchanged: boolean; classSufficient: boolean; documentsValid: boolean };
+
+/**
+ * Wiederholungsprüfung bestätigen: legt für DIESE Übergabe einen eigenen, sofort bestätigten Prüfvermerk an (Fahrer,
+ * Buchung/Übergabe, Zeitpunkt, Mitarbeiter, Referenz + Snapshot der verwendeten Daten, Prüfart REPEAT).
+ */
+export async function repeatVerification(tenantId: string, actor: Actor, handoverId: string, contractDriverId: string, confirmations: RepeatConfirmations): Promise<VerificationRow> {
+  if (!Object.values(confirmations).every(Boolean)) throw new DomainError("Bitte alle Punkte bestätigen: Originale vorgelegt, Identität geprüft, Führerschein vorgelegt, Daten unverändert, Klasse vorhanden, Dokumente gültig.");
+  return db.$transaction(async (tx) => {
+    const h = await loadOpenHandover(tx, tenantId, handoverId);
+    const driver = await tx.contractDriver.findFirst({ where: { id: contractDriverId, tenantId, contractId: h.contractId } });
+    if (!driver) throw new DomainError("Der Fahrer gehört nicht zu diesem Mietvertrag.");
+    const existing = await tx.driverVerification.findFirst({ where: { tenantId, handoverId, contractDriverId }, orderBy: { version: "desc" } });
+    if (existing?.status === "CONFIRMED") return existing;
+    if (existing) throw new DomainError("Für diesen Fahrer wurde bereits die vollständige Prüfung begonnen. Bitte dort fortsetzen.");
+
+    const booking = await tx.booking.findFirstOrThrow({ where: { id: h.bookingId, tenantId }, select: { endAt: true, vehicleId: true } });
+    const vehicle = await tx.vehicle.findFirstOrThrow({ where: { id: booking.vehicleId, tenantId }, select: { requiredLicenseClass: true, group: { select: { requiredLicenseClass: true, bodyType: true } } } });
+    const requiredClass = requiredLicenseClassFor(vehicle, vehicle.group);
+    const ref = await latestConfirmedReference(tx, tenantId, driver, handoverId);
+    if (!ref) throw new DomainError("Für diesen Fahrer gibt es keine frühere vollständige Prüfung. Bitte die vollständige Prüfung durchführen.");
+    const customer = driver.customerId ? await tx.customer.findFirst({ where: { id: driver.customerId, tenantId }, select: { licenseNumber: true, licenseValidUntil: true } }) : null;
+    const reasons = repeatCheckReasons(ref, driver, requiredClass, booking.endAt, customer);
+    if (reasons.length > 0) throw new DomainError(`Schnellbestätigung nicht möglich: ${reasons.join(" ")} Bitte die vollständige Prüfung durchführen.`);
+
+    const now = new Date();
+    const content = {
+      checkKind: "REPEAT", basedOnVerificationId: ref.id, driverRole: driver.role, identityDocumentType: ref.identityDocumentType, identityNameMatched: true, identityBirthDateMatched: true,
+      licenseNumberSnapshot: ref.licenseNumberSnapshot, licenseCountrySnapshot: ref.licenseCountrySnapshot, licenseClassesSnapshot: ref.licenseClassesSnapshot, licenseValidUntilSnapshot: ref.licenseValidUntilSnapshot?.toISOString() ?? null, requiredLicenseClassSnapshot: requiredClass,
+    };
+    const row = await tx.driverVerification.create({
+      data: {
+        tenantId, bookingId: h.bookingId, contractId: h.contractId, handoverId, contractDriverId, customerId: driver.customerId, version: 1,
+        checkKind: "REPEAT", basedOnVerificationId: ref.id,
+        driverRole: driver.role, driverFirstNameSnapshot: driver.firstName, driverLastNameSnapshot: driver.lastName, driverBirthDateSnapshot: driver.birthDate,
+        status: "CONFIRMED",
+        identityDocumentType: ref.identityDocumentType, identityOriginalSeen: true, identityNameMatched: true, identityBirthDateMatched: true, identityCheckedAt: now, identityCheckedById: actor.id, identityCheckedByName: actor.name,
+        licenseOriginalSeen: true, licenseDocumentValid: true, licenseNameMatched: true,
+        licenseNumberSnapshot: ref.licenseNumberSnapshot, licenseCountrySnapshot: ref.licenseCountrySnapshot, licenseIssuedAtSnapshot: ref.licenseIssuedAtSnapshot, licenseValidUntilSnapshot: ref.licenseValidUntilSnapshot, licenseClassesSnapshot: ref.licenseClassesSnapshot,
+        requiredLicenseClassSnapshot: requiredClass, licenseClassSatisfied: true,
+        internationalPermitPresented: ref.internationalPermitPresented, translationPresented: ref.translationPresented, manualReviewRequired: ref.manualReviewRequired, manualReviewConfirmed: ref.manualReviewRequired ? true : null,
+        deviatesFromCustomer: false, deviationConfirmed: null, licenseCheckedAt: now, licenseCheckedById: actor.id, licenseCheckedByName: actor.name,
+        verifiedAt: now, verifiedById: actor.id, verifiedByName: actor.name, blockedReasons: [],
+        notes: `Wiederholungsprüfung (Sichtprüfung): Originale vorgelegt, gespeicherte Daten unverändert. Grundlage: vollständige Prüfung vom ${ref.verifiedAt ? ref.verifiedAt.toLocaleDateString("de-DE", { timeZone: "Europe/Berlin" }) : "–"} (Buchung ${ref.booking.number}).`,
+        contentHash: contentHash(content), createdById: actor.id,
+      },
+    });
+    await recordAudit(tx, tenantId, actor, { action: "DRIVER_VERIFICATION_REPEATED", bookingId: h.bookingId, details: { verificationId: row.id, basedOnVerificationId: ref.id, referenceBooking: ref.booking.number, driver: `${driver.firstName} ${driver.lastName}`, handoverId, requiredClass: requiredClass ?? "" } });
+    return row;
+  }, TX);
+}
+
+// ---------------------------------------------------------------------------
 // Stand für den Übergabe-Assistenten und den Abschluss-Blocker
 // ---------------------------------------------------------------------------
 
-export type DriverVerificationView = { driver: RequiredDriver; verification: VerificationRow | null; status: "NOT_STARTED" | "IN_PROGRESS" | "CONFIRMED" | "BLOCKED"; requiredLicenseClass: string | null; customerDeviates: boolean };
+export type DriverVerificationView = { driver: RequiredDriver; verification: VerificationRow | null; status: "NOT_STARTED" | "IN_PROGRESS" | "CONFIRMED" | "BLOCKED"; requiredLicenseClass: string | null; customerDeviates: boolean; /** Befehl 20.9: frühere vollständige Prüfung (nur solange hier keine Prüfung begonnen wurde) */ repeat: RepeatReference | null };
 
 /** Vollständiger Stand: jeder laut Vertrag vorgesehene Fahrer mit seinem aktuellen Prüfvermerk (falls vorhanden). */
 export async function driverVerificationOverview(tenantId: string, handoverId: string, client: Tx | typeof db = db): Promise<DriverVerificationView[]> {
@@ -269,17 +379,27 @@ export async function driverVerificationOverview(tenantId: string, handoverId: s
   const [drivers, verifications, booking] = await Promise.all([
     requiredDriversFor(tenantId, h.contractId, client),
     client.driverVerification.findMany({ where: { tenantId, handoverId }, orderBy: { version: "desc" } }),
-    client.booking.findFirst({ where: { id: h.bookingId, tenantId }, select: { vehicleId: true } }),
+    client.booking.findFirst({ where: { id: h.bookingId, tenantId }, select: { vehicleId: true, endAt: true } }),
   ]);
   const vehicle = booking ? await client.vehicle.findFirst({ where: { id: booking.vehicleId, tenantId }, select: { requiredLicenseClass: true, group: { select: { requiredLicenseClass: true, bodyType: true } } } }) : null;
   const requiredClass = vehicle ? requiredLicenseClassFor(vehicle, vehicle.group) : null;
   const byDriver = new Map<string, VerificationRow>();
   for (const v of verifications) if (!byDriver.has(v.contractDriverId)) byDriver.set(v.contractDriverId, v); // erste = höchste Fassung (desc sortiert)
-  return drivers.map((driver) => {
+  const out: DriverVerificationView[] = [];
+  for (const driver of drivers) {
     const verification = byDriver.get(driver.contractDriverId) ?? null;
     const status: DriverVerificationView["status"] = !verification ? "NOT_STARTED" : verification.status === "CONFIRMED" ? "CONFIRMED" : verification.status === "BLOCKED" ? "BLOCKED" : "IN_PROGRESS";
-    return { driver, verification, status, requiredLicenseClass: requiredClass, customerDeviates: verification?.deviatesFromCustomer ?? false };
-  });
+    let repeat: RepeatReference | null = null;
+    if (!verification && booking) {
+      const ref = await latestConfirmedReference(client, tenantId, driver, handoverId);
+      if (ref) {
+        const customer = driver.customerId ? await client.customer.findFirst({ where: { id: driver.customerId, tenantId }, select: { licenseNumber: true, licenseValidUntil: true } }) : null;
+        repeat = toReference(ref, repeatCheckReasons(ref, driver, requiredClass, booking.endAt, customer));
+      }
+    }
+    out.push({ driver, verification, status, requiredLicenseClass: requiredClass, customerDeviates: verification?.deviatesFromCustomer ?? false, repeat });
+  }
+  return out;
 }
 
 /** Blocker für den Übergabeabschluss: jeder vorgesehene Fahrer, der nicht bestätigt ist. Serverseitig, kein reiner UI-Hinweis.
@@ -291,6 +411,8 @@ export async function driverVerificationBlockers(tenantId: string, handoverId: s
     const who = `${o.driver.firstName} ${o.driver.lastName}`;
     if (o.status === "BLOCKED") return { code: "DRIVER_BLOCKED", message: `${who}: Prüfung ist blockiert und muss geklärt werden, bevor übergeben werden kann.` };
     if (o.status === "IN_PROGRESS") return { code: "DRIVER_INCOMPLETE", message: `${who}: Identitäts- oder Führerscheinprüfung ist noch nicht vollständig.` };
+    // Befehl 20.9: bekannter Fahrer – die Stammdaten liegen vor, nur die Bestätigung für diese Übergabe fehlt
+    if (o.repeat) return { code: "DRIVER_NOT_VERIFIED", message: `${who}: Dokumente für diese Übergabe noch nicht bestätigt.` };
     return { code: "DRIVER_NOT_VERIFIED", message: `${who}: Identität und Führerschein sind noch nicht geprüft.` };
   });
 }

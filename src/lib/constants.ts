@@ -503,6 +503,8 @@ export const AUDIT_ACTIONS = {
   DRIVER_VERIFICATION_COMPLETED: "Fahrerprüfung bestätigt",
   DRIVER_VERIFICATION_BLOCKED: "Fahrerprüfung blockiert",
   DRIVER_VERIFICATION_SUPERSEDED: "Fahrerprüfung: neue Fassung",
+  DRIVER_VERIFICATION_REPEATED: "Fahrerprüfung: Wiederholungsprüfung bestätigt",
+  RETURN_PROPOSAL_DISMISSED: "Rückgabe: Kostenvorschlag nicht berechnet",
   DOCUMENT_COPY_CONSENT_RECORDED: "Dokumentkopie: Zustimmung dokumentiert",
   DRIVER_DOCUMENT_UPLOADED: "Dokumentkopie gespeichert",
   DRIVER_DOCUMENT_VIEWED: "Dokumentkopie angezeigt",

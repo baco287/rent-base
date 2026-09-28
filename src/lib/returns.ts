@@ -11,6 +11,9 @@
 import { effectiveKeyDropEnd } from "@/lib/key-drop-checks";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
+import { recordAudit, type Actor } from "@/lib/audit";
+import { accessoryPrice, accessoryProposalKey, missingAccessories, type ChecklistAnswer } from "@/lib/accessories";
+import { readContractRules, resolveRules, type BusinessRules } from "@/lib/business-rules";
 import { CHARGE_UNITS, EXTRA_CHARGE_TYPES, FUEL_POLICIES, energyRequirements, type ExtraChargeType } from "@/lib/constants";
 import { extraMileageCharge, flatCharge, fuelCharge, saveExtraCharge, type ChargeDraft } from "@/lib/extra-charges";
 import { touchHandover } from "@/lib/handovers";
@@ -22,8 +25,14 @@ import { fmtMinutes } from "@/lib/handover-view";
 type Tx = Prisma.TransactionClient;
 const TX = { timeout: 20_000, maxWait: 10_000 };
 
-export type Proposal = { key: "EXTRA_MILEAGE" | "FUEL"; draft: ChargeDraft; confirmed: boolean; chargeId: string | null };
+/** EXTRA_MILEAGE, FUEL oder ACCESSORY_<Checklistenschlüssel> (Befehl 20.9: fehlendes Zubehör mit Standard-Ersatzpreis) */
+export type ProposalKey = "EXTRA_MILEAGE" | "FUEL" | `ACCESSORY_${string}`;
+/** dismissed (Befehl 20.9): Mitarbeiter hat „Nicht berechnen“ gewählt – dokumentiert, keine Position; facts: Sachverhalt in Kurzform */
+export type Proposal = { key: ProposalKey; draft: ChargeDraft; confirmed: boolean; chargeId: string | null; dismissed: boolean; facts?: string[] };
 export type ReturnHint = { code: string; text: string };
+
+/** Checklisten-Antworten und Regeln, aus denen die Rückgabe fehlendes Zubehör erkennt (Befehl 20.9). */
+export type AccessoryContext = { pickup: ChecklistAnswer[]; ret: ChecklistAnswer[]; contractRules: Partial<BusinessRules> | null; currentRules: Partial<BusinessRules> | null };
 
 export type ReturnComparison = {
   pickup: { id: string; number: string; mileage: number | null; fuelLevelEighths: number | null; batteryPercent: number | null; finalizedAt: Date | null };
@@ -74,18 +83,39 @@ export function chargeRow(c: Prisma.ExtraChargeGetPayload<object>): ChargeRow {
   };
 }
 
+const answerSelect = { select: { itemKey: true, result: true } } as const;
+
+/**
+ * Zubehörkontext: Antworten beider Checklisten und die Ersatzpreise. Preise kommen aus dem Vertragsschnappschuss der
+ * Geschäftsregeln; nur wenn der Schnappschuss die Regel noch nicht kannte (ältere Verträge), aus den aktuell aufgelösten
+ * Regeln von Fahrzeug → Gruppe → Mandant. Feste Standardpreise (Warndreieck usw.) stehen in lib/accessories.ts.
+ */
+async function accessoryContext(tx: Tx, tenantId: string, h: { vehicleId: string; checklistItems: ChecklistAnswer[] }, contract: { conditions: Prisma.JsonValue }, pickup: { checklistItems: ChecklistAnswer[] }): Promise<AccessoryContext> {
+  const [vehicle, tenant] = await Promise.all([
+    tx.vehicle.findFirst({ where: { id: h.vehicleId, tenantId }, select: { plate: true, businessRules: true, group: { select: { name: true, businessRules: true } } } }),
+    tx.tenant.findUnique({ where: { id: tenantId }, select: { businessRules: true } }),
+  ]);
+  return {
+    pickup: pickup.checklistItems,
+    ret: h.checklistItems,
+    contractRules: readContractRules(contract.conditions)?.values ?? null,
+    currentRules: vehicle ? resolveRules(tenant?.businessRules, vehicle.group, vehicle).values : null,
+  };
+}
+
 async function loadReturn(tx: Tx, tenantId: string, handoverId: string) {
-  const h = await tx.handover.findFirst({ where: { id: handoverId, tenantId }, include: { extraCharges: { orderBy: { createdAt: "asc" } }, damages: true } });
+  const h = await tx.handover.findFirst({ where: { id: handoverId, tenantId }, include: { extraCharges: { orderBy: { createdAt: "asc" } }, damages: true, checklistItems: answerSelect } });
   if (!h) throw new DomainError("Protokoll nicht gefunden.");
   if (h.type !== "RETURN") throw new DomainError("Dieses Protokoll ist keine Rückgabe.");
   const [booking, contract, pickup] = await Promise.all([
     tx.booking.findFirstOrThrow({ where: { id: h.bookingId, tenantId } }),
     h.contractId ? tx.rentalContract.findFirst({ where: { id: h.contractId, tenantId } }) : null,
-    tx.handover.findFirst({ where: { tenantId, bookingId: h.bookingId, type: "PICKUP", status: "FINALIZED" }, orderBy: { finalizedAt: "desc" } }),
+    tx.handover.findFirst({ where: { tenantId, bookingId: h.bookingId, type: "PICKUP", status: "FINALIZED" }, orderBy: { finalizedAt: "desc" }, include: { checklistItems: answerSelect } }),
   ]);
   if (!contract || contract.status !== "SIGNED") throw new DomainError("Zu dieser Miete gibt es keinen abgeschlossenen Mietvertrag.");
   if (!pickup) throw new DomainError("Zu dieser Miete gibt es kein abgeschlossenes Übergabeprotokoll.");
-  return { h, booking, contract, pickup };
+  const accessories = await accessoryContext(tx, tenantId, h, contract, pickup);
+  return { h, booking, contract, pickup, accessories };
 }
 
 /** Der komplette Vergleich Übergabe/Rückgabe samt Vorschlägen. Rechnet nur mit Snapshots. */
@@ -94,9 +124,12 @@ export function buildComparison(input: {
   booking: { startAt: Date; endAt: Date; actualPickupAt: Date | null };
   contract: Prisma.RentalContractGetPayload<object>;
   pickup: Prisma.HandoverGetPayload<object>;
+  /** Befehl 20.9: ohne Kontext werden keine Zubehörvorschläge gebildet */
+  accessories?: AccessoryContext | null;
   now?: Date;
 }): ReturnComparison {
   const { handover: h, booking, contract, pickup } = input;
+  const dismissed = new Set<string>(h.dismissedProposals ?? []);
   const v = contract.vehicleSnapshot as Partial<VehicleSnapshot>;
   const energy = energyRequirements(h.driveType);
   // Befehl 20.6: kontaktlos zählt die vom Kunden gemeldete Abgabe als Mietende (nicht der spätere Kontrollzeitpunkt)
@@ -118,7 +151,7 @@ export function buildComparison(input: {
   // Mehrkilometer: Freikilometer je Vertrag × Vertragstage, Preis aus dem Vertrag
   if (driven != null && driven >= 0) {
     const draft = extraMileageCharge({ pickupMileage: pickup.mileage!, returnMileage: h.mileage!, start: contract.startAt, end: contract.endAt, kmIncludedPerDay: contract.kmIncludedPerDay, extraKmRate: Number(contract.extraKmRate) });
-    if (draft) { const c = confirmedOf("EXTRA_MILEAGE"); proposals.push({ key: "EXTRA_MILEAGE", draft, confirmed: !!c, chargeId: c?.id ?? null }); }
+    if (draft) { const c = confirmedOf("EXTRA_MILEAGE"); proposals.push({ key: "EXTRA_MILEAGE", draft, confirmed: !!c, chargeId: c?.id ?? null, dismissed: dismissed.has("EXTRA_MILEAGE") }); }
   }
 
   // Kraftstoff: nur wenn die Tankregel eine Nachberechnung vorsieht und Preis sowie Tankgröße belastbar vorliegen
@@ -134,8 +167,24 @@ export function buildComparison(input: {
       if (draft) {
         draft.calculation = { ...draft.calculation, priceOrigin: effectiveFuelPrice.origin, fuelPolicy: contract.fuelPolicy };
         const c = confirmedOf("FUEL");
-        proposals.push({ key: "FUEL", draft, confirmed: !!c, chargeId: c?.id ?? null });
+        proposals.push({ key: "FUEL", draft, confirmed: !!c, chargeId: c?.id ?? null, dismissed: dismissed.has("FUEL") });
       }
+    }
+  }
+
+  // Befehl 20.9: Zubehör, das bei der Übergabe eindeutig vorhanden war und bei der Rückgabe fehlt → Vorschlag, nie Position
+  if (input.accessories) {
+    const acc = input.accessories;
+    for (const f of missingAccessories(acc.pickup, acc.ret, (def) => accessoryPrice(def, acc.contractRules, acc.currentRules))) {
+      const key = accessoryProposalKey(f.def.key);
+      if (f.price.cents == null) {
+        hints.push({ code: `ACCESSORY_NO_PRICE_${f.def.key}`, text: `${f.def.label} fehlt: bei der Übergabe vorhanden, bei der Rückgabe nicht. Für dieses Fahrzeug ist kein Ersatzpreis hinterlegt (Geschäftsregel „Ersatzpreis ${f.def.label}“ am Fahrzeug oder an der Gruppe); es wird kein Betrag vorgeschlagen. Bei Bedarf eine Position „Fehlendes Zubehör“ bewusst manuell erfassen.` });
+        continue;
+      }
+      const draft = flatCharge("MISSING_ACCESSORY", `${f.def.label} fehlt (bei Übergabe vorhanden, bei Rückgabe fehlend)`, 1, "Stk", f.price.cents / 100);
+      draft.calculation = { ...draft.calculation, accessoryKey: f.def.key, priceOrigin: f.price.origin };
+      const c = h.extraCharges.find((x) => x.type === "MISSING_ACCESSORY" && x.source === "PROPOSAL" && (x.calculation as { accessoryKey?: string } | null)?.accessoryKey === f.def.key);
+      proposals.push({ key, draft, confirmed: !!c, chargeId: c?.id ?? null, dismissed: dismissed.has(key), facts: ["Bei Übergabe vorhanden", "Bei Rückgabe fehlend", f.price.origin === "STANDARD" ? "Standard-Ersatzpreis" : f.price.origin === "CONTRACT" ? "Ersatzpreis laut Vertrag (Fahrzeugregel)" : "Ersatzpreis laut Fahrzeugregel"] });
     }
   }
   if (batteryDiff != null && batteryDiff < 0) hints.push({ code: "CHARGING_NO_BASIS", text: `Die Batterie ist um ${-batteryDiff} Prozentpunkte niedriger als bei der Übergabe. Ein Ladepreis ist nicht vereinbart; bei Bedarf eine Position „Ladung“ manuell erfassen.` });
@@ -173,26 +222,53 @@ export { fmtMinutes };
 
 export async function getReturnComparison(tenantId: string, handoverId: string): Promise<ReturnComparison> {
   return db.$transaction(async (tx) => {
-    const { h, booking, contract, pickup } = await loadReturn(tx, tenantId, handoverId);
-    return buildComparison({ handover: h, booking, contract, pickup });
+    const { h, booking, contract, pickup, accessories } = await loadReturn(tx, tenantId, handoverId);
+    return buildComparison({ handover: h, booking, contract, pickup, accessories });
   }, TX);
 }
 
 /** Zusatzkosten gehören zum Inhalt: danach werden Unterschriften verworfen, deren Hash nicht mehr passt. */
 const touchAfterCharge = (tx: Tx, tenantId: string, handoverId: string) => touchHandover(tx, tenantId, handoverId);
 
-/** Mitarbeiter bestätigt einen Vorschlag. Der Betrag wird serverseitig neu berechnet, nie aus dem Formular übernommen. */
+/**
+ * Mitarbeiter bestätigt einen Vorschlag. Der Betrag wird serverseitig neu berechnet, nie aus dem Formular übernommen.
+ * Es entsteht genau eine Position: die Protokollsperre serialisiert parallele Klicks, der zweite sieht „bereits bestätigt“.
+ */
 export async function confirmProposal(tenantId: string, handoverId: string, actorId: string | null, key: Proposal["key"]) {
   return db.$transaction(async (tx) => {
-    const { h, booking, contract, pickup } = await loadReturn(tx, tenantId, handoverId);
+    await tx.$queryRaw`SELECT "id" FROM "Handover" WHERE "id" = ${handoverId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+    const { h, booking, contract, pickup, accessories } = await loadReturn(tx, tenantId, handoverId);
     assertHandoverDraft(h);
-    const cmp = buildComparison({ handover: h, booking, contract, pickup });
+    const cmp = buildComparison({ handover: h, booking, contract, pickup, accessories });
     const p = cmp.proposals.find((x) => x.key === key);
     if (!p) throw new DomainError("Für diese Position gibt es derzeit keinen Vorschlag.");
     if (p.confirmed) throw new DomainError("Diese Position wurde bereits bestätigt.");
     const created = await saveExtraCharge(tx, tenantId, actorId, { bookingId: h.bookingId, handoverId: h.id }, p.draft, { source: "PROPOSAL" });
+    // eine frühere Entscheidung „Nicht berechnen“ ist damit überholt
+    if (p.dismissed) await tx.handover.update({ where: { id: h.id }, data: { dismissedProposals: (h.dismissedProposals ?? []).filter((k) => k !== key) } });
     await touchAfterCharge(tx, tenantId, h.id);
     return created;
+  }, TX);
+}
+
+/**
+ * Befehl 20.9: „Nicht berechnen“ – der Mitarbeiter entscheidet bewusst, einen Vorschlag nicht zu übernehmen. Dokumentiert
+ * am Protokoll (kein Hash-Bestandteil), erzeugt nie eine Position oder Forderung; mit undo wieder offen.
+ */
+export async function dismissProposal(tenantId: string, handoverId: string, actor: Actor | null, key: Proposal["key"], undo = false) {
+  return db.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Handover" WHERE "id" = ${handoverId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+    const { h, booking, contract, pickup, accessories } = await loadReturn(tx, tenantId, handoverId);
+    assertHandoverDraft(h);
+    const cmp = buildComparison({ handover: h, booking, contract, pickup, accessories });
+    const p = cmp.proposals.find((x) => x.key === key);
+    if (!p) throw new DomainError("Für diese Position gibt es derzeit keinen Vorschlag.");
+    if (p.confirmed) throw new DomainError("Diese Position wurde bereits als Position übernommen. Bei Bedarf die Position unten entfernen.");
+    const current = h.dismissedProposals ?? [];
+    const next = undo ? current.filter((k) => k !== key) : current.includes(key) ? current : [...current, key];
+    await tx.handover.update({ where: { id: h.id }, data: { dismissedProposals: next } });
+    if (!undo && !current.includes(key)) await recordAudit(tx, tenantId, actor, { action: "RETURN_PROPOSAL_DISMISSED", bookingId: h.bookingId, details: { handoverId: h.id, proposal: key, description: p.draft.description, amount: p.draft.amount } });
+    return next;
   }, TX);
 }
 
@@ -244,13 +320,13 @@ export async function removeCharge(tenantId: string, handoverId: string, chargeI
 
 /** Vergleich für ein finalisiertes Protokoll (Ansicht und PDF): Rechnet aus denselben Snapshots, ohne "jetzt". */
 export async function loadSealedComparison(tx: Tx, tenantId: string, handoverId: string): Promise<ReturnComparison | null> {
-  const h = await tx.handover.findFirst({ where: { id: handoverId, tenantId, type: "RETURN" }, include: { extraCharges: { orderBy: { createdAt: "asc" } } } });
+  const h = await tx.handover.findFirst({ where: { id: handoverId, tenantId, type: "RETURN" }, include: { extraCharges: { orderBy: { createdAt: "asc" } }, checklistItems: answerSelect } });
   if (!h || !h.contractId) return null;
   const [booking, contract, pickup] = await Promise.all([
     tx.booking.findFirst({ where: { id: h.bookingId, tenantId } }),
     tx.rentalContract.findFirst({ where: { id: h.contractId, tenantId } }),
-    tx.handover.findFirst({ where: { tenantId, bookingId: h.bookingId, type: "PICKUP", status: "FINALIZED" }, orderBy: { finalizedAt: "desc" } }),
+    tx.handover.findFirst({ where: { tenantId, bookingId: h.bookingId, type: "PICKUP", status: "FINALIZED" }, orderBy: { finalizedAt: "desc" }, include: { checklistItems: answerSelect } }),
   ]);
   if (!booking || !contract || !pickup) return null;
-  return buildComparison({ handover: h, booking, contract, pickup });
+  return buildComparison({ handover: h, booking, contract, pickup, accessories: await accessoryContext(tx, tenantId, h, contract, pickup) });
 }

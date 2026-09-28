@@ -19,10 +19,17 @@ export function itemsForDrive(items: ChecklistItemDef[], driveType: string): Che
   return items.filter((i) => !i.appliesTo || i.appliesTo.length === 0 || i.appliesTo.includes(cls));
 }
 
-/** Standard, solange ein Mandant keine eigene Vorlage hat. */
+/**
+ * Standard, solange ein Mandant keine eigene Vorlage hat. Befehl 20.9: Warndreieck, Warnweste, Verbandkasten und Hutablage
+ * sind eigene Punkte mit denselben Schlüsseln wie in der Rückgabe-Checkliste – nur so kann die Rückgabe „bei Übergabe
+ * vorhanden, bei Rückgabe fehlend“ eindeutig erkennen (lib/accessories.ts). Bestehende Protokolle bleiben unverändert.
+ */
 export const DEFAULT_CHECKLIST: ChecklistItemDef[] = [
   { key: "documents", label: "Fahrzeugschein und Bordmappe vorhanden", answerType: "YES_NO", required: true },
-  { key: "warning_triangle", label: "Warndreieck, Warnweste, Verbandkasten vorhanden", answerType: "YES_NO", required: true },
+  { key: "warning_triangle", label: "Warndreieck vorhanden", answerType: "YES_NO", required: true },
+  { key: "safety_vest", label: "Warnweste vorhanden", answerType: "YES_NO", required: true },
+  { key: "first_aid", label: "Verbandkasten vorhanden", answerType: "YES_NO", required: true },
+  { key: "parcel_shelf", label: "Hutablage vorhanden (falls Fahrzeug eine hat, sonst „Nicht zutreffend“)", answerType: "YES_NO", required: true },
   { key: "keys", label: "Anzahl übergebener Schlüssel", answerType: "TEXT", required: true },
   { key: "tires", label: "Reifen und Felgen", answerType: "OK_NOT_OK", required: true },
   { key: "lights", label: "Beleuchtung funktioniert", answerType: "OK_NOT_OK", required: true },
@@ -40,6 +47,7 @@ export const DEFAULT_RETURN_CHECKLIST: ChecklistItemDef[] = [
   { key: "warning_triangle", label: "Warndreieck vorhanden", answerType: "YES_NO", required: true },
   { key: "safety_vest", label: "Warnweste vorhanden", answerType: "YES_NO", required: true },
   { key: "first_aid", label: "Verbandkasten vorhanden", answerType: "YES_NO", required: true },
+  { key: "parcel_shelf", label: "Hutablage vorhanden (falls Fahrzeug eine hat, sonst „Nicht zutreffend“)", answerType: "YES_NO", required: true },
   { key: "charging_cable", label: "Ladekabel und Ladezubehör zurück", answerType: "YES_NO", required: true, appliesTo: CHARGING },
   { key: "interior_checked", label: "Innenraum geprüft, keine Auffälligkeiten", answerType: "YES_NO", required: true },
   { key: "exterior_checked", label: "Fahrzeug außen geprüft, keine Auffälligkeiten", answerType: "YES_NO", required: true },

@@ -11,7 +11,7 @@ export const RULE_SECTIONS: Record<string, RuleKey[]> = {
   ausland: ["abroadAllowed", "abroadCountries"],
   rauchen: ["smokingAllowed", "petsPolicy"],
   rueckgabe: ["lateReturnRule", "lateReturnFeeCents", "outOfHoursReturn", "outOfHoursInstructions"],
-  reinigung: ["cleaningHeavySoilingCents", "cleaningSmokingCents", "cleaningPetHairCents", "cleaningSpecialCents", "keysAccessoriesNote"],
+  reinigung: ["cleaningHeavySoilingCents", "cleaningSmokingCents", "cleaningPetHairCents", "cleaningSpecialCents", "keysAccessoriesNote", "parcelShelfReplacementCents"],
   behoerden: ["authorityHandlingFeeEnabled", "authorityHandlingFeeCents"],
   nutzung: ["trailerAllowed", "towingAllowed", "commercialPassengerTransportAllowed", "specialUseNote"],
 };
@@ -64,6 +64,8 @@ export function overridesFromForm(fd: FormData): RuleOverrides | null {
   const feeType = String(fd.get("additionalDriverFeeType") ?? ""); if (feeType) { out.additionalDriverFeeType = feeType; out.additionalDriverFeeCents = feeType === "FREE" ? 0 : (cents(fd.get("additionalDriverFee")) ?? 0); }
   const trailer = tri("trailer"); if (trailer !== undefined) out.trailerAllowed = trailer;
   const towing = tri("towing"); if (towing !== undefined) out.towingAllowed = towing;
+  // Befehl 20.9: fahrzeugbezogener Ersatzpreis der Hutablage (leer = wie Standard/Gruppe)
+  const shelf = cents(fd.get("parcelShelf")); if (shelf != null) out.parcelShelfReplacementCents = shelf;
   const clean = sanitizeRules(out, OVERRIDABLE_KEYS) as RuleOverrides;
   if (clean.fuelRule === "MINIMUM_LEVEL" && clean.fuelMinimumEighths == null && clean.batteryMinimumPercent == null) throw new RuleError("Tank-/Laderegel „Mindestfüllstand“: bitte einen Mindestwert angeben.");
   if (clean.additionalDriverFeeType && clean.additionalDriverFeeType !== "FREE" && !((clean.additionalDriverFeeCents ?? 0) > 0)) throw new RuleError("Zusatzfahrer: Bei einer kostenpflichtigen Regel muss ein Betrag über 0 angegeben sein.");
@@ -79,5 +81,6 @@ export function overrideValues(rules: unknown) {
     deductible: eur(o.deductibleCents), kmPolicy: o.kmPolicy ?? "", fuelRule: o.fuelRule ?? "", fuelMinimumEighths: o.fuelMinimumEighths != null ? String(o.fuelMinimumEighths) : "", batteryMinimumPercent: o.batteryMinimumPercent != null ? String(o.batteryMinimumPercent) : "",
     abroad: tri(o.abroadAllowed), abroadCountries: o.abroadCountries ?? [], smoking: tri(o.smokingAllowed), petsPolicy: o.petsPolicy ?? "", additionalDrivers: tri(o.additionalDriversAllowed),
     additionalDriverFeeType: o.additionalDriverFeeType ?? "", additionalDriverFee: eur(o.additionalDriverFeeCents), trailer: tri(o.trailerAllowed), towing: tri(o.towingAllowed),
+    parcelShelf: eur(o.parcelShelfReplacementCents),
   };
 }

@@ -29,6 +29,7 @@ import {
   addChargeAction,
   addDamageAction,
   confirmProposalAction,
+  dismissProposalAction,
   finalizeReturnAction,
   navigateStepAction,
   removeChargeAction,
@@ -414,7 +415,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
               total={cmp.chargesTotal}
               deposit={cmp.contract.deposit}
               newDamages={doc.damages.filter((d) => d.marker === "NEW")}
-              actions={{ confirm: confirmProposalAction.bind(null, b.id), add: addChargeAction.bind(null, b.id), remove: removeChargeAction.bind(null, b.id) }}
+              actions={{ confirm: confirmProposalAction.bind(null, b.id), dismiss: dismissProposalAction.bind(null, b.id), add: addChargeAction.bind(null, b.id), remove: removeChargeAction.bind(null, b.id) }}
             />
             <Card className="p-4 md:p-5"><StepForm action={navigateStepAction.bind(null, b.id, 7)} step={7} nextLabel="Weiter zur Unterschrift"><span className="sr-only">Navigation</span></StepForm></Card>
           </>

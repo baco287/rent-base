@@ -113,6 +113,7 @@ export function RulesSectionForm({ action, section, v }: { action: Action; secti
         <Field label="Tierhaare in €" htmlFor="cleaningPetHairCents"><input id="cleaningPetHairCents" name="cleaningPetHairCents" inputMode="decimal" defaultValue={eur(v.cleaningPetHairCents)} className="input tnum" /></Field>
         <Field label="Sonstige Sonderreinigung in €" htmlFor="cleaningSpecialCents"><input id="cleaningSpecialCents" name="cleaningSpecialCents" inputMode="decimal" defaultValue={eur(v.cleaningSpecialCents)} className="input tnum" /></Field>
         <Field label="Hinweis Schlüssel und Zubehör (optional)" htmlFor="keysAccessoriesNote" full hint="Fehlende Schlüssel oder Zubehör werden in der Checkliste dokumentiert; keine automatische Forderung."><input id="keysAccessoriesNote" name="keysAccessoriesNote" defaultValue={v.keysAccessoriesNote ?? ""} maxLength={500} className="input" /></Field>
+        <Field label="Ersatzpreis Hutablage in € (Standard, optional)" htmlFor="parcelShelfReplacementCents" hint="Fahrzeugabhängig: der Preis am Fahrzeug bzw. an der Gruppe geht vor. Warndreieck, Warnweste und Verbandkasten haben den festen Standard 20,00 €. Fehlt bei Rückgabe etwas, das bei Übergabe vorhanden war, entsteht nur ein Vorschlag."><input id="parcelShelfReplacementCents" name="parcelShelfReplacementCents" inputMode="decimal" defaultValue={eur(v.parcelShelfReplacementCents)} className="input tnum" /></Field>
         <Feedback state={state} /><Submit pending={pending} />
       </form>
     );
@@ -152,7 +153,7 @@ export function PrivacyForm({ action, value }: { action: Action; value: string }
 // Abweichungen an Fahrzeuggruppe und Fahrzeug: je Schlüssel „wie Standard“ oder eigener Wert
 // ---------------------------------------------------------------------------
 
-export type OverrideValues = { deductible: string; kmPolicy: string; fuelRule: string; fuelMinimumEighths: string; batteryMinimumPercent: string; abroad: "" | "1" | "0"; abroadCountries: string[]; smoking: "" | "1" | "0"; petsPolicy: string; additionalDrivers: "" | "1" | "0"; additionalDriverFeeType: string; additionalDriverFee: string; trailer: "" | "1" | "0"; towing: "" | "1" | "0" };
+export type OverrideValues = { deductible: string; kmPolicy: string; fuelRule: string; fuelMinimumEighths: string; batteryMinimumPercent: string; abroad: "" | "1" | "0"; abroadCountries: string[]; smoking: "" | "1" | "0"; petsPolicy: string; additionalDrivers: "" | "1" | "0"; additionalDriverFeeType: string; additionalDriverFee: string; trailer: "" | "1" | "0"; towing: "" | "1" | "0"; parcelShelf: string };
 
 export function OverrideForm({ action, values, inherited, scopeLabel }: { action: Action; values: OverrideValues; inherited: BusinessRules; scopeLabel: string }) {
   const { state, formAction, pending } = useRules(action);
@@ -183,6 +184,7 @@ export function OverrideForm({ action, values, inherited, scopeLabel }: { action
       {feeType && feeType !== "FREE" && <Field label="Zusatzfahrer-Preis in €" htmlFor="ov-fee"><input id="ov-fee" name="additionalDriverFee" inputMode="decimal" defaultValue={values.additionalDriverFee} className="input tnum" /></Field>}
       {tri("trailer", "Anhängerbetrieb", values.trailer, "erlaubt", "nicht erlaubt", inherited.trailerAllowed)}
       {tri("towing", "Abschleppen", values.towing, "erlaubt", "nicht erlaubt", inherited.towingAllowed)}
+      <Field label="Ersatzpreis Hutablage in €" htmlFor="ov-parcelShelf" hint={`Standard: ${inherited.parcelShelfReplacementCents != null ? eur(inherited.parcelShelfReplacementCents) + " €" : "kein Preis hinterlegt"}. Fehlt die Hutablage bei Rückgabe (bei Übergabe vorhanden), wird dieser Betrag nur vorgeschlagen.`}><input id="ov-parcelShelf" name="parcelShelf" inputMode="decimal" defaultValue={values.parcelShelf} className="input tnum" placeholder="wie Standard" /></Field>
       <Feedback state={state} />
       <div className="md:col-span-2 flex flex-wrap gap-2 items-center"><button type="submit" disabled={pending} className="btn btn-primary">{pending ? "Wird gespeichert…" : "Abweichungen speichern"}</button><button type="submit" name="clear" value="1" disabled={pending} className="btn">Alle Abweichungen entfernen</button></div>
     </form>

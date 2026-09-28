@@ -15,8 +15,32 @@ import { getStorage } from "@/lib/storage";
 import { parseLocalDateTime } from "@/lib/time";
 import { PAYMENT_METHODS, RENTAL_PAYMENT_INTENTS, type RentalPaymentIntent } from "@/lib/constants";
 import { insertRentalPayment, parseRentalAmount, type RentalPaymentInput } from "@/lib/rental-payments";
+import { checkReceiveInput, insertDepositReceived, type ReceiveInput } from "@/lib/deposits";
 
 export type FormState = { error?: string } | undefined;
+
+/**
+ * Befehl 20.9: Bereich „Kaution“ der neuen Buchung. Die Buchung existiert beim Absenden noch nicht, deshalb wird hier nur die
+ * Absicht geprüft; dokumentiert wird der Eingang erst in derselben Transaktion nach dem Anlegen der Buchung
+ * (insertDepositReceived). Kaution ist nie Mietzahlung und verringert den offenen Mietpreis nicht.
+ */
+function initialDepositFromForm(formData: FormData): { input: Omit<ReceiveInput, "bookingId"> | null } | { error: string } {
+  if (String(formData.get("depIntent") ?? "NONE") !== "RECEIVED") return { input: null };
+  const amount = String(formData.get("depAmount") ?? "").trim();
+  if (!amount) return { error: "Kaution: Bitte den erhaltenen Betrag eingeben." };
+  const occurredAt = parseLocalDateTime(String(formData.get("depOccurredAt") ?? ""));
+  if (!occurredAt) return { error: "Kaution: Bitte einen gültigen Zeitpunkt angeben." };
+  const nonce = String(formData.get("depNonce") ?? "");
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(nonce)) return { error: "Die Seite ist veraltet. Bitte neu laden." };
+  const text = (k: string, max: number) => String(formData.get(k) ?? "").trim().slice(0, max) || null;
+  const input = { amount, method: String(formData.get("depMethod") ?? ""), occurredAt, reference: text("depReference", 120), note: text("depNote", 500), idempotencyKey: nonce };
+  try {
+    checkReceiveInput(input);
+  } catch (e) {
+    return { error: `Kaution: ${e instanceof DomainError ? e.message : "Ungültige Eingabe."}` };
+  }
+  return { input };
+}
 
 /**
  * Bereich „Zahlung“ der neuen Buchung. „Offen“ = keine Zahlung; sonst genau eine Zahlungsbewegung.
@@ -90,6 +114,9 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
   const d = parsed.data;
   const pay = initialPaymentFromForm(formData);
   if ("error" in pay) return pay;
+  const dep = initialDepositFromForm(formData);
+  if ("error" in dep) return dep;
+  if (dep.input && Math.round(d.deposit * 100) <= 0) return { error: "Kaution: Ohne vereinbarte Kaution (Betrag 0) kann kein Eingang dokumentiert werden." };
 
   // Kunde direkt in der Buchung anlegen: Kundendaten kommen mit Präfix "c_"
   const newCustomer = formData.get("customerMode") === "new";
@@ -126,6 +153,9 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
     id = b.id;
     // Erste Mietzahlung in derselben Transaktion: wird sie abgelehnt (z. B. Überzahlung), entsteht auch keine Buchung
     if (pay.input) await insertRentalPayment(tx, tenant.id, { id: user.id, name: user.name }, b.id, pay.input, { expectFull: pay.intent === "FULL" });
+    // Befehl 20.9: Kautionseingang in derselben Transaktion über die bestehende Kautionserfassung – vereinbart ist die Kaution der
+    // Buchung; wird der Eingang abgelehnt (z. B. mehr als vereinbart), entsteht auch keine Buchung. Getrennt von der Mietzahlung.
+    if (dep.input) await insertDepositReceived(tx, tenant.id, { id: user.id, name: user.name }, { ...dep.input, bookingId: b.id }, { fromBooking: true });
     return undefined;
   })).catch((e) => (e instanceof DomainError ? { error: e.message } : Promise.reject(e)));
   if (result?.error) return result;

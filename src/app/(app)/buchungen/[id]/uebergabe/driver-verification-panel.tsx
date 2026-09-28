@@ -7,8 +7,8 @@ import { DRIVER_ROLES, DRIVER_VERIFICATION_STATUS, IDENTITY_DOCUMENT_TYPES, type
 import { driverVerificationOverview, listDriverDocumentCopies, type DriverVerificationView } from "@/lib/driver-verification";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import { toDateInputValue } from "@/lib/time";
-import { confirmDriverVerificationAction, saveIdentityCheckAction, saveLicenseCheckAction, startDriverVerificationAction, updateCustomerLicenseAction } from "./driver-actions";
-import { ConfirmDriverButton, DriverDocumentUploader, IdentityCheckForm, LicenseCheckForm, StartDriverVerificationButton, UpdateCustomerLicenseButton } from "./driver-forms";
+import { confirmDriverVerificationAction, repeatDriverVerificationAction, saveIdentityCheckAction, saveLicenseCheckAction, startDriverVerificationAction, updateCustomerLicenseAction } from "./driver-actions";
+import { ConfirmDriverButton, DriverDocumentUploader, IdentityCheckForm, LicenseCheckForm, RepeatVerificationForm, StartDriverVerificationButton, UpdateCustomerLicenseButton } from "./driver-forms";
 
 const statusTone: Record<DriverVerificationStatus, "good" | "amber" | "bad" | "info" | "grey"> = { NOT_STARTED: "grey", IN_PROGRESS: "amber", CONFIRMED: "good", BLOCKED: "bad" };
 
@@ -47,7 +47,8 @@ function DriverCard({ bookingId, handoverId, view, role, copies }: { bookingId: 
       <div className="px-4 pb-4 flex flex-col gap-4 border-t border-line-soft pt-4">
         {confirmed && v ? (
           <div className="rounded-md bg-good-soft px-3.5 py-3 flex flex-col gap-1.5 text-sm">
-            <p className="font-medium text-good">Identität und Führerschein bestätigt.</p>
+            <p className="font-medium text-good">{v.checkKind === "REPEAT" ? "Wiederholungsprüfung für diese Übergabe bestätigt." : "Identität und Führerschein bestätigt."}</p>
+            {v.checkKind === "REPEAT" && v.notes && <p className="text-xs text-ink-2">{v.notes}</p>}
             <dl className="grid grid-cols-[minmax(140px,45%)_1fr] gap-x-3 gap-y-1 text-ink-2">
               <dt className="text-ink-3">Dokument</dt><dd>{IDENTITY_DOCUMENT_TYPES[v.identityDocumentType as IdentityDocumentType] ?? v.identityDocumentType}</dd>
               <dt className="text-ink-3">Fahrerlaubnisklassen</dt><dd>{v.licenseClassesSnapshot.join(", ")}{v.requiredLicenseClassSnapshot ? ` (erforderlich: ${v.requiredLicenseClassSnapshot})` : ""}</dd>
@@ -61,6 +62,31 @@ function DriverCard({ bookingId, handoverId, view, role, copies }: { bookingId: 
                 {licCopies.length > 0 && <DriverDocumentUploader handoverId={handoverId} verificationId={v.id} contractDriverId={view.driver.contractDriverId} documentKind="LICENSE" copies={licCopies} editable={false} />}
               </div>
             )}
+          </div>
+        ) : !v && view.repeat ? (
+          // Befehl 20.9: bekannter Fahrer – Stammdaten aus der letzten vollständigen Prüfung, Bestätigung für DIESE Übergabe
+          <div className="flex flex-col gap-3">
+            <div className="rounded-md bg-info-soft px-3.5 py-3 flex flex-col gap-1.5 text-sm">
+              <p className="font-medium text-info">{name} · Bereits vollständig geprüft</p>
+              <dl className="grid grid-cols-[minmax(140px,45%)_1fr] gap-x-3 gap-y-1 text-ink-2">
+                <dt className="text-ink-3">Führerschein</dt><dd>Klasse {view.repeat.licenseClasses.join(", ") || "–"}{view.requiredLicenseClass ? ` (erforderlich: ${view.requiredLicenseClass})` : ""}</dd>
+                <dt className="text-ink-3">Gültig bis</dt><dd>{view.repeat.licenseValidUntil ? fmtDate(view.repeat.licenseValidUntil) : "nicht angegeben"}</dd>
+                <dt className="text-ink-3">Ausweis</dt><dd>{IDENTITY_DOCUMENT_TYPES[view.repeat.identityDocumentType as IdentityDocumentType] ?? view.repeat.identityDocumentType ?? "–"}</dd>
+                <dt className="text-ink-3">Zuletzt vollständig geprüft</dt><dd>{view.repeat.verifiedAt ? fmtDateTime(view.repeat.verifiedAt) : "–"}{view.repeat.verifiedByName ? ` von ${view.repeat.verifiedByName}` : ""} · Buchung {view.repeat.bookingNumber}</dd>
+              </dl>
+            </div>
+            {view.repeat.eligible ? (
+              <>
+                <p className="text-xs text-ink-2">Für diese Übergabe wird ein eigener Prüfvermerk (Wiederholungs-/Sichtprüfung) mit Bezug auf die letzte Prüfung dokumentiert. Die alte Prüfung bleibt unverändert.</p>
+                <RepeatVerificationForm action={repeatDriverVerificationAction.bind(null, bookingId, handoverId, view.driver.contractDriverId)} />
+              </>
+            ) : (
+              <div className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm">
+                <div className="font-semibold mb-1">Schnellbestätigung nicht möglich</div>
+                <ul className="list-disc pl-5">{view.repeat.reasons.map((r) => <li key={r}>{r}</li>)}</ul>
+              </div>
+            )}
+            <StartDriverVerificationButton action={startDriverVerificationAction.bind(null, bookingId, handoverId, view.driver.contractDriverId)} label={view.repeat.eligible ? "Daten haben sich geändert – vollständige Prüfung" : `Vollständige Prüfung für ${name} beginnen`} />
           </div>
         ) : !v ? (
           <StartDriverVerificationButton action={startDriverVerificationAction.bind(null, bookingId, handoverId, view.driver.contractDriverId)} label={`Prüfung für ${name} beginnen`} />

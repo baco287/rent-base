@@ -18,6 +18,7 @@ import { db } from "@/lib/db";
 import { recordAudit } from "@/lib/audit";
 import { findConflicts } from "@/lib/bookings";
 import { additionalDriverFee, adoptDefaults, applyContractOverrides, contractRuleIssues, depositSourceOf, initialContractRules, readContractRules, resolveDeposit, resolveRules, rulesFingerprint, type BusinessRules, type ContractRuleKey, type ContractRules, type ResolvedDeposit, type ResolvedRules } from "@/lib/business-rules";
+import { depositAgreedAmountConflict, linkDepositToContract } from "@/lib/deposits";
 import { checkCustomer, checkDriver, errorsOf, type Issue } from "@/lib/contract-checks";
 import { driveClassOf } from "@/lib/constants";
 import { DomainError, assertContractDraft, contentHash, sha256 } from "@/lib/integrity";
@@ -544,6 +545,9 @@ export async function saveConditions(tenantId: string, contractId: string, input
       const conflicts = await findConflicts(tx, tenantId, booking.vehicleId, input.startAt, input.endAt, booking.id);
       if (conflicts.length > 0) throw new DomainError(`Der neue Zeitraum überschneidet sich mit Buchung ${conflicts[0].number}. ${booking.vehicle.plate} ist dann bereits vergeben.`);
     }
+    // Befehl 20.9: wurde die Kaution schon bei der Buchung als erhalten dokumentiert, ist der vereinbarte Betrag fest
+    const depositConflict = await depositAgreedAmountConflict(tx, tenantId, booking.id, Math.round(input.deposit * 100));
+    if (depositConflict) throw new DomainError(depositConflict);
     // Zeitraum, Kaution und Kilometervereinbarung gehören zur Buchung: dort mitschreiben, damit Buchung, Vertrag, Übergabe und Rückgabe dieselben Werte tragen
     await tx.booking.update({ where: { id: booking.id }, data: { startAt: input.startAt, endAt: input.endAt, deposit: input.deposit, kmIncludedPerDay: Math.round(input.kmIncludedPerDay), extraKmRate: input.extraKmRate } });
     // Geschäftsregeln des Vertrags: erlaubte Schlüssel anpassen, Herkunft „Individuell angepasst“ bei Abweichung, Audit je Änderung
@@ -764,7 +768,9 @@ export async function adoptContractDefaults(tenantId: string, contractId: string
     const next = adoptDefaults(current, resolved, new Date(), depositRule);
     const deductibleDefault = (next.values.deductibleCents ?? 0) / 100;
     // Kaution: nur übernehmen, wenn sie noch der bisherigen Vorgabe entspricht (nicht individuell angepasst); Buchung folgt dem Vertragswert
-    const depositFollows = current.depositResolvedCents != null && Math.round(Number(c.deposit) * 100) === current.depositResolvedCents && depositRule.cents !== current.depositResolvedCents;
+    // Befehl 20.9: eine bei der Buchung dokumentierte Kaution ist fest – der Vertrag folgt dann keiner neuen Vorgabe
+    const depositFixed = (await depositAgreedAmountConflict(tx, tenantId, c.bookingId, depositRule.cents)) !== null;
+    const depositFollows = !depositFixed && current.depositResolvedCents != null && Math.round(Number(c.deposit) * 100) === current.depositResolvedCents && depositRule.cents !== current.depositResolvedCents;
     if (depositFollows) await tx.booking.update({ where: { id: c.bookingId }, data: { deposit: depositRule.cents / 100 } });
     await tx.rentalContract.update({ where: { id: c.id }, data: { conditions: next as unknown as Prisma.InputJsonValue, ...(depositFollows ? { deposit: depositRule.cents / 100 } : {}), ...(next.sources.deductibleCents !== "CONTRACT" ? { deductible: deductibleDefault } : {}), ...(next.sources.fuelRule !== "CONTRACT" ? { fuelPolicy: next.values.fuelRule } : {}) } });
     await recordAudit(tx, tenantId, actor, { action: "CONTRACT_DEFAULTS_ADOPTED", bookingId: c.bookingId, details: { contractNumber: c.number, fingerprint: next.defaultsFingerprint } });
@@ -797,6 +803,8 @@ export async function finalizeContract(tenantId: string, contractId: string) {
 
     const contract = await loadContract(tx, tenantId, contractId);
     const hash = contentHash(signedContent(contract));
+    // Befehl 20.9: eine bei der Buchung dokumentierte Kaution wird dem Vertrag zugeordnet; die Beträge müssen übereinstimmen
+    await linkDepositToContract(tx, tenantId, contract.bookingId, { id: contract.id, deposit: contract.deposit });
     // Vermieterdaten einfrieren: Dokumente zeigen später den Briefkopf von heute, auch wenn sich die Stammdaten ändern
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { name: true, street: true, zip: true, city: true, phone: true, email: true, website: true, logoStorageKey: true, logoChecksum: true } });
     return tx.rentalContract.update({ where: { id: contract.id }, data: { status: "SIGNED", signedAt: new Date(), contentHash: hash, wizardStep: 7, landlordSnapshot: landlordFromTenant(tenant) } });

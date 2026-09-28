@@ -45,6 +45,9 @@ export type BusinessRules = {
   cleaningSpecialCents: number | null;
   // Schlüssel und Zubehör
   keysAccessoriesNote: string | null;
+  // Befehl 20.9: fahrzeugbezogener Ersatzpreis der Hutablage (Cent). null = kein Preis hinterlegt → Fehlen wird erkannt,
+  // aber kein Betrag vorgeschlagen. Nur Vorschlag im Rückgabeprozess, nie automatische Belastung (lib/accessories.ts).
+  parcelShelfReplacementCents: number | null;
   // Behörden: Bearbeitungsentgelt je beantworteter Behördenanfrage (standardmäßig aus); wird im Vertrag eingefroren und nach
   // der Übermittlung der Antwort nur als Rechnungsentwurf angelegt (lib/authority-fee.ts)
   authorityHandlingFeeEnabled: boolean;
@@ -81,6 +84,7 @@ export const DEFAULT_BUSINESS_RULES: BusinessRules = {
   cleaningPetHairCents: null,
   cleaningSpecialCents: null,
   keysAccessoriesNote: null,
+  parcelShelfReplacementCents: null,
   authorityHandlingFeeEnabled: false,
   authorityHandlingFeeCents: 0,
   trailerAllowed: false,
@@ -93,7 +97,7 @@ export type RuleKey = keyof BusinessRules;
 export const RULE_KEYS = Object.keys(DEFAULT_BUSINESS_RULES) as RuleKey[];
 
 /** Schlüssel, die Fahrzeuggruppe und Fahrzeug abweichend setzen dürfen. Alles andere gilt mandantenweit. */
-export const OVERRIDABLE_KEYS = ["deductibleCents", "kmPolicy", "fuelRule", "fuelMinimumEighths", "batteryMinimumPercent", "abroadAllowed", "abroadCountries", "smokingAllowed", "petsPolicy", "additionalDriversAllowed", "additionalDriverFeeType", "additionalDriverFeeCents", "trailerAllowed", "towingAllowed"] as const satisfies readonly RuleKey[];
+export const OVERRIDABLE_KEYS = ["deductibleCents", "kmPolicy", "fuelRule", "fuelMinimumEighths", "batteryMinimumPercent", "abroadAllowed", "abroadCountries", "smokingAllowed", "petsPolicy", "additionalDriversAllowed", "additionalDriverFeeType", "additionalDriverFeeCents", "trailerAllowed", "towingAllowed", "parcelShelfReplacementCents"] as const satisfies readonly RuleKey[];
 export type OverridableKey = (typeof OVERRIDABLE_KEYS)[number];
 export type RuleOverrides = Partial<Pick<BusinessRules, OverridableKey>>;
 
@@ -129,7 +133,7 @@ export function sanitizeRules(input: unknown, allowed: readonly RuleKey[] = RULE
     const v = src[key];
     if (v === undefined) continue;
     if (v === null) {
-      if (["depositCents", "deductibleCents", "fuelMinimumEighths", "batteryMinimumPercent", "lateReturnFeeCents", "cleaningHeavySoilingCents", "cleaningSmokingCents", "cleaningPetHairCents", "cleaningSpecialCents", ...TEXTS].includes(key)) { out[key] = null; continue; }
+      if (["depositCents", "deductibleCents", "fuelMinimumEighths", "batteryMinimumPercent", "lateReturnFeeCents", "cleaningHeavySoilingCents", "cleaningSmokingCents", "cleaningPetHairCents", "cleaningSpecialCents", "parcelShelfReplacementCents", ...TEXTS].includes(key)) { out[key] = null; continue; }
       throw new RuleError(`${key}: Wert fehlt.`);
     }
     if (key.endsWith("Cents")) {
@@ -234,7 +238,7 @@ export function labelOf(key: RuleKey): string {
     abroadAllowed: "Auslandsfahrten erlaubt", abroadCountries: "Freigegebene Länder", smokingAllowed: "Rauchen erlaubt", petsPolicy: "Tiere",
     lateReturnRule: "Verspätete Rückgabe", lateReturnFeeCents: "Richtwert verspätete Rückgabe", outOfHoursReturn: "Rückgabe außerhalb der Öffnungszeiten", outOfHoursInstructions: "Anweisung Rückgabe außerhalb der Öffnungszeiten",
     cleaningHeavySoilingCents: "Richtwert außergewöhnliche Verschmutzung", cleaningSmokingCents: "Richtwert Rauchen", cleaningPetHairCents: "Richtwert Tierhaare", cleaningSpecialCents: "Richtwert Sonderreinigung",
-    keysAccessoriesNote: "Hinweis Schlüssel und Zubehör", authorityHandlingFeeEnabled: "Bearbeitungsentgelt Behörden aktiv", authorityHandlingFeeCents: "Bearbeitungsentgelt Behörden",
+    keysAccessoriesNote: "Hinweis Schlüssel und Zubehör", parcelShelfReplacementCents: "Ersatzpreis Hutablage", authorityHandlingFeeEnabled: "Bearbeitungsentgelt Behörden aktiv", authorityHandlingFeeCents: "Bearbeitungsentgelt Behörden",
     trailerAllowed: "Anhängerbetrieb erlaubt", towingAllowed: "Abschleppen erlaubt", commercialPassengerTransportAllowed: "Gewerbliche Personenbeförderung erlaubt", specialUseNote: "Hinweis Sondernutzung",
   };
   return labels[key] ?? key;

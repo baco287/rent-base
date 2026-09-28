@@ -63,7 +63,8 @@ export async function getHandoverCompletionStatus(tenantId: string, handoverId: 
     if (type === "RETURN") {
       const cmp = await getReturnComparison(tenantId, handoverId);
       for (const p of cmp.proposals) {
-        if (!p.confirmed) all.push({ area: "CHARGES", code: `PROPOSAL_OPEN_${p.key}`, severity: "warning", message: `Zusatzkosten-Vorschlag „${p.draft.description}“ (${p.draft.formula}) ist weder bestätigt noch verworfen. Ohne Bestätigung wird er nicht berechnet.` });
+        // Befehl 20.9: bewusst „Nicht berechnen“ entschiedene Vorschläge sind erledigt, kein Hinweis mehr
+        if (!p.confirmed && !p.dismissed) all.push({ area: "CHARGES", code: `PROPOSAL_OPEN_${p.key}`, severity: "warning", message: `Zusatzkosten-Vorschlag „${p.draft.description}“ (${p.draft.formula}) ist weder bestätigt noch verworfen. Ohne Bestätigung wird er nicht berechnet.` });
       }
     }
   }

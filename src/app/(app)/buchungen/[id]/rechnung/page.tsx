@@ -14,6 +14,7 @@ import { Card, Chip, Content, PageHeader, Plate } from "@/components/ui";
 import { DocumentsPanel } from "../dokumente/documents-panel";
 import { FollowUpNotice } from "../dokumente/follow-up-notice";
 import { PaymentsPanel, PaymentStatusChip } from "../finanzen/panels";
+import { DepositSettlementCard } from "../finanzen/deposit-settlement-card";
 import { createInvoiceAction, discardInvoiceDraftAction, finalizeInvoiceAction, markDeliveredAction, saveInvoiceDraftAction, startInvoiceEditAction } from "./actions";
 import { InvoiceEditor, type EditableItem } from "./invoice-editor";
 import { InvoiceDocumentView, InvoiceIssueList } from "./invoice-parts";
@@ -168,6 +169,8 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
             </Card>
           )}
           {draft.versionNo > 1 && <p className="text-xs text-ink-3">Dieser Entwurf startet aus dem Snapshot der Fassung {draft.versionNo - 1}, nicht aus aktuellen Kunden-, Vertrags- oder Einstellungsdaten. Änderungen wirken nur auf diese Rechnung.</p>}
+          {/* Befehl 20.9: finanzielle Gesamtsituation (Forderung + Kaution) vor dem Abschluss – Verrechnung erst danach, bewusst */}
+          <DepositSettlementCard tenantId={tenant.id} bookingId={b.id} role={user.role} invoice={{ id: inv.id, number: inv.number, status: "DRAFT", grossCents: newGross, prepaidCents: draft.versionNo === 1 ? prepaidCents : mode?.paidCents ?? 0 }} />
           <InvoiceEditor
             version={draft.updatedAt.getTime()}
             versionNo={draft.versionNo}
@@ -280,6 +283,7 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
 
         {shown.id === current.id && <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} invoiceId={inv.id} />}
         {shown.id === current.id && <PaymentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} invoiceId={inv.id} />}
+        {shown.id === current.id && <DepositSettlementCard tenantId={tenant.id} bookingId={b.id} role={user.role} invoice={{ id: inv.id, number: inv.number, status: "FINALIZED", grossCents: finance.effectiveCents, prepaidCents: pay.paidCents }} />}
         {shown.id === current.id && (finance.refundRequired || finance.completedRefundCents > 0) && <PayoutPanel tenantId={tenant.id} role={user.role} sourceRef={{ sourceType: "INVOICE_REFUND", invoiceId: inv.id }} bookingId={b.id} />}
         <InvoiceDocumentView doc={doc} />
         {shown.diffFromPrevious && <DiffCard diff={shown.diffFromPrevious as unknown as VersionDiff} />}

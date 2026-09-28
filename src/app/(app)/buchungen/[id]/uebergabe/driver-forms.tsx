@@ -168,6 +168,36 @@ export function StartDriverVerificationButton({ action, label }: { action: Actio
   );
 }
 
+/**
+ * Befehl 20.9: Schnellbestätigung eines bereits vollständig geprüften Fahrers. Jeder Punkt muss bewusst bestätigt werden;
+ * der Server prüft Ablauf, Klasse und Datenkonsistenz erneut und legt einen eigenen Prüfvermerk für diese Übergabe an.
+ */
+export function RepeatVerificationForm({ action }: { action: Action }) {
+  const [state, formAction, pending] = useActionState(action, undefined);
+  const items: [string, string][] = [
+    ["originalsPresented", "Identität anhand des Originaldokuments geprüft"],
+    ["identityChecked", "Name und Geburtsdatum stimmen mit dem Fahrer überein"],
+    ["licensePresented", "Führerschein im Original vorgelegt"],
+    ["dataUnchanged", "Gespeicherte Daten (Nummer, Klassen, Gültigkeit) sind unverändert"],
+    ["classSufficient", "Erforderliche Fahrerlaubnisklasse für dieses Fahrzeug vorhanden"],
+    ["documentsValid", "Ausweis und Führerschein sind weiterhin gültig"],
+  ];
+  return (
+    <form action={formAction} className="flex flex-col gap-2.5">
+      <fieldset disabled={pending} className="flex flex-col gap-2">
+        {items.map(([name, label]) => (
+          <label key={name} className="flex items-center gap-2.5 rounded-md border border-line bg-panel-2 px-3 py-2.5 cursor-pointer">
+            <input type="checkbox" name={name} value="1" required className="size-5 shrink-0" />
+            <span className="text-sm">{label}</span>
+          </label>
+        ))}
+        <Feedback state={state} />
+        <button type="submit" className="btn btn-primary !py-3 w-full justify-center">{pending ? "Wird dokumentiert…" : "Originale vorgelegt & Angaben unverändert – für diese Übergabe bestätigen"}</button>
+      </fieldset>
+    </form>
+  );
+}
+
 export function ConfirmDriverButton({ action, disabled, blockers }: { action: Action; disabled: boolean; blockers: string[] }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   return (

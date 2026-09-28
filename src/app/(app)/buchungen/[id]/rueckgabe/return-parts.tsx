@@ -6,7 +6,7 @@
 import { useState, useTransition } from "react";
 import { CHARGE_UNITS, EXTRA_CHARGE_TYPES } from "@/lib/constants";
 import type { DocDamage, HandoverDocument } from "@/lib/handover-view";
-import type { ChargeRow, Proposal, ReturnHint } from "@/lib/returns";
+import type { ChargeRow, Proposal, ProposalKey, ReturnHint } from "@/lib/returns";
 import { DamageMap, MarkerIcon, type DamageActions } from "../uebergabe/damage-map";
 import { PhotoUploader } from "../uebergabe/photo-uploader";
 
@@ -78,7 +78,9 @@ export function ComparePhotos({ categories, pickupPhotos, returnPhotos, handover
 const eur = (n: number) => n.toLocaleString("de-DE", { style: "currency", currency: "EUR" });
 
 export type ChargeActions = {
-  confirm: (key: "EXTRA_MILEAGE" | "FUEL") => Promise<Result>;
+  confirm: (key: ProposalKey) => Promise<Result>;
+  /** Befehl 20.9: „Nicht berechnen“ (undo = wieder öffnen) */
+  dismiss: (key: ProposalKey, undo: boolean) => Promise<Result>;
   add: (payload: unknown) => Promise<Result>;
   remove: (chargeId: string) => Promise<Result>;
 };
@@ -99,25 +101,34 @@ export function ChargesEditor({ proposals, hints, charges, total, deposit, newDa
         <div className="card">
           <div className="px-4 py-2.5 border-b border-line-soft font-semibold text-sm">Vorschläge aus dem Vergleich</div>
           <ul className="divide-y divide-line-soft">
-            {proposals.map((p) => (
-              <li key={p.key} className="px-4 py-3 flex flex-col gap-1.5">
+            {proposals.map((p) => {
+              const accessory = p.key.startsWith("ACCESSORY_");
+              return (
+              <li key={p.key} className={`px-4 py-3 flex flex-col gap-1.5 ${p.dismissed ? "opacity-70" : ""}`}>
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <span className="font-medium">{EXTRA_CHARGE_TYPES[p.draft.type]}</span>
+                  <span className="font-medium">{accessory ? "Fehlendes Zubehör erkannt" : EXTRA_CHARGE_TYPES[p.draft.type]}</span>
                   <span className="text-sm text-ink-2">{p.draft.description}</span>
                   <span className="flex-1" />
                   <span className="font-mono tnum font-semibold">{eur(p.draft.amount)}</span>
                 </div>
-                <div className="text-xs text-ink-3 font-mono tnum">{p.draft.formula}</div>
+                {p.facts && p.facts.length > 0 && (
+                  <ul className="text-xs text-ink-2 flex flex-wrap gap-x-3 gap-y-0.5">{p.facts.map((f) => <li key={f}>· {f}</li>)}</ul>
+                )}
+                <div className="text-xs text-ink-3 font-mono tnum">{accessory ? `Vorgeschlagener Betrag: ${eur(p.draft.amount)}` : p.draft.formula}</div>
                 {p.confirmed ? (
-                  <div className="flex items-center gap-2"><span className="chip bg-good-soft text-good">Bestätigt</span><span className="text-xs text-ink-3">steht unten in den Positionen</span></div>
+                  <div className="flex items-center gap-2"><span className="chip bg-good-soft text-good">Übernommen</span><span className="text-xs text-ink-3">steht unten in den Positionen</span></div>
+                ) : p.dismissed ? (
+                  <div className="flex flex-wrap items-center gap-2"><span className="chip bg-panel-2 text-ink-2">Nicht berechnet</span><span className="text-xs text-ink-3">bewusst entschieden, keine Position</span><button type="button" disabled={busy} className="text-xs underline text-ink-3" onClick={() => run(() => actions.dismiss(p.key, true))}>Doch prüfen</button></div>
                 ) : (
                   <div className="flex flex-wrap items-center gap-2">
-                    <button type="button" disabled={busy} className="btn btn-primary" onClick={() => run(() => actions.confirm(p.key))}>Als Position übernehmen</button>
-                    <span className="text-xs text-ink-3">Nur ein Vorschlag. Ohne Bestätigung wird nichts berechnet.</span>
+                    <button type="button" disabled={busy} className="btn btn-primary" onClick={() => run(() => actions.confirm(p.key))}>Übernehmen</button>
+                    <button type="button" disabled={busy} className="btn" onClick={() => run(() => actions.dismiss(p.key, false))}>Nicht berechnen</button>
+                    <span className="text-xs text-ink-3">Nur ein Vorschlag. Ohne „Übernehmen“ wird nichts berechnet.</span>
                   </div>
                 )}
               </li>
-            ))}
+              );
+            })}
             {hints.map((h) => <li key={h.code} className="px-4 py-2.5 text-sm text-ink-2 bg-amber-soft/40">{h.text}</li>)}
           </ul>
         </div>

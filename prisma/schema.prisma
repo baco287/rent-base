@@ -725,6 +725,8 @@ model Handover {
   returnTimeOverrideReason String?
   returnTimeOverrideById   String?
   returnTimeOverrideByName String?
+  // Befehl 20.9: bewusst verworfene Kostenvorschläge der Rückgabe („Nicht berechnen“); keine Position, kein Hash-Bestandteil
+  dismissedProposals       String[]  @default([])
 
   startedAt   DateTime  @default(now())
   finalizedAt DateTime?
@@ -2001,6 +2003,10 @@ model DriverVerification {
   customerId       String? // nur Referenz (Kundenakte); maßgeblich sind die Snapshots
   version          Int     @default(1) // Korrektur = neue Fassung, die alte bleibt (supersededById)
   supersededById   String?
+  // Befehl 20.9: FULL = vollständige Originalprüfung, REPEAT = dokumentierte Wiederholungs-/Sichtprüfung auf Grundlage
+  // eines früheren, vollständig bestätigten Prüfvermerks (basedOnVerificationId). Alte Vermerke werden nie überschrieben.
+  checkKind             String  @default("FULL")
+  basedOnVerificationId String?
 
   driverRole              String // PRIMARY_DRIVER | ADDITIONAL_DRIVER (aus dem Vertrag)
   driverFirstNameSnapshot String
@@ -2056,11 +2062,14 @@ model DriverVerification {
   contractDriver ContractDriver       @relation(fields: [contractDriverId], references: [id])
   customer       Customer?            @relation(fields: [customerId], references: [id], onDelete: SetNull)
   documentCopies DriverDocumentCopy[]
+  basedOn        DriverVerification?  @relation("RepeatVerification", fields: [basedOnVerificationId], references: [id], onDelete: SetNull)
+  repeats        DriverVerification[] @relation("RepeatVerification")
 
   @@unique([tenantId, handoverId, contractDriverId, version])
   @@index([tenantId, handoverId])
   @@index([tenantId, customerId, verifiedAt])
   @@index([tenantId, bookingId])
+  @@index([tenantId, basedOnVerificationId])
 }
 
 model DriverDocumentCopy {

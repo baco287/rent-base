@@ -112,23 +112,39 @@ export function PaymentForm({ action, preview, targetId, targetField = "invoiceI
 // Storno mit Pflichtgrund (Zahlung oder Kautionsbewegung)
 // ---------------------------------------------------------------------------
 
-export function ReasonForm({ action, id, label, question }: { action: Action; id: string; label: string; question: string }) {
+/**
+ * variant "link": dezenter Textlink mit Inline-Formular (Kautionsbewegungen).
+ * variant "button" (Befehl 20.9, Zahlungen): klar erkennbare, destruktiv gekennzeichnete Aktion mit zwingendem
+ * Bestätigungsdialog. Es wird nichts gelöscht – die bestehende Stornologik kennzeichnet den Eintrag als storniert.
+ */
+export function ReasonForm({ action, id, label, question, variant = "link", explanation, confirmLabel }: { action: Action; id: string; label: string; question: string; variant?: "link" | "button"; explanation?: string; confirmLabel?: string }) {
   const { state, formAction, pending, done } = useMoneyAction(action);
   const [open, setOpen] = useState(false);
   if (done) return <Feedback state={state} />;
-  if (!open) return <button type="button" className="text-xs underline text-ink-3 hover:text-bad" onClick={() => setOpen(true)}>{label}</button>;
-  return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2 rounded-md bg-bad-soft/40 border border-bad/30 p-3 text-sm">
+  if (!open) {
+    if (variant === "button") return <div><button type="button" className="btn !py-1.5 !text-bad !border-bad/40 hover:!bg-bad-soft" onClick={() => setOpen(true)}>{label}</button></div>;
+    return <button type="button" className="text-xs underline text-ink-3 hover:text-bad" onClick={() => setOpen(true)}>{label}</button>;
+  }
+  const form = (
+    <form onSubmit={submitWithoutReset(formAction)} className={`flex flex-col gap-3 text-sm ${variant === "button" ? "" : "rounded-md bg-bad-soft/40 border border-bad/30 p-3"}`}>
       <input type="hidden" name="id" value={id} />
-      <div className="font-medium">{question}</div>
-      <label className="flex flex-col gap-1"><span className="label-xs">Grund der Korrektur (Pflicht)</span><input name="reason" required minLength={3} maxLength={500} className="input" placeholder="z. B. Betrag falsch eingegeben" /></label>
-      <p className="text-xs text-ink-3">Der Eintrag bleibt sichtbar und wird als storniert gekennzeichnet. Summen werden neu berechnet.</p>
-      <div className="flex flex-wrap gap-2">
-        <button type="submit" disabled={pending} className="btn btn-danger">{pending ? "Wird storniert…" : "Stornieren"}</button>
+      <div className={variant === "button" ? "text-base font-semibold" : "font-medium"}>{question}</div>
+      <p className="text-xs text-ink-2">{explanation ?? "Der Eintrag bleibt sichtbar und wird als storniert gekennzeichnet. Summen werden neu berechnet."}</p>
+      <label className="flex flex-col gap-1"><span className="label-xs">Grund der Korrektur (Pflicht)</span><input name="reason" required minLength={3} maxLength={500} className="input" placeholder="z. B. Betrag falsch eingegeben" autoFocus={variant === "button"} /></label>
+      <div className="flex flex-wrap gap-2 justify-end">
         <button type="button" className="btn" onClick={() => setOpen(false)}>Abbrechen</button>
+        <button type="submit" disabled={pending} className="btn btn-danger">{pending ? "Wird storniert…" : confirmLabel ?? "Stornieren"}</button>
       </div>
       <Feedback state={state} />
     </form>
+  );
+  if (variant !== "button") return form;
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4" role="presentation" onClick={(e) => { if (e.target === e.currentTarget && !pending) setOpen(false); }}>
+      <div role="dialog" aria-modal="true" aria-label={question} className="w-full sm:max-w-md rounded-t-2xl sm:rounded-xl bg-panel border border-line shadow-xl p-4 sm:p-5">
+        {form}
+      </div>
+    </div>
   );
 }
 
@@ -185,7 +201,7 @@ export function DepositReceiveForm({ action, nonce, defaultAmount, defaultWhen }
 // Befehl 20.7: Kaution mit einer offenen Forderung verrechnen (kein Geldeingang, ausdrückliche Bestätigung)
 // ---------------------------------------------------------------------------
 
-export function DepositOffsetForm({ action, preview, bookingId, nonce, invoices, availableCents, defaultWhen }: { action: Action; preview: (bookingId: string, invoiceId: string, amount: string) => Promise<DepositOffsetPreview | { error: string }>; bookingId: string; nonce: string; invoices: OffsetInvoiceOption[]; availableCents: number; defaultWhen: string }) {
+export function DepositOffsetForm({ action, preview, bookingId, nonce, invoices, availableCents, defaultWhen, buttonLabel }: { action: Action; preview: (bookingId: string, invoiceId: string, amount: string) => Promise<DepositOffsetPreview | { error: string }>; bookingId: string; nonce: string; invoices: OffsetInvoiceOption[]; availableCents: number; defaultWhen: string; buttonLabel?: string }) {
   const { state, formAction, pending, done } = useMoneyAction(action);
   const [open, setOpen] = useState(false);
   const [invoiceId, setInvoiceId] = useState(invoices[0]?.id ?? "");
@@ -196,7 +212,7 @@ export function DepositOffsetForm({ action, preview, bookingId, nonce, invoices,
   const suggested = invoice ? Math.max(0, Math.min(invoice.openCents, availableCents)) : 0;
   const eur = (c: number) => (c / 100).toFixed(2).replace(".", ",");
   if (done) return <Feedback state={state} />;
-  if (!open) return <div><button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>Aus Kaution verrechnen</button></div>;
+  if (!open) return <div><button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>{buttonLabel ?? "Aus Kaution verrechnen"}</button></div>;
   const check = () => {
     if (!form || !form.reportValidity()) return;
     const fd = new FormData(form);
@@ -260,7 +276,7 @@ export function DepositOffsetForm({ action, preview, bookingId, nonce, invoices,
 // Kaution freigeben / teilweise freigeben / einbehalten
 // ---------------------------------------------------------------------------
 
-export function DepositSettleForm({ action, preview, bookingId, nonce, remainingCents, defaultWhen }: { action: Action; preview: (bookingId: string, releaseAmount: string) => Promise<SettlePreview | { error: string }>; bookingId: string; nonce: string; remainingCents: number; defaultWhen: string }) {
+export function DepositSettleForm({ action, preview, bookingId, nonce, remainingCents, defaultWhen, releaseLabel }: { action: Action; preview: (bookingId: string, releaseAmount: string) => Promise<SettlePreview | { error: string }>; bookingId: string; nonce: string; remainingCents: number; defaultWhen: string; releaseLabel?: string }) {
   const { state, formAction, pending, done } = useMoneyAction(action);
   const [mode, setMode] = useState<"RELEASE" | "PARTIAL" | "RETAIN" | null>(null);
   const [pv, setPv] = useState<SettlePreview | { error: string } | null>(null);
@@ -271,7 +287,7 @@ export function DepositSettleForm({ action, preview, bookingId, nonce, remaining
   if (!mode) {
     return (
       <div className="flex flex-wrap gap-2">
-        <button type="button" className="btn btn-primary" onClick={() => setMode("RELEASE")}>Kaution vollständig freigeben</button>
+        <button type="button" className="btn btn-primary" onClick={() => setMode("RELEASE")}>{releaseLabel ?? "Kaution vollständig freigeben"}</button>
         <button type="button" className="btn" onClick={() => setMode("PARTIAL")}>Kaution teilweise freigeben</button>
         <button type="button" className="btn" onClick={() => setMode("RETAIN")}>Kaution einbehalten</button>
       </div>

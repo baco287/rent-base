@@ -13,6 +13,7 @@ import {
   confirmVerification,
   recordIdentityCheck,
   recordLicenseCheck,
+  repeatVerification,
   startOrGetVerification,
   updateCustomerLicenseFromVerification,
   type IdentityCheckInput,
@@ -120,6 +121,21 @@ export async function saveLicenseCheckAction(bookingId: string, verificationId: 
     await recordLicenseCheck(tenant.id, { id: user.id, name: user.name }, verificationId, input);
     refresh(bookingId);
     return { ok: "Führerschein gespeichert." };
+  } catch (e) {
+    return asState(e);
+  }
+}
+
+const yes = (v: FormDataEntryValue | null) => v === "1" || v === "on";
+
+/** Befehl 20.9: Wiederholungsprüfung eines bekannten Fahrers – alle Bestätigungen sind Pflicht, der Server prüft die Regeln erneut. */
+export async function repeatDriverVerificationAction(bookingId: string, handoverId: string, contractDriverId: string, _prev: DriverState, formData: FormData): Promise<DriverState> {
+  const { tenant, user } = await requireRole("DISPO", "YARD");
+  const confirmations = { originalsPresented: yes(formData.get("originalsPresented")), identityChecked: yes(formData.get("identityChecked")), licensePresented: yes(formData.get("licensePresented")), dataUnchanged: yes(formData.get("dataUnchanged")), classSufficient: yes(formData.get("classSufficient")), documentsValid: yes(formData.get("documentsValid")) };
+  try {
+    const row = await repeatVerification(tenant.id, { id: user.id, name: user.name }, handoverId, contractDriverId, confirmations);
+    refresh(bookingId);
+    return { ok: `Wiederholungsprüfung von ${row.driverFirstNameSnapshot} ${row.driverLastNameSnapshot} für diese Übergabe dokumentiert.` };
   } catch (e) {
     return asState(e);
   }

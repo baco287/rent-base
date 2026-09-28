@@ -18,6 +18,8 @@ import { PayoutPanel } from "../../../auszahlungen/payout-panel";
 
 // Befehl 20.7: eine Kautionsverrechnung ist keine Bar-/Bankzahlung – eigene Bezeichnung in jeder Historie
 const methodLabel = (m: string | null) => (m ? (m === DEPOSIT_OFFSET_METHOD ? DEPOSIT_OFFSET_LABEL : PAYMENT_METHODS[m as PaymentMethod] ?? m) : "–");
+// Befehl 20.9: Storno-Dialog sagt, was tatsächlich passiert (bestehende Stornologik: kennzeichnen, nicht löschen)
+const CANCEL_PAYMENT_EXPLANATION = "Die Zahlung wird nicht gelöscht. Sie bleibt in der Historie sichtbar, wird als storniert gekennzeichnet und der offene Betrag wird entsprechend neu berechnet.";
 
 export function PaymentStatusChip({ status }: { status: PaymentSummary["status"] }) {
   const tone = status === "PAID" ? "good" : status === "PARTIAL" ? "amber" : "bad";
@@ -86,8 +88,8 @@ export async function PaymentsPanel({ tenantId, bookingId, role, compact = false
                   {p.note && <span>· {p.note}</span>}
                 </div>
                 {p.status === "CANCELLED" && <div className="text-xs text-bad">Storniert am {fmtDateTime(p.cancelledAt)} von {p.cancelledByName ?? "–"}: {p.cancellationReason}</div>}
-                {p.status === "CONFIRMED" && canManage && p.type !== "DEPOSIT_OFFSET" && <ReasonForm action={cancelPaymentAction.bind(null, bookingId)} id={p.id} label="Zahlung stornieren" question={`Zahlung über ${fmtCents(p.amountCents)} (${methodLabel(p.method)}) stornieren?`} />}
-                {p.status === "CONFIRMED" && canManage && p.type === "DEPOSIT_OFFSET" && <ReasonForm action={cancelDepositOffsetAction.bind(null, bookingId)} id={p.id} label="Verrechnung stornieren" question={`Kautionsverrechnung über ${fmtCents(p.amountCents)} stornieren? Die Forderung ist danach wieder offen, die Kaution wieder verfügbar.`} />}
+                {p.status === "CONFIRMED" && canManage && p.type !== "DEPOSIT_OFFSET" && <ReasonForm variant="button" action={cancelPaymentAction.bind(null, bookingId)} id={p.id} label="Zahlung stornieren" confirmLabel="Zahlung stornieren" question={`Zahlung über ${fmtCents(p.amountCents)} wirklich stornieren?`} explanation={CANCEL_PAYMENT_EXPLANATION} />}
+                {p.status === "CONFIRMED" && canManage && p.type === "DEPOSIT_OFFSET" && <ReasonForm variant="button" action={cancelDepositOffsetAction.bind(null, bookingId)} id={p.id} label="Verrechnung stornieren" confirmLabel="Verrechnung stornieren" question={`Kautionsverrechnung über ${fmtCents(p.amountCents)} wirklich stornieren?`} explanation="Die Verrechnung wird nicht gelöscht, sondern als storniert gekennzeichnet. Die Forderung ist danach wieder offen, die Kaution wieder verfügbar." />}
               </li>
             ))}
           </ul>
@@ -152,7 +154,7 @@ export async function RentalPaymentsPanel({ tenantId, bookingId, role }: { tenan
                   {p.note && <span>· {p.note}</span>}
                 </div>
                 {p.status === "CANCELLED" && <div className="text-xs text-bad">Storniert am {fmtDateTime(p.cancelledAt)} von {p.cancelledByName ?? "–"}: {p.cancellationReason}</div>}
-                {p.status === "CONFIRMED" && canManage && <ReasonForm action={cancelPaymentAction.bind(null, bookingId)} id={p.id} label="Zahlung stornieren" question={`Mietzahlung über ${fmtCents(p.amountCents)} (${methodLabel(p.method)}) stornieren?`} />}
+                {p.status === "CONFIRMED" && canManage && <ReasonForm variant="button" action={cancelPaymentAction.bind(null, bookingId)} id={p.id} label="Zahlung stornieren" confirmLabel="Zahlung stornieren" question={`Zahlung über ${fmtCents(p.amountCents)} wirklich stornieren?`} explanation={CANCEL_PAYMENT_EXPLANATION} />}
               </li>
             ))}
           </ul>
@@ -168,10 +170,11 @@ const depositTone = (status: string) => (status === "RELEASED" ? "good" : status
 export async function DepositPanel({ tenantId, bookingId, role, charges }: { tenantId: string; bookingId: string; role: string; charges?: { count: number; total: number } | null }) {
   const v = await depositView(tenantId, bookingId);
   const canDecide = role !== "YARD";
-  if (!v.contractSigned) {
+  // Befehl 20.9: Ohne Vertrag gibt es eine Kautionszeile nur, wenn der Eingang schon bei der Buchungsanlage dokumentiert wurde
+  if (!v.contractSigned && !v.deposit) {
     return (
       <Card title="Kaution">
-        <div className="p-4 text-sm text-ink-3">Die vereinbarte Kaution ergibt sich aus dem abgeschlossenen Mietvertrag.</div>
+        <div className="p-4 text-sm text-ink-3">Die vereinbarte Kaution ergibt sich aus dem abgeschlossenen Mietvertrag. Ein bereits erhaltener Betrag kann bei der Anlage der Buchung dokumentiert werden.</div>
       </Card>
     );
   }
@@ -186,7 +189,7 @@ export async function DepositPanel({ tenantId, bookingId, role, charges }: { ten
     <Card title="Kaution" right={<Chip tone={depositTone(v.status)}>{DEPOSIT_STATUS[v.status]}</Chip>}>
       <div className="p-4 flex flex-col gap-4">
         <div className={`grid grid-cols-2 ${v.offsetCents > 0 ? "sm:grid-cols-5" : "sm:grid-cols-4"} gap-2 text-sm`}>
-          <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Vereinbart</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(v.expectedCents)}</div><div className="text-[11px] text-ink-3">laut {v.contractNumber}</div></div>
+          <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Vereinbart</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(v.expectedCents)}</div><div className="text-[11px] text-ink-3">laut {v.contractSigned && v.contractNumber ? v.contractNumber : "Buchung (Vertrag folgt)"}</div></div>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Erhalten</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(v.receivedCents)}</div></div>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Freigegeben</div><div className="font-mono tnum text-lg font-semibold text-good">{fmtCents(v.releasedCents)}</div></div>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Einbehalten</div><div className="font-mono tnum text-lg font-semibold text-bad">{fmtCents(v.retainedCents)}</div></div>
