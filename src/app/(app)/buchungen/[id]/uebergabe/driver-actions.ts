@@ -10,12 +10,14 @@ import { requireRole } from "@/lib/auth";
 import { DomainError, isImmutableError } from "@/lib/integrity";
 import { parseLocalDateTime } from "@/lib/time";
 import {
+  DRIVER_BLOCKER_LABELS,
   confirmVerification,
   recordIdentityCheck,
   recordLicenseCheck,
   repeatVerification,
   startOrGetVerification,
   updateCustomerLicenseFromVerification,
+  verifyDriverInOneStep,
   type IdentityCheckInput,
   type LicenseCheckInput,
 } from "@/lib/driver-verification";
@@ -126,16 +128,60 @@ export async function saveLicenseCheckAction(bookingId: string, verificationId: 
   }
 }
 
-const yes = (v: FormDataEntryValue | null) => v === "1" || v === "on";
-
-/** Befehl 20.9: Wiederholungsprüfung eines bekannten Fahrers – alle Bestätigungen sind Pflicht, der Server prüft die Regeln erneut. */
-export async function repeatDriverVerificationAction(bookingId: string, handoverId: string, contractDriverId: string, _prev: DriverState, formData: FormData): Promise<DriverState> {
+/**
+ * Befehl 20.9/21: Wiederholungsprüfung eines bekannten Fahrers. Der Knopf selbst ist die ausdrückliche Bestätigung aller
+ * Punkte (Originale vorgelegt, Identität geprüft, Daten unverändert, Klasse vorhanden, Dokumente gültig) durch den
+ * angemeldeten Mitarbeiter; der Server prüft die Regeln erneut und legt einen eigenen Prüfvermerk für diese Übergabe an.
+ */
+export async function repeatDriverVerificationAction(bookingId: string, handoverId: string, contractDriverId: string, _prev: DriverState, _formData: FormData): Promise<DriverState> {
+  void _formData;
   const { tenant, user } = await requireRole("DISPO", "YARD");
-  const confirmations = { originalsPresented: yes(formData.get("originalsPresented")), identityChecked: yes(formData.get("identityChecked")), licensePresented: yes(formData.get("licensePresented")), dataUnchanged: yes(formData.get("dataUnchanged")), classSufficient: yes(formData.get("classSufficient")), documentsValid: yes(formData.get("documentsValid")) };
+  const confirmations = { originalsPresented: true, identityChecked: true, licensePresented: true, dataUnchanged: true, classSufficient: true, documentsValid: true };
   try {
     const row = await repeatVerification(tenant.id, { id: user.id, name: user.name }, handoverId, contractDriverId, confirmations);
     refresh(bookingId);
     return { ok: `Wiederholungsprüfung von ${row.driverFirstNameSnapshot} ${row.driverLastNameSnapshot} für diese Übergabe dokumentiert.` };
+  } catch (e) {
+    return asState(e);
+  }
+}
+
+const oneStepSchema = z.object({
+  documentType: z.enum(["PERSONALAUSWEIS", "REISEPASS", "SONSTIGER_AMTLICHER_LICHTBILDAUSWEIS"], { message: "Bitte die Dokumentart wählen." }),
+  licenseNumber: z.string().trim().min(1, "Bitte die Führerscheinnummer eingeben."),
+  licenseCountry: z.string().trim().min(2, "Bitte das Ausstellungsland wählen."),
+  licenseIssuedAt: z.string().optional(),
+  licenseValidUntil: z.string().optional(),
+  internationalPermitPresented: z.preprocess((v) => v === "1" || v === "on" || v === true, z.boolean()).optional(),
+  translationPresented: z.preprocess((v) => v === "1" || v === "on" || v === true, z.boolean()).optional(),
+  manualReviewConfirmed: z.preprocess((v) => v === "1" || v === "on" || v === true, z.boolean()).optional(),
+  deviationConfirmed: z.preprocess((v) => v === "1" || v === "on" || v === true, z.boolean()).optional(),
+  notes: z.string().trim().max(1000).optional(),
+});
+
+/**
+ * Befehl 21: Fahrerprüfung in einem Vorgang. Mit dem Knopf bestätigt der angemeldete Mitarbeiter, dass Ausweis und
+ * Führerschein im Original vorgelegt und geprüft wurden; der Server speichert Identität, Führerschein und Bestätigung und
+ * prüft Klasse, Ablauf und Abweichungen. Bei einem Regelverstoß wird nicht bestätigt, die Gründe werden genannt.
+ */
+export async function verifyDriverAction(bookingId: string, handoverId: string, contractDriverId: string, _prev: DriverState, formData: FormData): Promise<DriverState> {
+  const { tenant, user } = await requireRole("DISPO", "YARD");
+  const parsed = oneStepSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const classes = formData.getAll("licenseClasses").map(String);
+  if (classes.length === 0) return { error: "Bitte mindestens eine Fahrerlaubnisklasse auswählen." };
+  const d = parsed.data;
+  try {
+    const res = await verifyDriverInOneStep(tenant.id, { id: user.id, name: user.name }, handoverId, contractDriverId, {
+      documentType: d.documentType, licenseNumber: d.licenseNumber, licenseCountry: d.licenseCountry,
+      licenseIssuedAt: d.licenseIssuedAt ? parseLocalDateTime(`${d.licenseIssuedAt}T00:00`) : null,
+      licenseValidUntil: d.licenseValidUntil ? parseLocalDateTime(`${d.licenseValidUntil}T00:00`) : null,
+      licenseClasses: classes, internationalPermitPresented: !!d.internationalPermitPresented, translationPresented: !!d.translationPresented,
+      manualReviewConfirmed: !!d.manualReviewConfirmed, deviationConfirmed: !!d.deviationConfirmed, notes: d.notes || null,
+    });
+    refresh(bookingId);
+    if (!res.confirmed) return { error: `Die Prüfung kann nicht bestätigt werden: ${res.blockers.map((b) => DRIVER_BLOCKER_LABELS[b] ?? b).join(" ")}` };
+    return { ok: `Prüfung von ${res.row.driverFirstNameSnapshot} ${res.row.driverLastNameSnapshot} bestätigt.` };
   } catch (e) {
     return asState(e);
   }

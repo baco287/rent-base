@@ -50,7 +50,12 @@ export function legendFor(type: "PICKUP" | "RETURN"): { symbol: DamageSymbol; te
  * activeView/onViewChange (Befehl 20.7): die gewählte Fahrzeugansicht kann von außen geführt werden, damit der Vergleich
  * „Übergabe vorher / Rückgabe jetzt“ auf beiden Skizzen dieselbe Ansicht zeigt.
  */
-export function DamageMap({ sketch, damages, handoverId, editable, actions, pickup, type, title, activeView, onViewChange }: { sketch: SketchInfo | null; damages: DocDamage[]; handoverId: string; editable: boolean; actions?: DamageActions; pickup?: boolean; type?: "PICKUP" | "RETURN"; title?: string; activeView?: string; onViewChange?: (key: string) => void }) {
+/**
+ * compact (Befehl 21): Protokollansicht – Bereichswahl und Skizze bleiben in der Größe einer normalen Karte (höchstens
+ * 640 px breit), statt die ganze Seitenbreite zu füllen. Nur der Rahmen wird begrenzt: Skizze und Markierungen liegen im
+ * selben Koordinatensystem (viewBox, Positionen 0 bis 1) und skalieren gemeinsam, die Zuordnung bleibt exakt.
+ */
+export function DamageMap({ sketch, damages, handoverId, editable, actions, pickup, type, title, activeView, onViewChange, compact = false }: { sketch: SketchInfo | null; damages: DocDamage[]; handoverId: string; editable: boolean; actions?: DamageActions; pickup?: boolean; type?: "PICKUP" | "RETURN"; title?: string; activeView?: string; onViewChange?: (key: string) => void; compact?: boolean }) {
   const router = useRouter();
   const kind: "PICKUP" | "RETURN" = type ?? (pickup === false ? "RETURN" : "PICKUP");
   const views = sketch?.views ?? [];
@@ -129,7 +134,7 @@ export function DamageMap({ sketch, damages, handoverId, editable, actions, pick
     // Einspaltig (Befehl 20.8): Bereiche → große Skizze → Bearbeitung → Schäden der Ansicht → alle Schäden aufklappbar.
     // So bleibt die Skizze auch neben der Vergleichsskizze groß, und nichts wird seitlich zusammengedrückt.
     <div className="flex flex-col gap-3 min-w-0">
-      <div className="flex flex-col gap-2.5 min-w-0">
+      <div className={`flex flex-col gap-2.5 min-w-0 w-full ${compact ? "max-w-[640px]" : ""}`}>
         {title && <div className="font-semibold text-sm">{title}</div>}
         {/* Fahrzeugbereiche: Name + Anzahl, responsives Raster (3 Spalten, ab md 6), große Touch-Ziele, keine Kollisionen */}
         <div role="tablist" aria-label="Fahrzeugansicht" className="grid grid-cols-3 md:grid-cols-6 gap-1.5">

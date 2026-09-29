@@ -43,10 +43,8 @@ export function IdentityCheckForm({ action, defaultDocumentType, defaultNameMatc
             {Object.entries(IDENTITY_DOCUMENT_TYPES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
           </select>
         </div>
-        <label className="flex items-center gap-2.5 rounded-md border border-line bg-panel-2 px-3 py-3 cursor-pointer">
-          <input type="checkbox" name="originalSeen" value="1" required className="size-5" />
-          <span className="text-sm font-medium">Das Originaldokument wurde vorgelegt und geprüft.</span>
-        </label>
+        {/* Befehl 21: kein eigenes Häkchen mehr – das Speichern der Prüfung dokumentiert die Vorlage des Originals */}
+        <input type="hidden" name="originalSeen" value="1" />
         <div className="flex flex-col gap-1.5">
           <span className="label-xs">Name stimmt mit dem Fahrer überein</span>
           {radioRow("nameMatched", defaultNameMatched == null ? undefined : defaultNameMatched ? "1" : "0")}
@@ -67,28 +65,79 @@ export function IdentityCheckForm({ action, defaultDocumentType, defaultNameMatc
   );
 }
 
-export function LicenseCheckForm({ action, defaults, requiredClass, disabled }: {
-  action: Action;
-  defaults: {
-    documentValid?: boolean | null; nameMatched?: boolean | null; licenseNumber?: string; licenseCountry?: string;
-    licenseIssuedAt?: string; licenseValidUntil?: string; licenseClasses?: string[]; internationalPermitPresented?: boolean; translationPresented?: boolean; notes?: string | null;
-    manualReviewRequired?: boolean; deviatesFromCustomer?: boolean;
-  };
-  requiredClass: string | null;
-  disabled: boolean;
-}) {
-  const [state, formAction, pending] = useActionState(action, undefined);
+type LicenseDefaults = {
+  documentValid?: boolean | null; nameMatched?: boolean | null; licenseNumber?: string; licenseCountry?: string;
+  licenseIssuedAt?: string; licenseValidUntil?: string; licenseClasses?: string[]; internationalPermitPresented?: boolean; translationPresented?: boolean; notes?: string | null;
+  manualReviewRequired?: boolean; deviatesFromCustomer?: boolean;
+};
+
+const EU_EEA_CH = new Set(["DE", "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE", "IS", "LI", "NO", "CH"]);
+
+/** Führerscheindaten wie auf dem Dokument – gemeinsam für die Prüfung in einem Vorgang und den Ausnahmefall. */
+function LicenseDataFields({ defaults, requiredClass, idPrefix }: { defaults: LicenseDefaults; requiredClass: string | null; idPrefix: string }) {
   const [country, setCountry] = useState(defaults.licenseCountry ?? "DE");
   const foreign = country !== "DE";
-  const euEeaCh = new Set(["DE", "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE", "IS", "LI", "NO", "CH"]);
-  const needsTranslationOrIfs = foreign && !euEeaCh.has(country);
+  const needsTranslationOrIfs = foreign && !EU_EEA_CH.has(country);
+  return (
+    <>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={`${idPrefix}-licenseNumber`} className="label-xs">Führerscheinnummer</label>
+          <input id={`${idPrefix}-licenseNumber`} name="licenseNumber" defaultValue={defaults.licenseNumber ?? ""} required className="input font-mono" />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={`${idPrefix}-licenseCountry`} className="label-xs">Ausstellungsland</label>
+          <select id={`${idPrefix}-licenseCountry`} name="licenseCountry" value={country} onChange={(e) => setCountry(e.target.value)} className="input">
+            {Object.entries(COUNTRIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </select>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={`${idPrefix}-licenseIssuedAt`} className="label-xs">Ausstellungsdatum (soweit vorhanden)</label>
+          <input id={`${idPrefix}-licenseIssuedAt`} name="licenseIssuedAt" type="date" defaultValue={defaults.licenseIssuedAt ?? ""} className="input" />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={`${idPrefix}-licenseValidUntil`} className="label-xs">Gültig bis (soweit vorhanden)</label>
+          <input id={`${idPrefix}-licenseValidUntil`} name="licenseValidUntil" type="date" defaultValue={defaults.licenseValidUntil ?? ""} className="input" />
+        </div>
+      </div>
+      <fieldset className="flex flex-col gap-1.5">
+        <legend className="label-xs mb-1">Fahrerlaubnisklassen{requiredClass && <span className="normal-case font-normal"> · erforderlich für dieses Fahrzeug: <b>{requiredClass}</b></span>}</legend>
+        <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
+          {Object.keys(LICENSE_CLASSES).map((c) => (
+            <label key={c} className="cursor-pointer">
+              <input type="checkbox" name="licenseClasses" value={c} defaultChecked={defaults.licenseClasses?.includes(c)} className="peer sr-only" />
+              <span className="flex h-10 items-center justify-center rounded-md border border-line bg-panel text-xs font-semibold peer-checked:bg-brand peer-checked:text-brand-ink peer-checked:border-brand">{c}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+      {foreign && (
+        <div className="rounded-md bg-amber-soft px-3 py-2.5 flex flex-col gap-2">
+          <p className="text-xs text-amber">Rent-Base beurteilt nicht automatisch die rechtliche Gültigkeit ausländischer Fahrerlaubnisse. Ausstellungsstaat, Dokument, Klassen und Gültigkeit werden erfasst; die Freigabe ist eine bewusste manuelle Entscheidung.</p>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="internationalPermitPresented" value="1" defaultChecked={defaults.internationalPermitPresented} className="size-4" /> Internationaler Führerschein vorgelegt</label>
+          {needsTranslationOrIfs && <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="translationPresented" value="1" defaultChecked={defaults.translationPresented} className="size-4" /> Beglaubigte Übersetzung vorgelegt</label>}
+          {needsTranslationOrIfs && (
+            <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" name="manualReviewConfirmed" value="1" defaultChecked={false} className="size-4" /> Manuelle Prüfung durchgeführt und bewusst bestätigt</label>
+          )}
+        </div>
+      )}
+      {defaults.deviatesFromCustomer && (
+        <div className="rounded-md bg-amber-soft px-3 py-2.5 flex flex-col gap-2">
+          <p className="text-sm font-medium text-amber">Die vorgelegten Daten unterscheiden sich von den Kundendaten.</p>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="deviationConfirmed" value="1" defaultChecked={false} className="size-4" /> Für diese Übergabe bestätigen (Kundenstammdaten bleiben unverändert)</label>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Ausnahmefall (Befehl 21): Führerschein mit ausdrücklicher Angabe, ob Dokument gültig ist und der Name stimmt. */
+export function LicenseCheckForm({ action, defaults, requiredClass, disabled }: { action: Action; defaults: LicenseDefaults; requiredClass: string | null; disabled: boolean }) {
+  const [state, formAction, pending] = useActionState(action, undefined);
   return (
     <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
       <fieldset disabled={disabled || pending} className="flex flex-col gap-3">
-        <label className="flex items-center gap-2.5 rounded-md border border-line bg-panel-2 px-3 py-3 cursor-pointer">
-          <input type="checkbox" name="originalSeen" value="1" required className="size-5" />
-          <span className="text-sm font-medium">Der Original-Führerschein wurde vorgelegt und geprüft.</span>
-        </label>
+        <input type="hidden" name="originalSeen" value="1" />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div className="flex flex-col gap-1.5">
             <span className="label-xs">Dokument gültig</span>
@@ -99,60 +148,45 @@ export function LicenseCheckForm({ action, defaults, requiredClass, disabled }: 
             {radioRow("nameMatched", defaults.nameMatched == null ? undefined : defaults.nameMatched ? "1" : "0")}
           </div>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="licenseNumber" className="label-xs">Führerscheinnummer</label>
-            <input id="licenseNumber" name="licenseNumber" defaultValue={defaults.licenseNumber ?? ""} required className="input font-mono" />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="licenseCountry" className="label-xs">Ausstellungsland</label>
-            <select id="licenseCountry" name="licenseCountry" value={country} onChange={(e) => setCountry(e.target.value)} className="input">
-              {Object.entries(COUNTRIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-            </select>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="licenseIssuedAt" className="label-xs">Ausstellungsdatum (soweit vorhanden)</label>
-            <input id="licenseIssuedAt" name="licenseIssuedAt" type="date" defaultValue={defaults.licenseIssuedAt ?? ""} className="input" />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="licenseValidUntil" className="label-xs">Gültig bis (soweit vorhanden)</label>
-            <input id="licenseValidUntil" name="licenseValidUntil" type="date" defaultValue={defaults.licenseValidUntil ?? ""} className="input" />
-          </div>
-        </div>
-        <fieldset className="flex flex-col gap-1.5">
-          <legend className="label-xs mb-1">Fahrerlaubnisklassen{requiredClass && <span className="normal-case font-normal"> · erforderlich für dieses Fahrzeug: <b>{requiredClass}</b></span>}</legend>
-          <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
-            {Object.keys(LICENSE_CLASSES).map((c) => (
-              <label key={c} className="cursor-pointer">
-                <input type="checkbox" name="licenseClasses" value={c} defaultChecked={defaults.licenseClasses?.includes(c)} className="peer sr-only" />
-                <span className="flex h-10 items-center justify-center rounded-md border border-line bg-panel text-xs font-semibold peer-checked:bg-brand peer-checked:text-brand-ink peer-checked:border-brand">{c}</span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
-        {foreign && (
-          <div className="rounded-md bg-amber-soft px-3 py-2.5 flex flex-col gap-2">
-            <p className="text-xs text-amber">Rent-Base beurteilt nicht automatisch die rechtliche Gültigkeit ausländischer Fahrerlaubnisse. Ausstellungsstaat, Dokument, Klassen und Gültigkeit werden erfasst; die Freigabe ist eine bewusste manuelle Entscheidung.</p>
-            <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="internationalPermitPresented" value="1" defaultChecked={defaults.internationalPermitPresented} className="size-4" /> Internationaler Führerschein vorgelegt</label>
-            {needsTranslationOrIfs && <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="translationPresented" value="1" defaultChecked={defaults.translationPresented} className="size-4" /> Beglaubigte Übersetzung vorgelegt</label>}
-            {needsTranslationOrIfs && (
-              <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" name="manualReviewConfirmed" value="1" defaultChecked={false} className="size-4" /> Manuelle Prüfung durchgeführt und bewusst bestätigt</label>
-            )}
-          </div>
-        )}
-        {defaults.deviatesFromCustomer && (
-          <div className="rounded-md bg-amber-soft px-3 py-2.5 flex flex-col gap-2">
-            <p className="text-sm font-medium text-amber">Die vorgelegten Daten unterscheiden sich von den Kundendaten.</p>
-            <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="deviationConfirmed" value="1" defaultChecked={false} className="size-4" /> Für diese Übergabe bestätigen (Kundenstammdaten bleiben unverändert)</label>
-          </div>
-        )}
+        <LicenseDataFields defaults={defaults} requiredClass={requiredClass} idPrefix="dev" />
         <div className="flex flex-col gap-1.5">
           <label htmlFor="lic-notes" className="label-xs">Prüfnotiz (optional, intern)</label>
           <textarea id="lic-notes" name="notes" defaultValue={defaults.notes ?? ""} rows={2} className="input" />
         </div>
         <FormError error={state?.error} />
         <Feedback state={state} />
-        <div><button type="submit" className="btn btn-primary !py-2.5 w-full sm:w-auto">{pending ? "Wird gespeichert…" : "Führerschein speichern"}</button></div>
+        <div><button type="submit" className="btn !py-2.5 w-full sm:w-auto">{pending ? "Wird gespeichert…" : "Führerschein mit Abweichung speichern"}</button></div>
+      </fieldset>
+    </form>
+  );
+}
+
+/**
+ * Befehl 21: Fahrerprüfung in einem Vorgang. Ausweis und Führerschein im Original zeigen lassen, Daten vergleichen,
+ * einmal bestätigen – der Server speichert Identität, Führerschein und Bestätigung zusammen und prüft Klasse und Ablauf.
+ */
+export function DriverCheckForm({ action, driverName, requiredClass, defaultDocumentType, defaults }: { action: Action; driverName: string; requiredClass: string | null; defaultDocumentType: string | null; defaults: LicenseDefaults }) {
+  const [state, formAction, pending] = useActionState(action, undefined);
+  return (
+    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
+      <fieldset disabled={pending} className="flex flex-col gap-3">
+        <div className="flex flex-col gap-1.5 max-w-md">
+          <label htmlFor="chk-documentType" className="label-xs">Vorgelegter Ausweis</label>
+          <select id="chk-documentType" name="documentType" defaultValue={defaultDocumentType ?? "PERSONALAUSWEIS"} className="input" required>
+            {Object.entries(IDENTITY_DOCUMENT_TYPES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </select>
+        </div>
+        <LicenseDataFields defaults={defaults} requiredClass={requiredClass} idPrefix="chk" />
+        <div className="rounded-md bg-panel-2 px-3.5 py-3 text-sm text-ink-2">
+          <div className="font-medium text-ink">Mit „Prüfung bestätigen“ dokumentieren Sie für {driverName}:</div>
+          <ul className="list-disc pl-5 mt-1 flex flex-col gap-0.5">
+            <li>Ausweis und Führerschein lagen im Original vor.</li>
+            <li>Name und Geburtsdatum stimmen mit dem Fahrer überein.</li>
+            <li>Der Führerschein ist gültig, die Daten oben entsprechen dem Dokument.</li>
+          </ul>
+        </div>
+        <Feedback state={state} />
+        <button type="submit" className="btn btn-primary !py-3 w-full justify-center">{pending ? "Wird geprüft und gespeichert…" : "Originale geprüft – Prüfung bestätigen"}</button>
       </fieldset>
     </form>
   );
@@ -169,31 +203,24 @@ export function StartDriverVerificationButton({ action, label }: { action: Actio
 }
 
 /**
- * Befehl 20.9: Schnellbestätigung eines bereits vollständig geprüften Fahrers. Jeder Punkt muss bewusst bestätigt werden;
- * der Server prüft Ablauf, Klasse und Datenkonsistenz erneut und legt einen eigenen Prüfvermerk für diese Übergabe an.
+ * Befehl 20.9/21: Wiederholungsprüfung eines bereits vollständig geprüften Fahrers – EINE klare Aktion. Der Knopf ist die
+ * ausdrückliche Bestätigung des Mitarbeiters; der Server prüft Ablauf, Klasse und Datenkonsistenz erneut und legt einen
+ * eigenen Prüfvermerk für diese Übergabe an (wer, wann, welche Referenzprüfung).
  */
 export function RepeatVerificationForm({ action }: { action: Action }) {
   const [state, formAction, pending] = useActionState(action, undefined);
-  const items: [string, string][] = [
-    ["originalsPresented", "Identität anhand des Originaldokuments geprüft"],
-    ["identityChecked", "Name und Geburtsdatum stimmen mit dem Fahrer überein"],
-    ["licensePresented", "Führerschein im Original vorgelegt"],
-    ["dataUnchanged", "Gespeicherte Daten (Nummer, Klassen, Gültigkeit) sind unverändert"],
-    ["classSufficient", "Erforderliche Fahrerlaubnisklasse für dieses Fahrzeug vorhanden"],
-    ["documentsValid", "Ausweis und Führerschein sind weiterhin gültig"],
-  ];
   return (
     <form action={formAction} className="flex flex-col gap-2.5">
-      <fieldset disabled={pending} className="flex flex-col gap-2">
-        {items.map(([name, label]) => (
-          <label key={name} className="flex items-center gap-2.5 rounded-md border border-line bg-panel-2 px-3 py-2.5 cursor-pointer">
-            <input type="checkbox" name={name} value="1" required className="size-5 shrink-0" />
-            <span className="text-sm">{label}</span>
-          </label>
-        ))}
-        <Feedback state={state} />
-        <button type="submit" className="btn btn-primary !py-3 w-full justify-center">{pending ? "Wird dokumentiert…" : "Originale vorgelegt & Angaben unverändert – für diese Übergabe bestätigen"}</button>
-      </fieldset>
+      <div className="rounded-md bg-panel-2 px-3.5 py-3 text-sm text-ink-2">
+        <div className="font-medium text-ink">Ausweis und Führerschein im Original zeigen lassen. Mit der Bestätigung dokumentieren Sie:</div>
+        <ul className="list-disc pl-5 mt-1 flex flex-col gap-0.5">
+          <li>Beide Dokumente lagen im Original vor und gehören zum Fahrer.</li>
+          <li>Die gespeicherten Daten sind unverändert, die Dokumente gültig.</li>
+          <li>Die erforderliche Fahrerlaubnisklasse ist vorhanden.</li>
+        </ul>
+      </div>
+      <Feedback state={state} />
+      <button type="submit" disabled={pending} className="btn btn-primary !py-3 w-full justify-center">{pending ? "Wird dokumentiert…" : "Originale vorgelegt & Angaben unverändert – bestätigen"}</button>
     </form>
   );
 }

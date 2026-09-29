@@ -121,6 +121,22 @@ function termsForNewDraft(tenant: { rentalTermsVersion: string | null; rentalTer
 
 type BookingWithContext = Prisma.BookingGetPayload<{ include: { customer: true; vehicle: { include: { group: true } }; tenant: true } }>;
 
+/** Befehl 21: Standard-Abholort ist die Anschrift des Vermieters – steht im Vertrag, nicht nur als Vorbelegung im Formular. */
+const defaultPickupLocation = (tenant: { street: string | null; city: string | null }) => [tenant.street, tenant.city].filter(Boolean).join(", ") || null;
+
+/**
+ * Befehl 21: Standard-Kilometerregel. Buchung bzw. Fahrzeug tragen Freikilometer je Tag und Mehrkilometerpreis; damit ist
+ * „Freikilometer je Tag, Mehrkilometer nach Preis je km“ der Normalfall. Eine nur GEERBTE „individuelle Kilometerregel“
+ * (Vorgabe des Vermieters, der Gruppe oder des Fahrzeugs) hat nie eine Beschreibung und würde jeden Vertrag blockieren –
+ * sie wird deshalb im Entwurf zur Standardregel. Wer im Vertrag bewusst „individuell“ wählt (Herkunft CONTRACT), muss die
+ * Regel weiterhin beschreiben. Abgeschlossene Verträge werden nie angefasst.
+ */
+export function standardKmPolicy(rules: ContractRules, booking: { kmIncludedPerDay: number | null; extraKmRate: unknown }): ContractRules {
+  if (rules.values.kmPolicy !== "INDIVIDUAL" || rules.sources.kmPolicy === "CONTRACT" || rules.values.kmPolicyNote) return rules;
+  const fromBooking = booking.kmIncludedPerDay != null || booking.extraKmRate != null;
+  return { ...rules, values: { ...rules.values, kmPolicy: "FREE_KILOMETERS" }, sources: { ...rules.sources, kmPolicy: fromBooking ? "BOOKING" : "VEHICLE" } };
+}
+
 function resolveFor(booking: BookingWithContext): ResolvedRules {
   return resolveRules(booking.tenant.businessRules, booking.vehicle.group, booking.vehicle);
 }
@@ -152,7 +168,7 @@ export async function ensureContractDraft(tenantId: string, bookingId: string, a
         if (booking.status !== "RESERVED") throw new DomainError("Ein Mietvertrag wird nur für reservierte Buchungen angelegt.");
         const resolved = resolveFor(booking);
         const depositRule = depositFor(booking);
-        const rules = initialContractRules(resolved, new Date(), depositRule);
+        const rules = standardKmPolicy(initialContractRules(resolved, new Date(), depositRule), booking);
         const price = contractPrice(booking, booking.customer.discountPercent, null, null, { additionalDrivers: 0, rules: feeRules(rules) });
         const terms = termsForNewDraft(booking.tenant, await activeTermsVersion(tx, tenantId));
         const number = await nextContractNumber(tx, tenantId, booking.startAt);
@@ -171,6 +187,7 @@ export async function ensureContractDraft(tenantId: string, bookingId: string, a
             totalAmount: price.finalTotal,
             discountPercent: price.discountPercent,
             deposit: initialDeposit(booking, depositRule),
+            pickupLocation: defaultPickupLocation(booking.tenant),
             // Befehl 20.7: Kilometervereinbarung der Buchung (sonst Fahrzeugwert) – eine Quelle bis zur Rückgabe
             kmIncludedPerDay: booking.kmIncludedPerDay ?? booking.vehicle.kmIncludedPerDay,
             extraKmRate: booking.extraKmRate ?? booking.vehicle.extraKmRate,
@@ -242,6 +259,7 @@ export async function refreshContractDraft(tx: Tx, tenantId: string, contractId:
   let rules = readContractRules(contract.conditions);
   const depositRule = depositFor(booking);
   if (!rules || vehicleChanged) rules = initialContractRules(resolveFor(booking), new Date(), depositRule);
+  rules = standardKmPolicy(rules, booking);
   const additionalDrivers = await tx.contractDriver.count({ where: { tenantId, contractId, role: "ADDITIONAL_DRIVER" } });
   const price = contractPrice(booking, booking.customer.discountPercent, toNumber(contract.agreedTotal), contract.agreedTotalNote, { additionalDrivers, rules: feeRules(rules) });
   // Mietbedingungen: ein versionierter Entwurf wechselt nie von selbst. Ohne Fassung (Altbestand, noch nicht bestätigt)
@@ -274,6 +292,8 @@ export async function refreshContractDraft(tx: Tx, tenantId: string, contractId:
       ...(booking.kmIncludedPerDay != null ? { kmIncludedPerDay: booking.kmIncludedPerDay } : vehicleChanged ? { kmIncludedPerDay: booking.vehicle.kmIncludedPerDay } : {}),
       ...(booking.extraKmRate != null ? { extraKmRate: booking.extraKmRate } : vehicleChanged ? { extraKmRate: booking.vehicle.extraKmRate } : {}),
       ...(vehicleChanged ? { deductible: (rules.values.deductibleCents ?? 0) / 100, fuelPolicy: rules.values.fuelRule, deposit: depositRule.cents / 100 } : {}),
+      // Befehl 21: Entwurf ohne Abholort übernimmt die Anschrift des Vermieters (kein falscher Hinweis „Kein Abholort“)
+      ...(contract.pickupLocation == null && defaultPickupLocation(booking.tenant) ? { pickupLocation: defaultPickupLocation(booking.tenant) } : {}),
       conditions: rules as unknown as Prisma.InputJsonValue,
       ...terms,
     },
@@ -557,6 +577,9 @@ export async function saveConditions(tenantId: string, contractId: string, input
     const changes: { key: string; from: unknown; to: unknown }[] = [];
     const applied = applyContractOverrides(rules, resolved, { ...(input.rules ?? {}), fuelRule: input.fuelPolicy });
     rules = applied.rules;
+    // Befehl 21: „individuell“ ist im Vertrag immer eine bewusste Wahl – auch wenn die Vorgabe des Vermieters gleich lautet.
+    // Sie bleibt deshalb erhalten (keine stille Rückkehr zur Standardregel) und braucht die Beschreibung.
+    if (input.rules?.kmPolicy === "INDIVIDUAL") rules = { ...rules, sources: { ...rules.sources, kmPolicy: "CONTRACT" } };
     changes.push(...applied.changes);
     rules = { ...rules, values: { ...rules.values, deductibleCents: Math.round(input.deductible * 100) }, sources: { ...rules.sources, deductibleCents: Math.round(input.deductible * 100) === (resolved.values.deductibleCents ?? 0) ? resolved.sources.deductibleCents : "CONTRACT" } };
     if (Math.round(Number(c.deductible) * 100) !== Math.round(input.deductible * 100)) changes.push({ key: "deductibleCents", from: Math.round(Number(c.deductible) * 100), to: Math.round(input.deductible * 100) });

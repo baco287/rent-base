@@ -243,7 +243,7 @@ export function HandoverDocumentView({ doc, handoverId, showSignatures = true }:
 
       <Card title="Fahrzeugzustand" right={doc.type === "PICKUP" ? <><Chip>{existing} bereits dokumentiert</Chip><Chip tone={fresh > 0 ? "bad" : "grey"}>{fresh} neu entdeckt</Chip></> : <><Chip>{existing} vor Mietbeginn</Chip><Chip>{pickupNew} bei Übergabe</Chip><Chip tone={fresh > 0 ? "amber" : "grey"}>{fresh} bei Rückgabe festgestellt</Chip></>}>
         <div className="p-4">
-          <DamageMap sketch={doc.sketch} damages={doc.damages} handoverId={handoverId} editable={false} type={doc.type} />
+          <DamageMap sketch={doc.sketch} damages={doc.damages} handoverId={handoverId} editable={false} type={doc.type} compact />
           {doc.sketch && <p className="text-[11px] text-ink-3 mt-2">Skizze: {doc.sketch.name}, Fassung {doc.sketch.version}</p>}
         </div>
       </Card>

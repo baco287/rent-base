@@ -5,7 +5,7 @@ import { db } from "@/lib/db";
 import { customerName, fmtDateTime, fmtEur } from "@/lib/format";
 import { calculateRentalPrice, rateCardFrom } from "@/lib/pricing";
 import { BookingStageChip, Card, Chip, Content, Empty, PageHeader, Plate } from "@/components/ui";
-import { bookingStage } from "@/lib/booking-status";
+import { bookingStage, pickupAction, returnAction } from "@/lib/booking-status";
 import { bookingSearchWhere, SEARCH_MAX } from "@/lib/search";
 
 export const metadata = { title: "Buchungen" };
@@ -35,7 +35,7 @@ export default async function BookingsPage({ searchParams }: PageProps<"/buchung
     db.booking.count({ where }),
     db.booking.findMany({
       where,
-      include: { vehicle: true, customer: true, contract: { select: { status: true } } },
+      include: { vehicle: true, customer: true, contract: { select: { status: true } }, handovers: { where: { correctsId: null }, select: { type: true, status: true } } },
       orderBy: { startAt: filter.key === "abgeschlossen" || filter.key === "alle" ? "desc" : "asc" },
       skip: (page - 1) * PAGE,
       take: PAGE,
@@ -79,6 +79,7 @@ export default async function BookingsPage({ searchParams }: PageProps<"/buchung
                     <th className="label-xs px-3 py-2 border-b border-line text-right">Tage</th>
                     <th className="label-xs px-3 py-2 border-b border-line text-right">Voraussichtlich</th>
                     <th className="label-xs px-3 py-2 border-b border-line">Status</th>
+                    <th className="label-xs px-3 py-2 border-b border-line">Aktion</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -87,6 +88,10 @@ export default async function BookingsPage({ searchParams }: PageProps<"/buchung
                     const d = price.days;
                     const total = price.total;
                     const overdue = b.status === "ACTIVE" && b.endAt < new Date();
+                    // Befehl 21: die nächste Prozessaktion direkt in der Zeile – Rückgabe (laufende Miete) bzw. Übergabe (bereit)
+                    const ret = returnAction(b, b.contract, b.handovers);
+                    const pick = pickupAction(b, b.contract, b.handovers);
+                    const rowAction = ret.kind === "START" || ret.kind === "CONTINUE" ? { href: `/buchungen/${b.id}/rueckgabe`, label: ret.label } : pick.kind === "START" || pick.kind === "CONTINUE" ? { href: `/buchungen/${b.id}/uebergabe`, label: pick.label } : null;
                     return (
                       <tr key={b.id} className="border-b border-line-soft last:border-0 hover:bg-panel-2/60">
                         <td className="px-3 py-2.5 font-mono tnum"><Link href={`/buchungen/${b.id}`} className="hover:underline">{b.number}</Link></td>
@@ -97,6 +102,7 @@ export default async function BookingsPage({ searchParams }: PageProps<"/buchung
                         <td className="px-3 py-2.5 text-right tnum">{d}</td>
                         <td className="px-3 py-2.5 text-right font-mono tnum">{fmtEur(total)}</td>
                         <td className="px-3 py-2.5">{overdue ? <span className="chip bg-bad-soft text-bad">Überfällig</span> : <BookingStageChip stage={bookingStage(b, b.contract)} />}</td>
+                        <td className="px-3 py-2">{rowAction ? <Link href={rowAction.href} className="btn btn-primary !py-1.5 whitespace-nowrap">{rowAction.label}</Link> : <Link href={`/buchungen/${b.id}`} className="btn !py-1.5 whitespace-nowrap">Öffnen</Link>}</td>
                       </tr>
                     );
                   })}

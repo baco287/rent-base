@@ -72,7 +72,7 @@ export async function DepositSettlementCard({ tenantId, bookingId, role, invoice
         </div>
 
         {!finalized && (
-          <p className="text-xs text-ink-3">Die Kaution wird nicht automatisch mit der Rechnung verrechnet. Nach dem Abschluss der Rechnung kann hier bewusst „Aus Kaution verrechnen“ gewählt werden{openCents > 0 && availableCents > 0 ? ` – Vorschlag dann: ${fmtCents(Math.min(openCents, availableCents))} (kleinerer Betrag aus offener Forderung und verfügbarer Kaution)` : ""}. Freigabe und Auszahlung der Restkaution bleiben getrennte Vorgänge.</p>
+          <p className="text-xs text-ink-3">Die Kaution wird nie automatisch verrechnet.{openCents > 0 && availableCents > 0 ? ` Unten bei „Rechnung finalisieren“ können Sie bewusst ${fmtCents(Math.min(openCents, availableCents))} aus der Kaution verrechnen (Vorschlag: kleinerer Betrag aus offener Forderung und verfügbarer Kaution).` : ""} Freigabe und Auszahlung der verbleibenden Kaution sind danach eigene Schritte.</p>
         )}
 
         {finalized && thisInvoice && offset && !offset.blockedReason && (
@@ -90,7 +90,7 @@ export async function DepositSettlementCard({ tenantId, bookingId, role, invoice
 
         {finalized && afterReturn && availableCents > 0 && canDecide && (
           <div className="flex flex-col gap-2">
-            <div className="text-sm font-medium">Restkaution: {fmtCents(availableCents)}</div>
+            <div className="text-sm font-medium">Verbleibende Kaution (zur Rückzahlung verfügbar, noch nicht freigegeben oder ausgezahlt): {fmtCents(availableCents)}</div>
             <DepositSettleForm action={settleDepositAction.bind(null, bookingId)} preview={previewDepositSettleAction} bookingId={bookingId} nonce={`${nonce}-settle`} remainingCents={availableCents} defaultWhen={now} releaseLabel={`${fmtCents(availableCents)} Kaution zur Auszahlung freigeben`} />
             <p className="text-xs text-ink-3">Freigabe ist die Entscheidung, die Auszahlung der tatsächliche Geldfluss – dokumentiert unter <Link href={`/buchungen/${bookingId}#kaution`} className="underline">Kaution</Link> auf der Buchungsseite.</p>
           </div>

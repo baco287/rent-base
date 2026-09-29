@@ -2,38 +2,40 @@
 // getrennt identifiziert und seine Fahrerlaubnis anhand des Originaldokuments geprüft. Mieter und Fahrer sind
 // fachlich getrennt – hier stehen alle vertraglichen Fahrer, nicht nur der Mieter. Eine Dokumentkopie ist immer
 // optional; Pflicht ist ausschließlich die dokumentierte Originalprüfung.
+//
+// Befehl 21: EIN Vorgang je Fahrer. Der Mitarbeiter prüft Ausweis und Führerschein im Original und bestätigt mit einem
+// Knopf; der Server speichert Identität, Führerschein und Bestätigung in einem Zug und prüft Klasse, Ablauf und
+// Abweichungen wie bisher. Die getrennten Schritte „Identität speichern“ / „Führerschein speichern“ gibt es nur noch
+// für den Ausnahmefall (etwas stimmt nicht überein).
 import { Card, Chip } from "@/components/ui";
 import { DRIVER_ROLES, DRIVER_VERIFICATION_STATUS, IDENTITY_DOCUMENT_TYPES, type DriverRole, type DriverVerificationStatus, type IdentityDocumentType } from "@/lib/constants";
-import { driverVerificationOverview, listDriverDocumentCopies, type DriverVerificationView } from "@/lib/driver-verification";
+import { DRIVER_BLOCKER_LABELS, driverVerificationOverview, listDriverDocumentCopies, type DriverVerificationView } from "@/lib/driver-verification";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import { toDateInputValue } from "@/lib/time";
-import { confirmDriverVerificationAction, repeatDriverVerificationAction, saveIdentityCheckAction, saveLicenseCheckAction, startDriverVerificationAction, updateCustomerLicenseAction } from "./driver-actions";
-import { ConfirmDriverButton, DriverDocumentUploader, IdentityCheckForm, LicenseCheckForm, RepeatVerificationForm, StartDriverVerificationButton, UpdateCustomerLicenseButton } from "./driver-forms";
+import { confirmDriverVerificationAction, repeatDriverVerificationAction, saveIdentityCheckAction, saveLicenseCheckAction, startDriverVerificationAction, updateCustomerLicenseAction, verifyDriverAction } from "./driver-actions";
+import { ConfirmDriverButton, DriverCheckForm, DriverDocumentUploader, IdentityCheckForm, LicenseCheckForm, RepeatVerificationForm, StartDriverVerificationButton, UpdateCustomerLicenseButton } from "./driver-forms";
 
 const statusTone: Record<DriverVerificationStatus, "good" | "amber" | "bad" | "info" | "grey"> = { NOT_STARTED: "grey", IN_PROGRESS: "amber", CONFIRMED: "good", BLOCKED: "bad" };
 
-const BLOCKER_LABELS: Record<string, string> = {
-  IDENTITY_NAME_MISMATCH: "Identität: Name stimmt nicht überein.",
-  IDENTITY_BIRTHDATE_MISMATCH: "Identität: Geburtsdatum stimmt nicht überein.",
-  LICENSE_INVALID: "Führerschein: als ungültig markiert.",
-  LICENSE_NAME_MISMATCH: "Führerschein: Name stimmt nicht überein.",
-  LICENSE_EXPIRED: "Führerschein: abgelaufen.",
-  LICENSE_EXPIRES_BEFORE_RETURN: "Führerschein: läuft vor der geplanten Rückgabe ab.",
-  LICENSE_CLASS_INSUFFICIENT: "Führerschein: erforderliche Fahrerlaubnisklasse fehlt.",
-  LICENSE_NO_REQUIRED_CLASS_CONFIGURED: "Für dieses Fahrzeug ist keine erforderliche Fahrerlaubnisklasse hinterlegt. Bitte in den Fahrzeug- oder Gruppendaten konfigurieren.",
-  LICENSE_MANUAL_REVIEW_OPEN: "Ausländischer Führerschein: manuelle Prüfung noch nicht bestätigt.",
-  LICENSE_DEVIATES_FROM_CUSTOMER: "Die vorgelegten Daten unterscheiden sich von den Kundendaten und sind noch nicht bestätigt.",
-};
-
-function DriverCard({ bookingId, handoverId, view, role, copies }: { bookingId: string; handoverId: string; view: DriverVerificationView; role: string; copies: { id: string; documentKind: string; side: string; contractDriverId: string; verificationId: string }[] }) {
+function DriverCard({ bookingId, handoverId, view, role, copies, mode }: { bookingId: string; handoverId: string; view: DriverVerificationView; role: string; copies: { id: string; documentKind: string; side: string; contractDriverId: string; verificationId: string }[]; mode: "quick" | "full" }) {
   const v = view.verification;
   const name = `${view.driver.firstName} ${view.driver.lastName}`;
   const confirmed = view.status === "CONFIRMED";
   const idCopies = copies.filter((c) => c.contractDriverId === view.driver.contractDriverId && c.documentKind === "IDENTITY");
   const licCopies = copies.filter((c) => c.contractDriverId === view.driver.contractDriverId && c.documentKind === "LICENSE");
-  const blockers = (v?.blockedReasons ?? []).map((r) => BLOCKER_LABELS[r] ?? r);
+  const blockers = (v?.blockedReasons ?? []).map((r) => DRIVER_BLOCKER_LABELS[r] ?? r);
   const canConfirm = !!v && v.status !== "CONFIRMED" && v.identityOriginalSeen && v.identityNameMatched === true && v.identityBirthDateMatched === true && v.licenseOriginalSeen && v.licenseDocumentValid === true && v.licenseNameMatched === true && v.licenseClassSatisfied === true && v.blockedReasons.length === 0;
   const canUpdateCustomer = role !== "YARD" && !!v?.customerId && !!v?.licenseOriginalSeen;
+  const licenseDefaults = {
+    documentValid: v?.licenseDocumentValid, nameMatched: v?.licenseNameMatched,
+    licenseNumber: v?.licenseNumberSnapshot ?? view.driver.licenseNumber, licenseCountry: v?.licenseCountrySnapshot ?? view.driver.licenseCountry,
+    licenseIssuedAt: toDateInputValue(v?.licenseIssuedAtSnapshot ?? view.driver.licenseIssuedAt),
+    licenseValidUntil: v?.licenseValidUntilSnapshot ? toDateInputValue(v.licenseValidUntilSnapshot) : view.driver.licenseValidUntil ? toDateInputValue(view.driver.licenseValidUntil) : "",
+    licenseClasses: v?.licenseClassesSnapshot.length ? v.licenseClassesSnapshot : [view.driver.licenseClass].filter(Boolean),
+    internationalPermitPresented: v?.internationalPermitPresented ?? false, translationPresented: v?.translationPresented ?? false, notes: v?.notes ?? null,
+    manualReviewRequired: v?.manualReviewRequired ?? false, deviatesFromCustomer: v?.deviatesFromCustomer ?? false,
+  };
+  const self = `/buchungen/${bookingId}/uebergabe?schritt=6`;
 
   return (
     <details className="card overflow-hidden" open={!confirmed}>
@@ -63,8 +65,8 @@ function DriverCard({ bookingId, handoverId, view, role, copies }: { bookingId: 
               </div>
             )}
           </div>
-        ) : !v && view.repeat ? (
-          // Befehl 20.9: bekannter Fahrer – Stammdaten aus der letzten vollständigen Prüfung, Bestätigung für DIESE Übergabe
+        ) : !v && view.repeat && mode !== "full" ? (
+          // Bekannter Fahrer (Befehl 20.9/21): Daten aus der letzten vollständigen Prüfung, EINE klare Bestätigung für diese Übergabe
           <div className="flex flex-col gap-3">
             <div className="rounded-md bg-info-soft px-3.5 py-3 flex flex-col gap-1.5 text-sm">
               <p className="font-medium text-info">{name} · Bereits vollständig geprüft</p>
@@ -76,57 +78,62 @@ function DriverCard({ bookingId, handoverId, view, role, copies }: { bookingId: 
               </dl>
             </div>
             {view.repeat.eligible ? (
-              <>
-                <p className="text-xs text-ink-2">Für diese Übergabe wird ein eigener Prüfvermerk (Wiederholungs-/Sichtprüfung) mit Bezug auf die letzte Prüfung dokumentiert. Die alte Prüfung bleibt unverändert.</p>
-                <RepeatVerificationForm action={repeatDriverVerificationAction.bind(null, bookingId, handoverId, view.driver.contractDriverId)} />
-              </>
+              <RepeatVerificationForm action={repeatDriverVerificationAction.bind(null, bookingId, handoverId, view.driver.contractDriverId)} />
             ) : (
               <div className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm">
                 <div className="font-semibold mb-1">Schnellbestätigung nicht möglich</div>
                 <ul className="list-disc pl-5">{view.repeat.reasons.map((r) => <li key={r}>{r}</li>)}</ul>
               </div>
             )}
-            <StartDriverVerificationButton action={startDriverVerificationAction.bind(null, bookingId, handoverId, view.driver.contractDriverId)} label={view.repeat.eligible ? "Daten haben sich geändert – vollständige Prüfung" : `Vollständige Prüfung für ${name} beginnen`} />
+            <div><a href={`${self}&pruefung=${view.driver.contractDriverId}`} className="btn w-full justify-center sm:w-auto">{view.repeat.eligible ? "Daten haben sich geändert – Daten neu prüfen" : `Daten von ${name} neu prüfen`}</a></div>
           </div>
-        ) : !v ? (
-          <StartDriverVerificationButton action={startDriverVerificationAction.bind(null, bookingId, handoverId, view.driver.contractDriverId)} label={`Prüfung für ${name} beginnen`} />
         ) : (
           <>
-            <section className="flex flex-col gap-2">
-              <h3 className="font-semibold text-sm">1 · Identität prüfen</h3>
-              <IdentityCheckForm
-                action={saveIdentityCheckAction.bind(null, bookingId, v.id)}
-                defaultDocumentType={v.identityDocumentType}
-                defaultNameMatched={v.identityNameMatched}
-                defaultBirthMatched={v.identityBirthDateMatched}
-                defaultNotes={v.notes}
-                disabled={false}
-              />
-              <DriverDocumentUploader handoverId={handoverId} verificationId={v.id} contractDriverId={view.driver.contractDriverId} documentKind="IDENTITY" copies={idCopies} editable />
-            </section>
-            <section className="flex flex-col gap-2 pt-2 border-t border-line-soft">
-              <h3 className="font-semibold text-sm">2 · Führerschein prüfen</h3>
-              <LicenseCheckForm
-                action={saveLicenseCheckAction.bind(null, bookingId, v.id)}
-                requiredClass={view.requiredLicenseClass}
-                defaults={{
-                  documentValid: v.licenseDocumentValid, nameMatched: v.licenseNameMatched,
-                  licenseNumber: v.licenseNumberSnapshot ?? view.driver.licenseNumber, licenseCountry: v.licenseCountrySnapshot ?? view.driver.licenseCountry,
-                  licenseIssuedAt: toDateInputValue(v.licenseIssuedAtSnapshot ?? view.driver.licenseIssuedAt),
-                  licenseValidUntil: v.licenseValidUntilSnapshot ? toDateInputValue(v.licenseValidUntilSnapshot) : view.driver.licenseValidUntil ? toDateInputValue(view.driver.licenseValidUntil) : "",
-                  licenseClasses: v.licenseClassesSnapshot.length ? v.licenseClassesSnapshot : [view.driver.licenseClass].filter(Boolean),
-                  internationalPermitPresented: v.internationalPermitPresented, translationPresented: v.translationPresented, notes: v.notes,
-                  manualReviewRequired: v.manualReviewRequired, deviatesFromCustomer: v.deviatesFromCustomer,
-                }}
-                disabled={false}
-              />
-              <DriverDocumentUploader handoverId={handoverId} verificationId={v.id} contractDriverId={view.driver.contractDriverId} documentKind="LICENSE" copies={licCopies} editable />
-              {canUpdateCustomer && v.deviatesFromCustomer && <UpdateCustomerLicenseButton action={updateCustomerLicenseAction.bind(null, bookingId, v.id)} />}
-            </section>
-            <section className="pt-2 border-t border-line-soft">
-              <h3 className="font-semibold text-sm mb-2">3 · Prüfung bestätigen</h3>
-              <ConfirmDriverButton action={confirmDriverVerificationAction.bind(null, bookingId, v.id)} disabled={!canConfirm} blockers={blockers} />
-            </section>
+            {blockers.length > 0 && (
+              <div role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">
+                <div className="font-semibold mb-1">Prüfung noch nicht möglich</div>
+                <ul className="list-disc pl-5">{blockers.map((b) => <li key={b}>{b}</li>)}</ul>
+              </div>
+            )}
+            <DriverCheckForm action={verifyDriverAction.bind(null, bookingId, handoverId, view.driver.contractDriverId)} driverName={name} requiredClass={view.requiredLicenseClass} defaultDocumentType={v?.identityDocumentType ?? null} defaults={licenseDefaults} />
+            {canUpdateCustomer && v?.deviatesFromCustomer && <UpdateCustomerLicenseButton action={updateCustomerLicenseAction.bind(null, bookingId, v.id)} />}
+
+            <details className="rounded-md border border-line-soft">
+              <summary className="cursor-pointer px-3 py-2.5 text-sm text-ink-2">Dokumentkopie aufnehmen (optional)</summary>
+              <div className="p-3 pt-0 flex flex-col gap-2">
+                {v ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <DriverDocumentUploader handoverId={handoverId} verificationId={v.id} contractDriverId={view.driver.contractDriverId} documentKind="IDENTITY" copies={idCopies} editable />
+                    <DriverDocumentUploader handoverId={handoverId} verificationId={v.id} contractDriverId={view.driver.contractDriverId} documentKind="LICENSE" copies={licCopies} editable />
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-xs text-ink-3">Eine Kopie ist freiwillig und ersetzt die Originalprüfung nicht. Sie wird vor dem Bestätigen aufgenommen.</p>
+                    <StartDriverVerificationButton action={startDriverVerificationAction.bind(null, bookingId, handoverId, view.driver.contractDriverId)} label="Kopie vorbereiten" />
+                  </>
+                )}
+              </div>
+            </details>
+
+            {v && (
+              <details className="rounded-md border border-line-soft">
+                <summary className="cursor-pointer px-3 py-2.5 text-sm text-ink-2">Etwas stimmt nicht überein? Abweichung dokumentieren</summary>
+                <div className="p-3 pt-0 flex flex-col gap-4">
+                  <p className="text-xs text-ink-3">Nur für den Ausnahmefall: Name, Geburtsdatum oder Dokument passen nicht. Die Prüfung wird dann blockiert und dokumentiert.</p>
+                  <section className="flex flex-col gap-2">
+                    <h3 className="font-semibold text-sm">Identität</h3>
+                    <IdentityCheckForm action={saveIdentityCheckAction.bind(null, bookingId, v.id)} defaultDocumentType={v.identityDocumentType} defaultNameMatched={v.identityNameMatched} defaultBirthMatched={v.identityBirthDateMatched} defaultNotes={v.notes} disabled={false} />
+                  </section>
+                  <section className="flex flex-col gap-2 pt-2 border-t border-line-soft">
+                    <h3 className="font-semibold text-sm">Führerschein</h3>
+                    <LicenseCheckForm action={saveLicenseCheckAction.bind(null, bookingId, v.id)} requiredClass={view.requiredLicenseClass} defaults={licenseDefaults} disabled={false} />
+                  </section>
+                  <section className="pt-2 border-t border-line-soft">
+                    <ConfirmDriverButton action={confirmDriverVerificationAction.bind(null, bookingId, v.id)} disabled={!canConfirm} blockers={[]} />
+                  </section>
+                </div>
+              </details>
+            )}
           </>
         )}
       </div>
@@ -134,16 +141,16 @@ function DriverCard({ bookingId, handoverId, view, role, copies }: { bookingId: 
   );
 }
 
-export async function DriverVerificationSection({ tenantId, bookingId, handoverId, role }: { tenantId: string; bookingId: string; handoverId: string; role: string }) {
+export async function DriverVerificationSection({ tenantId, bookingId, handoverId, role, fullCheckFor }: { tenantId: string; bookingId: string; handoverId: string; role: string; /** Fahrer, für den statt der Wiederholungsprüfung die Daten neu geprüft werden sollen („Daten haben sich geändert“) */ fullCheckFor?: string | null }) {
   const [overview, copies] = await Promise.all([driverVerificationOverview(tenantId, handoverId), listDriverDocumentCopies(tenantId, handoverId)]);
   const openCount = overview.filter((o) => o.status !== "CONFIRMED").length;
   return (
     <>
       <Card title="Fahrer & Dokumente" right={<Chip tone={openCount ? "amber" : "good"}>{openCount ? `${openCount} offen` : "vollständig"}</Chip>}>
-        <p className="px-4 pt-3 pb-1 text-sm text-ink-2 max-w-[75ch]">Jeder im Mietvertrag vorgesehene Fahrer wird einzeln identifiziert; seine Fahrerlaubnis wird anhand des vorgelegten Originaldokuments geprüft. Eine Dokumentkopie ist optional und ersetzt die Prüfung nicht.</p>
+        <p className="px-4 pt-3 pb-3 text-sm text-ink-2 max-w-[75ch]">Ausweis und Führerschein im Original zeigen lassen, Angaben vergleichen, bestätigen. Eine Dokumentkopie ist freiwillig.</p>
       </Card>
       <div className="flex flex-col gap-3">
-        {overview.map((o) => <DriverCard key={o.driver.contractDriverId} bookingId={bookingId} handoverId={handoverId} view={o} role={role} copies={copies} />)}
+        {overview.map((o) => <DriverCard key={o.driver.contractDriverId} bookingId={bookingId} handoverId={handoverId} view={o} role={role} copies={copies} mode={fullCheckFor === o.driver.contractDriverId ? "full" : "quick"} />)}
       </div>
     </>
   );

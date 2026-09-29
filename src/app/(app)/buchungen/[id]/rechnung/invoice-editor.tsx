@@ -9,6 +9,7 @@ import { useRouter } from "next/navigation";
 import { submitWithoutReset } from "@/components/submit-without-reset";
 import { DAMAGE_TAX_TREATMENT_HELP, DAMAGE_TAX_TREATMENTS, INVOICE_UNITS, type DamageTaxTreatment } from "@/lib/constants";
 import type { InvoiceDocumentData } from "@/lib/invoice-view";
+import { fmtCents, toCents } from "@/lib/money";
 import type { InvoiceState } from "./actions";
 
 export type EditableItem = { id: string; description: string; quantity: string; unit: string; unitPrice: string; taxRate: string; source: string; sourceLabel: string; net: string; tax: string; gross: string };
@@ -32,6 +33,11 @@ type Props = {
   blockingReason?: string;
   /** Vorschau der Zahlungsdifferenz (Fassung >= 2 mit Zahlungen), vom Server gerechnet */
   paymentPreview: { paid: string; grossBefore: string; grossAfter: string; openAfter: string; overpaid: string | null } | null;
+  /**
+   * Befehl 21: Ausgangslage für die bewusste Kautionsverrechnung beim Abschluss (vom Server gerechnet). null = nichts zu
+   * verrechnen (keine offene Forderung, keine verfügbare Kaution, Miete nicht zurückgegeben). Nie vorausgewählt.
+   */
+  depositOffset?: DepositOffsetChoice | null;
   save: (payload: unknown) => Promise<InvoiceState>;
   finalize: (prev: InvoiceState, fd: FormData) => Promise<InvoiceState>;
 };
@@ -53,12 +59,69 @@ export function InvoiceEditor(props: Props) {
   );
 }
 
-function FinalizeCard({ finalize, blocking, blockingReason, versionNo, kind, paymentPreview }: Props) {
+export type DepositOffsetChoice = { grossCents: number; paidCents: number; openCents: number; receivedCents: number; usedCents: number; availableCents: number; suggestedCents: number; nonce: string; when: string };
+
+const Line = ({ label, value, strong, tone }: { label: string; value: string; strong?: boolean; tone?: "good" | "bad" | "info" }) => (
+  <div className={`flex justify-between gap-3 ${strong ? "font-semibold" : ""}`}><span className="text-ink-3">{label}</span><span className={`font-mono tnum ${tone === "good" ? "text-good" : tone === "bad" ? "text-bad" : tone === "info" ? "text-info" : ""}`}>{value}</span></div>
+);
+
+/**
+ * Befehl 21: Kautionsverrechnung bewusst auswählen. Die Auswahl bucht nichts – sie wird mit „Rechnung finalisieren“
+ * gesendet und serverseitig zusammen mit dem Abschluss verbucht (oder gar nicht). Die Vorschau rechnet nur mit den vom
+ * Server gelieferten Zahlen; der Server prüft beim Abschluss erneut (nie mehr als offen, nie mehr als verfügbar).
+ */
+function DepositOffsetSection({ choice, chosen, setChosen, amount, setAmount }: { choice: DepositOffsetChoice; chosen: boolean; setChosen: (v: boolean) => void; amount: string; setAmount: (v: string) => void }) {
+  let cents = 0;
+  try { cents = Math.max(0, toCents(amount.trim() || "0")); } catch { cents = -1; }
+  const tooMuch = cents > choice.openCents || cents > choice.availableCents;
+  const invalid = chosen && (cents <= 0 || tooMuch);
+  const used = chosen && !invalid ? cents : 0;
+  return (
+    <div className="rounded-lg border-2 border-info/40 p-3 flex flex-col gap-3 text-sm">
+      <div className="font-semibold">Kaution &amp; offene Forderung</div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="flex flex-col gap-0.5">
+          <Line label="Rechnungsbetrag" value={fmtCents(choice.grossCents)} />
+          <Line label="Mietzahlungen" value={fmtCents(choice.paidCents)} />
+          {used > 0 && <Line label="aus Kaution verrechnet" value={fmtCents(used)} tone="info" />}
+          <div className="border-t border-line-soft mt-1 pt-1"><Line label={used > 0 ? "noch offen" : "offen nach Abschluss"} value={fmtCents(Math.max(0, choice.openCents - used))} strong tone={choice.openCents - used > 0 ? "bad" : "good"} /></div>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <Line label="Kaution erhalten" value={fmtCents(choice.receivedCents)} />
+          {choice.usedCents > 0 && <Line label="bereits freigegeben, einbehalten oder verrechnet" value={fmtCents(choice.usedCents)} />}
+          {used > 0 && <Line label="davon jetzt verrechnet" value={fmtCents(used)} tone="info" />}
+          <div className="border-t border-line-soft mt-1 pt-1"><Line label={used > 0 ? "an Kunden verbleibend" : "aktuell verfügbar"} value={fmtCents(choice.availableCents - used)} strong /></div>
+        </div>
+      </div>
+      <label className="flex items-start gap-2.5 rounded-md bg-panel-2 px-3 py-2.5 cursor-pointer">
+        <input type="checkbox" name="depositOffset" value="1" checked={chosen} onChange={(e) => setChosen(e.target.checked)} className="mt-0.5 size-5 shrink-0" />
+        <span><span className="font-medium">{fmtCents(choice.suggestedCents)} aus Kaution verrechnen</span><span className="block text-xs text-ink-3">Vorschlag: kleinerer Betrag aus offener Forderung und verfügbarer Kaution. Ohne Auswahl wird nichts verrechnet.</span></span>
+      </label>
+      {chosen && (
+        <>
+          <label className="flex flex-col gap-1 max-w-xs"><span className="label-xs">Verrechnungsbetrag in €</span><input name="depositOffsetAmount" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} required className="input tnum" /></label>
+          <input type="hidden" name="depositOffsetConfirmed" value="1" />
+          <input type="hidden" name="depositOffsetNonce" value={choice.nonce} />
+          <input type="hidden" name="depositOffsetAt" value={choice.when} />
+          {invalid && <p role="alert" className="text-bad bg-bad-soft rounded-md px-3 py-2 text-xs">{cents <= 0 ? "Bitte einen Betrag über 0,00 € eingeben." : `Höchstens ${fmtCents(Math.min(choice.openCents, choice.availableCents))}: nie mehr als die offene Forderung und nie mehr als die verfügbare Kaution.`}</p>}
+          <p className="text-xs text-ink-3">Es fließt kein Geld und die Rechnung bleibt unverändert: Die Verrechnung gleicht die Forderung aus, wie eine Zahlung. Die verbleibende Kaution wird dadurch weder freigegeben noch ausgezahlt – das ist danach ein eigener Schritt.</p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function FinalizeCard({ finalize, blocking, blockingReason, versionNo, kind, paymentPreview, depositOffset }: Props) {
   const [state, formAction, pending] = useActionState(finalize, undefined);
   const [clicked, setClicked] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const [offsetChosen, setOffsetChosen] = useState(false);
+  const [offsetAmount, setOffsetAmount] = useState(depositOffset ? (depositOffset.suggestedCents / 100).toFixed(2).replace(".", ",") : "");
+  let offsetCents = 0;
+  try { offsetCents = offsetChosen ? toCents(offsetAmount.trim() || "0") : 0; } catch { offsetCents = -1; }
+  const offsetInvalid = !!depositOffset && offsetChosen && (offsetCents <= 0 || offsetCents > depositOffset.openCents || offsetCents > depositOffset.availableCents);
   const overpaid = !!paymentPreview?.overpaid;
-  const locked = blocking || pending || (clicked && !state?.error) || (overpaid && !confirmed);
+  const locked = blocking || pending || (clicked && !state?.error) || (overpaid && !confirmed) || offsetInvalid;
   return (
     <form onSubmit={(e) => { setClicked(true); submitWithoutReset(formAction)(e); }} className="card p-4 flex flex-col gap-3">
       {versionNo === 1 ? (
@@ -85,9 +148,10 @@ function FinalizeCard({ finalize, blocking, blockingReason, versionNo, kind, pay
           <span>Für diese Rechnung wurden bereits {paymentPreview!.paid} Zahlungen dokumentiert. Der neue Rechnungsbetrag beträgt {paymentPreview!.grossAfter}. Dadurch entsteht eine Überzahlung von {paymentPreview!.overpaid}. Rent-Base führt keine automatische Erstattung durch. Ich bestätige das ausdrücklich.</span>
         </label>
       )}
+      {depositOffset && !overpaid && <DepositOffsetSection choice={depositOffset} chosen={offsetChosen} setChosen={setOffsetChosen} amount={offsetAmount} setAmount={setOffsetAmount} />}
       {state?.error && <p role="alert" className="text-bad bg-bad-soft rounded-md px-3 py-2 text-sm">{state.error}</p>}
       <button type="submit" disabled={locked} className="btn btn-primary justify-center !py-3 !text-[15px]">
-        {pending || (clicked && !state?.error) ? "Rechnung wird abgeschlossen…" : versionNo === 1 ? "Rechnung finalisieren" : `Fassung ${versionNo} finalisieren`}
+        {pending || (clicked && !state?.error) ? "Rechnung wird abgeschlossen…" : `${versionNo === 1 ? "Rechnung finalisieren" : `Fassung ${versionNo} finalisieren`}${depositOffset && offsetChosen && !offsetInvalid ? ` und ${fmtCents(offsetCents)} aus Kaution verrechnen` : ""}`}
       </button>
       {blocking && blockingReason && <p className="text-xs text-ink-3">{blockingReason}</p>}
     </form>

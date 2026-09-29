@@ -5,12 +5,14 @@
 // beim Speichern und beim Abschluss; nach dem Speichern kommt ohnehin der Serverstand.
 import { useEffect, useState } from "react";
 import type { HandoverIssue } from "@/lib/handovers";
+import { isBatteryInputValid, isFuelInputValid, isMileageInputValid } from "@/lib/readings-live";
 
 export type ReadingWatch = { code: string; check: () => boolean };
 
-export const WATCH_MILEAGE: ReadingWatch = { code: "MILEAGE_MISSING", check: () => /^\d+$/.test((document.getElementById("mileage") as HTMLInputElement | null)?.value.replace(/\./g, "").trim() ?? "") };
-export const WATCH_FUEL: ReadingWatch = { code: "FUEL_MISSING", check: () => !!document.querySelector('input[name="fuelLevelEighths"]:checked') };
-export const WATCH_BATTERY: ReadingWatch = { code: "BATTERY_MISSING", check: () => /^\d{1,3}$/.test((document.getElementById("batteryPercent") as HTMLInputElement | null)?.value.trim() ?? "") };
+// Die Regeln selbst stehen als reine Funktionen in lib/readings-live.ts (testbar); hier nur das Auslesen der Felder.
+export const WATCH_MILEAGE: ReadingWatch = { code: "MILEAGE_MISSING", check: () => isMileageInputValid((document.getElementById("mileage") as HTMLInputElement | null)?.value) };
+export const WATCH_FUEL: ReadingWatch = { code: "FUEL_MISSING", check: () => isFuelInputValid((document.querySelector('input[name="fuelLevelEighths"]:checked') as HTMLInputElement | null)?.value) };
+export const WATCH_BATTERY: ReadingWatch = { code: "BATTERY_MISSING", check: () => isBatteryInputValid((document.getElementById("batteryPercent") as HTMLInputElement | null)?.value) };
 
 export function ReadingsIssueList({ issues, watch, okText }: { issues: HandoverIssue[]; watch: ("mileage" | "fuel" | "battery")[]; okText?: string }) {
   const [satisfied, setSatisfied] = useState<Set<string>>(() => new Set());

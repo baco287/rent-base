@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { requireRole } from "@/lib/auth";
@@ -8,6 +9,8 @@ import { customerName, fmtDateTime, fmtEur } from "@/lib/format";
 import { getInvoiceState, invoiceSettingsMissing, listVersions, type CompanySnapshot, type InvoiceCustomerSnapshot, type VersionDiff } from "@/lib/invoices";
 import { fmtCents, toCents } from "@/lib/money";
 import { invoicePaymentSummary } from "@/lib/payments";
+import { depositView } from "@/lib/deposits";
+import { depositOffsetStart } from "@/lib/invoice-settlement";
 import { invoiceFinancials } from "@/lib/counter-documents";
 import { toDateTimeInputValue } from "@/lib/time";
 import { Card, Chip, Content, PageHeader, Plate } from "@/components/ui";
@@ -123,6 +126,11 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
       : prepaidCents > 0
         ? { paid: fmtCents(prepaidCents), grossBefore: "–", grossAfter: fmtCents(newGross), openAfter: fmtCents(Math.max(0, newGross - prepaidCents)), overpaid: prepaidCents > newGross ? fmtCents(prepaidCents - newGross) : null }
         : null;
+    // Befehl 21: Ausgangslage für die bewusste Kautionsverrechnung beim Abschluss – nur Zahlen, es wird nichts gebucht
+    const paidBefore = draft.versionNo === 1 ? prepaidCents : mode?.paidCents ?? 0;
+    const dep = await depositView(tenant.id, b.id);
+    const offsetStart = depositOffsetStart({ bookingStatus: b.status, grossCents: newGross, paidCents: paidBefore, receivedCents: dep.receivedCents, remainingCents: dep.remainingCents });
+    const depositOffset = offsetStart ? { ...offsetStart, nonce: randomUUID(), when: toDateTimeInputValue(new Date()) } : null;
     const title = draft.versionNo === 1 ? `${kindLabel} (Entwurf)` : `${kindLabel} ${inv.number} · Fassung ${draft.versionNo} (Entwurf)`;
     return (
       <>
@@ -188,6 +196,7 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
             blocking={blockingIssues.length > 0}
             blockingReason={blockingIssues.length > 0 ? "Bitte zuerst die offenen Punkte aus der Prüfung lösen." : undefined}
             paymentPreview={paymentPreview}
+            depositOffset={depositOffset}
             save={saveInvoiceDraftAction.bind(null, b.id, key)}
             finalize={finalizeInvoiceAction.bind(null, b.id, key)}
           />

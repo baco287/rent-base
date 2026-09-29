@@ -112,6 +112,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
             {canStart ? (
               <>
                 <p className="rounded-md bg-info-soft text-info px-3.5 py-2.5 font-medium">Der Rückgabezustand wird mit dem dokumentierten Übergabezustand ({pickup!.number}) verglichen.</p>
+                <p className="rounded-md bg-panel-2 px-3.5 py-2.5 text-sm font-medium">Für die Fahrzeugrückgabe am besten auf dem Tablet weitermachen.</p>
                 <p className="text-sm text-ink-2">Geplante Rückgabe: {fmtDateTime(b.endAt)}. Der Assistent führt durch Kilometer, Tank, Fahrzeugzustand im Vorher-/Nachher-Vergleich, Fotos, Checkliste, Zusatzkosten und Unterschrift. Erst das finalisierte Protokoll setzt die Buchung auf „Zurückgegeben“.</p>
                 <form action={startReturnAction.bind(null, b.id)}><button className="btn btn-primary !py-2.5 !px-5">Rückgabe starten</button></form>
               </>
@@ -150,7 +151,13 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
           <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
         </PageHeader>
         <Content>
-          {sp.abgeschlossen === "1" && <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 font-medium">Die Rückgabe ist abgeschlossen und versiegelt. {b.vehicle.plate} ist zurück und die Buchung steht auf „Zurückgegeben“.</p>}
+          {sp.abgeschlossen === "1" && (
+            <div className="rounded-md bg-good-soft text-good px-3.5 py-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+              <p className="font-medium flex-1">Rückgabe abgeschlossen. Die Rechnung wird anschließend am PC geprüft und finalisiert.</p>
+              {user.role !== "YARD" && <Link href={`/buchungen/${b.id}/rechnung`} className="btn justify-center">Zur Rechnung</Link>}
+            </div>
+          )}
+          {sp.abgeschlossen === "1" && <p className="text-xs text-ink-3">Das Protokoll ist versiegelt. {b.vehicle.plate} ist zurück und die Buchung steht auf „Zurückgegeben“.</p>}
           {sp.abgeschlossen === "1" && <FollowUpNotice tenantId={tenant.id} bookingId={b.id} handoverId={handover.id} kind="RETURN" />}
           <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
           <DamageCasesPanel tenantId={tenant.id} where={{ discoveredInHandoverId: handover.id }} title="Bei dieser Rückgabe neu festgestellte Schäden" empty="Bei dieser Rückgabe wurden keine neuen Schäden festgestellt." />
@@ -195,6 +202,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
 
         {step === 1 && (
           <>
+            <p className="rounded-md bg-panel-2 px-3.5 py-2.5 text-sm font-medium">Für die Fahrzeugrückgabe am besten auf dem Tablet weitermachen.</p>
             <p className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm font-medium">Der Rückgabezustand wird mit dem dokumentierten Übergabezustand ({pickup?.number}) verglichen.</p>
             {keyDrop && <KeyDropCustomerCard k={keyDrop.doc} />}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">

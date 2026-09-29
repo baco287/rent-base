@@ -271,7 +271,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
         {step === 6 && (
           <>
             <HandoverIssueList issues={issues} areas={["DRIVERS"]} okText="Alle vorgesehenen Fahrer sind identifiziert und ihre Fahrerlaubnis ist geprüft." />
-            <DriverVerificationSection tenantId={tenant.id} bookingId={b.id} handoverId={handover.id} role={user.role} />
+            <DriverVerificationSection tenantId={tenant.id} bookingId={b.id} handoverId={handover.id} role={user.role} fullCheckFor={typeof sp.pruefung === "string" ? sp.pruefung : null} />
             <Card className="p-4 md:p-5"><StepForm action={navigateStepAction.bind(null, b.id, 6)} step={6} nextLabel="Weiter zur Unterschrift"><span className="sr-only">Navigation</span></StepForm></Card>
           </>
         )}

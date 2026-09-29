@@ -6,6 +6,8 @@ import { getContractState } from "@/lib/contracts";
 import { buildContractDocument } from "@/lib/contract-view";
 import { customerToFormValues } from "@/lib/customer-form-values";
 import { hasErrors } from "@/lib/contract-checks";
+import { pickupAction } from "@/lib/booking-status";
+import { startPickupAction } from "../uebergabe/actions";
 import { DRIVER_ROLES, FUELS, RULE_SOURCES, VEHICLE_STATUS, driveClassOf, type Fuel, type VehicleStatus } from "@/lib/constants";
 import { sourceText, type RuleKey } from "@/lib/business-rules";
 import { ContractTermsText } from "@/components/terms-view";
@@ -85,6 +87,9 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
 
   // Abgeschlossen oder storniert: nur noch Anzeige
   if (contract.status !== "DRAFT") {
+    // Befehl 21: nach dem Abschluss ist die Übergabe der nächste Schritt – bestehender Entwurf wird fortgesetzt, nie dupliziert
+    const handovers = await db.handover.findMany({ where: { tenantId: tenant.id, bookingId: booking.id, correctsId: null }, select: { type: true, status: true } });
+    const next = contract.status === "SIGNED" ? pickupAction(booking, contract, handovers) : { kind: "NONE" as const, label: "" };
     return (
       <>
         <PageHeader title={`Mietvertrag ${contract.number}`} sub={`Buchung ${booking.number}`}>
@@ -93,6 +98,19 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
         </PageHeader>
         <Content>
           {sp.abgeschlossen === "1" && <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 font-medium">Der Mietvertrag ist abgeschlossen und versiegelt. Die Buchung ist bereit zur Übergabe.</p>}
+          {(next.kind === "START" || next.kind === "CONTINUE") && (
+            <section aria-label="Nächster Schritt" className="rounded-xl border-2 border-brand bg-panel p-4 md:p-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5">
+              <div className="flex-1 min-w-0">
+                <div className="label-xs text-ink-3">Nächster Schritt</div>
+                <div className="text-lg font-semibold leading-snug">Jetzt auf dem Tablet mit der Übergabe weitermachen</div>
+                <p className="text-sm text-ink-2 mt-0.5">{next.kind === "CONTINUE" ? "Die Übergabe wurde bereits begonnen und wird fortgesetzt." : "Kilometerstand, Fahrzeugzustand, Fotos, Fahrerprüfung und Unterschrift – direkt am Fahrzeug."}</p>
+              </div>
+              {next.kind === "CONTINUE"
+                ? <Link href={`/buchungen/${booking.id}/uebergabe`} className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">Übergabe fortsetzen</Link>
+                : <form action={startPickupAction.bind(null, booking.id)}><button className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">Übergabe starten</button></form>}
+            </section>
+          )}
+          {next.kind === "VIEW" && <p className="text-sm text-ink-2">Die Übergabe ist abgeschlossen. <Link href={`/buchungen/${booking.id}/uebergabe`} className="underline">Übergabeprotokoll anzeigen</Link></p>}
           <ContractDocumentView doc={doc} />
         </Content>
       </>

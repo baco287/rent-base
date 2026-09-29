@@ -11,6 +11,7 @@ import { requireRole } from "@/lib/auth";
 import { DomainError, isImmutableError } from "@/lib/integrity";
 import { INVOICE_UNITS, isSideInvoice } from "@/lib/constants";
 import { discardInvoiceDraft, ensureInvoiceDraft, finalizeInvoice, markVersionDelivered, startInvoiceEdit, updateInvoiceDraft } from "@/lib/invoices";
+import { finalizeInvoiceWithDepositOffset } from "@/lib/invoice-settlement";
 import { runInvoiceFollowUp } from "@/lib/followup";
 import { discardCounterAction } from "./counter-actions";
 import { parseLocalDateTime } from "@/lib/time";
@@ -127,8 +128,20 @@ export async function discardInvoiceDraftAction(bookingId: string, invoiceId: st
 export async function finalizeInvoiceAction(bookingId: string, invoiceId: string | null, _prev: InvoiceState, formData: FormData): Promise<InvoiceState> {
   const { tenant, invoice, key, caseId, actor } = await context(bookingId, invoiceId);
   let version;
+  // Befehl 21: bewusst ausgewählte Kautionsverrechnung – wird nur zusammen mit dem Abschluss gebucht (eine Transaktion)
+  const offsetChosen = formData.get("depositOffset") === "1";
+  const opts = { confirmOverpayment: formData.get("confirmOverpayment") === "1" };
   try {
-    version = await finalizeInvoice(tenant.id, invoice.id, actor, { confirmOverpayment: formData.get("confirmOverpayment") === "1" });
+    if (offsetChosen) {
+      const amount = String(formData.get("depositOffsetAmount") ?? "").trim();
+      if (!amount) return { error: "Bitte den Betrag eingeben, der aus der Kaution verrechnet werden soll." };
+      if (formData.get("depositOffsetConfirmed") !== "1") return { error: "Bitte die Kautionsverrechnung ausdrücklich bestätigen." };
+      const occurredAt = parseLocalDateTime(String(formData.get("depositOffsetAt") ?? "")) ?? new Date();
+      const res = await finalizeInvoiceWithDepositOffset(tenant.id, invoice.id, actor, opts, { amount, occurredAt, idempotencyKey: String(formData.get("depositOffsetNonce") ?? "") });
+      version = res.version;
+    } else {
+      version = await finalizeInvoice(tenant.id, invoice.id, actor, opts);
+    }
   } catch (e) {
     return asState(e);
   }

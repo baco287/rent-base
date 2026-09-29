@@ -7,7 +7,7 @@ import { customerName, fmtDateTime, fmtEur, toDateTimeInput } from "@/lib/format
 import { calculateRentalPrice, rateCardFrom } from "@/lib/pricing";
 import { BookingStageChip, Card, Chip, Content, PageHeader, Plate } from "@/components/ui";
 import { EXTRA_CHARGE_TYPES, type ExtraChargeType } from "@/lib/constants";
-import { bookingStage, canCancel } from "@/lib/booking-status";
+import { bookingStage, canCancel, pickupAction, returnAction } from "@/lib/booking-status";
 import { startContractAction } from "./vertrag/actions";
 import { setBookingStatusAction, updateBookingAction } from "../actions";
 import { BookingForm } from "../booking-form";
@@ -52,6 +52,17 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const startContract = startContractAction.bind(null, b.id);
   const finish = setBookingStatusAction.bind(null, b.id, "RETURNED");
   const cancel = setBookingStatusAction.bind(null, b.id, "CANCELLED");
+  // Befehl 21: „Was ist als Nächstes zu tun?“ – eine deutliche Aktion je Stand, abgeleitet aus denselben Regeln wie die Kopfzeile
+  const pickupNext = pickupAction(b, b.contract, b.handovers);
+  const returnNext = returnAction(b, b.contract, b.handovers);
+  const canContract = user.role !== "YARD";
+  const nextStep: { title: string; text: string; action: React.ReactNode } | null =
+    stage === "NEEDS_CONTRACT" ? { title: "Mietvertrag fehlt", text: canContract ? "Für diese Buchung gibt es noch keinen Mietvertrag. Ohne Vertrag ist keine Übergabe möglich." : "Der Mietvertrag wird von der Disposition erstellt. Danach kann die Übergabe beginnen.", action: canContract ? <form action={startContract}><button className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">Mietvertrag erstellen</button></form> : null }
+    : stage === "CONTRACT_DRAFT" ? { title: "Mietvertrag noch nicht abgeschlossen", text: canContract ? "Der Vertragsentwurf ist angelegt. Bitte prüfen, unterschreiben lassen und abschließen." : "Die Disposition schließt den Mietvertrag ab. Danach kann die Übergabe beginnen.", action: canContract ? <Link href={`/buchungen/${b.id}/vertrag`} className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">Mietvertrag fortsetzen</Link> : null }
+    : pickupNext.kind === "START" || pickupNext.kind === "CONTINUE" ? { title: "Bereit zur Übergabe", text: "Der Mietvertrag ist abgeschlossen. Jetzt auf dem Tablet mit der Übergabe weitermachen.", action: <Link href={`/buchungen/${b.id}/uebergabe`} className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">{pickupNext.label}</Link> }
+    : returnNext.kind === "START" || returnNext.kind === "CONTINUE" ? { title: overdue ? "Rückgabe überfällig" : "Fahrzeug ist unterwegs", text: "Wenn das Fahrzeug zurückkommt: Rückgabe am besten auf dem Tablet durchführen.", action: <Link href={`/buchungen/${b.id}/rueckgabe`} className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">{returnNext.label}</Link> }
+    : b.status === "RETURNED" && returnDone && invoice?.status !== "FINALIZED" ? { title: invoice ? "Rechnung noch nicht abgeschlossen" : "Rechnung fehlt", text: canContract ? "Die Rückgabe ist abgeschlossen. Die Rechnung wird am PC geprüft und finalisiert." : "Die Rechnung wird von der Disposition erstellt.", action: canContract ? <Link href={`/buchungen/${b.id}/rechnung`} className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">{invoice ? "Rechnung fortsetzen" : "Rechnung erstellen"}</Link> : null }
+    : null;
 
   return (
     <>
@@ -79,6 +90,16 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
         {sp.gespeichert === "1" && <Chip tone="good">Gespeichert</Chip>}
         {sp.fehler === "status" && <Chip tone="bad">Dieser Statuswechsel ist nicht möglich.</Chip>}
         {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
+        {nextStep && (
+          <section aria-label="Nächster Schritt" className="rounded-xl border-2 border-brand bg-panel p-4 md:p-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5">
+            <div className="flex-1 min-w-0">
+              <div className="label-xs text-ink-3">Nächster Schritt</div>
+              <div className="text-lg font-semibold leading-snug">{nextStep.title}</div>
+              <p className="text-sm text-ink-2 mt-0.5">{nextStep.text}</p>
+            </div>
+            {nextStep.action}
+          </section>
+        )}
         {b.status === "ACTIVE" && pickupDone && (
           <p className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm">Übergeben mit Protokoll {pickupDone.number}. Die Rückgabe läuft über „Rückgabe starten“ und vergleicht den Zustand mit der Übergabe.</p>
         )}
@@ -170,11 +191,10 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
           {/* Mietzahlung und Kaution bleiben getrennt: gemeinsamer Überblick (Befehl 20.7), eigene Bereiche, keine automatische Verrechnung */}
           <MoneyOverview tenantId={tenant.id} bookingId={b.id} role={user.role} />
           <RentalPaymentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
-          {contractSigned && (
-            <div id="kaution">
-              <DepositPanel tenantId={tenant.id} bookingId={b.id} role={user.role} charges={returnDone ? { count: charges.length, total: chargesTotal } : null} />
-            </div>
-          )}
+          {/* Befehl 21: der Bereich ist immer erreichbar („Zur Kaution“); ohne Vertrag erklärt er, wann der Eingang dokumentiert wird */}
+          <div id="kaution" className="scroll-mt-20">
+            <DepositPanel tenantId={tenant.id} bookingId={b.id} role={user.role} charges={returnDone ? { count: charges.length, total: chargesTotal } : null} />
+          </div>
           </div>
 
           <div className="flex flex-col gap-4">

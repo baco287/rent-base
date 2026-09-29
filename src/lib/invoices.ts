@@ -838,86 +838,93 @@ export type FinalizeOptions = { reason?: string | null; confirmOverpayment?: boo
  * veralteter Entwurf (nicht Nachfolger der aktuellen Fassung) wird abgewiesen. Eine Nummer wird nie wiederverwendet.
  */
 export async function finalizeInvoice(tenantId: string, invoiceId: string, actor: Actor, opts: FinalizeOptions = {}): Promise<VersionWithItems> {
-  return withNumberRetry(() =>
-    db.$transaction(async (tx) => {
-      const { invoice: lockedInv, draft: draft0 } = await lockDraft(tx, tenantId, invoiceId);
-      if (lockedInv.documentType !== "INVOICE") throw new DomainError("Gutschriften und Stornobelege werden über ihren eigenen Abschluss finalisiert.");
-      const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: lockedInv.id } });
-      let draft = draft0;
-      if (opts.reason !== undefined && (opts.reason?.trim() || "") !== (draft.reason ?? "")) {
-        draft = await tx.invoiceVersion.update({ where: { id: draft.id }, data: { reason: opts.reason?.trim() || null }, include: withItems });
-      }
-      const current = invoice.currentVersionId ? await tx.invoiceVersion.findFirstOrThrow({ where: { id: invoice.currentVersionId, tenantId }, include: withItems }) : null;
-      const mode = current ? await editModeOf(tx, tenantId, invoice, current) : null;
-      if (draft.versionNo > 1) {
-        if (!current) throw new DomainError("Die Rechnung hat keine aktuelle Fassung.");
-        if (draft.supersedesVersionId !== current.id) throw new DomainError("Dieser Entwurf basiert nicht mehr auf der aktuellen Fassung. Bitte den Entwurf verwerfen und die Bearbeitung neu beginnen.");
-        // Fassungsart folgt dem tatsächlichen Übermittlungsstand der Vorfassung zum Zeitpunkt des Abschlusses
-        const kind: VersionKind = mode!.delivered ? "CORRECTION" : "REVISION";
-        if (kind !== draft.kind) draft = await tx.invoiceVersion.update({ where: { id: draft.id }, data: { kind }, include: withItems });
-      }
-      const problems = (await collectIssues(tx, tenantId, invoice, draft, draft.versionNo > 1 ? mode : null)).filter((i) => i.severity === "error");
-      if (problems.length > 0) throw new DomainError(problems.length === 1 ? problems[0].message : `${problems[0].message} (und ${problems.length - 1} weitere Punkte)`);
-      const newGross = toCents(draft.grossTotal);
-      if (mode && mode.paidCents > newGross && !opts.confirmOverpayment) {
-        throw new DomainError(`Für diese Rechnung wurden bereits ${fmtCents(mode.paidCents)} Zahlungen dokumentiert. Der neue Rechnungsbetrag beträgt ${fmtCents(newGross)}. Dadurch entsteht eine Überzahlung von ${fmtCents(mode.paidCents - newGross)}. Rent-Base führt keine automatische Erstattung durch. Bitte die Überzahlung ausdrücklich bestätigen.`);
-      }
-      // Erste Fassung der Mietrechnung: vorab an der Buchung erfasste Mietzahlungen werden ihr zugeordnet (Buchung gesperrt)
-      const linksRentalPayments = draft.versionNo === 1 && invoice.kind === "RENTAL";
-      const prepaidCents = linksRentalPayments ? await lockUnlinkedRentalPayments(tx, tenantId, invoice.bookingId) : 0;
-      if (prepaidCents > newGross && !opts.confirmOverpayment) {
-        throw new DomainError(`Zu dieser Buchung wurden bereits ${fmtCents(prepaidCents)} Mietzahlungen dokumentiert. Der Rechnungsbetrag beträgt ${fmtCents(newGross)}. Dadurch entsteht eine Überzahlung von ${fmtCents(prepaidCents - newGross)}. Rent-Base führt keine automatische Erstattung durch. Bitte die Überzahlung ausdrücklich bestätigen.`);
-      }
+  return withNumberRetry(() => db.$transaction((tx) => finalizeInvoiceIn(tx, tenantId, invoiceId, actor, opts), TX)).catch(finalizeErrorOf);
+}
 
-      const now = new Date();
-      let number = invoice.number;
-      let companySnapshot = draft.companySnapshot as Prisma.InputJsonValue;
-      let issueDate = draft.issueDate;
-      if (draft.versionNo === 1) {
-        const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
-        number = await nextInvoiceNumber(tx, tenantId, now);
-        companySnapshot = companySnapshotOf(tenant) as unknown as Prisma.InputJsonValue;
-        issueDate = now;
-      }
-      // Zahlungsziel läuft ab dem Abschluss der jeweiligen Fassung (bei einer Berichtigung ab dem Berichtigungsdatum)
-      const paymentDueDate = draft.paymentTermDays != null ? new Date(now.getTime() + draft.paymentTermDays * 86400_000) : null;
-      const sealedBase = await tx.invoiceVersion.update({
-        where: { id: draft.id },
-        data: { issueDate, correctionDate: draft.versionNo > 1 ? now : null, paymentDueDate, companySnapshot },
-        include: withItems,
-      });
-      const hash = contentHash(sealedContent({ ...invoice, number }, sealedBase));
-      const diff = current ? diffVersions(current, sealedBase) : null;
-      const finalized = await tx.invoiceVersion.update({
-        where: { id: draft.id },
-        data: { status: "FINALIZED", finalizedAt: now, finalizedById: actor.id, finalizedByName: actor.name, contentHash: hash, diffFromPrevious: diff ? (diff as unknown as Prisma.InputJsonValue) : undefined },
-        include: withItems,
-      });
-      const log = Array.isArray(invoice.changeLog) ? (invoice.changeLog as Prisma.JsonArray) : [];
-      const summary = draft.versionNo === 1
-        ? `Abgeschlossen als ${number} (Fassung 1)`
-        : `Fassung ${draft.versionNo} abgeschlossen (${finalized.kind === "CORRECTION" ? "Berichtigung" : "Neufassung"}, ${diff!.entries.length} Änderungen, Betrag ${diff!.grossBefore} → ${diff!.grossAfter})${finalized.reason ? `: ${finalized.reason}` : ""}`;
-      if (draft.versionNo === 1) {
-        await tx.invoice.update({ where: { id: invoice.id }, data: { number, status: "FINALIZED", finalizedAt: now, currentVersionId: finalized.id, changeLog: [...log, { at: now.toISOString(), by: actor.name, versionNo: 1, summary }] } });
-        if (linksRentalPayments) await linkRentalPaymentsToInvoice(tx, tenantId, actor, { id: invoice.id, bookingId: invoice.bookingId, number });
-      } else {
-        await tx.invoice.update({ where: { id: invoice.id }, data: { currentVersionId: finalized.id, changeLog: [...log, { at: now.toISOString(), by: actor.name, versionNo: draft.versionNo, summary }] } });
-        await recordAudit(tx, tenantId, actor, {
-          action: finalized.kind === "CORRECTION" ? "INVOICE_CORRECTED" : "INVOICE_REVISED",
-          bookingId: invoice.bookingId,
-          invoiceId: invoice.id,
-          amountCents: newGross,
-          details: { invoiceNumber: number, fromVersion: current!.versionNo, toVersion: finalized.versionNo, grossBefore: toCents(current!.grossTotal), grossAfter: newGross, paidCents: mode!.paidCents, overpaidCents: Math.max(0, mode!.paidCents - newGross), reason: finalized.reason, changes: diff!.entries.length },
-        });
-      }
-      return finalized;
-    }, TX),
-  ).catch((e) => {
-    if (isUniqueViolation(e, "damageCaseId")) throw new DomainError("Zu dieser Schadenakte gibt es bereits eine Schadenabrechnung.");
-    if (isUniqueViolation(e, "authorityCaseId") || isUniqueViolation(e, "one_per_authority_case")) throw new DomainError("Zu diesem Behördenvorgang gibt es bereits ein Bearbeitungsentgelt.");
-    if (isUniqueViolation(e, "bookingId")) throw new DomainError("Zu dieser Buchung gibt es bereits eine abgeschlossene Mietrechnung.");
-    throw e;
+/** Eindeutigkeitsverletzungen des Abschlusses als Fachmeldung. */
+export function finalizeErrorOf(e: unknown): never {
+  if (isUniqueViolation(e, "damageCaseId")) throw new DomainError("Zu dieser Schadenakte gibt es bereits eine Schadenabrechnung.");
+  if (isUniqueViolation(e, "authorityCaseId") || isUniqueViolation(e, "one_per_authority_case")) throw new DomainError("Zu diesem Behördenvorgang gibt es bereits ein Bearbeitungsentgelt.");
+  if (isUniqueViolation(e, "bookingId")) throw new DomainError("Zu dieser Buchung gibt es bereits eine abgeschlossene Mietrechnung.");
+  throw e;
+}
+
+/**
+ * Kern des Abschlusses in einer laufenden Transaktion (Befehl 21: auch gemeinsam mit einer bewusst bestätigten
+ * Kautionsverrechnung – lib/invoice-settlement.ts). Inhaltlich unverändert.
+ */
+export async function finalizeInvoiceIn(tx: Tx, tenantId: string, invoiceId: string, actor: Actor, opts: FinalizeOptions = {}): Promise<VersionWithItems> {
+  const { invoice: lockedInv, draft: draft0 } = await lockDraft(tx, tenantId, invoiceId);
+  if (lockedInv.documentType !== "INVOICE") throw new DomainError("Gutschriften und Stornobelege werden über ihren eigenen Abschluss finalisiert.");
+  const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: lockedInv.id } });
+  let draft = draft0;
+  if (opts.reason !== undefined && (opts.reason?.trim() || "") !== (draft.reason ?? "")) {
+    draft = await tx.invoiceVersion.update({ where: { id: draft.id }, data: { reason: opts.reason?.trim() || null }, include: withItems });
+  }
+  const current = invoice.currentVersionId ? await tx.invoiceVersion.findFirstOrThrow({ where: { id: invoice.currentVersionId, tenantId }, include: withItems }) : null;
+  const mode = current ? await editModeOf(tx, tenantId, invoice, current) : null;
+  if (draft.versionNo > 1) {
+    if (!current) throw new DomainError("Die Rechnung hat keine aktuelle Fassung.");
+    if (draft.supersedesVersionId !== current.id) throw new DomainError("Dieser Entwurf basiert nicht mehr auf der aktuellen Fassung. Bitte den Entwurf verwerfen und die Bearbeitung neu beginnen.");
+    // Fassungsart folgt dem tatsächlichen Übermittlungsstand der Vorfassung zum Zeitpunkt des Abschlusses
+    const kind: VersionKind = mode!.delivered ? "CORRECTION" : "REVISION";
+    if (kind !== draft.kind) draft = await tx.invoiceVersion.update({ where: { id: draft.id }, data: { kind }, include: withItems });
+  }
+  const problems = (await collectIssues(tx, tenantId, invoice, draft, draft.versionNo > 1 ? mode : null)).filter((i) => i.severity === "error");
+  if (problems.length > 0) throw new DomainError(problems.length === 1 ? problems[0].message : `${problems[0].message} (und ${problems.length - 1} weitere Punkte)`);
+  const newGross = toCents(draft.grossTotal);
+  if (mode && mode.paidCents > newGross && !opts.confirmOverpayment) {
+    throw new DomainError(`Für diese Rechnung wurden bereits ${fmtCents(mode.paidCents)} Zahlungen dokumentiert. Der neue Rechnungsbetrag beträgt ${fmtCents(newGross)}. Dadurch entsteht eine Überzahlung von ${fmtCents(mode.paidCents - newGross)}. Rent-Base führt keine automatische Erstattung durch. Bitte die Überzahlung ausdrücklich bestätigen.`);
+  }
+  // Erste Fassung der Mietrechnung: vorab an der Buchung erfasste Mietzahlungen werden ihr zugeordnet (Buchung gesperrt)
+  const linksRentalPayments = draft.versionNo === 1 && invoice.kind === "RENTAL";
+  const prepaidCents = linksRentalPayments ? await lockUnlinkedRentalPayments(tx, tenantId, invoice.bookingId) : 0;
+  if (prepaidCents > newGross && !opts.confirmOverpayment) {
+    throw new DomainError(`Zu dieser Buchung wurden bereits ${fmtCents(prepaidCents)} Mietzahlungen dokumentiert. Der Rechnungsbetrag beträgt ${fmtCents(newGross)}. Dadurch entsteht eine Überzahlung von ${fmtCents(prepaidCents - newGross)}. Rent-Base führt keine automatische Erstattung durch. Bitte die Überzahlung ausdrücklich bestätigen.`);
+  }
+
+  const now = new Date();
+  let number = invoice.number;
+  let companySnapshot = draft.companySnapshot as Prisma.InputJsonValue;
+  let issueDate = draft.issueDate;
+  if (draft.versionNo === 1) {
+    const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+    number = await nextInvoiceNumber(tx, tenantId, now);
+    companySnapshot = companySnapshotOf(tenant) as unknown as Prisma.InputJsonValue;
+    issueDate = now;
+  }
+  // Zahlungsziel läuft ab dem Abschluss der jeweiligen Fassung (bei einer Berichtigung ab dem Berichtigungsdatum)
+  const paymentDueDate = draft.paymentTermDays != null ? new Date(now.getTime() + draft.paymentTermDays * 86400_000) : null;
+  const sealedBase = await tx.invoiceVersion.update({
+    where: { id: draft.id },
+    data: { issueDate, correctionDate: draft.versionNo > 1 ? now : null, paymentDueDate, companySnapshot },
+    include: withItems,
   });
+  const hash = contentHash(sealedContent({ ...invoice, number }, sealedBase));
+  const diff = current ? diffVersions(current, sealedBase) : null;
+  const finalized = await tx.invoiceVersion.update({
+    where: { id: draft.id },
+    data: { status: "FINALIZED", finalizedAt: now, finalizedById: actor.id, finalizedByName: actor.name, contentHash: hash, diffFromPrevious: diff ? (diff as unknown as Prisma.InputJsonValue) : undefined },
+    include: withItems,
+  });
+  const log = Array.isArray(invoice.changeLog) ? (invoice.changeLog as Prisma.JsonArray) : [];
+  const summary = draft.versionNo === 1
+    ? `Abgeschlossen als ${number} (Fassung 1)`
+    : `Fassung ${draft.versionNo} abgeschlossen (${finalized.kind === "CORRECTION" ? "Berichtigung" : "Neufassung"}, ${diff!.entries.length} Änderungen, Betrag ${diff!.grossBefore} → ${diff!.grossAfter})${finalized.reason ? `: ${finalized.reason}` : ""}`;
+  if (draft.versionNo === 1) {
+    await tx.invoice.update({ where: { id: invoice.id }, data: { number, status: "FINALIZED", finalizedAt: now, currentVersionId: finalized.id, changeLog: [...log, { at: now.toISOString(), by: actor.name, versionNo: 1, summary }] } });
+    if (linksRentalPayments) await linkRentalPaymentsToInvoice(tx, tenantId, actor, { id: invoice.id, bookingId: invoice.bookingId, number });
+  } else {
+    await tx.invoice.update({ where: { id: invoice.id }, data: { currentVersionId: finalized.id, changeLog: [...log, { at: now.toISOString(), by: actor.name, versionNo: draft.versionNo, summary }] } });
+    await recordAudit(tx, tenantId, actor, {
+      action: finalized.kind === "CORRECTION" ? "INVOICE_CORRECTED" : "INVOICE_REVISED",
+      bookingId: invoice.bookingId,
+      invoiceId: invoice.id,
+      amountCents: newGross,
+      details: { invoiceNumber: number, fromVersion: current!.versionNo, toVersion: finalized.versionNo, grossBefore: toCents(current!.grossTotal), grossAfter: newGross, paidCents: mode!.paidCents, overpaidCents: Math.max(0, mode!.paidCents - newGross), reason: finalized.reason, changes: diff!.entries.length },
+    });
+  }
+  return finalized;
 }
 
 /** Prüfsumme einer Fassung nachrechnen. Fassung 1 aus der Zeit vor den Fassungen wird mit dem damaligen Inhalt geprüft. */

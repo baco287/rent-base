@@ -256,6 +256,58 @@ export async function confirmVerification(tenantId: string, actor: Actor, verifi
   }, TX);
 }
 
+/** Klartext der Blocker (Oberfläche und Rückmeldung der Aktionen). */
+export const DRIVER_BLOCKER_LABELS: Record<string, string> = {
+  IDENTITY_NAME_MISMATCH: "Identität: Name stimmt nicht überein.",
+  IDENTITY_BIRTHDATE_MISMATCH: "Identität: Geburtsdatum stimmt nicht überein.",
+  LICENSE_INVALID: "Führerschein: als ungültig markiert.",
+  LICENSE_NAME_MISMATCH: "Führerschein: Name stimmt nicht überein.",
+  LICENSE_EXPIRED: "Führerschein: abgelaufen.",
+  LICENSE_EXPIRES_BEFORE_RETURN: "Führerschein: läuft vor der geplanten Rückgabe ab.",
+  LICENSE_CLASS_INSUFFICIENT: "Führerschein: erforderliche Fahrerlaubnisklasse fehlt.",
+  LICENSE_NO_REQUIRED_CLASS_CONFIGURED: "Für dieses Fahrzeug ist keine erforderliche Fahrerlaubnisklasse hinterlegt. Bitte in den Fahrzeug- oder Gruppendaten konfigurieren.",
+  LICENSE_MANUAL_REVIEW_OPEN: "Ausländischer Führerschein: manuelle Prüfung noch nicht bestätigt.",
+  LICENSE_DEVIATES_FROM_CUSTOMER: "Die vorgelegten Daten unterscheiden sich von den Kundendaten und sind noch nicht bestätigt.",
+};
+
+// ---------------------------------------------------------------------------
+// Befehl 21: Prüfung in einem Vorgang (ein Knopf statt „Identität speichern“ / „Führerschein speichern“ / „bestätigen“)
+// ---------------------------------------------------------------------------
+//
+// Der Mitarbeiter lässt sich Ausweis und Führerschein im Original zeigen, vergleicht und bestätigt einmal. Der Server
+// führt dafür dieselben drei Schritte aus wie bisher – Identität, Führerschein, Bestätigung – mit denselben Prüfungen
+// (Ablauf, Klasse, ausländischer Führerschein, Abweichung von den Kundendaten) und demselben Audit. Verletzt der
+// Führerschein eine Regel, wird NICHT bestätigt: der Vermerk bleibt blockiert und nennt die Gründe.
+
+export type OneStepCheckInput = {
+  documentType: string;
+  licenseNumber: string;
+  licenseCountry: string;
+  licenseIssuedAt: Date | null;
+  licenseValidUntil: Date | null;
+  licenseClasses: string[];
+  internationalPermitPresented: boolean;
+  translationPresented: boolean;
+  manualReviewConfirmed?: boolean;
+  deviationConfirmed?: boolean;
+  notes?: string | null;
+};
+
+export async function verifyDriverInOneStep(tenantId: string, actor: Actor, handoverId: string, contractDriverId: string, input: OneStepCheckInput): Promise<{ row: VerificationRow; confirmed: boolean; blockers: string[] }> {
+  const started = await startOrGetVerification(tenantId, actor, handoverId, contractDriverId);
+  if (started.status === "CONFIRMED") return { row: started, confirmed: true, blockers: [] };
+  await recordIdentityCheck(tenantId, actor, started.id, { documentType: input.documentType, originalSeen: true, nameMatched: true, birthDateMatched: true, notes: input.notes ?? null });
+  const checked = await recordLicenseCheck(tenantId, actor, started.id, {
+    originalSeen: true, documentValid: true, nameMatched: true,
+    licenseNumber: input.licenseNumber, licenseCountry: input.licenseCountry, licenseIssuedAt: input.licenseIssuedAt, licenseValidUntil: input.licenseValidUntil, licenseClasses: input.licenseClasses,
+    internationalPermitPresented: input.internationalPermitPresented, translationPresented: input.translationPresented,
+    manualReviewConfirmed: input.manualReviewConfirmed, deviationConfirmed: input.deviationConfirmed, notes: input.notes ?? null,
+  });
+  if (checked.blockedReasons.length > 0) return { row: checked, confirmed: false, blockers: checked.blockedReasons };
+  const row = await confirmVerification(tenantId, actor, started.id);
+  return { row, confirmed: true, blockers: [] };
+}
+
 // ---------------------------------------------------------------------------
 // Befehl 20.9: Wiederholungsprüfung bekannter Fahrer (dokumentierte Sichtprüfung, keine blinde Wiederverwendung)
 // ---------------------------------------------------------------------------

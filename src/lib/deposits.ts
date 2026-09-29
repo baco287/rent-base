@@ -90,18 +90,31 @@ export type DepositView = DepositFinancials & {
   /** Vertrag abgeschlossen, also gibt es eine vereinbarte Kaution */
   contractSigned: boolean;
   bookingStatus: string;
+  /** Befehl 21: Kautionsbetrag der Buchung – nur als „vereinbart“ anzeigbar, solange es weder Vertrag noch Kautionszeile gibt */
+  bookingDepositCents: Cents;
 };
+
+/**
+ * Befehl 21: Eingangsstand der Kaution für die Anzeige. „Erhalten“ stammt ausschließlich aus dokumentierten, bestätigten
+ * Kautionsbewegungen (receivedCents) – nie aus dem vereinbarten Betrag von Buchung oder Vertrag abgeleitet.
+ */
+export type DepositReceiptState = "NONE_AGREED" | "NOT_RECEIVED" | "PARTIALLY_RECEIVED" | "RECEIVED";
+export const DEPOSIT_RECEIPT_LABELS: Record<DepositReceiptState, string> = { NONE_AGREED: "Keine Kaution vereinbart", NOT_RECEIVED: "Noch nicht erhalten", PARTIALLY_RECEIVED: "Teilweise erhalten", RECEIVED: "Erhalten" };
+export function depositReceiptState(agreedCents: Cents, receivedCents: Cents): DepositReceiptState {
+  if (receivedCents <= 0) return agreedCents > 0 ? "NOT_RECEIVED" : "NONE_AGREED";
+  return receivedCents < agreedCents ? "PARTIALLY_RECEIVED" : "RECEIVED";
+}
 
 /** Stand der Kaution einer Buchung. Ohne gespeicherte Kaution gilt der Vertragswert als vereinbart und nichts als erhalten. */
 export async function depositView(tenantId: string, bookingId: string): Promise<DepositView> {
-  const booking = await db.booking.findFirst({ where: { id: bookingId, tenantId }, select: { status: true, contract: { select: { number: true, status: true, deposit: true } }, securityDeposit: { include: { events: { orderBy: [{ occurredAt: "desc" }, { createdAt: "desc" }] } } } } });
+  const booking = await db.booking.findFirst({ where: { id: bookingId, tenantId }, select: { status: true, deposit: true, contract: { select: { number: true, status: true, deposit: true } }, securityDeposit: { include: { events: { orderBy: [{ occurredAt: "desc" }, { createdAt: "desc" }] } } } } });
   if (!booking) throw new DomainError("Buchung nicht gefunden.");
   const signed = booking.contract?.status === "SIGNED";
   const deposit = booking.securityDeposit;
   const expected = deposit ? deposit.expectedAmountCents : signed ? toCents(booking.contract!.deposit) : 0;
   const events = deposit?.events ?? [];
   const fin = deposit ? (await depositFinancialsFor(tenantId, [deposit])).get(deposit.id)! : computeDepositFinancials(balanceOf(expected, []), 0);
-  return { ...fin, deposit, events, contractNumber: booking.contract?.number ?? null, contractSigned: signed, bookingStatus: booking.status };
+  return { ...fin, deposit, events, contractNumber: booking.contract?.number ?? null, contractSigned: signed, bookingStatus: booking.status, bookingDepositCents: toCents(booking.deposit) };
 }
 
 /**

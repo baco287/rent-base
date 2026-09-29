@@ -139,48 +139,7 @@ export async function applyDepositOffset(tenantId: string, actor: Actor, input: 
     if (existing) return { payment: existing, event: existing.depositOffsetEvent, created: false };
   }
   try {
-    return await db.$transaction(async (tx) => {
-      const { row: deposit, balance, bookingStatus } = await lockOrCreateDeposit(tx, tenantId, input.bookingId, actor);
-      const locked = await tx.$queryRaw<{ id: string; status: string; documentType: string; bookingId: string; number: string | null }[]>`SELECT "id", "status", "documentType", "bookingId", "number" FROM "Invoice" WHERE "id" = ${input.invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
-      if (key) {
-        // unter der Sperre erneut prüfen: ein paralleler Klick mit demselben Schlüssel war vielleicht schneller
-        const dup = await paymentByKey(tx, tenantId, key);
-        if (dup) return { payment: dup, event: dup.depositOffsetEvent, created: false };
-      }
-      if (locked.length === 0) throw new DomainError("Rechnung nicht gefunden.");
-      const inv = locked[0];
-      if (inv.bookingId !== input.bookingId) throw new DomainError("Die Rechnung gehört nicht zu dieser Buchung. Verrechnet wird nur die Kaution derselben Miete.");
-      if (inv.status !== "FINALIZED") throw new DomainError("Verrechnet wird nur mit abgeschlossenen Rechnungen.");
-      if (inv.documentType !== "INVOICE") throw new DomainError("Verrechnet wird nur mit Rechnungen, nicht mit Gutschriften oder Stornobelegen.");
-      if (!OFFSET_ALLOWED_BOOKING_STATUS.has(bookingStatus)) throw new DomainError("Eine Verrechnung ist erst nach der Rückgabe (oder bei Storno) möglich.");
-      if (balance.receivedCents <= 0) throw new DomainError("Es wurde noch keine Kaution als erhalten dokumentiert.");
-      const f = await invoiceFinancials(tenantId, inv.id, tx);
-      if (f.hasDraftCounter) throw new DomainError("Zu dieser Rechnung gibt es einen Gegenbeleg-Entwurf. Bitte zuerst abschließen oder verwerfen.");
-      const availableCents = Math.max(0, balance.remainingCents);
-      const plan = planAmount(f.openCents, availableCents, input.amount);
-      if (plan.error) throw new DomainError(plan.error);
-      const amountCents = plan.amountCents;
-      const note = input.note?.trim() || null;
-
-      const payment = await tx.payment.create({
-        data: {
-          tenantId, bookingId: inv.bookingId, invoiceId: inv.id, type: DEPOSIT_OFFSET_METHOD, method: DEPOSIT_OFFSET_METHOD, amountCents,
-          paidAt: input.occurredAt, reference: "Verrechnung aus der Kaution", note, idempotencyKey: key, createdById: actor.id, createdByName: actor.name,
-        },
-      });
-      const event = await tx.securityDepositEvent.create({
-        data: {
-          tenantId, depositId: deposit.id, type: "OFFSET", amountCents, method: null, reference: inv.number ? `Rechnung ${inv.number}` : "Rechnung", note, occurredAt: input.occurredAt,
-          idempotencyKey: key ? `${key}-o` : null, paymentId: payment.id, createdById: actor.id, createdByName: actor.name,
-        },
-      });
-      const after = await syncStatus(tx, tenantId, deposit.id);
-      await recordAudit(tx, tenantId, actor, {
-        action: "DEPOSIT_OFFSET_APPLIED", bookingId: inv.bookingId, invoiceId: inv.id, paymentId: payment.id, depositId: deposit.id, amountCents,
-        details: { invoiceNumber: inv.number, openBefore: f.openCents, openAfter: f.openCents - amountCents, depositAvailableBefore: availableCents, depositAvailableAfter: availableCents - amountCents, depositStatusAfter: after.status, at: input.occurredAt.toISOString() },
-      });
-      return { payment, event, created: true };
-    }, TX);
+    return await db.$transaction((tx) => applyDepositOffsetIn(tx, tenantId, actor, input, key), TX);
   } catch (e) {
     if (key && isUniqueViolation(e, "idempotencyKey")) {
       const winner = await paymentByKey(db, tenantId, key);
@@ -188,6 +147,53 @@ export async function applyDepositOffset(tenantId: string, actor: Actor, input: 
     }
     return domainFromDb(e);
   }
+}
+
+/**
+ * Kern der Verrechnung in einer laufenden Transaktion (Befehl 21: auch zusammen mit dem Rechnungsabschluss, damit beides
+ * gemeinsam gelingt oder gemeinsam scheitert – lib/invoice-settlement.ts). Prüft und bucht exakt wie bisher.
+ */
+export async function applyDepositOffsetIn(tx: Tx, tenantId: string, actor: Actor, input: DepositOffsetInput, key: string | null): Promise<DepositOffsetResult> {
+  const { row: deposit, balance, bookingStatus } = await lockOrCreateDeposit(tx, tenantId, input.bookingId, actor);
+  const locked = await tx.$queryRaw<{ id: string; status: string; documentType: string; bookingId: string; number: string | null }[]>`SELECT "id", "status", "documentType", "bookingId", "number" FROM "Invoice" WHERE "id" = ${input.invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+  if (key) {
+    // unter der Sperre erneut prüfen: ein paralleler Klick mit demselben Schlüssel war vielleicht schneller
+    const dup = await paymentByKey(tx, tenantId, key);
+    if (dup) return { payment: dup, event: dup.depositOffsetEvent, created: false };
+  }
+  if (locked.length === 0) throw new DomainError("Rechnung nicht gefunden.");
+  const inv = locked[0];
+  if (inv.bookingId !== input.bookingId) throw new DomainError("Die Rechnung gehört nicht zu dieser Buchung. Verrechnet wird nur die Kaution derselben Miete.");
+  if (inv.status !== "FINALIZED") throw new DomainError("Verrechnet wird nur mit abgeschlossenen Rechnungen.");
+  if (inv.documentType !== "INVOICE") throw new DomainError("Verrechnet wird nur mit Rechnungen, nicht mit Gutschriften oder Stornobelegen.");
+  if (!OFFSET_ALLOWED_BOOKING_STATUS.has(bookingStatus)) throw new DomainError("Eine Verrechnung ist erst nach der Rückgabe (oder bei Storno) möglich.");
+  if (balance.receivedCents <= 0) throw new DomainError("Es wurde noch keine Kaution als erhalten dokumentiert.");
+  const f = await invoiceFinancials(tenantId, inv.id, tx);
+  if (f.hasDraftCounter) throw new DomainError("Zu dieser Rechnung gibt es einen Gegenbeleg-Entwurf. Bitte zuerst abschließen oder verwerfen.");
+  const availableCents = Math.max(0, balance.remainingCents);
+  const plan = planAmount(f.openCents, availableCents, input.amount);
+  if (plan.error) throw new DomainError(plan.error);
+  const amountCents = plan.amountCents;
+  const note = input.note?.trim() || null;
+
+  const payment = await tx.payment.create({
+    data: {
+      tenantId, bookingId: inv.bookingId, invoiceId: inv.id, type: DEPOSIT_OFFSET_METHOD, method: DEPOSIT_OFFSET_METHOD, amountCents,
+      paidAt: input.occurredAt, reference: "Verrechnung aus der Kaution", note, idempotencyKey: key, createdById: actor.id, createdByName: actor.name,
+    },
+  });
+  const event = await tx.securityDepositEvent.create({
+    data: {
+      tenantId, depositId: deposit.id, type: "OFFSET", amountCents, method: null, reference: inv.number ? `Rechnung ${inv.number}` : "Rechnung", note, occurredAt: input.occurredAt,
+      idempotencyKey: key ? `${key}-o` : null, paymentId: payment.id, createdById: actor.id, createdByName: actor.name,
+    },
+  });
+  const after = await syncStatus(tx, tenantId, deposit.id);
+  await recordAudit(tx, tenantId, actor, {
+    action: "DEPOSIT_OFFSET_APPLIED", bookingId: inv.bookingId, invoiceId: inv.id, paymentId: payment.id, depositId: deposit.id, amountCents,
+    details: { invoiceNumber: inv.number, openBefore: f.openCents, openAfter: f.openCents - amountCents, depositAvailableBefore: availableCents, depositAvailableAfter: availableCents - amountCents, depositStatusAfter: after.status, at: input.occurredAt.toISOString() },
+  });
+  return { payment, event, created: true };
 }
 
 /**
