@@ -203,7 +203,7 @@ test("Teilauszahlungen, spätere Gutschrift erhöht den Rest, Storno einer Ausza
   assert.deepEqual((await db.payout.findUniqueOrThrow({ where: { id: p2.id } })).amountCents, 30_000, "frühere Auszahlung unverändert");
   // Zahlungsstorno bei erfolgter Erstattung: blockiert (Code und DB)
   await assert.rejects(() => cancelPayment(w.tenantId, w.actor, payment!.id, "falsch erfasst"), /bereits .* erstattet/);
-  await assert.rejects(() => db.payment.update({ where: { id: payment!.id }, data: { status: "CANCELLED", cancelledAt: new Date(), cancellationReason: "direkt" } }), dbRejects(/RB_DOMAIN: .*Erstattungen ausgezahlt/));
+  await assert.rejects(() => db.payment.update({ where: { id: payment!.id }, data: { status: "CANCELLED", cancelledAt: new Date(), cancellationReason: "direkt" } }), dbRejects(/RB_DOMAIN: .*bereits ausgezahlt oder zur Kaution zurückgeführt/));
   // Berichtigung, die das Guthaben unter die Auszahlungen senken würde: Rechnung 1.000 → 1.000 ist erlaubt? Gutschriften sperren die Berichtigung ohnehin (Phase 17)
   await assert.rejects(() => startInvoiceEdit(w.tenantId, invoiceId, w.actor), /nicht mehr berichtigt/);
   // Storno von AZ-1 (Fehlbuchung): Rest wieder 300; Zeile bleibt; Doppelstorno blockiert; neue Auszahlung möglich

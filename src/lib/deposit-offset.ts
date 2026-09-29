@@ -216,9 +216,13 @@ export async function cancelDepositOffset(tenantId: string, actor: Actor, paymen
       const ev = await tx.securityDepositEvent.findFirst({ where: { tenantId, paymentId, depositId: deposit.id } });
       if (!ev) throw new DomainError("Die Kautionsbewegung zu dieser Verrechnung wurde nicht gefunden.");
       if (ev.status !== "CONFIRMED") throw new DomainError("Diese Verrechnung ist bereits storniert.");
-      // Rechnungsseite: bereits ausgezahlte Erstattungen dürfen nicht ohne Deckung bleiben (wie cancelPayment)
+      // Befehl 22: eine Verrechnung, aus der bereits zur Kaution zurückgeführt wurde, wird erst nach Storno der Rückführungen storniert
+      const returns = await tx.securityDepositEvent.aggregate({ where: { tenantId, returnsPaymentId: paymentId, type: "OFFSET_RETURN", status: "CONFIRMED" }, _sum: { amountCents: true } });
+      if ((returns._sum.amountCents ?? 0) > 0) throw new DomainError(`Aus dieser Verrechnung wurden bereits ${fmtCents(returns._sum.amountCents ?? 0)} zur Kaution zurückgeführt. Bitte zuerst die Rückführung stornieren.`);
+      // Rechnungsseite: bereits ausgezahltes oder zurückgeführtes Guthaben darf nicht ohne Deckung bleiben (wie cancelPayment)
       const f = await invoiceFinancials(tenantId, p0.invoiceId, tx);
-      if (f.completedRefundCents > 0 && f.completedRefundCents > Math.max(0, f.paidCents - p0.amountCents - f.effectiveCents)) throw new DomainError(`Zu dieser Rechnung wurden bereits ${fmtCents(f.completedRefundCents)} erstattet. Die Verrechnung kann erst storniert werden, wenn die Auszahlung storniert ist.`);
+      const usedCredit = f.completedRefundCents + f.returnedToDepositCents;
+      if (usedCredit > 0 && usedCredit > Math.max(0, f.paidCents - p0.amountCents - f.effectiveCents)) throw new DomainError(`Aus dem Kundenguthaben dieser Rechnung wurden bereits ${fmtCents(usedCredit)} ausgezahlt oder zur Kaution zurückgeführt. Die Verrechnung kann erst storniert werden, wenn Auszahlung bzw. Rückführung storniert sind.`);
       const now = new Date();
       const payment = await tx.payment.update({ where: { id: paymentId }, data: { status: "CANCELLED", cancelledAt: now, cancelledById: actor.id, cancelledByName: actor.name, cancellationReason: why } });
       const event = await tx.securityDepositEvent.update({ where: { id: ev.id }, data: { status: "CANCELLED", cancelledAt: now, cancelledById: actor.id, cancelledByName: actor.name, cancellationReason: why } });

@@ -139,8 +139,8 @@ export async function FinanceTab({ tenantId, customerId }: { tenantId: string; c
                         <div className="flex flex-wrap gap-1">
                           {(fin.effectiveCents > 0 || fin.paidCents > 0) && <PaymentStatusChip status={fin.refundRequired ? "OVERPAID" : fin.paymentStatus} />}
                           {fin.chain !== "NONE" && <Chip tone={fin.chain === "CANCELLED" ? "bad" : "info"}>{INVOICE_CHAIN_STATUS[fin.chain]}</Chip>}
-                          {fin.refundOpen && <Chip tone="bad">Erstattung {fmtCents(fin.refundRemainingCents)} offen</Chip>}
-                          {fin.refundRequired && !fin.refundOpen && <Chip tone="good">Erstattet {fmtCents(fin.completedRefundCents)}</Chip>}
+                          {fin.refundOpen && <Chip tone="bad">Guthaben {fmtCents(fin.refundRemainingCents)} offen</Chip>}
+                          {fin.refundRequired && !fin.refundOpen && <Chip tone="good">{fin.returnedToDepositCents > 0 ? `Guthaben erledigt (${fmtCents(fin.returnedToDepositCents)} zur Kaution)` : `Erstattet ${fmtCents(fin.completedRefundCents)}`}</Chip>}
                         </div>
                       ) : <Chip tone="grey">Gegenbeleg</Chip>}</td>
                     </tr>

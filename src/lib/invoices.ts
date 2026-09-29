@@ -394,14 +394,15 @@ export async function deliveryStateOf(tenantId: string, version: { id: string; d
 }
 
 export type EditMode = "A" | "B" | "C" | "D";
-export type EditModeInfo = { mode: EditMode; nextKind: "REVISION" | "CORRECTION"; delivered: boolean; exported: boolean; paidCents: Cents; currentGrossCents: Cents; reasons: string[]; /** abgeschlossene Gutschriften/Stornobelege: danach keine Berichtigung mehr */ counterFinalized: number; counterDraft: boolean; editable: boolean; blockedReason: string | null; /** Phase 18: bereits erstattet (abgeschlossene Auszahlungen) */ completedRefundCents: Cents };
+export type EditModeInfo = { mode: EditMode; nextKind: "REVISION" | "CORRECTION"; delivered: boolean; exported: boolean; paidCents: Cents; currentGrossCents: Cents; reasons: string[]; /** abgeschlossene Gutschriften/Stornobelege: danach keine Berichtigung mehr */ counterFinalized: number; counterDraft: boolean; editable: boolean; blockedReason: string | null; /** Phase 18: bereits erstattet (abgeschlossene Auszahlungen); Befehl 22: inkl. Rückführungen zur Kaution */ completedRefundCents: Cents };
 
 async function editModeOf(client: Tx | typeof db, tenantId: string, invoice: InvoiceRow, current: VersionRow): Promise<EditModeInfo> {
-  const [delivery, paid, counters, refunds] = await Promise.all([
+  const [delivery, paid, counters, refunds, returns] = await Promise.all([
     deliveryStateOf(tenantId, current, client),
     client.payment.aggregate({ where: { tenantId, invoiceId: invoice.id, status: "CONFIRMED" }, _sum: { amountCents: true } }),
     client.invoice.findMany({ where: { tenantId, originalInvoiceId: invoice.id, status: { in: ["DRAFT", "FINALIZED"] } }, select: { status: true } }),
     client.payout.aggregate({ where: { tenantId, invoiceId: invoice.id, status: "COMPLETED" }, _sum: { amountCents: true } }),
+    client.securityDepositEvent.aggregate({ where: { tenantId, invoiceId: invoice.id, type: "OFFSET_RETURN", status: "CONFIRMED" }, _sum: { amountCents: true } }),
   ]);
   const exported = !!invoice.exportedAt || !!current.exportedAt;
   const paidCents = paid._sum.amountCents ?? 0;
@@ -417,7 +418,7 @@ async function editModeOf(client: Tx | typeof db, tenantId: string, invoice: Inv
     : counterFinalized > 0 ? `Zu dieser Rechnung gibt es bereits ${counterFinalized === 1 ? "einen abgeschlossenen Gegenbeleg" : `${counterFinalized} abgeschlossene Gegenbelege`} (Gutschrift oder Storno). Sie wird nicht mehr berichtigt; weitere Änderungen nur über einen weiteren Gegenbeleg.`
     : counterDraft ? "Zu dieser Rechnung ist ein Entwurf einer Gutschrift oder eines Stornobelegs offen. Bitte zuerst abschließen oder verwerfen."
     : null;
-  return { mode, nextKind: delivery.delivered ? "CORRECTION" : "REVISION", delivered: delivery.delivered, exported, paidCents, currentGrossCents: toCents(current.grossTotal), reasons, counterFinalized, counterDraft, editable: blockedReason === null, blockedReason, completedRefundCents: refunds._sum.amountCents ?? 0 };
+  return { mode, nextKind: delivery.delivered ? "CORRECTION" : "REVISION", delivered: delivery.delivered, exported, paidCents, currentGrossCents: toCents(current.grossTotal), reasons, counterFinalized, counterDraft, editable: blockedReason === null, blockedReason, completedRefundCents: (refunds._sum.amountCents ?? 0) + (returns._sum.amountCents ?? 0) };
 }
 
 /** Bearbeitungsmodus einer abgeschlossenen Rechnung (A nicht übermittelt, B übermittelt, C mit Zahlungen, D exportiert). */

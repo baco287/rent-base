@@ -12,7 +12,7 @@ import { fmtCents } from "@/lib/money";
 import { invoicePaymentSummary, listInvoicePayments, type PaymentSummary } from "@/lib/payments";
 import { listRentalPayments, rentalPaymentSummary, type RentalPaymentSummary } from "@/lib/rental-payments";
 import { toDateTimeInputValue } from "@/lib/time";
-import { applyDepositOffsetAction, cancelDepositEventAction, cancelDepositOffsetAction, cancelPaymentAction, previewDepositOffsetAction, previewDepositSettleAction, previewPaymentAction, previewRentalPaymentAction, recordDepositReceivedAction, recordPaymentAction, recordRentalPaymentAction, settleDepositAction } from "./actions";
+import { applyDepositOffsetAction, cancelDepositEventAction, cancelDepositOffsetAction, cancelOffsetReturnAction, cancelPaymentAction, previewDepositOffsetAction, previewDepositSettleAction, previewPaymentAction, previewRentalPaymentAction, recordDepositReceivedAction, recordPaymentAction, recordRentalPaymentAction, settleDepositAction } from "./actions";
 import { DepositOffsetForm, DepositReceiveForm, DepositSettleForm, PaymentForm, ReasonForm } from "./money-forms";
 import { PayoutPanel } from "../../../auszahlungen/payout-panel";
 
@@ -188,12 +188,12 @@ export async function DepositPanel({ tenantId, bookingId, role, charges }: { ten
   return (
     <Card title="Kaution" right={<Chip tone={depositTone(v.status)}>{DEPOSIT_STATUS[v.status]}</Chip>}>
       <div className="p-4 flex flex-col gap-4">
-        <div className={`grid grid-cols-2 ${v.offsetCents > 0 ? "sm:grid-cols-5" : "sm:grid-cols-4"} gap-2 text-sm`}>
+        <div className={`grid grid-cols-2 ${v.offsetGrossCents > 0 ? "sm:grid-cols-5" : "sm:grid-cols-4"} gap-2 text-sm`}>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Vereinbart</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(v.expectedCents)}</div><div className="text-[11px] text-ink-3">laut {v.contractSigned && v.contractNumber ? v.contractNumber : "Buchung (Vertrag folgt)"}</div></div>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Erhalten</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(v.receivedCents)}</div></div>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Freigegeben</div><div className="font-mono tnum text-lg font-semibold text-good">{fmtCents(v.releasedCents)}</div></div>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Einbehalten</div><div className="font-mono tnum text-lg font-semibold text-bad">{fmtCents(v.retainedCents)}</div></div>
-          {v.offsetCents > 0 && <div className="rounded-md bg-info-soft p-3"><div className="label-xs">Verrechnet</div><div className="font-mono tnum text-lg font-semibold text-info">{fmtCents(v.offsetCents)}</div><div className="text-[11px] text-ink-3">mit Forderungen, kein Einbehalt</div></div>}
+          {v.offsetGrossCents > 0 && <div className="rounded-md bg-info-soft p-3"><div className="label-xs">Mit Forderungen verrechnet</div><div className="font-mono tnum text-lg font-semibold text-info">{fmtCents(v.offsetGrossCents)}</div><div className="text-[11px] text-ink-3">{v.offsetReturnedCents > 0 ? `davon zurückgeführt ${fmtCents(v.offsetReturnedCents)} · netto ${fmtCents(v.offsetCents)}` : "kein Einbehalt"}</div></div>}
         </div>
         {(v.releasedCents > 0 || v.completedPayoutCents > 0) && (
           <div className="grid grid-cols-3 gap-2 text-sm">
@@ -247,12 +247,13 @@ export async function DepositPanel({ tenantId, bookingId, role, charges }: { ten
                     {e.method && <span className="text-ink-3">· {methodLabel(e.method)}</span>}
                     {e.reference && <span className="text-ink-3">· {e.reference}</span>}
                   </div>
-                  <span className={`font-mono tnum font-semibold ${e.status === "CANCELLED" ? "line-through text-ink-3" : e.type === "RETAINED" ? "text-bad" : e.type === "RELEASED" ? "text-good" : e.type === "OFFSET" ? "text-info" : ""}`}>{fmtCents(e.amountCents)}</span>
+                  <span className={`font-mono tnum font-semibold ${e.status === "CANCELLED" ? "line-through text-ink-3" : e.type === "RETAINED" ? "text-bad" : e.type === "RELEASED" ? "text-good" : e.type === "OFFSET" || e.type === "OFFSET_RETURN" ? "text-info" : ""}`}>{e.type === "OFFSET" ? "− " : e.type === "OFFSET_RETURN" || e.type === "RECEIVED" ? "+ " : ""}{fmtCents(e.amountCents)}</span>
                 </div>
                 {e.reason && <div className="text-xs">Grund: {e.reason}</div>}
-                <div className="text-xs text-ink-3 flex flex-wrap gap-x-2"><span>dokumentiert von {e.createdByName ?? "–"} am {fmtDateTime(e.createdAt)}</span>{e.type === "OFFSET" && <span>· kein Geldfluss, Storno unter „Zahlungen“</span>}{e.note && <span>· {e.note}</span>}</div>
+                <div className="text-xs text-ink-3 flex flex-wrap gap-x-2"><span>dokumentiert von {e.createdByName ?? "–"} am {fmtDateTime(e.createdAt)}</span>{e.type === "OFFSET" && <span>· kein Geldfluss, Storno unter „Zahlungen“</span>}{e.type === "OFFSET_RETURN" && <span>· kein Geldfluss, aus Kundenguthaben der Rechnung</span>}{e.note && <span>· {e.note}</span>}</div>
                 {e.status === "CANCELLED" && <div className="text-xs text-bad">Storniert am {fmtDateTime(e.cancelledAt)} von {e.cancelledByName ?? "–"}: {e.cancellationReason}</div>}
-                {e.status === "CONFIRMED" && canDecide && e.type !== "OFFSET" && <ReasonForm action={cancelDepositEventAction.bind(null, bookingId)} id={e.id} label="Bewegung korrigieren (Storno)" question={`${DEPOSIT_EVENT_TYPES[e.type as DepositEventType]} über ${fmtCents(e.amountCents)} stornieren?`} />}
+                {e.status === "CONFIRMED" && canDecide && e.type === "OFFSET_RETURN" && <ReasonForm action={cancelOffsetReturnAction.bind(null, bookingId)} id={e.id} label="Rückführung stornieren" question={`Rückführung über ${fmtCents(e.amountCents)} stornieren? Das Kundenguthaben ist danach wieder verfügbar.`} />}
+                {e.status === "CONFIRMED" && canDecide && e.type !== "OFFSET" && e.type !== "OFFSET_RETURN" && <ReasonForm action={cancelDepositEventAction.bind(null, bookingId)} id={e.id} label="Bewegung korrigieren (Storno)" question={`${DEPOSIT_EVENT_TYPES[e.type as DepositEventType]} über ${fmtCents(e.amountCents)} stornieren?`} />}
               </li>
             ))}
           </ul>

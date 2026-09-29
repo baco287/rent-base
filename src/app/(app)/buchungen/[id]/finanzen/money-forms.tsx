@@ -10,6 +10,7 @@ import { PAYMENT_METHODS } from "@/lib/constants";
 import { fmtCents } from "@/lib/money";
 import type { SettlePreview } from "@/lib/deposits";
 import type { DepositOffsetPreview, OffsetInvoiceOption } from "@/lib/deposit-offset";
+import type { OffsetReturnPreview } from "@/lib/deposit-offset-return";
 import type { PaymentPreview } from "@/lib/payments";
 import type { MoneyState } from "./actions";
 
@@ -263,6 +264,64 @@ export function DepositOffsetForm({ action, preview, bookingId, nonce, invoices,
           <div className="text-xs text-ink-3">Danach: Rechnung {full.invoiceStatusAfter === "PAID" ? "vollständig ausgeglichen" : "teilweise ausgeglichen"}. Eine verbleibende Kaution wird wie bisher freigegeben und ausgezahlt.</div>
           <div className="flex flex-wrap gap-2 mt-1">
             <button type="submit" disabled={pending} className="btn btn-primary !py-2.5">{pending ? "Wird verrechnet…" : "Ja, aus Kaution verrechnen"}</button>
+            <button type="button" className="btn" onClick={() => setPv(null)}>Zurück</button>
+          </div>
+        </div>
+      )}
+      <Feedback state={state} />
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Befehl 22: Kundenguthaben zur Kaution zurückführen (ausdrückliche Bestätigung, Vorschau vom Server)
+// ---------------------------------------------------------------------------
+
+export function OffsetReturnForm({ action, preview, nonce, defaultWhen, maxCents }: { action: Action; preview: (amount: string) => Promise<OffsetReturnPreview | { error: string }>; nonce: string; defaultWhen: string; maxCents: number }) {
+  const { state, formAction, pending, done } = useMoneyAction(action);
+  const [open, setOpen] = useState(false);
+  const [pv, setPv] = useState<OffsetReturnPreview | { error: string } | null>(null);
+  const [checking, start] = useTransition();
+  const [form, setForm] = useState<HTMLFormElement | null>(null);
+  const eur = (c: number) => (c / 100).toFixed(2).replace(".", ",");
+  if (done) return <Feedback state={state} />;
+  if (!open) return <div><button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>Zur Kaution zurückführen</button></div>;
+  const check = () => {
+    if (!form || !form.reportValidity()) return;
+    const fd = new FormData(form);
+    start(async () => setPv(await preview(String(fd.get("amount") ?? ""))));
+  };
+  const full = pv && "maxCents" in pv && !pv.error ? pv : null;
+  return (
+    <form ref={setForm} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
+      <input type="hidden" name="nonce" value={nonce} />
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label className="flex flex-col gap-1"><span className="label-xs">Betrag in €</span><input name="amount" inputMode="decimal" defaultValue={eur(maxCents)} required className="input text-xl tnum" onChange={() => setPv(null)} /><span className="text-[11px] text-ink-3">höchstens {fmtCents(maxCents)} (verfügbares Guthaben und noch rückführbarer Teil der Verrechnung). Teilbetrag möglich.</span></label>
+        <label className="flex flex-col gap-1"><span className="label-xs">Datum und Uhrzeit</span><input name="occurredAt" type="datetime-local" defaultValue={defaultWhen} required className="input" /></label>
+        <label className="flex flex-col gap-1 sm:col-span-2"><span className="label-xs">Notiz (optional)</span><input name="note" maxLength={500} className="input" /></label>
+      </div>
+      <p className="text-xs text-ink-3">Es fließt kein Geld: Der Betrag steht danach wieder als Kaution zur Verfügung und wird später mit der Kaution freigegeben oder einbehalten. Die ursprüngliche Verrechnung bleibt als Historie bestehen.</p>
+      {!full && (
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className="btn btn-primary" disabled={checking} onClick={check}>{checking ? "Wird geprüft…" : "Weiter zur Bestätigung"}</button>
+          <button type="button" className="btn" onClick={() => { setOpen(false); setPv(null); }}>Abbrechen</button>
+        </div>
+      )}
+      {pv?.error && <p role="alert" className="text-bad bg-bad-soft rounded-md px-3 py-2 text-sm">{pv.error}</p>}
+      {full && (
+        <div className="rounded-lg border-2 border-brand bg-panel p-4 flex flex-col gap-2">
+          <div className="text-sm font-medium">Zur Kaution zurückführen</div>
+          <Big>{fmtCents(full.amountCents)}</Big>
+          <div className="text-sm flex flex-col gap-0.5 mt-1 border-t border-line-soft pt-2">
+            <Row label="Verfügbares Guthaben" value={fmtCents(full.availableCreditCents)} />
+            <Row label="Frühere Kautionsverrechnung" value={fmtCents(full.offsetCents)} />
+            <Row label="Bereits zurückgeführt" value={fmtCents(full.offsetReturnedCents)} />
+            <Row label="Maximal möglich" value={fmtCents(full.maxCents)} />
+            <Row label="Guthaben danach" value={fmtCents(full.creditAfterCents)} strong />
+            <Row label="Kaution verfügbar danach" value={`${fmtCents(full.depositAvailableBeforeCents)} → ${fmtCents(full.depositAvailableAfterCents)}`} strong />
+          </div>
+          <div className="flex flex-wrap gap-2 mt-1">
+            <button type="submit" disabled={pending} className="btn btn-primary !py-2.5">{pending ? "Wird gebucht…" : `${fmtCents(full.amountCents)} wieder der Kaution zuführen`}</button>
             <button type="button" className="btn" onClick={() => setPv(null)}>Zurück</button>
           </div>
         </div>

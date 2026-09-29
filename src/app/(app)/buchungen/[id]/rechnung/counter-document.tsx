@@ -10,6 +10,7 @@ import { fmtCents, fmtRate, toCents } from "@/lib/money";
 import type { EditModeInfo } from "@/lib/invoices";
 import { DocumentsPanel } from "../dokumente/documents-panel";
 import { FollowUpNotice } from "../dokumente/follow-up-notice";
+import { CustomerCreditCard } from "../finanzen/customer-credit-card";
 import { createCancellationAction, createCreditNoteAction, discardCounterAction, finalizeCounterAction, saveCounterDraftAction } from "./counter-actions";
 import { CreditNoteEditor, type ManualRow, type SourceRow } from "./credit-note-editor";
 import { FinalizeCounterForm } from "./counter-forms";
@@ -108,6 +109,8 @@ export async function CounterDocumentPage({ tenantId, role, booking, invoiceId, 
         {finished && <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 font-medium">{word} {st.invoice.number} ist abgeschlossen und versiegelt. Betrag {fmtCents(toCents(st.current.grossTotal))}. Die Rechnung {st.original.number} bleibt unverändert; Zahlungen wurden nicht verändert.</p>}
         {finished && <FollowUpNotice tenantId={tenantId} bookingId={booking.id} invoiceId={st.invoice.id} invoiceVersionId={st.current.id} kind="INVOICE" documentType={st.type} />}
         <FinancialSummary f={st.financials} numberLabel={st.original.number} />
+        {/* Befehl 22: das entstandene Kundenguthaben gehört zur Rechnung – hier sichtbar und direkt bearbeitbar */}
+        <CustomerCreditCard tenantId={tenantId} bookingId={booking.id} role={role} invoiceId={st.original.id} />
         <ChainCard tenantId={tenantId} invoiceId={st.original.id} currentId={st.invoice.id} canEdit={false} mode={null} />
         <DocumentsPanel tenantId={tenantId} bookingId={booking.id} role={role} invoiceId={st.invoice.id} />
         <InvoiceDocumentView doc={doc} />
@@ -136,7 +139,7 @@ export function FinancialSummary({ f, numberLabel }: { f: InvoiceFinancials; num
       <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Wirksame Forderung</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(f.effectiveCents)}</div><div className="text-xs text-ink-3">{INVOICE_CHAIN_STATUS[f.chain]}</div></div>
       <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Bezahlt</div><div className="font-mono tnum text-lg font-semibold text-good">{fmtCents(f.paidCents)}</div><div className="text-xs text-ink-3">{f.offsetCents > 0 ? `davon ${fmtCents(f.offsetCents)} aus der Kaution verrechnet · ` : ""}unverändert durch Gegenbelege</div></div>
       {f.customerCreditCents > 0 ? (
-        <div className={`rounded-md p-3 ${f.refundRemainingCents > 0 ? "bg-bad-soft" : "bg-good-soft"}`}><div className="label-xs">Kundenguthaben</div><div className={`font-mono tnum text-lg font-semibold ${f.refundRemainingCents > 0 ? "text-bad" : "text-good"}`}>{fmtCents(f.customerCreditCents)}</div><div className="text-xs">ausgezahlt {fmtCents(f.completedRefundCents)} · noch auszuzahlen {fmtCents(f.refundRemainingCents)}{f.refundRemainingCents > 0 ? " – keine automatische Auszahlung, keine Verrechnung" : ""}</div></div>
+        <div className={`rounded-md p-3 ${f.refundRemainingCents > 0 ? "bg-bad-soft" : "bg-good-soft"}`}><div className="label-xs">Kundenguthaben</div><div className={`font-mono tnum text-lg font-semibold ${f.refundRemainingCents > 0 ? "text-bad" : "text-good"}`}>{fmtCents(f.customerCreditCents)}</div><div className="text-xs">ausgezahlt {fmtCents(f.completedRefundCents)}{f.returnedToDepositCents > 0 ? ` · zur Kaution zurückgeführt ${fmtCents(f.returnedToDepositCents)}` : ""} · noch verfügbar {fmtCents(f.refundRemainingCents)}{f.refundRemainingCents > 0 ? " – keine automatische Entscheidung" : ""}</div></div>
       ) : (
         <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Offen</div><div className={`font-mono tnum text-lg font-semibold ${f.openCents > 0 ? "text-bad" : ""}`}>{fmtCents(f.openCents)}</div><div className="text-xs text-ink-3">{f.openCents === 0 ? "nichts mehr offen" : "vom Kunden zu zahlen"}</div></div>
       )}

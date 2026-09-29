@@ -18,6 +18,7 @@ import { DocumentsPanel } from "../dokumente/documents-panel";
 import { FollowUpNotice } from "../dokumente/follow-up-notice";
 import { PaymentsPanel, PaymentStatusChip } from "../finanzen/panels";
 import { DepositSettlementCard } from "../finanzen/deposit-settlement-card";
+import { CustomerCreditCard } from "../finanzen/customer-credit-card";
 import { createInvoiceAction, discardInvoiceDraftAction, finalizeInvoiceAction, markDeliveredAction, saveInvoiceDraftAction, startInvoiceEditAction } from "./actions";
 import { InvoiceEditor, type EditableItem } from "./invoice-editor";
 import { InvoiceDocumentView, InvoiceIssueList } from "./invoice-parts";
@@ -250,8 +251,8 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
         )}
         {Number.isFinite(finishedNo) && finishedNo === current.versionNo && <FollowUpNotice tenantId={tenant.id} bookingId={b.id} invoiceId={inv.id} invoiceVersionId={current.id} kind="INVOICE" />}
         {mode && !mode.editable && mode.blockedReason && <p className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm font-medium">{mode.blockedReason}</p>}
-        {pay.status === "OVERPAID" && finance.refundRemainingCents > 0 && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm font-medium">Erstattung erforderlich: wirksame Forderung {fmtCents(pay.grossCents)}, bezahlt {fmtCents(pay.paidCents)}, Kundenguthaben {fmtCents(pay.overpaidCents)}, bereits ausgezahlt {fmtCents(finance.completedRefundCents)}, noch auszuzahlen {fmtCents(finance.refundRemainingCents)}. Offen ist 0,00 €. Rent-Base führt keine automatische Erstattung und keine Verrechnung durch; die Auszahlung wird unten erfasst.</p>}
-        {pay.status === "OVERPAID" && finance.refundRemainingCents === 0 && <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Kundenguthaben {fmtCents(pay.overpaidCents)} wurde vollständig ausgezahlt ({fmtCents(finance.completedRefundCents)}). Nichts mehr auszuzahlen.</p>}
+        {pay.status === "OVERPAID" && finance.refundRemainingCents > 0 && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm font-medium">Kundenguthaben {fmtCents(pay.overpaidCents)}: wirksame Forderung {fmtCents(pay.grossCents)}, bezahlt {fmtCents(pay.paidCents)}{finance.completedRefundCents > 0 ? `, bereits ausgezahlt ${fmtCents(finance.completedRefundCents)}` : ""}{finance.returnedToDepositCents > 0 ? `, zur Kaution zurückgeführt ${fmtCents(finance.returnedToDepositCents)}` : ""}, noch verfügbar {fmtCents(finance.refundRemainingCents)}. Offen ist 0,00 €. Rent-Base entscheidet nicht automatisch – siehe „Kundenguthaben“.</p>}
+        {pay.status === "OVERPAID" && finance.refundRemainingCents === 0 && <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Kundenguthaben {fmtCents(pay.overpaidCents)} ist erledigt{finance.completedRefundCents > 0 ? ` – ausgezahlt ${fmtCents(finance.completedRefundCents)}` : ""}{finance.returnedToDepositCents > 0 ? ` – zur Kaution zurückgeführt ${fmtCents(finance.returnedToDepositCents)}` : ""}.</p>}
         {(pay.chain !== "NONE" || finance.hasDraftCounter) && <FinancialSummary f={finance} numberLabel={inv.number ?? ""} />}
         <ChainCard tenantId={tenant.id} invoiceId={inv.id} currentId={inv.id} canEdit={canEdit} mode={mode} bookingId={b.id} />
         {shown.id !== current.id && <p className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm font-medium">Sie sehen die ersetzte Fassung {shown.versionNo}. <Link href={self} className="underline">Zur aktuellen Fassung {current.versionNo}</Link>.</p>}
@@ -291,6 +292,7 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
         </Card>
 
         {shown.id === current.id && <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} invoiceId={inv.id} />}
+        {shown.id === current.id && <CustomerCreditCard tenantId={tenant.id} bookingId={b.id} role={user.role} invoiceId={inv.id} />}
         {shown.id === current.id && <PaymentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} invoiceId={inv.id} />}
         {shown.id === current.id && <DepositSettlementCard tenantId={tenant.id} bookingId={b.id} role={user.role} invoice={{ id: inv.id, number: inv.number, status: "FINALIZED", grossCents: finance.effectiveCents, prepaidCents: pay.paidCents }} />}
         {shown.id === current.id && (finance.refundRequired || finance.completedRefundCents > 0) && <PayoutPanel tenantId={tenant.id} role={user.role} sourceRef={{ sourceType: "INVOICE_REFUND", invoiceId: inv.id }} bookingId={b.id} />}

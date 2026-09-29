@@ -42,8 +42,8 @@ function StatusCell({ f }: { f: InvoiceFinancials }) {
     <div className="flex flex-wrap gap-1 items-center">
       {(f.effectiveCents > 0 || f.paidCents > 0) && <PaymentStatusChip status={f.refundRequired ? "OVERPAID" : f.paymentStatus} />}
       {f.chain !== "NONE" && <Chip tone={f.chain === "CANCELLED" ? "bad" : "info"}>{INVOICE_CHAIN_STATUS[f.chain]}</Chip>}
-      {f.refundOpen && <Chip tone="bad">Erstattung {fmtCents(f.refundRemainingCents)} erforderlich</Chip>}
-      {f.refundRequired && !f.refundOpen && <Chip tone="good">Erstattet {fmtCents(f.completedRefundCents)}</Chip>}
+      {f.refundOpen && <Chip tone="bad">Guthaben {fmtCents(f.refundRemainingCents)} offen</Chip>}
+      {f.refundRequired && !f.refundOpen && <Chip tone="good">{f.returnedToDepositCents > 0 ? `Guthaben erledigt (${fmtCents(f.returnedToDepositCents)} zur Kaution)` : `Erstattet ${fmtCents(f.completedRefundCents)}`}</Chip>}
       {f.hasDraftCounter && <Chip tone="amber">Gegenbeleg-Entwurf offen</Chip>}
     </div>
   );

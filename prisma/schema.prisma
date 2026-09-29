@@ -1129,6 +1129,7 @@ model Invoice {
   documents        Document[]
   payments         Payment[]
   payouts          Payout[]
+  depositOffsetReturns SecurityDepositEvent[] @relation("DepositOffsetReturns")
   versions         InvoiceVersion[] @relation("InvoiceVersions")
   currentVersion   InvoiceVersion?  @relation("InvoiceCurrentVersion", fields: [currentVersionId], references: [id])
   damageCase       DamageCase?      @relation(fields: [damageCaseId], references: [id])
@@ -1207,6 +1208,8 @@ model Payment {
   invoice Invoice? @relation(fields: [invoiceId], references: [id])
   // Befehl 20.7: Kautionsverrechnung (type DEPOSIT_OFFSET) – die Kautionsbewegung OFFSET derselben Operation
   depositOffsetEvent SecurityDepositEvent?
+  // Befehl 22: Rückführungen dieser Verrechnung zur Kaution (Gegenbewegungen OFFSET_RETURN)
+  offsetReturns      SecurityDepositEvent[] @relation("DepositOffsetReturnOf")
 
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, invoiceId, status])
@@ -1255,6 +1258,9 @@ model SecurityDepositEvent {
   status         String   @default("CONFIRMED") // CONFIRMED | CANCELLED
   idempotencyKey String?
   paymentId      String?  @unique // nur OFFSET: das Payment (type DEPOSIT_OFFSET) derselben Verrechnung
+  // Befehl 22: nur OFFSET_RETURN – Rückführung einer Verrechnung aus Kundenguthaben: Rechnung und ursprüngliche Verrechnungszahlung
+  invoiceId        String?
+  returnsPaymentId String?
   createdById    String?
   createdByName  String?
   createdAt      DateTime @default(now())
@@ -1268,9 +1274,13 @@ model SecurityDepositEvent {
   deposit SecurityDeposit @relation(fields: [depositId], references: [id])
   // Cascade nur für das Löschen ganzer Mandanten (Purge): eine Verrechnungszahlung wird sonst nie gelöscht (Trigger)
   payment Payment?        @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoice        Invoice? @relation("DepositOffsetReturns", fields: [invoiceId], references: [id], onDelete: Cascade)
+  returnsPayment Payment? @relation("DepositOffsetReturnOf", fields: [returnsPaymentId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, depositId, status])
+  @@index([tenantId, invoiceId, status])
+  @@index([returnsPaymentId])
 }
 
 // Phase 18: Auszahlung = tatsächlicher Geldabfluss an den Kunden (Rechnungserstattung oder Kautionsrückzahlung).

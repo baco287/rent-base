@@ -416,7 +416,7 @@ export const INVOICE_VERSION_KINDS = { ORIGINAL: "Original", REVISION: "Neufassu
 export type InvoicePaymentStatus = keyof typeof INVOICE_PAYMENT_STATUS;
 export const DEPOSIT_STATUS = { EXPECTED: "Noch nicht erhalten", RECEIVED: "Erhalten", PARTIALLY_RELEASED: "Teilweise freigegeben", RELEASED: "Freigegeben", RETAINED: "Einbehalten" } as const;
 export type DepositStatus = keyof typeof DEPOSIT_STATUS;
-export const DEPOSIT_EVENT_TYPES = { RECEIVED: "Erhalten", RELEASED: "Freigegeben", RETAINED: "Einbehalten", OFFSET: "Mit Forderung verrechnet" } as const;
+export const DEPOSIT_EVENT_TYPES = { RECEIVED: "Erhalten", RELEASED: "Freigegeben", RETAINED: "Einbehalten", OFFSET: "Mit Forderung verrechnet", OFFSET_RETURN: "Aus Kundenguthaben zur Kaution zurückgeführt" } as const;
 export type DepositEventType = keyof typeof DEPOSIT_EVENT_TYPES;
 /**
  * Befehl 20.7: Kautionsverrechnung. Bewusst KEINE Zahlungsart in PAYMENT_METHODS (nie in Zahlungsformularen wählbar):
@@ -436,6 +436,10 @@ export const AUDIT_ACTIONS = {
   // Befehl 20.7: bewusste Verrechnung erhaltener Kaution mit einer konkreten Forderung (kein Geldeingang)
   DEPOSIT_OFFSET_APPLIED: "Kaution mit Forderung verrechnet",
   DEPOSIT_OFFSET_CANCELLED: "Kautionsverrechnung storniert",
+  // Befehl 22: Kundenguthaben (nach Gutschrift/Storno) bewusst zur Kaution zurückgeführt – Gegenbewegung, keine Zahlung
+  DEPOSIT_OFFSET_PARTIALLY_RETURNED: "Kautionsverrechnung teilweise zur Kaution zurückgeführt",
+  DEPOSIT_OFFSET_FULLY_RETURNED: "Kautionsverrechnung vollständig zur Kaution zurückgeführt",
+  DEPOSIT_OFFSET_RETURN_CANCELLED: "Rückführung zur Kaution storniert",
   DEPOSIT_CORRECTION: "Kautionsbewegung storniert",
   INVOICE_VERSION_CREATED: "Rechnungsbearbeitung begonnen",
   INVOICE_REVISED: "Rechnung neu gefasst",

@@ -765,7 +765,7 @@ report(payoutList.includes(refund.number!) && payoutList.includes("Rechnungserst
 const invAfterRefund = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } }));
 report(invAfterRefund.includes(refund.number!) && invAfterRefund.includes("40,00") && invAfterRefund.includes("noch auszuzahlen 60,00"), "Rechnung: Auszahlungshistorie und Rest nach Teilerstattung");
 const listRefundOpen = await plain(await fetch(base + "/rechnungen?filter=erstattung", { headers: { cookie } }));
-report(listRefundOpen.includes(finalInvoice.number) && listRefundOpen.includes("Erstattung 60,00"), "Rechnungsliste: noch zu erstattender Rest");
+report(listRefundOpen.includes(finalInvoice.number) && listRefundOpen.includes("Guthaben 60,00"), "Rechnungsliste: noch offenes Kundenguthaben (Rest)");
 const depPayout = (await createPayout(w.tenantId, w.actor, { sourceType: "SECURITY_DEPOSIT_REFUND", bookingId: retBooking.id }, { amount: "350", method: "BANK_TRANSFER", iban: "DE02120300000000202051", executedAt: new Date(Date.now() - 3600_000), reference: "Kaution RET-1" }, { complete: true, confirmed: true })).payout;
 const bookingDep2 = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
 report(depPayout.sourceType === "SECURITY_DEPOSIT_REFUND" && bookingDep2.includes(depPayout.number!) && bookingDep2.includes("ausgezahlt 350,00") && !bookingDep2.includes("Kaution auszahlen"), "Buchung: Kaution vollständig ausgezahlt, keine weitere Auszahlung");

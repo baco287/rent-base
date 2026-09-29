@@ -64,7 +64,7 @@ export async function DepositSettlementCard({ tenantId, bookingId, role, invoice
                 <Tile label="Bereits freigegeben" value={fmtCents(v.releasedCents)} tone={v.releasedCents > 0 ? "good" : undefined} />
                 <Tile label="Bereits ausgezahlt" value={fmtCents(v.completedPayoutCents)} />
                 <Tile label="Bereits einbehalten" value={fmtCents(v.retainedCents)} tone={v.retainedCents > 0 ? "bad" : undefined} />
-                <Tile label="Mit Forderungen verrechnet" value={fmtCents(v.offsetCents)} tone={v.offsetCents > 0 ? "info" : undefined} />
+                <Tile label="Mit Forderungen verrechnet" value={fmtCents(v.offsetGrossCents)} tone={v.offsetCents > 0 ? "info" : undefined} sub={v.offsetReturnedCents > 0 ? `davon zurückgeführt ${fmtCents(v.offsetReturnedCents)} · netto ${fmtCents(v.offsetCents)}` : undefined} />
                 <div className="col-span-2 sm:col-span-3"><Tile label="Aktuell verfügbar" value={fmtCents(availableCents)} tone={availableCents > 0 ? "info" : undefined} sub="erhalten − freigegeben − einbehalten − verrechnet" /></div>
               </div>
             )}

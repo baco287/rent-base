@@ -20,8 +20,12 @@ const TX = { timeout: 20_000, maxWait: 10_000 };
 export type DepositRow = Prisma.SecurityDepositGetPayload<object>;
 export type DepositEventRow = Prisma.SecurityDepositEventGetPayload<object>;
 
-/** offsetCents (Befehl 20.7): mit Forderungen verrechnete Kaution – verbraucht, nicht mehr verfügbar, kein Einbehalt. */
-export type DepositBalance = { expectedCents: Cents; receivedCents: Cents; releasedCents: Cents; retainedCents: Cents; offsetCents: Cents; remainingCents: Cents; status: DepositStatus };
+/**
+ * offsetCents (Befehl 20.7): mit Forderungen verrechnete Kaution – verbraucht, nicht mehr verfügbar, kein Einbehalt.
+ * Befehl 22: offsetCents ist NETTO (Verrechnungen − Rückführungen aus Kundenguthaben); alle Salden rechnen damit.
+ * offsetGrossCents / offsetReturnedCents zeigen die Herkunft: 95 verrechnet, davon 40 zurückgeführt, netto 55.
+ */
+export type DepositBalance = { expectedCents: Cents; receivedCents: Cents; releasedCents: Cents; retainedCents: Cents; offsetCents: Cents; offsetGrossCents: Cents; offsetReturnedCents: Cents; remainingCents: Cents; status: DepositStatus };
 
 /**
  * Status aus den Summen. Nach einer Entscheidung (Freigabe/Einbehalt/Verrechnung) ist immer die ganze erhaltene Kaution
@@ -40,15 +44,17 @@ export function deriveDepositStatus(receivedCents: Cents, releasedCents: Cents, 
 }
 
 export function balanceOf(expectedCents: Cents, events: { type: string; amountCents: number; status: string }[]): DepositBalance {
-  let receivedCents = 0, releasedCents = 0, retainedCents = 0, offsetCents = 0;
+  let receivedCents = 0, releasedCents = 0, retainedCents = 0, offsetGrossCents = 0, offsetReturnedCents = 0;
   for (const e of events) {
     if (e.status !== "CONFIRMED") continue;
     if (e.type === "RECEIVED") receivedCents += e.amountCents;
     else if (e.type === "RELEASED") releasedCents += e.amountCents;
     else if (e.type === "RETAINED") retainedCents += e.amountCents;
-    else if (e.type === "OFFSET") offsetCents += e.amountCents;
+    else if (e.type === "OFFSET") offsetGrossCents += e.amountCents;
+    else if (e.type === "OFFSET_RETURN") offsetReturnedCents += e.amountCents;
   }
-  return { expectedCents, receivedCents, releasedCents, retainedCents, offsetCents, remainingCents: receivedCents - releasedCents - retainedCents - offsetCents, status: deriveDepositStatus(receivedCents, releasedCents, retainedCents, offsetCents) };
+  const offsetCents = offsetGrossCents - offsetReturnedCents;
+  return { expectedCents, receivedCents, releasedCents, retainedCents, offsetCents, offsetGrossCents, offsetReturnedCents, remainingCents: receivedCents - releasedCents - retainedCents - offsetCents, status: deriveDepositStatus(receivedCents, releasedCents, retainedCents, offsetCents) };
 }
 
 /**
@@ -359,6 +365,8 @@ export async function cancelDepositEvent(tenantId: string, actor: Actor, eventId
       if (fresh.status !== "CONFIRMED") throw new DomainError("Diese Bewegung ist bereits storniert.");
       // Eine Verrechnung hat zwei Seiten (Rechnung und Kaution); sie wird nur gemeinsam storniert (deposit-offset.ts)
       if (fresh.type === "OFFSET") throw new DomainError("Diese Bewegung ist eine Kautionsverrechnung. Bitte die Verrechnung unter „Zahlungen“ stornieren; damit werden Rechnung und Kaution gemeinsam korrigiert.");
+      // Befehl 22: eine Rückführung verbraucht Kundenguthaben der Rechnung und wird nur über ihren eigenen Storno korrigiert
+      if (fresh.type === "OFFSET_RETURN") throw new DomainError("Diese Bewegung ist eine Rückführung aus Kundenguthaben. Bitte „Rückführung stornieren“ verwenden; damit werden Kaution und Kundenguthaben gemeinsam korrigiert.");
       if (fresh.type !== "RETAINED") {
         const others = await tx.securityDepositEvent.findMany({ where: { tenantId, depositId: ev.depositId, status: "CONFIRMED", id: { not: eventId } }, select: { type: true, amountCents: true, status: true } });
         const dep0 = await tx.securityDeposit.findFirstOrThrow({ where: { id: ev.depositId, tenantId } });

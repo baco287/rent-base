@@ -12,6 +12,7 @@ import { requireRole } from "@/lib/auth";
 import { PAYMENT_METHODS } from "@/lib/constants";
 import { cancelDepositEvent, previewDepositSettlement, recordDepositReceived, settleDeposit, type SettlePreview } from "@/lib/deposits";
 import { applyDepositOffset, cancelDepositOffset, previewDepositOffset, type DepositOffsetPreview } from "@/lib/deposit-offset";
+import { cancelOffsetReturn, previewOffsetReturn, returnOffsetToDeposit, type OffsetReturnPreview } from "@/lib/deposit-offset-return";
 import { DomainError, isImmutableError } from "@/lib/integrity";
 import { fmtCents } from "@/lib/money";
 import { cancelPayment, previewInvoicePayment, recordInvoicePayment, type PaymentPreview } from "@/lib/payments";
@@ -186,6 +187,46 @@ export async function cancelDepositOffsetAction(bookingId: string, _prev: MoneyS
     const res = await cancelDepositOffset(tenant.id, { id: user.id, name: user.name }, parsed.data.id, parsed.data.reason);
     refresh(bookingId);
     return { ok: `Verrechnung über ${fmtCents(res.payment.amountCents)} storniert. Forderung und Kaution wurden neu berechnet.` };
+  } catch (e) {
+    return failure(e);
+  }
+}
+
+// Befehl 22: Kundenguthaben bewusst zur Kaution zurückführen – nur Inhaber und Disposition, nur auf Bestätigung
+export async function previewOffsetReturnAction(invoiceId: string, paymentId: string, amount: string): Promise<OffsetReturnPreview | { error: string }> {
+  const { tenant } = await requireRole("DISPO");
+  try {
+    return await previewOffsetReturn(tenant.id, invoiceId, paymentId, amount);
+  } catch (e) {
+    return { error: e instanceof DomainError ? e.message : "Vorschau nicht möglich." };
+  }
+}
+
+const returnSchema = z.object({ amount: z.string().trim().min(1, "Bitte den Betrag eingeben.").max(20), occurredAt: when, note: text(500), nonce });
+
+export async function returnOffsetToDepositAction(bookingId: string, invoiceId: string, paymentId: string, _prev: MoneyState, formData: FormData): Promise<MoneyState> {
+  const { tenant, user } = await requireRole("DISPO");
+  const parsed = returnSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const occurredAt = parseLocalDateTime(parsed.data.occurredAt);
+  if (!occurredAt) return { error: "Bitte einen gültigen Zeitpunkt angeben." };
+  try {
+    const res = await returnOffsetToDeposit(tenant.id, { id: user.id, name: user.name }, { invoiceId, paymentId, amount: parsed.data.amount, occurredAt, note: parsed.data.note, idempotencyKey: parsed.data.nonce });
+    refresh(bookingId);
+    return { ok: res.created ? `${fmtCents(res.event.amountCents)} wieder der Kaution zugeführt. Es ist kein Geld geflossen.` : "Diese Rückführung war bereits dokumentiert. Es wurde nichts doppelt gebucht." };
+  } catch (e) {
+    return failure(e);
+  }
+}
+
+export async function cancelOffsetReturnAction(bookingId: string, _prev: MoneyState, formData: FormData): Promise<MoneyState> {
+  const { tenant, user } = await requireRole("DISPO");
+  const parsed = cancelSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  try {
+    const ev = await cancelOffsetReturn(tenant.id, { id: user.id, name: user.name }, parsed.data.id, parsed.data.reason);
+    refresh(bookingId);
+    return { ok: `Rückführung über ${fmtCents(ev.amountCents)} storniert. Guthaben und Kaution wurden neu berechnet.` };
   } catch (e) {
     return failure(e);
   }
