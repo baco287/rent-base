@@ -381,6 +381,46 @@ export async function createAuthorityFeeInvoiceDraft(tx: Tx, tenantId: string, a
   return invoice;
 }
 
+/**
+ * Befehl 23: Mahngebühr als eigene Nebenrechnung (kind DUNNING_FEE) – nur innerhalb der Mahn-Transaktion. Eine Position über
+ * die beim Erstellen eingefrorene Gebühr der Stufe, 0 % USt (Mahngebühren sind kein Leistungsentgelt; die Einordnung
+ * trifft der Vermieter mit seiner Steuerberatung, Rent-Base prüft keine Zulässigkeit). Rechnungsempfänger = Empfänger der
+ * gemahnten Rechnung (deren Kopie), Fälligkeit = Frist des Mahnschreibens. Die gemahnte Rechnung bleibt unverändert.
+ */
+export async function createDunningFeeInvoiceDraft(tx: Tx, tenantId: string, actor: Actor, input: { invoiceId: string; invoiceNumber: string; levelLabel: string; noticeNumber: string; feeCents: Cents; deadlineDays: number }): Promise<InvoiceRow> {
+  const main = await tx.invoice.findFirst({ where: { id: input.invoiceId, tenantId }, include: { currentVersion: true, tenant: true } });
+  if (!main || !main.currentVersion) throw new DomainError("Rechnung nicht gefunden.");
+  if (input.feeCents <= 0) throw new DomainError("Die Mahngebühr muss größer als 0,00 € sein.");
+  const tenant = main.tenant;
+  const missing = invoiceSettingsMissing(tenant);
+  if (missing.length > 0) throw new DomainError(`Bevor eine Mahngebühr berechnet werden kann, muss der Inhaber in den Einstellungen ergänzen: ${missing.join("; ")}.`);
+  const mode = tenant.pricesIncludeTax ? "GROSS" : "NET";
+  const item = computeItem(mode, { description: `Mahngebühr ${input.levelLabel} ${input.noticeNumber} zu Rechnung ${input.invoiceNumber}`, quantity: 1, unit: "pauschal", unitPrice: centsToDecimalString(input.feeCents), taxRate: 0, source: "MANUAL", reference: `Mahnschreiben ${input.noticeNumber}` });
+  const totals = summarize([{ taxRateBp: item.taxRateBp, amounts: item.amounts }]);
+  const now = new Date();
+  const invoice = await tx.invoice.create({
+    data: {
+      tenantId, bookingId: main.bookingId, customerId: main.customerId, contractId: main.contractId,
+      kind: "DUNNING_FEE",
+      sourceHash: sha256(`${main.id}:${input.noticeNumber}:${input.feeCents}`),
+      createdById: actor.id,
+      changeLog: [{ at: now.toISOString(), by: actor.name, versionNo: 1, summary: `Mahngebühr ${fmtCents(input.feeCents)} zu ${input.invoiceNumber} (${input.levelLabel} ${input.noticeNumber})` }],
+    },
+  });
+  const version = await tx.invoiceVersion.create({
+    data: {
+      tenantId, invoiceId: invoice.id, versionNo: 1, kind: "ORIGINAL",
+      servicePeriodStart: now, servicePeriodEnd: now, pricesIncludeTax: mode === "GROSS",
+      customerSnapshot: main.currentVersion.customerSnapshot as Prisma.InputJsonValue, companySnapshot: companySnapshotOf(tenant),
+      netTotal: centsToDecimalString(totals.total.net), taxTotal: centsToDecimalString(totals.total.tax), grossTotal: centsToDecimalString(totals.total.gross),
+      paymentTermDays: input.deadlineDays, taxNote: "Mahngebühr ohne Umsatzsteuer (kein Leistungsentgelt).",
+      createdById: actor.id, createdByName: actor.name,
+    },
+  });
+  await tx.invoiceVersionItem.create({ data: itemData(tenantId, version.id, 0, item) });
+  return invoice;
+}
+
 // ---------------------------------------------------------------------------
 // Übermittlung und Bearbeitungsmodus
 // ---------------------------------------------------------------------------
@@ -671,6 +711,10 @@ async function collectIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, draf
     if (!ac) err("AUTHORITY_CASE", "Zu diesem Bearbeitungsentgelt gibt es keinen Behördenvorgang.");
     else if (ac.bookingId !== invoice.bookingId) err("AUTHORITY_CASE", "Der Behördenvorgang ist nicht (mehr) dieser Vermietung zugeordnet.");
     else if (ac.status === "CANCELLED") err("AUTHORITY_CASE", "Der Behördenvorgang wurde storniert.");
+    const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+    for (const m of invoiceSettingsMissing(tenant)) err("COMPANY", `Firmendaten unvollständig: ${m}.`);
+  } else if (draft.versionNo === 1 && invoice.kind === "DUNNING_FEE") {
+    // Befehl 23: Mahngebühr – entsteht nur im Mahnvorgang; braucht vollständige Firmendaten
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
     for (const m of invoiceSettingsMissing(tenant)) err("COMPANY", `Firmendaten unvollständig: ${m}.`);
   } else if (draft.versionNo === 1) {

@@ -107,6 +107,20 @@ export async function DocumentsPanel({ tenantId, bookingId, role, invoiceId = nu
             );
           })}
         </ul>
+        {/* Befehl 23: Mahnschreiben (Zahlungserinnerung, 1. und 2. Mahnung) – unveränderliche Archivfassungen */}
+        {documents.some((d) => d.type === "DUNNING_NOTICE") && (
+          <div className="border-t border-line px-4 py-3 flex flex-col gap-1.5">
+            <div className="label-xs">Mahnschreiben</div>
+            <ul className="text-sm flex flex-col gap-1">
+              {documents.filter((d) => d.type === "DUNNING_NOTICE").map((d) => (
+                <li key={d.id} className="flex flex-wrap items-baseline gap-x-2">
+                  <a href={`/api/documents/${d.id}?download=1`} className="underline break-all">{d.fileName}</a>
+                  <span className="text-xs text-ink-3">{fmtDateTime(d.createdAt)} · {kb(d.sizeBytes)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </Card>
 
       {(mailBlocks.length > 0 || invoiceBlock) && (

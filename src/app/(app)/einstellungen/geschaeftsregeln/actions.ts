@@ -66,3 +66,30 @@ export async function updateKeyDropSettingsAction(_prev: RulesState, fd: FormDat
   revalidatePath("/einstellungen/geschaeftsregeln");
   return { ok: "Einstellungen zur kontaktlosen Rückgabe gespeichert." };
 }
+
+/**
+ * Befehl 23: Mahnwesen (Standard-Zahlungsziel, Fristen, Mahngebühren). Nur der Inhaber; wirkt nur auf künftige Rechnungen
+ * und Mahnschreiben. Serverseitig geprüft (lib/dunning.ts validateDunningSettings), Beträge in Cent, keine Verzugszinsen.
+ */
+export async function updateDunningSettingsAction(_prev: RulesState, fd: FormData): Promise<RulesState> {
+  const { tenant, user } = await requireRole("OWNER");
+  const { updateDunningSettings } = await import("@/lib/dunning");
+  const { parseAmount } = await import("@/lib/deposits");
+  const { DomainError } = await import("@/lib/integrity");
+  const int = (k: string) => { const v = String(fd.get(k) ?? "").trim(); return v === "" ? NaN : Number(v); };
+  try {
+    const term = String(fd.get("paymentTermDays") ?? "").trim();
+    await updateDunningSettings(tenant.id, { id: user.id, name: user.name }, {
+      paymentTermDays: term === "" ? null : Number(term),
+      reminderDays: int("reminderDays"), firstDays: int("firstDays"), secondDays: int("secondDays"),
+      feesEnabled: fd.get("feesEnabled") === "on",
+      firstFeeCents: parseAmount(String(fd.get("firstFee") ?? "") || "0", "Die Gebühr der 1. Mahnung"),
+      secondFeeCents: parseAmount(String(fd.get("secondFee") ?? "") || "0", "Die Gebühr der 2. Mahnung"),
+    });
+  } catch (e) {
+    if (e instanceof DomainError) return { error: e.message };
+    throw e;
+  }
+  for (const p of ["/einstellungen/geschaeftsregeln", "/einstellungen", "/forderungen"]) revalidatePath(p);
+  return { ok: "Mahnwesen gespeichert. Die Werte gelten für künftige Rechnungen und Mahnschreiben; bestehende bleiben unverändert." };
+}

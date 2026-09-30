@@ -5,7 +5,7 @@
 // „Erhalten“ stammt ausschließlich aus dokumentierten Kautionsbewegungen – nie aus dem Buchungs- oder Vertragsbetrag.
 import Link from "next/link";
 import { Card, Chip } from "@/components/ui";
-import { DEPOSIT_STATUS } from "@/lib/constants";
+import { depositStatusLabel } from "@/lib/constants";
 import { DEPOSIT_RECEIPT_LABELS, depositReceiptState, depositView } from "@/lib/deposits";
 import { fmtCents } from "@/lib/money";
 import { rentalPaymentSummary } from "@/lib/rental-payments";
@@ -40,7 +40,7 @@ export async function MoneyOverview({ tenantId, bookingId, role }: { tenantId: s
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-semibold text-sm">Kaution</span>
             <Chip tone={receipt === "RECEIVED" ? "good" : receipt === "NONE_AGREED" ? "grey" : "amber"}>{DEPOSIT_RECEIPT_LABELS[receipt]}</Chip>
-            {decided && <Chip tone={dep.status === "RELEASED" ? "good" : dep.status === "RETAINED" ? "bad" : "info"}>{DEPOSIT_STATUS[dep.status]}</Chip>}
+            {decided && <Chip tone={dep.status === "RELEASED" ? "good" : dep.status === "RETAINED" ? "bad" : "info"}>{depositStatusLabel(dep.status, dep)}</Chip>}
           </div>
           <div className="grid grid-cols-3 gap-2 text-sm">
             {tile("Vereinbart", agreedCents)}

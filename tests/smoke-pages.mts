@@ -32,6 +32,9 @@ import { createTenantByPlatform, suspendTenant, reactivateTenant } from "../src/
 import { acceptInvitation } from "../src/lib/invitations";
 import { requestPasswordReset } from "../src/lib/password-reset";
 import { startSupportSession } from "../src/lib/support-sessions";
+import { createDunningNotice, previewDunning } from "../src/lib/dunning";
+import { ensureDunningDocument } from "../src/lib/documents";
+import { returnedWorld } from "./rental-flow";
 import { setTenantFeature } from "../src/lib/features";
 import { upsertSubscription } from "../src/lib/subscriptions";
 import { setMailTransport, type MailMessage, type MailTransport } from "../src/lib/mail";
@@ -909,6 +912,66 @@ const supportUpload = await fetch(`${base}/api/vehicles/${w.vehicleId}/documents
 report(supportUpload.status === 403, `${supportUpload.status} Supportmodus: API-Upload abgelehnt`);
 const foreignSupportSession = await db.supportSession.findFirst({ where: { superAdminId: admin.id, tenantId: newTenant.id } });
 report(foreignSupportSession === null, "Supportmodus: keine Session für einen anderen Mandanten entstanden");
+
+// ---------------------------------------------------------------------------
+// Befehl 23: Mahnwesen und Forderungen. Eigene Vermietung im Testmandanten, Rechnung abgeschlossen (Zahlungsziel 14 Tage),
+// Zahlungserinnerung mit Zeitpunkt in 20 Tagen erstellt (nur Testdaten). Seiten, Rollen, Supportmodus, Mandantentrennung.
+// ---------------------------------------------------------------------------
+const dnWorld = await returnedWorld("smoke-mahn"); // eigener Mandant (ohne veröffentlichte Mietbedingungen)
+platformTenants.push(dnWorld.tenantId);
+await db.user.update({ where: { id: dnWorld.userId }, data: { role: "OWNER" } });
+const dnSessionId = randomBytes(32).toString("base64url");
+await db.session.create({ data: { id: dnSessionId, userId: dnWorld.userId, expiresAt: new Date(Date.now() + 3600_000) } });
+const dnCookie = `rb_session=${dnSessionId}`;
+const dnYardUser = await db.user.create({ data: { tenantId: dnWorld.tenantId, email: `yard-dn-${Date.now()}@example.test`, name: "Hof Mahnwesen", passwordHash: "x", role: "YARD" } });
+const dnYardSession = randomBytes(32).toString("base64url");
+await db.session.create({ data: { id: dnYardSession, userId: dnYardUser.id, expiresAt: new Date(Date.now() + 3600_000) } });
+const dnInv = await ensureInvoiceDraft(dnWorld.tenantId, dnWorld.bookingId, dnWorld.actor);
+await finalizeInvoice(dnWorld.tenantId, dnInv.id, dnWorld.actor);
+const dnNumber = (await db.invoice.findUniqueOrThrow({ where: { id: dnInv.id } })).number!;
+const dnLater = new Date(Date.now() + 20 * 86400_000);
+const dnPlan = await previewDunning(dnWorld.tenantId, dnInv.id, { now: dnLater });
+const dnNotice = (await createDunningNotice(dnWorld.tenantId, dnWorld.actor, { invoiceId: dnInv.id, level: 1, expectedTotalCents: dnPlan.totalCents, idempotencyKey: `smoke-dn-${Date.now()}` }, { now: dnLater })).notice;
+const dnDoc = (await ensureDunningDocument(dnWorld.tenantId, dnNotice.id, dnWorld.actor.id)).document;
+const dnInvoiceUrl = `${base}/buchungen/${dnWorld.bookingId}/rechnung?nr=${dnInv.id}`;
+const dnBookingNumber = (await db.booking.findUniqueOrThrow({ where: { id: dnWorld.bookingId } })).number;
+// Knöpfe gezielt prüfen: „Übermittlung vermerken“ steht auch im für alle sichtbaren Satz „Nächster Schritt: …“
+const dnActionButtons = (html: string) => />Übermittlung vermerken<\/button>/.test(html) || />Per E-Mail senden<\/button>/.test(html) || />Erneut senden<\/button>/.test(html);
+const dnList = await fetch(`${base}/forderungen?filter=erinnerung`, { headers: { cookie: dnCookie } });
+const dnListHtml = await plain(dnList);
+report(dnList.status === 200 && dnListHtml.includes(dnNumber) && dnListHtml.includes("Zahlungserinnerung erstellt, Versand offen"), `${dnList.status} Forderungen: Filter Zahlungserinnerung zeigt ${dnNumber}`);
+const dnAll = await plain(await fetch(`${base}/forderungen`, { headers: { cookie: dnCookie } }));
+report(dnAll.includes("Offene Forderungen") && dnAll.includes("Davon überfällig") && dnAll.includes("Ohne Fälligkeit"), "Forderungen: Übersicht mit Kennzahlen und Filtern erreichbar");
+const dnSearch = await plain(await fetch(`${base}/forderungen?filter=erinnerung&q=${encodeURIComponent(dnNumber)}`, { headers: { cookie: dnCookie } }));
+report(dnSearch.includes(dnBookingNumber), "Forderungen: serverseitige Suche nach Rechnungsnummer findet die Buchung");
+const dnHome = await plain(await fetch(`${base}/heute`, { headers: { cookie: dnCookie } }));
+report(dnHome.includes("Offene Forderungen") && dnHome.includes("In Mahnung") && dnHome.includes('href="/forderungen"'), "Dashboard: Forderungen und Mahnstufen, verlinkt");
+const dnRules = await plain(await fetch(`${base}/einstellungen/geschaeftsregeln`, { headers: { cookie: dnCookie } }));
+report(dnRules.includes("Mahnwesen") && dnRules.includes("Mahnwesen speichern") && dnRules.includes("Frist 1. Mahnung"), "Geschäftsregeln: Bereich Mahnwesen (Inhaber)");
+const dnRanges = await plain(await fetch(`${base}/einstellungen/nummernkreise`, { headers: { cookie: dnCookie } }));
+report(dnRanges.includes("Präfix Mahnungen") && dnRanges.includes("MA-"), "Nummernkreise: Kreis Mahnungen");
+const dnInvoiceHtml = await plain(await fetch(dnInvoiceUrl, { headers: { cookie: dnCookie } }));
+report(dnInvoiceHtml.includes("Forderung &amp; Mahnwesen") && dnInvoiceHtml.includes("Mahnhistorie") && dnInvoiceHtml.includes(dnNotice.number) && dnActionButtons(dnInvoiceHtml), "Rechnung: Mahnhistorie mit Aktionen (Disposition/Inhaber)");
+report(dnInvoiceHtml.includes(dnDoc.fileName), "Dokumente: Mahnschreiben im Dokumentenbereich");
+const dnPdf = await fetch(`${base}/api/documents/${dnDoc.id}?download=1`, { headers: { cookie: dnCookie } });
+report(dnPdf.status === 200 && (dnPdf.headers.get("content-type") ?? "").includes("pdf"), `${dnPdf.status} Mahnschreiben-PDF abrufbar`);
+const dnYard = await plain(await fetch(dnInvoiceUrl, { headers: { cookie: `rb_session=${dnYardSession}` } }));
+report(dnYard.includes("Mahnhistorie") && dnYard.includes(dnNotice.number) && !dnActionButtons(dnYard), "Hofmitarbeiter: Mahnhistorie lesend, keine Mahnaktionen");
+const dnYardList = await fetch(`${base}/forderungen`, { headers: { cookie: `rb_session=${dnYardSession}` } });
+report(dnYardList.status === 200, `${dnYardList.status} Hofmitarbeiter: Forderungen lesbar`);
+const dnSupportSession = await startSupportSession({ id: admin.id, name: admin.name }, dnWorld.tenantId, "Smoke-Test Mahnwesen read-only");
+const dnSupportCookie = `${adminCookie}; rb_support=${dnSupportSession.id}`;
+const dnSupportList = await plain(await fetch(`${base}/forderungen?filter=erinnerung`, { headers: { cookie: dnSupportCookie } }));
+report(dnSupportList.includes("SUPPORTMODUS") && dnSupportList.includes(dnBookingNumber) && !dnActionButtons(dnSupportList), "Supportmodus: Forderungen lesbar, keine Mahnaktionen");
+// Rechnungsseiten sind im Supportmodus schon bisher gesperrt (Umleitung) – damit auch jede Mahnaktion
+const dnSupportInvoice = await fetch(dnInvoiceUrl, { headers: { cookie: dnSupportCookie }, redirect: "manual" });
+report(dnSupportInvoice.status === 307 && (dnSupportInvoice.headers.get("location") ?? "").includes("fehler=support"), `${dnSupportInvoice.status} Supportmodus: Rechnung mit Mahnaktionen gesperrt`);
+const dnForeignList = await plain(await fetch(`${base}/forderungen?filter=erinnerung&q=${encodeURIComponent(dnNumber)}`, { headers: { cookie } }));
+report(!dnForeignList.includes(dnBookingNumber) && dnForeignList.includes("Keine Forderung passt zur Suche."), "Forderungen: fremder Mandant sieht die Forderung nicht");
+const dnForeignInvoice = await fetch(dnInvoiceUrl, { headers: { cookie } });
+report(dnForeignInvoice.status === 404, `${dnForeignInvoice.status} fremder Mandant: Rechnung mit Mahnhistorie nicht auffindbar`);
+const dnForeignPdf = await fetch(`${base}/api/documents/${dnDoc.id}`, { headers: { cookie } });
+report(dnForeignPdf.status === 404 || dnForeignPdf.status === 403, `${dnForeignPdf.status} fremder Mandant: Mahnschreiben-PDF gesperrt`);
 
 // ---------------------------------------------------------------------------
 // Control Center: Navigation je interner Rolle, alle Bereiche erreichbar, Berechtigungen serverseitig, Feature-Gating,

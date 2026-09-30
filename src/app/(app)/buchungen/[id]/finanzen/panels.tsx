@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { Card, Chip } from "@/components/ui";
-import { DEPOSIT_EVENT_TYPES, DEPOSIT_OFFSET_LABEL, DEPOSIT_OFFSET_METHOD, DEPOSIT_STATUS, INVOICE_PAYMENT_STATUS, PAYMENT_METHODS, RENTAL_PAYMENT_STATUS, type DepositEventType, type PaymentMethod, invoiceKindWord, isSideInvoice } from "@/lib/constants";
+import { DEPOSIT_EVENT_TYPES, DEPOSIT_OFFSET_LABEL, DEPOSIT_OFFSET_METHOD, depositStatusLabel, INVOICE_PAYMENT_STATUS, PAYMENT_METHODS, RENTAL_PAYMENT_STATUS, type DepositEventType, type PaymentMethod, invoiceKindWord, isSideInvoice } from "@/lib/constants";
 import { depositView } from "@/lib/deposits";
 import { depositOffsetOptions } from "@/lib/deposit-offset";
 import { fmtDateTime, fmtEur } from "@/lib/format";
@@ -186,7 +186,7 @@ export async function DepositPanel({ tenantId, bookingId, role, charges }: { ten
   // Befehl 20.7: bewusste Verrechnung mit einer offenen Forderung – nur nach Rückgabe, nur mit verfügbarer Kaution
   const offset = afterReturn && canDecide && v.remainingCents > 0 ? await depositOffsetOptions(tenantId, bookingId) : null;
   return (
-    <Card title="Kaution" right={<Chip tone={depositTone(v.status)}>{DEPOSIT_STATUS[v.status]}</Chip>}>
+    <Card title="Kaution" right={<Chip tone={depositTone(v.status)}>{depositStatusLabel(v.status, v)}</Chip>}>
       <div className="p-4 flex flex-col gap-4">
         <div className={`grid grid-cols-2 ${v.offsetGrossCents > 0 ? "sm:grid-cols-5" : "sm:grid-cols-4"} gap-2 text-sm`}>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Vereinbart</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(v.expectedCents)}</div><div className="text-[11px] text-ink-3">laut {v.contractSigned && v.contractNumber ? v.contractNumber : "Buchung (Vertrag folgt)"}</div></div>

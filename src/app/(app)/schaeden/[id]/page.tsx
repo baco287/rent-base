@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { Card, Chip, Content, PageHeader, Plate, VehicleStatusChip } from "@/components/ui";
-import { DAMAGE_CASE_DOCUMENT_TYPES, DAMAGE_CASE_EVENT_TYPES, DAMAGE_CASE_PRIORITY, DAMAGE_CASE_TRANSITIONS, DAMAGE_KINDS, DAMAGE_SEVERITY, DAMAGE_TAX_TREATMENTS, DAMAGE_VIEWS, DEPOSIT_STATUS, LIABILITY_STATUS, type DamageCaseDocumentType, type DamageCasePriority, type DamageCaseStatus, type DamageKind, type DamageSeverity, type DamageTaxTreatment, type DamageView, type LiabilityStatus } from "@/lib/constants";
+import { DAMAGE_CASE_DOCUMENT_TYPES, DAMAGE_CASE_EVENT_TYPES, DAMAGE_CASE_PRIORITY, DAMAGE_CASE_TRANSITIONS, DAMAGE_KINDS, DAMAGE_SEVERITY, DAMAGE_TAX_TREATMENTS, DAMAGE_VIEWS, depositStatusLabel, LIABILITY_STATUS, type DamageCaseDocumentType, type DamageCasePriority, type DamageCaseStatus, type DamageKind, type DamageSeverity, type DamageTaxTreatment, type DamageView, type LiabilityStatus } from "@/lib/constants";
 import { caseView, futureBookingsOf } from "@/lib/damage-cases";
 import { DomainError } from "@/lib/integrity";
 import { customerName, fmtDate, fmtDateTime, fmtInt } from "@/lib/format";
@@ -319,7 +319,7 @@ export default async function DamageCasePage({ params, searchParams }: PageProps
 
         {/* Kaution informativ */}
         {c.bookingId && c.deposit && (
-          <Card title="Kaution (zur Information)" right={<Chip tone={c.deposit.status === "RELEASED" ? "good" : c.deposit.status === "RETAINED" ? "bad" : "amber"}>{DEPOSIT_STATUS[c.deposit.status as keyof typeof DEPOSIT_STATUS] ?? c.deposit.status}</Chip>}>
+          <Card title="Kaution (zur Information)" right={<Chip tone={c.deposit.status === "RELEASED" ? "good" : c.deposit.status === "RETAINED" ? "bad" : "amber"}>{depositStatusLabel(c.deposit.status, c.deposit)}</Chip>}>
             <div className="p-4 flex flex-col gap-2 text-sm">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Vereinbart</div><div className="font-mono tnum font-semibold">{fmtCents(c.deposit.expectedCents)}</div></div>

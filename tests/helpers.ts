@@ -39,6 +39,8 @@ export async function purgeTenants(tenantIds: string[]) {
         await tx.auditLog.deleteMany(w);
         await tx.document.deleteMany({ where: { tenantId: t, payoutId: { not: null } } });
         await tx.payout.deleteMany(w);
+        // Befehl 23: Mahnschreiben vor den Rechnungen (verweisen auf gemahnte Rechnung und Gebührenrechnung)
+        await tx.dunningNotice.deleteMany(w);
         // Kautionsbewegungen vor Zahlungen: eine OFFSET-Bewegung verweist auf ihre Verrechnungszahlung (Befehl 20.7)
         await tx.securityDepositEvent.deleteMany(w);
         await tx.payment.deleteMany(w);

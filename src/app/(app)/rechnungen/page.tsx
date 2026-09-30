@@ -25,6 +25,7 @@ const KINDS: { key: string; label: string; kind: string | null }[] = [
   { key: "miete", label: "Mietrechnungen", kind: "RENTAL" },
   { key: "schaden", label: "Schadensrechnungen", kind: "DAMAGE" },
   { key: "behoerde", label: "Bearbeitungsentgelte Behörde", kind: "AUTHORITY_FEE" },
+  { key: "mahngebuehr", label: "Mahngebühren", kind: "DUNNING_FEE" },
 ];
 const DOCS: { key: string; label: string; types: string[] }[] = [
   { key: "rechnungen", label: "Rechnungen", types: ["INVOICE"] },

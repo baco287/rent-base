@@ -62,7 +62,7 @@ export async function CustomerCreditCard({ tenantId, bookingId, role, invoiceId 
                   </div>
                   <div className="text-xs text-ink-3">von {e.createdByName ?? "–"} · kein Geldfluss{e.note ? ` · ${e.note}` : ""}</div>
                   {e.status === "CANCELLED" && <div className="text-xs text-bad">Storniert am {fmtDateTime(e.cancelledAt)} von {e.cancelledByName ?? "–"}: {e.cancellationReason}</div>}
-                  {e.status === "CONFIRMED" && canManage && <ReasonForm action={cancelOffsetReturnAction.bind(null, bookingId)} id={e.id} label="Rückführung stornieren" question={`Rückführung über ${fmtCents(e.amountCents)} stornieren? Das Guthaben ist danach wieder verfügbar, die Kaution um diesen Betrag geringer.`} />}
+                  {e.status === "CONFIRMED" && canManage && <ReasonForm variant="button" confirmLabel="Rückführung stornieren" action={cancelOffsetReturnAction.bind(null, bookingId)} id={e.id} label="Rückführung stornieren" question={`Rückführung über ${fmtCents(e.amountCents)} stornieren? Das Guthaben ist danach wieder verfügbar, die Kaution um diesen Betrag geringer.`} />}
                 </li>
               ))}
             </ul>

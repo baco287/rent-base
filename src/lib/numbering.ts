@@ -1,7 +1,7 @@
 // Fortlaufende Nummern je Mandant und Jahr: Präfix-JJJJ-NNNN.
 // Gleiche Logik wie die Buchungsnummer, für Verträge und Protokolle wiederverwendet.
 import type { Prisma } from "@prisma/client";
-import { nextInRange, numberRangesOf, payoutPrefix, rangePrefix, type InvoiceDocumentType, type NumberRanges } from "@/lib/number-ranges";
+import { dunningPrefix, nextInRange, numberRangesOf, payoutPrefix, rangePrefix, type InvoiceDocumentType, type NumberRanges } from "@/lib/number-ranges";
 
 type Tx = Prisma.TransactionClient;
 
@@ -80,9 +80,17 @@ export async function nextPayoutNumber(tx: Tx, tenantId: string, date = new Date
   return nextInRange(prefix, last?.number);
 }
 
+/** Mahnschreiben (Kreis „Mahnungen“, Standard MA-JJJJ-NNNNNN), beim Erstellen; eindeutiger Index + withNumberRetry. */
+export async function nextDunningNumber(tx: Tx, tenantId: string, date = new Date()) {
+  const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { numberRanges: true } });
+  const prefix = dunningPrefix(numberRangesOf(tenant.numberRanges), date.getFullYear());
+  const last = await tx.dunningNotice.findFirst({ where: { tenantId, number: { startsWith: prefix } }, orderBy: { number: "desc" }, select: { number: true } });
+  return nextInRange(prefix, last?.number);
+}
+
 /** Vorschau der nächsten Nummer je Kreis (Einstellungen); vergibt nichts. */
 export async function previewNextNumbers(client: Tx, tenantId: string, ranges: NumberRanges, date = new Date()) {
-  const out: Record<InvoiceDocumentType | "PAYOUT", string> = { INVOICE: "", CREDIT_NOTE: "", CANCELLATION: "", PAYOUT: "" };
+  const out: Record<InvoiceDocumentType | "PAYOUT" | "DUNNING", string> = { INVOICE: "", CREDIT_NOTE: "", CANCELLATION: "", PAYOUT: "", DUNNING: "" };
   for (const type of ["INVOICE", "CREDIT_NOTE", "CANCELLATION"] as InvoiceDocumentType[]) {
     const prefix = rangePrefix(ranges, type, date.getFullYear());
     const last = await client.invoice.findFirst({ where: { tenantId, number: { startsWith: prefix } }, orderBy: { number: "desc" }, select: { number: true } });
@@ -91,6 +99,9 @@ export async function previewNextNumbers(client: Tx, tenantId: string, ranges: N
   const pp = payoutPrefix(ranges, date.getFullYear());
   const lastPayout = await client.payout.findFirst({ where: { tenantId, number: { startsWith: pp } }, orderBy: { number: "desc" }, select: { number: true } });
   out.PAYOUT = nextInRange(pp, lastPayout?.number);
+  const dp = dunningPrefix(ranges, date.getFullYear());
+  const lastDunning = await client.dunningNotice.findFirst({ where: { tenantId, number: { startsWith: dp } }, orderBy: { number: "desc" }, select: { number: true } });
+  out.DUNNING = nextInRange(dp, lastDunning?.number);
   return out;
 }
 

@@ -19,6 +19,7 @@ import { FollowUpNotice } from "../dokumente/follow-up-notice";
 import { PaymentsPanel, PaymentStatusChip } from "../finanzen/panels";
 import { DepositSettlementCard } from "../finanzen/deposit-settlement-card";
 import { CustomerCreditCard } from "../finanzen/customer-credit-card";
+import { DunningCard, DunningFeeNote } from "./dunning-card";
 import { createInvoiceAction, discardInvoiceDraftAction, finalizeInvoiceAction, markDeliveredAction, saveInvoiceDraftAction, startInvoiceEditAction } from "./actions";
 import { InvoiceEditor, type EditableItem } from "./invoice-editor";
 import { InvoiceDocumentView, InvoiceIssueList } from "./invoice-parts";
@@ -292,6 +293,8 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
         </Card>
 
         {shown.id === current.id && <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} invoiceId={inv.id} />}
+        {shown.id === current.id && inv.kind !== "DUNNING_FEE" && <DunningCard tenantId={tenant.id} bookingId={b.id} role={user.role} invoiceId={inv.id} />}
+        {shown.id === current.id && inv.kind === "DUNNING_FEE" && <DunningFeeNote tenantId={tenant.id} bookingId={b.id} invoiceId={inv.id} />}
         {shown.id === current.id && <CustomerCreditCard tenantId={tenant.id} bookingId={b.id} role={user.role} invoiceId={inv.id} />}
         {shown.id === current.id && <PaymentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} invoiceId={inv.id} />}
         {shown.id === current.id && <DepositSettlementCard tenantId={tenant.id} bookingId={b.id} role={user.role} invoice={{ id: inv.id, number: inv.number, status: "FINALIZED", grossCents: finance.effectiveCents, prepaidCents: pay.paidCents }} />}

@@ -13,7 +13,7 @@ export type RangesState = { error?: string; ok?: string } | undefined;
 
 export async function updateNumberRangesAction(_prev: RangesState, fd: FormData): Promise<RangesState> {
   const { tenant, user } = await requireRole("OWNER");
-  const input = { invoice: String(fd.get("invoice") ?? ""), creditNote: String(fd.get("creditNote") ?? ""), cancellation: String(fd.get("cancellation") ?? ""), payout: String(fd.get("payout") ?? "") };
+  const input = { invoice: String(fd.get("invoice") ?? ""), creditNote: String(fd.get("creditNote") ?? ""), cancellation: String(fd.get("cancellation") ?? ""), payout: String(fd.get("payout") ?? ""), dunning: String(fd.get("dunning") ?? "") };
   try {
     const next = validateNumberRanges(input);
     const before = numberRangesOf(tenant.numberRanges);

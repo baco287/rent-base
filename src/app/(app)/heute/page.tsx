@@ -94,6 +94,13 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
           <KPI label="Rechnungserstattungen offen" value={c.refundsOpen} detail={<Link href="/auszahlungen?filter=offen&quelle=rechnung" className="underline">{fmtCents(c.refundsOpenCents)} noch auszuzahlen</Link>} hot={c.refundsOpen > 0} />
           <KPI label="Kautionsauszahlungen offen" value={c.depositPayoutsOpen} detail={<Link href="/auszahlungen?filter=offen&quelle=kaution" className="underline">{fmtCents(c.depositPayoutsOpenCents)} freigegeben, noch nicht ausgezahlt</Link>} hot={c.depositPayoutsOpen > 0} />
         </div>
+        {/* Befehl 23: Forderungen und Mahnstufen – dieselbe Ableitung wie die Forderungsübersicht, keine eigene Rechnung */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <KPI label="Offene Forderungen" value={fmtCents(d.receivables.openCents)} detail={<Link href="/forderungen" className="underline">{d.receivables.open} {d.receivables.open === 1 ? "Rechnung" : "Rechnungen"} · davon überfällig {fmtCents(d.receivables.overdueCents)}</Link>} hot={d.receivables.overdueCents > 0} />
+          <KPI label="Überfällige Forderungen" value={d.receivables.overdue} detail={<Link href="/forderungen?filter=ueberfaellig" className="underline">{d.receivables.actionable.length > 0 ? `${d.receivables.actionable.length} mit möglichem Mahnschritt` : "kein Mahnschritt offen"}</Link>} hot={d.receivables.actionable.length > 0} />
+          <KPI label="In Mahnung" value={d.receivables.reminder + d.receivables.first + d.receivables.second} detail={<Link href="/forderungen?filter=erinnerung" className="underline">{d.receivables.reminder} Zahlungserinnerung · {d.receivables.first} 1. Mahnung · {d.receivables.second} 2. Mahnung</Link>} />
+          <KPI label="Weitere Bearbeitung" value={d.receivables.further} detail={<Link href="/forderungen?filter=weitere" className="underline">{d.receivables.further > 0 ? "alle Mahnstufen ausgeschöpft" : "keine"}{d.receivables.noDueDate > 0 ? ` · ${d.receivables.noDueDate} ohne Fälligkeit` : ""}</Link>} hot={d.receivables.further > 0} />
+        </div>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <KPI label="Offene Kautionen" value={c.depositsHeld} detail={`nach Rückgabe noch nicht entschieden · ${c.depositsExpected} unterwegs ohne Eingang`} hot={c.depositsHeld > 0} />
           <KPI label="Offene Schadenakten" value={c.damagesOpen} detail={<Link href="/schaeden?filter=offen" className="underline">{c.damagesUnderReview} in Prüfung · {c.damagesInRepair} in Reparatur · {damage.blocked} wegen Schaden gesperrt</Link>} hot={c.damagesOpen > 0 || damage.blocked > 0} />

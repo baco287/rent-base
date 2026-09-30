@@ -22,6 +22,8 @@ export type VersionInfo = {
 export type OriginalRef = { number: string; date: string | null; versionNo: number; gross: string; customerName: string };
 
 export type InvoiceDocumentData = {
+  /** Befehl 23: Mahngebühr (eigene Nebenrechnung) – eigener Untertitel statt „Fahrzeugmiete“ */
+  dunningFee?: boolean;
   title: string;
   /** INVOICE = Rechnung, CREDIT_NOTE = Gutschrift, CANCELLATION = Stornobeleg (Phase 17) */
   documentType: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION";
@@ -80,6 +82,7 @@ export function buildInvoiceDocument(inv: VersionFull, refs: DocumentRefs): Invo
   const o = refs.original ?? null;
   return {
     title: kind === "CORRECTION" ? `Berichtigte ${baseTitle}` : baseTitle,
+    dunningFee: refs.kind === "DUNNING_FEE",
     documentType,
     original: o ? { number: o.number, date: date(o.issueDate ? new Date(o.issueDate) : null), versionNo: o.versionNo, gross: fmtCents(toCents(o.grossTotal)), customerName: o.customerName } : null,
     reason: documentType !== "INVOICE" ? inv.reason : null,

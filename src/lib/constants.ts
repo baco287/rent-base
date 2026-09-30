@@ -217,6 +217,7 @@ export const MAIL_TEMPLATE_CATEGORY: Record<string, MailCategory> = {
   SMTP_TEST: "TENANT_BUSINESS",
   KEY_DROP_LINK: "TENANT_BUSINESS", // Befehl 20.6: persönlicher Link zur kontaktlosen Rückgabe (nur durch bewussten Klick)
   KEY_DROP_CONFIRMATION: "TENANT_BUSINESS", // Eingangsbestätigung der Kundenmeldung (keine Zustandsbestätigung)
+  DUNNING_NOTICE: "TENANT_BUSINESS", // Befehl 23: Zahlungserinnerung / Mahnung – nur nach bewusster Bestätigung, nie automatisch
 };
 export const mailCategoryOf = (template: string): MailCategory => MAIL_TEMPLATE_CATEGORY[template] ?? "TENANT_BUSINESS";
 export const MAIL_CHANNELS = { PLATFORM_SMTP: "RentBase-Versanddienst", TENANT_SMTP: "Eigener SMTP des Vermieters" } as const;
@@ -366,6 +367,7 @@ export const DOCUMENT_TYPES = {
   PAYOUT_RECEIPT: "Auszahlungsbeleg",
   PAYOUT_ATTACHMENT: "Auszahlungsnachweis",
   KEY_DROP_CONFIRMATION: "Bestätigung kontaktlose Rückgabe",
+  DUNNING_NOTICE: "Mahnschreiben",
 } as const;
 export type DocumentType = keyof typeof DOCUMENT_TYPES;
 
@@ -415,6 +417,22 @@ export const INVOICE_PAYMENT_STATUS = { OPEN: "Offen", PARTIAL: "Teilbezahlt", P
 export const INVOICE_VERSION_KINDS = { ORIGINAL: "Original", REVISION: "Neufassung", CORRECTION: "Berichtigung" } as const;
 export type InvoicePaymentStatus = keyof typeof INVOICE_PAYMENT_STATUS;
 export const DEPOSIT_STATUS = { EXPECTED: "Noch nicht erhalten", RECEIVED: "Erhalten", PARTIALLY_RELEASED: "Teilweise freigegeben", RELEASED: "Freigegeben", RETAINED: "Einbehalten" } as const;
+/**
+ * Befehl 23 (Punkt 44B): Anzeige des Kautionsstands aus den tatsächlichen Bewegungen. Der gespeicherte Status steuert
+ * weiterhin die Logik (z. B. PARTIALLY_RELEASED = teilweise erledigt, Rest noch verfügbar → offene Kautionen) und bleibt
+ * unverändert; nur die Bezeichnung behauptet keine Freigabe mehr, wenn nur verrechnet oder einbehalten wurde.
+ */
+export function depositStatusLabel(status: string, b?: { releasedCents: number; retainedCents: number; offsetCents: number } | null): string {
+  const base = DEPOSIT_STATUS[status as keyof typeof DEPOSIT_STATUS] ?? status;
+  if (!b) return base;
+  if (status === "PARTIALLY_RELEASED" && b.releasedCents === 0) {
+    if (b.offsetCents > 0 && b.retainedCents === 0) return "Teilweise verrechnet";
+    if (b.retainedCents > 0 && b.offsetCents === 0) return "Teilweise einbehalten";
+    if (b.retainedCents > 0 && b.offsetCents > 0) return "Teilweise verrechnet und einbehalten";
+  }
+  if (status === "RETAINED" && b.offsetCents > 0) return b.retainedCents > 0 ? "Verrechnet und einbehalten" : "Mit Forderungen verrechnet";
+  return base;
+}
 export type DepositStatus = keyof typeof DEPOSIT_STATUS;
 export const DEPOSIT_EVENT_TYPES = { RECEIVED: "Erhalten", RELEASED: "Freigegeben", RETAINED: "Einbehalten", OFFSET: "Mit Forderung verrechnet", OFFSET_RETURN: "Aus Kundenguthaben zur Kaution zurückgeführt" } as const;
 export type DepositEventType = keyof typeof DEPOSIT_EVENT_TYPES;
@@ -440,6 +458,15 @@ export const AUDIT_ACTIONS = {
   DEPOSIT_OFFSET_PARTIALLY_RETURNED: "Kautionsverrechnung teilweise zur Kaution zurückgeführt",
   DEPOSIT_OFFSET_FULLY_RETURNED: "Kautionsverrechnung vollständig zur Kaution zurückgeführt",
   DEPOSIT_OFFSET_RETURN_CANCELLED: "Rückführung zur Kaution storniert",
+  // Befehl 23: Mahnwesen – nur bewusste Handlungen (erstellen, versenden, übermittelt vermerken); abgeleitete Statuswechsel nicht
+  DUNNING_REMINDER_CREATED: "Zahlungserinnerung erstellt",
+  DUNNING_FIRST_CREATED: "1. Mahnung erstellt",
+  DUNNING_SECOND_CREATED: "2. Mahnung erstellt",
+  DUNNING_SENT: "Mahnschreiben versendet",
+  DUNNING_RESENT: "Mahnschreiben erneut versendet",
+  DUNNING_DELIVERED: "Mahnschreiben als übermittelt vermerkt",
+  DUNNING_FEE_CREATED: "Mahngebühr berechnet",
+  DUNNING_SETTINGS_UPDATED: "Mahnwesen-Einstellungen geändert",
   DEPOSIT_CORRECTION: "Kautionsbewegung storniert",
   INVOICE_VERSION_CREATED: "Rechnungsbearbeitung begonnen",
   INVOICE_REVISED: "Rechnung neu gefasst",
@@ -644,12 +671,38 @@ export const DAMAGE_CASE_EVENT_TYPES = {
   PHOTO_ADDED: "Foto hinzugefügt", DOCUMENT_ADDED: "Dokument hinzugefügt", NOTE_ADDED: "Notiz ergänzt", VEHICLE_BLOCKED: "Fahrzeug gesperrt", VEHICLE_RELEASED: "Fahrzeug freigegeben",
   CUSTOMER_CHARGE_CREATED: "Kundenbelastung festgelegt", INVOICE_CREATED: "Schadenabrechnung erstellt", CLOSED: "Akte geschlossen", REOPENED: "Akte wieder geöffnet",
 } as const;
-export const INVOICE_KINDS = { RENTAL: "Mietrechnung", DAMAGE: "Schadenabrechnung", AUTHORITY_FEE: "Bearbeitungsentgelt Behörde" } as const;
+export const INVOICE_KINDS = { RENTAL: "Mietrechnung", DAMAGE: "Schadenabrechnung", AUTHORITY_FEE: "Bearbeitungsentgelt Behörde", DUNNING_FEE: "Mahngebühr" } as const;
 export type InvoiceKind = keyof typeof INVOICE_KINDS;
 /** Kurzes Wort für Listen und Knöpfe („Rechnung RE-…“, „Schadenabrechnung RE-…“). */
-export const invoiceKindWord = (kind: string | null | undefined) => (kind === "DAMAGE" ? "Schadenabrechnung" : kind === "AUTHORITY_FEE" ? "Bearbeitungsentgelt" : "Rechnung");
+export const invoiceKindWord = (kind: string | null | undefined) => (kind === "DAMAGE" ? "Schadenabrechnung" : kind === "AUTHORITY_FEE" ? "Bearbeitungsentgelt" : kind === "DUNNING_FEE" ? "Mahngebühr" : "Rechnung");
 /** Nebenrechnungen (nicht die Mietrechnung der Buchung) werden über ?nr=<id> adressiert. */
-export const isSideInvoice = (kind: string | null | undefined) => kind === "DAMAGE" || kind === "AUTHORITY_FEE";
+export const isSideInvoice = (kind: string | null | undefined) => kind === "DAMAGE" || kind === "AUTHORITY_FEE" || kind === "DUNNING_FEE";
+
+// Befehl 23: Mahnwesen. Stufen sind fortlaufend (keine Stufe wird übersprungen); nichts wird automatisch erstellt oder versendet.
+export const DUNNING_LEVELS = { 1: "Zahlungserinnerung", 2: "1. Mahnung", 3: "2. Mahnung" } as const;
+export type DunningLevel = 1 | 2 | 3;
+export const dunningLevelLabel = (level: number) => DUNNING_LEVELS[level as DunningLevel] ?? `Stufe ${level}`;
+/** Abgeleiteter Stand einer Forderung – nie gespeichert, immer aus Rechnungssaldo, Fälligkeit und Mahnhistorie berechnet. */
+export const RECEIVABLE_STATUS = {
+  NOT_DUE: "Offen, noch nicht fällig",
+  NO_DUE_DATE: "Offen, ohne Fälligkeit",
+  OVERDUE: "Überfällig",
+  REMINDER_OPEN: "Zahlungserinnerung erstellt, Versand offen",
+  REMINDER_SENT: "Zahlungserinnerung gesendet",
+  FIRST_OPEN: "1. Mahnung erstellt, Versand offen",
+  FIRST_SENT: "1. Mahnung gesendet",
+  SECOND_OPEN: "2. Mahnung erstellt, Versand offen",
+  SECOND_SENT: "2. Mahnung gesendet",
+  FURTHER_ACTION: "Weitere Bearbeitung erforderlich",
+  SETTLED: "Erledigt",
+} as const;
+export type ReceivableStatus = keyof typeof RECEIVABLE_STATUS;
+export const DUNNING_HELP = {
+  NO_AUTOMATION: "Rent-Base erkennt nur, welcher Schritt möglich ist. Erstellt und versendet wird ein Mahnschreiben ausschließlich nach Ihrer Bestätigung – keine automatische Mail, keine automatische Eskalation, keine Weitergabe an Dritte.",
+  NO_INTEREST: "Verzugszinsen berechnet Rent-Base nicht.",
+  FEES: "Mahngebühren sind die von Ihnen festgelegten Beträge. Rent-Base prüft nicht, ob eine Gebühr im Einzelfall rechtlich zulässig ist. Eine Gebühr entsteht als eigene Gebührenrechnung (0 % USt) und ist damit Teil der offenen Forderung.",
+  NO_DUE_DATE: "Diese Rechnung wurde ohne Zahlungsziel abgeschlossen. Rent-Base legt kein Fälligkeitsdatum rückwirkend fest; ohne Fälligkeit gibt es keine Mahnstufe.",
+} as const;
 /**
  * Steuerliche Behandlung einer Kundenbelastung – bewusste Auswahl des Mitarbeiters, keine Vorentscheidung durch Rent-Base
  * (Abschn. 1.3 UStAE: Ausgleich für Beschädigung durch nicht vertragsgemäße Nutzung ist echter Schadensersatz und nicht

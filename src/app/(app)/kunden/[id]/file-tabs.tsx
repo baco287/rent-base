@@ -4,7 +4,7 @@
 import Link from "next/link";
 import { BookingStatusChip, Card, Chip, Empty, KPI, Plate } from "@/components/ui";
 import { DocumentThumb } from "@/components/document-thumb";
-import { AUTHORITY_DOCUMENT_TYPES, CONTRACT_STATUS, DAMAGE_CASE_DOCUMENT_TYPES, DEPOSIT_EVENT_TYPES, DEPOSIT_OFFSET_LABEL, DEPOSIT_OFFSET_METHOD, DEPOSIT_STATUS, DOCUMENT_TYPES, DRIVER_ROLES, DRIVER_VERIFICATION_STATUS, EMAIL_STATUS, INVOICE_CHAIN_STATUS, INVOICE_DOCUMENT_TYPES, PAYMENT_METHODS, PAYOUT_METHODS, PAYOUT_SOURCE_TYPES, PAYOUT_STATUS, type AuthorityDocumentType, type DamageCaseDocumentType, type DepositEventType, type DepositStatus, type DocumentType, type DriverRole, type DriverVerificationStatus, type EmailStatus, type InvoiceDocumentTypeKey, type PaymentMethod, type PayoutMethod, type PayoutSourceType, type PayoutStatus, isSideInvoice, invoiceKindWord } from "@/lib/constants";
+import { AUTHORITY_DOCUMENT_TYPES, CONTRACT_STATUS, DAMAGE_CASE_DOCUMENT_TYPES, DEPOSIT_EVENT_TYPES, DEPOSIT_OFFSET_LABEL, DEPOSIT_OFFSET_METHOD, depositStatusLabel, DOCUMENT_TYPES, DRIVER_ROLES, DRIVER_VERIFICATION_STATUS, EMAIL_STATUS, INVOICE_CHAIN_STATUS, INVOICE_DOCUMENT_TYPES, PAYMENT_METHODS, PAYOUT_METHODS, PAYOUT_SOURCE_TYPES, PAYOUT_STATUS, type AuthorityDocumentType, type DamageCaseDocumentType, type DepositEventType, type DocumentType, type DriverRole, type DriverVerificationStatus, type EmailStatus, type InvoiceDocumentTypeKey, type PaymentMethod, type PayoutMethod, type PayoutSourceType, type PayoutStatus, isSideInvoice, invoiceKindWord } from "@/lib/constants";
 import { casesForCustomer } from "@/lib/authority";
 import { driverDocumentHistoryForCustomer } from "@/lib/driver-verification";
 import { BOOKINGS_PAGE, customerBookings, customerDamageCases, customerDeposits, customerDocuments, customerDriverRoles, customerEmails, customerFinance, customerTimeline, type CustomerOverview } from "@/lib/customer-file";
@@ -185,7 +185,7 @@ export async function DepositsTab({ tenantId, customerId }: { tenantId: string; 
                 <Link href={`/buchungen/${d.bookingId}#kaution`} className="font-mono tnum font-medium hover:underline">Buchung {d.bookingNumber}</Link>
                 <Plate>{d.plate}</Plate>
                 <BookingStatusChip status={d.bookingStatus} />
-                <Chip tone={d.status === "RELEASED" ? "good" : d.status === "RETAINED" ? "bad" : d.status === "EXPECTED" ? "amber" : "info"}>{DEPOSIT_STATUS[d.status as DepositStatus]}</Chip>
+                <Chip tone={d.status === "RELEASED" ? "good" : d.status === "RETAINED" ? "bad" : d.status === "EXPECTED" ? "amber" : "info"}>{depositStatusLabel(d.status, d)}</Chip>
                 {d.payoutRemainingCents > 0 && <Chip tone="bad">noch auszuzahlen {fmtCents(d.payoutRemainingCents)}</Chip>}
                 {d.payoutExcessCents > 0 && <Chip tone="amber">mehr ausgezahlt als freigegeben {fmtCents(d.payoutExcessCents)}</Chip>}
               </div>

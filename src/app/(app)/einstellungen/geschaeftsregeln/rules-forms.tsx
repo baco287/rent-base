@@ -212,3 +212,32 @@ export function KeyDropSettingsForm({ action, v }: { action: (s: RulesState, fd:
     </form>
   );
 }
+
+/** Befehl 23: Mahnwesen – Standard-Zahlungsziel, Fristen je Stufe, Mahngebühren (Zahlungserinnerung immer ohne Gebühr). */
+export function DunningSettingsForm({ action, v, help }: { action: Action; v: { paymentTermDays: number | null; reminderDays: number; firstDays: number; secondDays: number; feesEnabled: boolean; firstFeeCents: number; secondFeeCents: number }; help: { fees: string; noAutomation: string; noInterest: string } }) {
+  const [state, formAction, pending] = useActionState(action, undefined);
+  const [fees, setFees] = useState(v.feesEnabled);
+  return (
+    <form action={formAction} className="p-4 flex flex-col gap-3 text-sm">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <Field label="Standard-Zahlungsziel neuer Rechnungen (Tage)" htmlFor="dn-term" hint="leer = kein Zahlungsziel; gilt nur für künftige Rechnungen">
+          <input id="dn-term" name="paymentTermDays" type="number" min={0} max={365} defaultValue={v.paymentTermDays ?? ""} className="input tnum" />
+        </Field>
+        <Field label="Frist Zahlungserinnerung (Tage)" htmlFor="dn-reminder"><input id="dn-reminder" name="reminderDays" type="number" min={1} max={60} required defaultValue={v.reminderDays} className="input tnum" /></Field>
+        <Field label="Frist 1. Mahnung (Tage)" htmlFor="dn-first"><input id="dn-first" name="firstDays" type="number" min={1} max={60} required defaultValue={v.firstDays} className="input tnum" /></Field>
+        <Field label="Frist 2. Mahnung (Tage)" htmlFor="dn-second"><input id="dn-second" name="secondDays" type="number" min={1} max={60} required defaultValue={v.secondDays} className="input tnum" /></Field>
+      </div>
+      <label className="flex items-start gap-2 py-1"><input type="checkbox" name="feesEnabled" checked={fees} onChange={(e) => setFees(e.target.checked)} className="mt-1 size-4" /><span className="font-medium">Mahngebühren verwenden</span></label>
+      <div className={`grid grid-cols-1 sm:grid-cols-3 gap-3 ${fees ? "" : "opacity-60"}`}>
+        <Field label="Zahlungserinnerung" htmlFor="dn-fee0" hint="immer ohne Gebühr"><input id="dn-fee0" value="0,00" disabled className="input tnum" /></Field>
+        <Field label="Gebühr 1. Mahnung (€)" htmlFor="dn-fee1"><input id="dn-fee1" name="firstFee" inputMode="decimal" defaultValue={eur(v.firstFeeCents)} className="input tnum" /></Field>
+        <Field label="Gebühr 2. Mahnung (€)" htmlFor="dn-fee2"><input id="dn-fee2" name="secondFee" inputMode="decimal" defaultValue={eur(v.secondFeeCents)} className="input tnum" /></Field>
+      </div>
+      <p className="text-xs text-ink-3">{help.fees}</p>
+      <p className="text-xs text-ink-3">{help.noAutomation} {help.noInterest}</p>
+      <FormError error={state?.error} />
+      {state?.ok && <p className="text-good bg-good-soft rounded-md px-3 py-2">{state.ok}</p>}
+      <div><button disabled={pending} className="btn btn-primary">{pending ? "Wird gespeichert…" : "Mahnwesen speichern"}</button></div>
+    </form>
+  );
+}

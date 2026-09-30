@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { Card, Chip } from "@/components/ui";
-import { DEPOSIT_STATUS } from "@/lib/constants";
+import { depositStatusLabel } from "@/lib/constants";
 import { depositView } from "@/lib/deposits";
 import { depositOffsetOptions } from "@/lib/deposit-offset";
 import { fmtCents } from "@/lib/money";
@@ -42,7 +42,7 @@ export async function DepositSettlementCard({ tenantId, bookingId, role, invoice
   const noDeposit = !v.deposit && !v.contractSigned;
 
   return (
-    <Card title="Kaution & Abrechnung" right={v.expectedCents > 0 ? <Chip tone={v.status === "RECEIVED" ? "info" : v.status === "EXPECTED" ? "amber" : "grey"}>Kaution: {DEPOSIT_STATUS[v.status]}</Chip> : undefined}>
+    <Card title="Kaution & Abrechnung" right={v.expectedCents > 0 ? <Chip tone={v.status === "RECEIVED" ? "info" : v.status === "EXPECTED" ? "amber" : "grey"}>Kaution: {depositStatusLabel(v.status, v)}</Chip> : undefined}>
       <div className="p-4 flex flex-col gap-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <section aria-label="Rechnung" className="flex flex-col gap-2">

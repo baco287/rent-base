@@ -60,10 +60,19 @@ model Tenant {
   logoUpdatedAt  DateTime?
 
   // Befehl 20.6: kontaktlose Rückgabe / Schlüsselbox. Mandanten-Funktion (nicht Teil der eingefrorenen Vertragsregeln).
-  keyDropEnabled  Boolean  @default(false)
+  keyDropEnabled  Boolean @default(false)
   keyDropSettings Json? // { label, defaultInstructions, parkingNote, keyNote, requestedPhotos[] }
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+
+  // Befehl 23: Mahnwesen. Fristen je Stufe (Tage ab Erstellung), Mahngebühren optional (Zahlungserinnerung immer ohne Gebühr).
+  // Werden beim Erstellen eines Mahnschreibens eingefroren; spätere Änderungen wirken nie auf bestehende Mahnungen.
+  dunningReminderDays   Int      @default(7)
+  dunningFirstDays      Int      @default(7)
+  dunningSecondDays     Int      @default(7)
+  dunningFeesEnabled    Boolean  @default(false)
+  dunningFirstFeeCents  Int      @default(0)
+  dunningSecondFeeCents Int      @default(0)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
   users     User[]
   groups    VehicleGroup[]
@@ -108,6 +117,7 @@ model Tenant {
   authorityResponses       AuthorityResponse[]
   authorityReceipts        AuthoritySubmissionReceipt[]
   authorityCaseEvents      AuthorityCaseEvent[]
+  dunningNotices           DunningNotice[]
   authorityContacts        AuthorityContact[]
   authorityUploads         AuthorityUpload[]
   rentalTermsVersions      RentalTermsVersion[]
@@ -490,6 +500,7 @@ model Customer {
   invoices            Invoice[]
   payouts             Payout[]
   driverVerifications DriverVerification[]
+  dunningNotices      DunningNotice[]
 
   @@unique([tenantId, number])
   @@index([tenantId, lastName])
@@ -498,27 +509,27 @@ model Customer {
 }
 
 model Booking {
-  id             String    @id @default(cuid())
-  tenantId       String
-  number         String // z. B. 2026-0001, fortlaufend pro Mandant
-  vehicleId      String
-  customerId     String
-  startAt        DateTime
-  endAt          DateTime
-  status         String    @default("RESERVED") // RESERVED | ACTIVE | RETURNED | CANCELLED
-  dailyRate      Decimal   @default(0) // Preis-Snapshot bei Buchung
-  workWeekRate   Decimal? // Snapshot Woche (5 Tage)
-  weeklyRate     Decimal? // Snapshot Kalenderwoche (7 Tage)
-  monthlyRate    Decimal? // Snapshot Monat (30 Tage)
-  deposit        Decimal   @default(0)
+  id               String    @id @default(cuid())
+  tenantId         String
+  number           String // z. B. 2026-0001, fortlaufend pro Mandant
+  vehicleId        String
+  customerId       String
+  startAt          DateTime
+  endAt            DateTime
+  status           String    @default("RESERVED") // RESERVED | ACTIVE | RETURNED | CANCELLED
+  dailyRate        Decimal   @default(0) // Preis-Snapshot bei Buchung
+  workWeekRate     Decimal? // Snapshot Woche (5 Tage)
+  weeklyRate       Decimal? // Snapshot Kalenderwoche (7 Tage)
+  monthlyRate      Decimal? // Snapshot Monat (30 Tage)
+  deposit          Decimal   @default(0)
   // Befehl 20.7: Kilometervereinbarung bereits auf der Buchung (null = Wert des Fahrzeugs); der Vertrag friert sie ein
   kmIncludedPerDay Int?
   extraKmRate      Decimal?
-  actualPickupAt DateTime? // gesetzt beim Finalisieren der Übergabe
-  actualReturnAt DateTime? // gesetzt beim Finalisieren der Rückgabe
-  notes          String?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  actualPickupAt   DateTime? // gesetzt beim Finalisieren der Übergabe
+  actualReturnAt   DateTime? // gesetzt beim Finalisieren der Rückgabe
+  notes            String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   vehicle  Vehicle  @relation(fields: [vehicleId], references: [id])
@@ -541,6 +552,7 @@ model Booking {
   driverVerifications  DriverVerification[]
   driverDocumentCopies DriverDocumentCopy[]
   keyDropReturns       KeyDropReturn[]
+  dunningNotices       DunningNotice[]
 
   @@unique([tenantId, number])
   @@index([tenantId, vehicleId, startAt, endAt])
@@ -941,6 +953,7 @@ model Document {
   invoiceId        String?
   invoiceVersionId String? // Rechnungsfassung, aus der das PDF entstand
   payoutId         String? // Auszahlung (Phase 18): Auszahlungsbeleg (PAYOUT_RECEIPT) oder hochgeladener Nachweis (PAYOUT_ATTACHMENT)
+  dunningNoticeId  String? // Befehl 23: Zahlungserinnerung / Mahnung (DUNNING_NOTICE)
   type             String // RENTAL_CONTRACT | PICKUP_PROTOCOL | RETURN_PROTOCOL | INVOICE | CREDIT_NOTE | CANCELLATION | PAYOUT_RECEIPT | PAYOUT_ATTACHMENT
   storageKey       String   @unique
   fileName         String
@@ -959,11 +972,13 @@ model Document {
   invoice        Invoice?        @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
   invoiceVersion InvoiceVersion? @relation(fields: [invoiceVersionId], references: [id], onDelete: SetNull)
   payout         Payout?         @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+  dunningNotice  DunningNotice?  @relation(fields: [dunningNoticeId], references: [id], onDelete: SetNull)
 
   keyDrop KeyDropReturn? @relation(fields: [keyDropId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, bookingId, type])
   @@index([tenantId, payoutId])
+  @@index([tenantId, dunningNoticeId])
 }
 
 // Zusatzkosten mit vollständiger Rechengrundlage, z. B. 342 km × 0,25 € = 85,50 €.
@@ -1014,6 +1029,7 @@ model EmailLog {
   invoiceId         String? // Bezug zur Rechnung, nur Referenz
   invoiceVersionId  String? // welche Rechnungsfassung versendet wurde (Anhang = deren PDF)
   payoutId          String? // Auszahlungsbeleg (Phase 18), nur Referenz
+  dunningNoticeId   String? // Befehl 23: Mahnschreiben, nur Referenz
   trigger           String    @default("AUTO") // AUTO = nach Abschluss | MANUAL = "erneut senden"
   attemptNo         Int       @default(1) // fortlaufender Versuch je Buchung und Vorlage
   createdById       String?
@@ -1030,12 +1046,14 @@ model EmailLog {
   booking        Booking?        @relation(fields: [bookingId], references: [id], onDelete: SetNull)
   invoiceVersion InvoiceVersion? @relation(fields: [invoiceVersionId], references: [id], onDelete: SetNull)
   payout         Payout?         @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+  dunningNotice  DunningNotice?  @relation(fields: [dunningNoticeId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, status])
   @@index([tenantId, bookingId, createdAt])
   @@index([tenantId, invoiceVersionId])
   @@index([tenantId, payoutId])
+  @@index([tenantId, dunningNoticeId])
 }
 
 // Fahrzeughistorie, nur anfügen.
@@ -1120,24 +1138,26 @@ model Invoice {
   updatedAt   DateTime  @updatedAt
   finalizedAt DateTime? // Abschluss der Fassung 1
 
-  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  booking          Booking          @relation(fields: [bookingId], references: [id])
-  customer         Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  contract         RentalContract?  @relation(fields: [contractId], references: [id], onDelete: SetNull)
-  returnHandover   Handover?        @relation(fields: [returnHandoverId], references: [id], onDelete: SetNull)
-  items            InvoiceItem[] // Altbestand (Positionen der Fassung 1 vor Phase 10)
-  documents        Document[]
-  payments         Payment[]
-  payouts          Payout[]
+  tenant               Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking              Booking                @relation(fields: [bookingId], references: [id])
+  customer             Customer?              @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  contract             RentalContract?        @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  returnHandover       Handover?              @relation(fields: [returnHandoverId], references: [id], onDelete: SetNull)
+  items                InvoiceItem[] // Altbestand (Positionen der Fassung 1 vor Phase 10)
+  documents            Document[]
+  payments             Payment[]
+  payouts              Payout[]
   depositOffsetReturns SecurityDepositEvent[] @relation("DepositOffsetReturns")
-  versions         InvoiceVersion[] @relation("InvoiceVersions")
-  currentVersion   InvoiceVersion?  @relation("InvoiceCurrentVersion", fields: [currentVersionId], references: [id])
-  damageCase       DamageCase?      @relation(fields: [damageCaseId], references: [id])
-  authorityCaseId  String? // nur AUTHORITY_FEE: Behördenvorgang, dessen Bearbeitungsentgelt laut Mietvertrag berechnet wird
-  authorityCase    AuthorityCase?   @relation(fields: [authorityCaseId], references: [id])
-  original         Invoice?         @relation("InvoiceCounterDocuments", fields: [originalInvoiceId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  counterDocuments Invoice[]        @relation("InvoiceCounterDocuments")
-  originalVersion  InvoiceVersion?  @relation("InvoiceOriginalVersion", fields: [originalVersionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  dunningNotices       DunningNotice[]        @relation("DunningNoticeInvoice")
+  dunningFeeOf         DunningNotice?         @relation("DunningNoticeFee")
+  versions             InvoiceVersion[]       @relation("InvoiceVersions")
+  currentVersion       InvoiceVersion?        @relation("InvoiceCurrentVersion", fields: [currentVersionId], references: [id])
+  damageCase           DamageCase?            @relation(fields: [damageCaseId], references: [id])
+  authorityCaseId      String? // nur AUTHORITY_FEE: Behördenvorgang, dessen Bearbeitungsentgelt laut Mietvertrag berechnet wird
+  authorityCase        AuthorityCase?         @relation(fields: [authorityCaseId], references: [id])
+  original             Invoice?               @relation("InvoiceCounterDocuments", fields: [originalInvoiceId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  counterDocuments     Invoice[]              @relation("InvoiceCounterDocuments")
+  originalVersion      InvoiceVersion?        @relation("InvoiceOriginalVersion", fields: [originalVersionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([tenantId, number])
   @@index([tenantId, bookingId])
@@ -1203,9 +1223,9 @@ model Payment {
   cancelledByName    String?
   cancellationReason String?
 
-  tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  booking Booking  @relation(fields: [bookingId], references: [id])
-  invoice Invoice? @relation(fields: [invoiceId], references: [id])
+  tenant             Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking            Booking                @relation(fields: [bookingId], references: [id])
+  invoice            Invoice?               @relation(fields: [invoiceId], references: [id])
   // Befehl 20.7: Kautionsverrechnung (type DEPOSIT_OFFSET) – die Kautionsbewegung OFFSET derselben Operation
   depositOffsetEvent SecurityDepositEvent?
   // Befehl 22: Rückführungen dieser Verrechnung zur Kaution (Gegenbewegungen OFFSET_RETURN)
@@ -1245,37 +1265,37 @@ model SecurityDeposit {
 // Eine Bewegung der Kaution. Bestätigte Bewegungen sind unveränderlich; eine Korrektur ist ein Storno mit Grund
 // (status CANCELLED), die ursprüngliche Zeile bleibt sichtbar.
 model SecurityDepositEvent {
-  id             String   @id @default(cuid())
-  tenantId       String
-  depositId      String
-  type           String // RECEIVED | RELEASED | RETAINED | OFFSET (Befehl 20.7: bewusst mit einer Forderung verrechnet)
-  amountCents    Int
-  method         String? // CASH | CARD | BANK_TRANSFER | OTHER (bei RECEIVED und RELEASED); OFFSET: null
-  reference      String?
-  reason         String? // Pflicht bei RETAINED
-  note           String?
-  occurredAt     DateTime
-  status         String   @default("CONFIRMED") // CONFIRMED | CANCELLED
-  idempotencyKey String?
-  paymentId      String?  @unique // nur OFFSET: das Payment (type DEPOSIT_OFFSET) derselben Verrechnung
+  id               String   @id @default(cuid())
+  tenantId         String
+  depositId        String
+  type             String // RECEIVED | RELEASED | RETAINED | OFFSET (Befehl 20.7: bewusst mit einer Forderung verrechnet)
+  amountCents      Int
+  method           String? // CASH | CARD | BANK_TRANSFER | OTHER (bei RECEIVED und RELEASED); OFFSET: null
+  reference        String?
+  reason           String? // Pflicht bei RETAINED
+  note             String?
+  occurredAt       DateTime
+  status           String   @default("CONFIRMED") // CONFIRMED | CANCELLED
+  idempotencyKey   String?
+  paymentId        String?  @unique // nur OFFSET: das Payment (type DEPOSIT_OFFSET) derselben Verrechnung
   // Befehl 22: nur OFFSET_RETURN – Rückführung einer Verrechnung aus Kundenguthaben: Rechnung und ursprüngliche Verrechnungszahlung
   invoiceId        String?
   returnsPaymentId String?
-  createdById    String?
-  createdByName  String?
-  createdAt      DateTime @default(now())
+  createdById      String?
+  createdByName    String?
+  createdAt        DateTime @default(now())
 
   cancelledAt        DateTime?
   cancelledById      String?
   cancelledByName    String?
   cancellationReason String?
 
-  tenant  Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  deposit SecurityDeposit @relation(fields: [depositId], references: [id])
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  deposit        SecurityDeposit @relation(fields: [depositId], references: [id])
   // Cascade nur für das Löschen ganzer Mandanten (Purge): eine Verrechnungszahlung wird sonst nie gelöscht (Trigger)
-  payment Payment?        @relation(fields: [paymentId], references: [id], onDelete: Cascade)
-  invoice        Invoice? @relation("DepositOffsetReturns", fields: [invoiceId], references: [id], onDelete: Cascade)
-  returnsPayment Payment? @relation("DepositOffsetReturnOf", fields: [returnsPaymentId], references: [id], onDelete: Cascade)
+  payment        Payment?        @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoice        Invoice?        @relation("DepositOffsetReturns", fields: [invoiceId], references: [id], onDelete: Cascade)
+  returnsPayment Payment?        @relation("DepositOffsetReturnOf", fields: [returnsPaymentId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, depositId, status])
@@ -2004,15 +2024,15 @@ model RentalTermsVersion {
 // ---------------------------------------------------------------------------
 
 model DriverVerification {
-  id               String  @id @default(cuid())
-  tenantId         String
-  bookingId        String
-  contractId       String
-  handoverId       String
-  contractDriverId String
-  customerId       String? // nur Referenz (Kundenakte); maßgeblich sind die Snapshots
-  version          Int     @default(1) // Korrektur = neue Fassung, die alte bleibt (supersededById)
-  supersededById   String?
+  id                    String  @id @default(cuid())
+  tenantId              String
+  bookingId             String
+  contractId            String
+  handoverId            String
+  contractDriverId      String
+  customerId            String? // nur Referenz (Kundenakte); maßgeblich sind die Snapshots
+  version               Int     @default(1) // Korrektur = neue Fassung, die alte bleibt (supersededById)
+  supersededById        String?
   // Befehl 20.9: FULL = vollständige Originalprüfung, REPEAT = dokumentierte Wiederholungs-/Sichtprüfung auf Grundlage
   // eines früheren, vollständig bestätigten Prüfvermerks (basedOnVerificationId). Alte Vermerke werden nie überschrieben.
   checkKind             String  @default("FULL")
@@ -2123,4 +2143,54 @@ model DriverDocumentCopy {
   @@index([tenantId, handoverId])
   @@index([tenantId, verificationId])
   @@index([tenantId, deletionStatus, retentionUntil])
+}
+
+// ============================================================================
+// Befehl 23: Mahnwesen. Ein Mahnschreiben (Zahlungserinnerung = 1, 1. Mahnung = 2, 2. Mahnung = 3) zu genau einer
+// abgeschlossenen Rechnung. Betrag, Gebühr, Frist, Empfänger und Firmendaten sind beim Erstellen eingefroren (snapshot,
+// contentHash); die Zeile ist danach unveränderlich (rb_guard_dunning_notice), nur die Übermittlung per Post/persönlich wird
+// einmalig vermerkt. Der aktuelle Forderungsstand wird nie gespeichert, sondern aus der zentralen Summierung berechnet.
+// ============================================================================
+model DunningNotice {
+  id                 String    @id @default(cuid())
+  tenantId           String
+  invoiceId          String
+  bookingId          String
+  customerId         String?
+  level              Int // 1 Zahlungserinnerung | 2 1. Mahnung | 3 2. Mahnung
+  number             String // MA-JJJJ-NNNNNN (Nummernkreis „Mahnungen“)
+  issuedAt           DateTime
+  deadlineDays       Int
+  deadlineAt         DateTime
+  principalOpenCents Int // offene Forderung der Rechnung zum Zeitpunkt der Mahnung
+  priorFeesOpenCents Int       @default(0) // noch offene Gebühren früherer Stufen
+  feeCents           Int       @default(0) // Gebühr dieser Stufe (eigene Gebührenrechnung)
+  totalCents         Int
+  feeInvoiceId       String?   @unique
+  recipientName      String
+  recipientEmail     String?
+  snapshot           Json
+  contentHash        String
+  idempotencyKey     String
+  createdById        String?
+  createdByName      String?
+  createdAt          DateTime  @default(now())
+  deliveredAt        DateTime? // außerhalb des E-Mail-Versands übermittelt (Post, persönlich) – manuell vermerkt
+  deliveredById      String?
+  deliveredByName    String?
+  deliveredNote      String?
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoice    Invoice    @relation("DunningNoticeInvoice", fields: [invoiceId], references: [id], onDelete: Restrict)
+  booking    Booking    @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  customer   Customer?  @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  feeInvoice Invoice?   @relation("DunningNoticeFee", fields: [feeInvoiceId], references: [id], onDelete: Restrict)
+  documents  Document[]
+  emailLogs  EmailLog[]
+
+  @@unique([tenantId, number])
+  @@unique([tenantId, invoiceId, level])
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, issuedAt])
+  @@index([tenantId, bookingId])
 }

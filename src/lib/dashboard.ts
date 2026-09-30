@@ -5,10 +5,11 @@
 // sind halboffen [start, end). Gruppen: Überfällig · Heute · Bald · Hinweis – deterministisch, ohne Doppelzählung.
 
 import { db } from "@/lib/db";
-import { AUTHORITY_CASE_STATUS, DAMAGE_CASE_STATUS, DOCUMENT_TYPES, type AuthorityCaseStatus, type DamageCaseStatus, type DocumentType, invoiceKindWord } from "@/lib/constants";
+import { AUTHORITY_CASE_STATUS, DAMAGE_CASE_STATUS, DOCUMENT_TYPES, type AuthorityCaseStatus, type DamageCaseStatus, type DocumentType, dunningLevelLabel, invoiceKindWord } from "@/lib/constants";
 import { AUTHORITY_OPEN_STATUS } from "@/lib/authority";
 import { deadlineInfo } from "@/lib/authority-matching";
 import { financialsFor } from "@/lib/counter-documents";
+import { receivablesSummary, type ReceivableSummary } from "@/lib/dunning";
 import { openDepositRows } from "@/lib/deposits";
 import { pickupDriverCheckStatus } from "@/lib/driver-verification";
 import { customerName, fmtDate, fmtDateTime, fmtTime } from "@/lib/format";
@@ -67,6 +68,8 @@ export type DashboardEvent = { kind: "PICKUP" | "RETURN"; at: Date; bookingId: s
 
 export type Dashboard = {
   now: Date;
+  /** Befehl 23: Forderungen und Mahnstufen – dieselbe Ableitung wie die Forderungsübersicht (lib/dunning.ts) */
+  receivables: ReceivableSummary;
   horizon: Horizon;
   range: { start: Date; end: Date; horizonEnd: Date };
   tasks: DashboardTask[];
@@ -185,6 +188,9 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
 
   // --- Rechnungen: offen/überfällig nur bei offen > 0 (Guthaben oder gutgeschriebene Belege sind nie überfällig); Erstattungen aus derselben Summierung ---
   const fin = await financialsFor(tenantId, finalInvoices.map((i) => ({ id: i.id, grossTotal: i.currentVersion!.grossTotal })));
+  // Befehl 23: nächster Mahnschritt je Rechnung aus der zentralen Forderungsableitung (keine eigene Logik hier)
+  const receivables = await receivablesSummary(tenantId, now);
+  const dunningNext = new Map(receivables.actionable.map((a) => [a.invoiceId, a.next]));
   for (const i of finalInvoices) {
     const f = fin.get(i.id)!;
     const name = customerName(i.booking.customer);
@@ -195,7 +201,10 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
       const due = i.currentVersion!.paymentDueDate;
       if (due && due < start) {
         counts.overdueInvoices++; counts.overdueInvoiceCents += f.openCents;
-        add({ area: "INVOICE", href, key: `invoice-overdue-${i.id}`, group: "OVERDUE", title: `${word} ${i.number} überfällig · ${name}`, detail: `offen ${fmtCents(f.openCents)} · fällig ${fmtDate(due)} · Buchung ${i.booking.number}`, at: due, status: "Überfällig" });
+        // Mahngebühren gehören zum Mahnvorgang ihrer Rechnung und erscheinen dort, nicht als eigene Aufgabe
+        const nx = dunningNext.get(i.id);
+        const dunningStatus = nx?.kind === "CREATE" ? `${dunningLevelLabel(nx.level)} möglich` : nx?.kind === "DELIVER" ? `${dunningLevelLabel(nx.level)}: Versand offen` : "Überfällig";
+        if (i.kind !== "DUNNING_FEE") add({ area: "INVOICE", href, key: `invoice-overdue-${i.id}`, group: "OVERDUE", title: `${word} ${i.number} überfällig · ${name}`, detail: `offen ${fmtCents(f.openCents)} · fällig ${fmtDate(due)} · Buchung ${i.booking.number}`, at: due, status: dunningStatus });
       } else if (due && inRange(due, start, end)) {
         add({ area: "INVOICE", href, key: `invoice-due-${i.id}`, group: "TODAY", title: `${word} ${i.number} heute fällig · ${name}`, detail: `offen ${fmtCents(f.openCents)} · Buchung ${i.booking.number}`, at: due, status: "Heute fällig" });
       } else if (due && days > 0 && inRange(due, end, horizonEnd)) {
@@ -284,10 +293,10 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
   tasks.sort((a, b) => (a.at && b.at ? a.at.getTime() - b.at.getTime() : a.at ? -1 : b.at ? 1 : 0) || areaOrder.indexOf(a.area) - areaOrder.indexOf(b.area) || a.title.localeCompare(b.title, "de"));
   const groups: Record<TaskGroup, DashboardTask[]> = { OVERDUE: [], TODAY: [], SOON: [], NOTE: [] };
   for (const t of tasks) groups[t.group].push(t);
-  return { now, horizon, range: { start, end, horizonEnd }, tasks, groups, counts, events };
+  return { now, horizon, range: { start, end, horizonEnd }, tasks, groups, counts, events, receivables };
 }
 
-const TEMPLATE_LABELS: Record<string, string> = { PICKUP_DOCUMENTS: "Unterlagen nach Übergabe", RETURN_DOCUMENTS: "Unterlagen nach Rückgabe", INVOICE: "Rechnung", INVOICE_CORRECTION: "Rechnungsberichtigung", CREDIT_NOTE: "Gutschrift", CANCELLATION: "Stornobeleg", PAYOUT_RECEIPT: "Auszahlungsbeleg" };
+const TEMPLATE_LABELS: Record<string, string> = { PICKUP_DOCUMENTS: "Unterlagen nach Übergabe", RETURN_DOCUMENTS: "Unterlagen nach Rückgabe", INVOICE: "Rechnung", INVOICE_CORRECTION: "Rechnungsberichtigung", CREDIT_NOTE: "Gutschrift", CANCELLATION: "Stornobeleg", PAYOUT_RECEIPT: "Auszahlungsbeleg", DUNNING_NOTICE: "Mahnschreiben" };
 /** Lesbare Bezeichnung einer Versandvorlage (Fallback: technischer Name). */
 export function templateLabel(template: string): string {
   return TEMPLATE_LABELS[template] ?? template;

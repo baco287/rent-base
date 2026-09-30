@@ -213,7 +213,7 @@ export function DepositOffsetForm({ action, preview, bookingId, nonce, invoices,
   const suggested = invoice ? Math.max(0, Math.min(invoice.openCents, availableCents)) : 0;
   const eur = (c: number) => (c / 100).toFixed(2).replace(".", ",");
   if (done) return <Feedback state={state} />;
-  if (!open) return <div><button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>{buttonLabel ?? "Aus Kaution verrechnen"}</button></div>;
+  if (!open) return <div><button type="button" className="btn btn-primary max-w-full !whitespace-normal text-left" onClick={() => setOpen(true)}>{buttonLabel ?? "Aus Kaution verrechnen"}</button></div>;
   const check = () => {
     if (!form || !form.reportValidity()) return;
     const fd = new FormData(form);
