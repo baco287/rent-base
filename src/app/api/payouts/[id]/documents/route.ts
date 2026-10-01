@@ -39,7 +39,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/payouts/[id]/do
   let storageKey = "";
   try {
     const storage = getStorage();
-    storageKey = buildStorageKey({ tenantId, area: "documents", bookingId: payout.bookingId, contentType });
+    storageKey = buildStorageKey({ tenantId, area: "documents", bookingId: payout.bookingId ?? undefined, contentType });
     await storage.put(storageKey, bytes, contentType);
     try {
       const doc = await registerPayoutAttachment(tenantId, { id: session.user.id, name: session.user.name }, payout.id, { fileName, storageKey, contentType, sizeBytes: bytes.length, checksum: sha256(bytes) });

@@ -10,7 +10,7 @@ import type { CustomerOption } from "./booking-form";
 const MIN = 2;
 const DEBOUNCE_MS = 220;
 
-export function CustomerPicker({ value, onChange, inputId = "customerId" }: { value: CustomerOption | null; onChange: (c: CustomerOption | null) => void; inputId?: string }) {
+export function CustomerPicker({ value, onChange, inputId = "customerId", allowBlocked = false }: { value: CustomerOption | null; onChange: (c: CustomerOption | null) => void; inputId?: string; /** Befehl 23.1: Rechnungen dürfen auch an gesperrte Kunden gehen (Sperre betrifft Vermietungen) */ allowBlocked?: boolean }) {
   const listId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState("");
@@ -42,7 +42,7 @@ export function CustomerPicker({ value, onChange, inputId = "customerId" }: { va
   };
 
   const pick = (c: CustomerOption) => {
-    if (c.blocked) return;
+    if (c.blocked && !allowBlocked) return;
     onChange(c);
     setOpen(false);
     setQ("");
@@ -106,8 +106,8 @@ export function CustomerPicker({ value, onChange, inputId = "customerId" }: { va
             {hits.map((c, i) => {
               const on = i === active;
               return (
-                <li key={c.id} id={`${listId}-${c.id}`} role="option" aria-selected={on} aria-disabled={c.blocked}>
-                  <button type="button" tabIndex={-1} disabled={c.blocked} onMouseEnter={() => setActive(i)} onMouseDown={(e) => e.preventDefault()} onClick={() => pick(c)} className={`w-full text-left px-3 py-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 min-h-[44px] ${on ? "bg-brand-soft" : "hover:bg-panel-2/60"} ${c.blocked ? "opacity-60 cursor-not-allowed" : ""}`}>
+                <li key={c.id} id={`${listId}-${c.id}`} role="option" aria-selected={on} aria-disabled={c.blocked && !allowBlocked}>
+                  <button type="button" tabIndex={-1} disabled={c.blocked && !allowBlocked} onMouseEnter={() => setActive(i)} onMouseDown={(e) => e.preventDefault()} onClick={() => pick(c)} className={`w-full text-left px-3 py-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 min-h-[44px] ${on ? "bg-brand-soft" : "hover:bg-panel-2/60"} ${c.blocked ? "opacity-60 cursor-not-allowed" : ""}`}>
                     {c.number && <span className="font-mono tnum text-xs text-ink-3">{c.number}</span>}
                     <span className="font-medium">{c.label}</span>
                     {c.blocked && <span className="chip bg-bad-soft text-bad">Gesperrt</span>}

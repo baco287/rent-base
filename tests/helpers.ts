@@ -97,7 +97,8 @@ export async function purgeTenants(tenantIds: string[]) {
         await tx.tenant.deleteMany({ where: { id: t } });
       }
     },
-    { timeout: 60_000, maxWait: 20_000 },
+    // Aufräumen vieler Testmandanten dauert auf der lokalen Einzelverbindungs-Datenbank unter Last länger als 60 s (Befehl 23.1)
+    { timeout: 180_000, maxWait: 60_000 },
   );
 }
 

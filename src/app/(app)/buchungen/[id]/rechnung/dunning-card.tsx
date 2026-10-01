@@ -1,5 +1,6 @@
 // Befehl 23: Forderung und Mahnwesen einer abgeschlossenen Rechnung. Stand aus der zentralen Summierung (lib/dunning.ts),
 // nächster sinnvoller Schritt, Mahnhistorie. Nichts wird automatisch erstellt oder versendet.
+import { invoiceHref } from "@/lib/invoice-links";
 import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { Card, Chip } from "@/components/ui";
@@ -18,7 +19,7 @@ const Tile = ({ label, value, tone, sub }: { label: string; value: string; tone?
   <div className="rounded-md bg-panel-2 p-3 min-w-0"><div className="label-xs">{label}</div><div className={`font-mono tnum text-lg font-semibold ${tone === "bad" ? "text-bad" : tone === "good" ? "text-good" : ""}`}>{value}</div>{sub && <div className="text-[11px] text-ink-3">{sub}</div>}</div>
 );
 
-export async function DunningCard({ tenantId, bookingId, role, invoiceId }: { tenantId: string; bookingId: string; role: string; invoiceId: string }) {
+export async function DunningCard({ tenantId, bookingId, role, invoiceId }: { tenantId: string; bookingId: string | null; role: string; invoiceId: string }) {
   const r = await receivableOf(tenantId, invoiceId);
   if (!r) return null;
   if (r.notices.length === 0 && (r.status === "SETTLED" || r.status === "NOT_DUE") && r.totalOpenCents === 0) return null;
@@ -64,7 +65,7 @@ export async function DunningCard({ tenantId, bookingId, role, invoiceId }: { te
                       {n.sentAt && <span className="text-good">versendet am {fmtDateTime(n.sentAt)} an {n.sentTo}{n.sendCount > 1 ? ` · insgesamt ${n.sendCount}× versendet` : ""}</span>}
                       {n.manualDeliveredAt && <span className="text-good">übermittelt (vermerkt) am {fmtDateTime(n.manualDeliveredAt)} von {n.manualDeliveredByName ?? "–"}{n.manualDeliveredNote ? ` · ${n.manualDeliveredNote}` : ""}</span>}
                       {!n.delivered && <span className="text-amber">noch nicht übermittelt</span>}
-                      {n.feeInvoiceId && <span>Gebührenrechnung <Link href={`/buchungen/${bookingId}/rechnung?nr=${n.feeInvoiceId}`} className="underline">{n.feeInvoiceNumber}</Link>{(() => { const c = r.feeClaims.find((x) => x.invoiceId === n.feeInvoiceId); return c ? ` · offen ${fmtCents(c.openCents)}` : ""; })()}</span>}
+                      {n.feeInvoiceId && <span>Gebührenrechnung <Link href={invoiceHref({ id: n.feeInvoiceId, bookingId })} className="underline">{n.feeInvoiceNumber}</Link>{(() => { const c = r.feeClaims.find((x) => x.invoiceId === n.feeInvoiceId); return c ? ` · offen ${fmtCents(c.openCents)}` : ""; })()}</span>}
                     </div>
                     <div className="flex flex-wrap gap-2 items-start">
                       {doc ? <a href={`/api/documents/${doc.id}?download=1`} className="btn !py-2.5">PDF</a> : <span className="text-xs text-ink-3">PDF wird beim Versand erzeugt</span>}
@@ -84,10 +85,10 @@ export async function DunningCard({ tenantId, bookingId, role, invoiceId }: { te
 }
 
 /** Gebührenrechnung (kind DUNNING_FEE): Bezug zum Mahnschreiben und zur gemahnten Rechnung. */
-export async function DunningFeeNote({ tenantId, bookingId, invoiceId }: { tenantId: string; bookingId: string; invoiceId: string }) {
-  const n = await db.dunningNotice.findFirst({ where: { tenantId, feeInvoiceId: invoiceId }, select: { number: true, level: true, invoiceId: true, invoice: { select: { number: true } } } });
+export async function DunningFeeNote({ tenantId, bookingId, invoiceId }: { tenantId: string; bookingId: string | null; invoiceId: string }) {
+  const n = await db.dunningNotice.findFirst({ where: { tenantId, feeInvoiceId: invoiceId }, select: { number: true, level: true, invoiceId: true, invoice: { select: { number: true, kind: true } } } });
   if (!n) return null;
   return (
-    <p className="rounded-md bg-panel-2 px-3.5 py-2.5 text-sm">Mahngebühr aus {n.level === 2 ? "der 1. Mahnung" : "der 2. Mahnung"} {n.number} zu <Link href={`/buchungen/${bookingId}/rechnung?nr=${n.invoiceId}`} className="underline">Rechnung {n.invoice.number}</Link>. Die gemahnte Rechnung bleibt unverändert; Zahlungen auf diese Gebühr werden hier erfasst.</p>
+    <p className="rounded-md bg-panel-2 px-3.5 py-2.5 text-sm">Mahngebühr aus {n.level === 2 ? "der 1. Mahnung" : "der 2. Mahnung"} {n.number} zu <Link href={invoiceHref({ id: n.invoiceId, bookingId, kind: n.invoice.kind })} className="underline">Rechnung {n.invoice.number}</Link>. Die gemahnte Rechnung bleibt unverändert; Zahlungen auf diese Gebühr werden hier erfasst.</p>
   );
 }

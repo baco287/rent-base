@@ -61,6 +61,8 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
   // Gutschrift oder Stornobeleg: eigene Seite (Entwurf mit Abschluss oder abgeschlossener Beleg)
   if (invoice && invoice.documentType !== "INVOICE") return <CounterDocumentPage tenantId={tenant.id} role={user.role} booking={{ id: b.id, number: b.number, vehicle: { plate: b.vehicle.plate } }} invoiceId={invoice.id} sp={sp} />;
 
+  // Befehl 23.1: freie Rechnungen (und ihre Gegenbelege) haben ihre eigene Seite /rechnungen/<id>
+  if (invoice?.kind === "GENERAL") redirect(`/rechnungen/${invoice.id}`);
   if (!invoice) {
     const ret = b.handovers[0];
     const ready = b.status === "RETURNED" && b.contract?.status === "SIGNED" && !!ret;
@@ -182,6 +184,7 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
           {/* Befehl 20.9: finanzielle Gesamtsituation (Forderung + Kaution) vor dem Abschluss – Verrechnung erst danach, bewusst */}
           <DepositSettlementCard tenantId={tenant.id} bookingId={b.id} role={user.role} invoice={{ id: inv.id, number: inv.number, status: "DRAFT", grossCents: newGross, prepaidCents: draft.versionNo === 1 ? prepaidCents : mode?.paidCents ?? 0 }} />
           <InvoiceEditor
+            defaultPaymentTermDays={tenant.paymentTermDays}
             version={draft.updatedAt.getTime()}
             versionNo={draft.versionNo}
             kind={kind}

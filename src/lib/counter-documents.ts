@@ -24,6 +24,7 @@ import { isUniqueViolation, nextDocumentNumber, withNumberRetry } from "@/lib/nu
 import { domainFromDb } from "@/lib/db-errors";
 import type { InvoiceDocumentType } from "@/lib/number-ranges";
 import { APP_TIME_ZONE } from "@/lib/time";
+import { invoiceHref } from "@/lib/invoice-links";
 
 type Tx = Prisma.TransactionClient;
 type Client = Tx | typeof db;
@@ -394,7 +395,7 @@ function checkLines(draft: VersionWithItems, residuals: Residuals, type: Counter
 }
 
 /** Versiegelter Inhalt eines Gegenbelegs (Grundlage der Prüfsumme): wie eine Rechnungsfassung, ergänzt um Belegart und Originalbezug. */
-export function sealedCounterContent(inv: { number: string | null; documentType: string; originalInvoiceId: string | null; originalVersionId: string | null; originalSnapshot: unknown; bookingId: string; contractId: string | null }, v: VersionWithItems) {
+export function sealedCounterContent(inv: { number: string | null; documentType: string; originalInvoiceId: string | null; originalVersionId: string | null; originalSnapshot: unknown; bookingId: string | null; contractId: string | null }, v: VersionWithItems) {
   return {
     documentType: inv.documentType,
     number: inv.number,
@@ -474,7 +475,7 @@ export async function finalizeCounterDocument(tenantId: string, counterId: strin
 // Belegkette und zentrale Finanzsummierung
 // ---------------------------------------------------------------------------
 
-export type ChainEntry = { id: string; documentType: InvoiceDocumentType; number: string | null; status: string; issueDate: Date | null; finalizedAt: Date | null; grossCents: Cents; reason: string | null; versionNo: number; bookingId: string; href: string };
+export type ChainEntry = { id: string; documentType: InvoiceDocumentType; number: string | null; status: string; issueDate: Date | null; finalizedAt: Date | null; grossCents: Cents; reason: string | null; versionNo: number; bookingId: string | null; href: string };
 
 export type InvoiceFinancials = {
   invoiceId: string;
@@ -565,17 +566,18 @@ export async function invoiceFinancials(tenantId: string, invoiceId: string, cli
   return m.get(inv.id)!;
 }
 
-const hrefOf = (bookingId: string, id: string) => `/buchungen/${bookingId}/rechnung?nr=${id}`;
+// Befehl 23.1: freie Rechnungen (GENERAL) und Belege ohne Buchung haben ihre eigene Adresse (lib/invoice-links.ts)
+const hrefOf = (bookingId: string | null, id: string, kind?: string | null) => invoiceHref({ id, bookingId, kind });
 
 /** Belegkette einer Rechnung: das Original und alle Gegenbelege (auch Entwürfe), älteste zuerst. Für einen Gegenbeleg: die Kette seines Originals. */
 export async function documentChain(tenantId: string, invoiceId: string): Promise<{ original: ChainEntry; counters: ChainEntry[]; financials: InvoiceFinancials }> {
   const self = await db.invoice.findFirst({ where: { id: invoiceId, tenantId }, select: { id: true, originalInvoiceId: true } });
   if (!self) throw new DomainError("Rechnung nicht gefunden.");
   const originalId = self.originalInvoiceId ?? self.id;
-  const sel = { id: true, documentType: true, number: true, status: true, bookingId: true, finalizedAt: true, currentVersion: { select: { issueDate: true, grossTotal: true, reason: true, versionNo: true } }, versions: { where: { status: "DRAFT" }, select: { grossTotal: true, reason: true }, take: 1 } } as const;
+  const sel = { id: true, documentType: true, number: true, status: true, bookingId: true, kind: true, finalizedAt: true, currentVersion: { select: { issueDate: true, grossTotal: true, reason: true, versionNo: true } }, versions: { where: { status: "DRAFT" }, select: { grossTotal: true, reason: true }, take: 1 } } as const;
   const original = await db.invoice.findFirstOrThrow({ where: { id: originalId, tenantId }, select: sel });
   const counters = await db.invoice.findMany({ where: { tenantId, originalInvoiceId: originalId, status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: [{ finalizedAt: "asc" }, { createdAt: "asc" }], select: sel });
-  const entry = (r: typeof original): ChainEntry => ({ id: r.id, documentType: r.documentType as InvoiceDocumentType, number: r.number, status: r.status, issueDate: r.currentVersion?.issueDate ?? null, finalizedAt: r.finalizedAt, grossCents: toCents(r.currentVersion?.grossTotal ?? r.versions[0]?.grossTotal ?? 0), reason: r.currentVersion?.reason ?? r.versions[0]?.reason ?? null, versionNo: r.currentVersion?.versionNo ?? 1, bookingId: r.bookingId, href: hrefOf(r.bookingId, r.id) });
+  const entry = (r: typeof original): ChainEntry => ({ id: r.id, documentType: r.documentType as InvoiceDocumentType, number: r.number, status: r.status, issueDate: r.currentVersion?.issueDate ?? null, finalizedAt: r.finalizedAt, grossCents: toCents(r.currentVersion?.grossTotal ?? r.versions[0]?.grossTotal ?? 0), reason: r.currentVersion?.reason ?? r.versions[0]?.reason ?? null, versionNo: r.currentVersion?.versionNo ?? 1, bookingId: r.bookingId, href: hrefOf(r.bookingId, r.id, r.kind) });
   const financials = await invoiceFinancials(tenantId, originalId);
   return { original: entry(original), counters: counters.map(entry), financials };
 }
@@ -584,7 +586,7 @@ export async function documentChain(tenantId: string, invoiceId: string): Promis
 export type CounterDocumentState = {
   invoice: InvoiceRow;
   type: CounterDocumentType;
-  original: { id: string; number: string; bookingId: string; snapshot: OriginalSnapshot; href: string; currentVersionNo: number; stale: boolean; kind: string; taxTreatmentLabel: string | null; pricesIncludeTax: boolean };
+  original: { id: string; number: string; bookingId: string | null; snapshot: OriginalSnapshot; href: string; currentVersionNo: number; stale: boolean; kind: string; taxTreatmentLabel: string | null; pricesIncludeTax: boolean };
   draft: VersionWithItems | null;
   current: VersionWithItems | null;
   residuals: Residuals | null;
@@ -617,7 +619,7 @@ export async function getCounterDocumentState(tenantId: string, counterId: strin
   const tt = original.currentVersion?.taxTreatment ?? null;
   return {
     invoice, type,
-    original: { id: original.id, number: original.number!, bookingId: original.bookingId, snapshot, href: hrefOf(original.bookingId, original.id), currentVersionNo: original.currentVersion?.versionNo ?? 1, stale, kind: original.kind, taxTreatmentLabel: tt && tt in DAMAGE_TAX_TREATMENTS ? DAMAGE_TAX_TREATMENTS[tt as keyof typeof DAMAGE_TAX_TREATMENTS] : null, pricesIncludeTax: original.currentVersion?.pricesIncludeTax ?? true },
+    original: { id: original.id, number: original.number!, bookingId: original.bookingId, snapshot, href: hrefOf(original.bookingId, original.id, original.kind), currentVersionNo: original.currentVersion?.versionNo ?? 1, stale, kind: original.kind, taxTreatmentLabel: tt && tt in DAMAGE_TAX_TREATMENTS ? DAMAGE_TAX_TREATMENTS[tt as keyof typeof DAMAGE_TAX_TREATMENTS] : null, pricesIncludeTax: original.currentVersion?.pricesIncludeTax ?? true },
     draft, current, residuals, issues, financials, paidCents: financials.paidCents, customerCreditAfter: Math.max(0, financials.paidCents - effectiveAfter), effectiveAfter,
   };
 }

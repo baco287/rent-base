@@ -947,7 +947,7 @@ model Document {
   id               String   @id @default(cuid())
   tenantId         String
   keyDropId        String? // Befehl 20.6: Kundenangabe bei kontaktloser Rückgabe
-  bookingId        String
+  bookingId        String?
   contractId       String?
   handoverId       String?
   invoiceId        String?
@@ -966,7 +966,7 @@ model Document {
   createdById      String?
 
   tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  booking        Booking         @relation(fields: [bookingId], references: [id])
+  booking        Booking?        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
   contract       RentalContract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
   handover       Handover?       @relation(fields: [handoverId], references: [id], onDelete: SetNull)
   invoice        Invoice?        @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
@@ -1086,7 +1086,7 @@ model VehicleEvent {
 model Invoice {
   id                String  @id @default(cuid())
   tenantId          String
-  bookingId         String
+  bookingId         String?
   customerId        String? // nur Referenz, maßgeblich ist customerSnapshot
   contractId        String? // Vertrag, aus dem der Mietpreis stammt
   returnHandoverId  String? // Rückgabe, aus der die bestätigten Zusatzkosten stammen
@@ -1139,7 +1139,7 @@ model Invoice {
   finalizedAt DateTime? // Abschluss der Fassung 1
 
   tenant               Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  booking              Booking                @relation(fields: [bookingId], references: [id])
+  booking              Booking?               @relation(fields: [bookingId], references: [id], onDelete: Restrict)
   customer             Customer?              @relation(fields: [customerId], references: [id], onDelete: SetNull)
   contract             RentalContract?        @relation(fields: [contractId], references: [id], onDelete: SetNull)
   returnHandover       Handover?              @relation(fields: [returnHandoverId], references: [id], onDelete: SetNull)
@@ -1202,7 +1202,7 @@ model InvoiceItem {
 model Payment {
   id             String   @id @default(cuid())
   tenantId       String
-  bookingId      String
+  bookingId      String?
   invoiceId      String? // bei INVOICE_PAYMENT Pflicht (Trigger), sonst leer
   type           String // INVOICE_PAYMENT | OTHER_PAYMENT
   method         String // CASH | CARD | BANK_TRANSFER | OTHER; CARD/BANK_TRANSFER = außerhalb von Rent-Base ausgeführt, hier nur dokumentiert
@@ -1224,7 +1224,7 @@ model Payment {
   cancellationReason String?
 
   tenant             Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  booking            Booking                @relation(fields: [bookingId], references: [id])
+  booking            Booking?               @relation(fields: [bookingId], references: [id], onDelete: Restrict)
   invoice            Invoice?               @relation(fields: [invoiceId], references: [id])
   // Befehl 20.7: Kautionsverrechnung (type DEPOSIT_OFFSET) – die Kautionsbewegung OFFSET derselben Operation
   depositOffsetEvent SecurityDepositEvent?
@@ -1314,7 +1314,7 @@ model Payout {
   sourceType        String // INVOICE_REFUND | SECURITY_DEPOSIT_REFUND
   invoiceId         String? // genau eine Quelle: Rechnung ...
   securityDepositId String? // ... oder Kaution
-  bookingId         String
+  bookingId         String?
   customerId        String?
   status            String    @default("DRAFT") // DRAFT | COMPLETED | CANCELLED
   amountCents       Int
@@ -1354,7 +1354,7 @@ model Payout {
   cancellationReason String?
 
   tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  booking   Booking          @relation(fields: [bookingId], references: [id])
+  booking   Booking?         @relation(fields: [bookingId], references: [id], onDelete: Restrict)
   invoice   Invoice?         @relation(fields: [invoiceId], references: [id])
   deposit   SecurityDeposit? @relation(fields: [securityDepositId], references: [id])
   customer  Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
@@ -2155,7 +2155,7 @@ model DunningNotice {
   id                 String    @id @default(cuid())
   tenantId           String
   invoiceId          String
-  bookingId          String
+  bookingId          String?
   customerId         String?
   level              Int // 1 Zahlungserinnerung | 2 1. Mahnung | 3 2. Mahnung
   number             String // MA-JJJJ-NNNNNN (Nummernkreis „Mahnungen“)
@@ -2182,7 +2182,7 @@ model DunningNotice {
 
   tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   invoice    Invoice    @relation("DunningNoticeInvoice", fields: [invoiceId], references: [id], onDelete: Restrict)
-  booking    Booking    @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  booking    Booking?   @relation(fields: [bookingId], references: [id], onDelete: Restrict)
   customer   Customer?  @relation(fields: [customerId], references: [id], onDelete: SetNull)
   feeInvoice Invoice?   @relation("DunningNoticeFee", fields: [feeInvoiceId], references: [id], onDelete: Restrict)
   documents  Document[]

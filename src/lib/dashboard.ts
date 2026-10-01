@@ -9,6 +9,7 @@ import { AUTHORITY_CASE_STATUS, DAMAGE_CASE_STATUS, DOCUMENT_TYPES, type Authori
 import { AUTHORITY_OPEN_STATUS } from "@/lib/authority";
 import { deadlineInfo } from "@/lib/authority-matching";
 import { financialsFor } from "@/lib/counter-documents";
+import { bookingLabel, invoiceHref } from "@/lib/invoice-links";
 import { receivablesSummary, type ReceivableSummary } from "@/lib/dunning";
 import { openDepositRows } from "@/lib/deposits";
 import { pickupDriverCheckStatus } from "@/lib/driver-verification";
@@ -96,7 +97,7 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
   const [bookings, activeRentals, finalInvoices, depositRows, claims, damageCases, maint, authorityCases, failedMails, contractsNoDoc, handoversNoDoc, versionsNoDoc, payoutsNoDoc] = await Promise.all([
     db.booking.findMany({ where: { tenantId, OR: [{ status: "RESERVED", startAt: { gte: staleStart, lt: fetchEnd } }, { status: "ACTIVE", endAt: { lt: fetchEnd } }] }, select: { id: true, number: true, status: true, startAt: true, endAt: true, customer: cust, vehicle: veh }, orderBy: { startAt: "asc" } }),
     db.booking.count({ where: { tenantId, status: "ACTIVE" } }),
-    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", documentType: "INVOICE", currentVersionId: { not: null } }, select: { id: true, number: true, kind: true, bookingId: true, booking: { select: { number: true, customer: cust } }, currentVersion: { select: { grossTotal: true, paymentDueDate: true } } } }),
+    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", documentType: "INVOICE", currentVersionId: { not: null } }, select: { id: true, number: true, kind: true, bookingId: true, customer: cust, booking: { select: { number: true, customer: cust } }, currentVersion: { select: { grossTotal: true, paymentDueDate: true } } } }),
     openDepositRows(tenantId),
     openPayoutClaims(tenantId),
     db.damageCase.findMany({ where: { tenantId, status: { not: "CLOSED" } }, select: { id: true, caseNumber: true, status: true, liabilityStatus: true, description: true, createdAt: true, vehicle: veh }, orderBy: { createdAt: "asc" }, take: 200 }),
@@ -193,8 +194,11 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
   const dunningNext = new Map(receivables.actionable.map((a) => [a.invoiceId, a.next]));
   for (const i of finalInvoices) {
     const f = fin.get(i.id)!;
-    const name = customerName(i.booking.customer);
-    const href = `/buchungen/${i.bookingId}/rechnung?nr=${i.id}`;
+    // Befehl 23.1: freie Rechnungen ohne Buchung – Kunde direkt an der Rechnung, eigene Adresse
+    const cust0 = i.booking?.customer ?? i.customer;
+    const name = cust0 ? customerName(cust0) : "–";
+    const href = invoiceHref(i);
+    const bookingText = bookingLabel(i.booking?.number);
     const word = invoiceKindWord(i.kind);
     if (f.openCents > 0) {
       counts.openInvoices++; counts.openInvoiceCents += f.openCents;
@@ -204,11 +208,11 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
         // Mahngebühren gehören zum Mahnvorgang ihrer Rechnung und erscheinen dort, nicht als eigene Aufgabe
         const nx = dunningNext.get(i.id);
         const dunningStatus = nx?.kind === "CREATE" ? `${dunningLevelLabel(nx.level)} möglich` : nx?.kind === "DELIVER" ? `${dunningLevelLabel(nx.level)}: Versand offen` : "Überfällig";
-        if (i.kind !== "DUNNING_FEE") add({ area: "INVOICE", href, key: `invoice-overdue-${i.id}`, group: "OVERDUE", title: `${word} ${i.number} überfällig · ${name}`, detail: `offen ${fmtCents(f.openCents)} · fällig ${fmtDate(due)} · Buchung ${i.booking.number}`, at: due, status: dunningStatus });
+        if (i.kind !== "DUNNING_FEE") add({ area: "INVOICE", href, key: `invoice-overdue-${i.id}`, group: "OVERDUE", title: `${word} ${i.number} überfällig · ${name}`, detail: `offen ${fmtCents(f.openCents)} · fällig ${fmtDate(due)} · ${bookingText}`, at: due, status: dunningStatus });
       } else if (due && inRange(due, start, end)) {
-        add({ area: "INVOICE", href, key: `invoice-due-${i.id}`, group: "TODAY", title: `${word} ${i.number} heute fällig · ${name}`, detail: `offen ${fmtCents(f.openCents)} · Buchung ${i.booking.number}`, at: due, status: "Heute fällig" });
+        add({ area: "INVOICE", href, key: `invoice-due-${i.id}`, group: "TODAY", title: `${word} ${i.number} heute fällig · ${name}`, detail: `offen ${fmtCents(f.openCents)} · ${bookingText}`, at: due, status: "Heute fällig" });
       } else if (due && days > 0 && inRange(due, end, horizonEnd)) {
-        add({ area: "INVOICE", href, key: `invoice-soon-${i.id}`, group: "SOON", title: `${word} ${i.number} fällig ${fmtDate(due)} · ${name}`, detail: `offen ${fmtCents(f.openCents)} · Buchung ${i.booking.number}`, at: due, status: "Bald fällig" });
+        add({ area: "INVOICE", href, key: `invoice-soon-${i.id}`, group: "SOON", title: `${word} ${i.number} fällig ${fmtDate(due)} · ${name}`, detail: `offen ${fmtCents(f.openCents)} · ${bookingText}`, at: due, status: "Bald fällig" });
       }
     }
     if (f.refundOpen) {

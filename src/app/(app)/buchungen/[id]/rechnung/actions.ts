@@ -19,15 +19,17 @@ import { parseLocalDateTime } from "@/lib/time";
 export type InvoiceState = { error?: string; ok?: string } | undefined;
 
 // Eine Buchung kann mehrere Rechnungen haben: die Mietrechnung (Standard, ohne nr) und Schadenabrechnungen (nr = Rechnungs-Id).
-const base = (bookingId: string, invoiceId?: string | null) => `/buchungen/${bookingId}/rechnung${invoiceId ? `?nr=${invoiceId}` : ""}`;
+// Befehl 23.1: freie Rechnungen (und Belege ohne Buchung) unter /rechnungen/<id>; dann ist bookingId null
+const base = (bookingId: string | null, invoiceId?: string | null) => (bookingId ? `/buchungen/${bookingId}/rechnung${invoiceId ? `?nr=${invoiceId}` : ""}` : invoiceId ? `/rechnungen/${invoiceId}` : "/rechnungen");
 const withParam = (url: string, key: string, value: string) => `${url}${url.includes("?") ? "&" : "?"}${key}=${encodeURIComponent(value)}`;
-const refresh = (bookingId: string) => { for (const p of [`/buchungen/${bookingId}/rechnung`, `/buchungen/${bookingId}`, "/buchungen", "/rechnungen", "/heute", "/schaeden"]) revalidatePath(p); };
+const refresh = (bookingId: string | null) => { for (const p of [...(bookingId ? [`/buchungen/${bookingId}/rechnung`, `/buchungen/${bookingId}`] : []), "/buchungen", "/rechnungen", "/forderungen", "/heute", "/schaeden"]) revalidatePath(p); revalidatePath("/rechnungen", "layout"); };
 
-async function context(bookingId: string, invoiceId: string | null) {
+async function context(bookingId: string | null, invoiceId: string | null) {
   const { tenant, user } = await requireRole("DISPO");
+  // ohne Buchung (freie Rechnung): immer über die Rechnungs-Id, mandantengebunden
   const invoice = invoiceId
-    ? await db.invoice.findFirst({ where: { id: invoiceId, bookingId, tenantId: tenant.id, status: { in: ["DRAFT", "FINALIZED"] } } })
-    : await db.invoice.findFirst({ where: { bookingId, tenantId: tenant.id, kind: "RENTAL", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "desc" } });
+    ? await db.invoice.findFirst({ where: { id: invoiceId, ...(bookingId ? { bookingId } : {}), tenantId: tenant.id, status: { in: ["DRAFT", "FINALIZED"] } } })
+    : bookingId ? await db.invoice.findFirst({ where: { bookingId, tenantId: tenant.id, kind: "RENTAL", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "desc" } }) : null;
   if (!invoice) redirect(base(bookingId));
   const key = isSideInvoice(invoice.kind) || invoice.documentType !== "INVOICE" ? invoice.id : null;
   const caseId = invoice.damageCaseId;
@@ -53,7 +55,7 @@ export async function createInvoiceAction(bookingId: string) {
 }
 
 /** „Rechnung bearbeiten“: Entwurf der nächsten Fassung aus der aktuellen Fassung; der Server bestimmt den Modus. */
-export async function startInvoiceEditAction(bookingId: string, invoiceId: string | null) {
+export async function startInvoiceEditAction(bookingId: string | null, invoiceId: string | null) {
   const { tenant, invoice, key, actor } = await context(bookingId, invoiceId);
   try {
     await startInvoiceEdit(tenant.id, invoice.id, actor);
@@ -91,7 +93,7 @@ const draftSchema = z.object({
 });
 
 /** Entwurf speichern. Beträge rechnet ausschließlich der Server (Cent-Arithmetik in lib/money.ts). */
-export async function saveInvoiceDraftAction(bookingId: string, invoiceId: string | null, payload: unknown): Promise<InvoiceState> {
+export async function saveInvoiceDraftAction(bookingId: string | null, invoiceId: string | null, payload: unknown): Promise<InvoiceState> {
   const { tenant, invoice, actor } = await context(bookingId, invoiceId);
   const parsed = draftSchema.safeParse(payload);
   if (!parsed.success) return { error: parsed.error.issues[0].message };
@@ -108,7 +110,7 @@ export async function saveInvoiceDraftAction(bookingId: string, invoiceId: strin
   return { ok: "Entwurf gespeichert." };
 }
 
-export async function discardInvoiceDraftAction(bookingId: string, invoiceId: string | null) {
+export async function discardInvoiceDraftAction(bookingId: string | null, invoiceId: string | null) {
   const { tenant, invoice, key, caseId, actor } = await context(bookingId, invoiceId);
   if (invoice.documentType !== "INVOICE") return discardCounterAction(bookingId, invoice.id);
   let deleted = false;
@@ -121,11 +123,11 @@ export async function discardInvoiceDraftAction(bookingId: string, invoiceId: st
   refresh(bookingId);
   if (caseId) revalidatePath(`/schaeden/${caseId}`);
   // Schadenabrechnung gelöscht: zurück zur Schadenakte, Mietrechnung gelöscht: zurück zur Buchung
-  redirect(deleted ? (caseId ? `/schaeden/${caseId}` : `/buchungen/${bookingId}`) : base(bookingId, key));
+  redirect(deleted ? (caseId ? `/schaeden/${caseId}` : bookingId ? `/buchungen/${bookingId}` : "/rechnungen") : base(bookingId, key));
 }
 
 /** Abschluss: Server prüft alles erneut, vergibt bei Fassung 1 die Nummer, versiegelt die Fassung. Danach PDF und E-Mail als Nachbearbeitung, die nie werfen. */
-export async function finalizeInvoiceAction(bookingId: string, invoiceId: string | null, _prev: InvoiceState, formData: FormData): Promise<InvoiceState> {
+export async function finalizeInvoiceAction(bookingId: string | null, invoiceId: string | null, _prev: InvoiceState, formData: FormData): Promise<InvoiceState> {
   const { tenant, invoice, key, caseId, actor } = await context(bookingId, invoiceId);
   let version;
   // Befehl 21: bewusst ausgewählte Kautionsverrechnung – wird nur zusammen mit dem Abschluss gebucht (eine Transaktion)
@@ -154,7 +156,7 @@ export async function finalizeInvoiceAction(bookingId: string, invoiceId: string
 const deliveredSchema = z.object({ versionId: z.string().min(1), note: text(300) });
 
 /** „Als an Kunden übergeben markieren“: hängt an der konkreten Fassung, einmalig, nie still entfernbar. */
-export async function markDeliveredAction(bookingId: string, invoiceId: string | null, _prev: InvoiceState, formData: FormData): Promise<InvoiceState> {
+export async function markDeliveredAction(bookingId: string | null, invoiceId: string | null, _prev: InvoiceState, formData: FormData): Promise<InvoiceState> {
   const { tenant, actor } = await context(bookingId, invoiceId);
   const parsed = deliveredSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0].message };

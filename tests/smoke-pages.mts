@@ -13,7 +13,7 @@ import { createWorld, fakeSignaturePng, purgeTenants } from "./helpers";
 import { ensureContractDocument, ensurePickupDocument, ensureReturnDocument } from "../src/lib/documents";
 import { addManualCharge, confirmProposal } from "../src/lib/returns";
 import { ensureInvoiceDocument } from "../src/lib/documents";
-import { ensureInvoiceDraft, finalizeInvoice, startInvoiceEdit, updateInvoiceDraft } from "../src/lib/invoices";
+import { createGeneralInvoiceDraft, ensureInvoiceDraft, finalizeInvoice, startInvoiceEdit, updateInvoiceDraft } from "../src/lib/invoices";
 import { recordInvoicePayment } from "../src/lib/payments";
 import { recordDepositReceived, settleDeposit } from "../src/lib/deposits";
 import { chargeCustomer, openDamageCase, setLiability } from "../src/lib/damage-cases";
@@ -972,6 +972,39 @@ const dnForeignInvoice = await fetch(dnInvoiceUrl, { headers: { cookie } });
 report(dnForeignInvoice.status === 404, `${dnForeignInvoice.status} fremder Mandant: Rechnung mit Mahnhistorie nicht auffindbar`);
 const dnForeignPdf = await fetch(`${base}/api/documents/${dnDoc.id}`, { headers: { cookie } });
 report(dnForeignPdf.status === 404 || dnForeignPdf.status === 403, `${dnForeignPdf.status} fremder Mandant: Mahnschreiben-PDF gesperrt`);
+
+// Befehl 23.1: freie Rechnungen (ohne Buchung) – Übersicht mit „+ Neue Rechnung“, Anlage, Editor mit Zahlungsziel, Abschluss,
+// eigene Seite, Forderungen; Hof ohne Anlage, Supportmodus gesperrt, fremder Mandant ohne Zugriff
+const frList = await plain(await fetch(`${base}/rechnungen`, { headers: { cookie: dnCookie } }));
+report(frList.includes('href="/rechnungen/neu"') && frList.includes("+ Neue Rechnung"), "Rechnungen: Knopf „+ Neue Rechnung“ (Inhaber)");
+const frYardList = await plain(await fetch(`${base}/rechnungen`, { headers: { cookie: `rb_session=${dnYardSession}` } }));
+report(!frYardList.includes('href="/rechnungen/neu"'), "Hofmitarbeiter: kein „+ Neue Rechnung“");
+const frNew = await fetch(`${base}/rechnungen/neu`, { headers: { cookie: dnCookie } });
+const frNewHtml = await plain(frNew);
+report(frNew.status === 200 && frNewHtml.includes("Rechnungsempfänger") && frNewHtml.includes("Kein Buchungsbezug"), `${frNew.status} Neue Rechnung: Kundenauswahl und optionaler Buchungsbezug`);
+const frNewYard = await fetch(`${base}/rechnungen/neu`, { headers: { cookie: `rb_session=${dnYardSession}` }, redirect: "manual" });
+report(frNewYard.status === 307, `${frNewYard.status} Hofmitarbeiter: Neue Rechnung gesperrt`);
+const frDraft = (await createGeneralInvoiceDraft(dnWorld.tenantId, dnWorld.actor, { customerId: dnWorld.customerId, nonce: `smoke-free-${Date.now()}` })).invoice;
+await updateInvoiceDraft(dnWorld.tenantId, frDraft.id, dnWorld.actor, { items: [{ description: "Sonderreinigung", quantity: "1", unit: "pauschal", unitPrice: "59,50", taxRate: "19" }], paymentTermDays: 3 });
+const frDraftHtml = await plain(await fetch(`${base}/rechnungen/${frDraft.id}`, { headers: { cookie: dnCookie } }));
+report(frDraftHtml.includes("Zahlungsziel") && frDraftHtml.includes("Sofort fällig") && frDraftHtml.includes("Freie Rechnung") && frDraftHtml.includes("ohne Buchungsbezug"), "Freie Rechnung: Editor mit Zahlungsziel und Fälligkeit");
+await finalizeInvoice(dnWorld.tenantId, frDraft.id, dnWorld.actor);
+const frNumber = (await db.invoice.findUniqueOrThrow({ where: { id: frDraft.id } })).number!;
+const frPage = await fetch(`${base}/rechnungen/${frDraft.id}`, { headers: { cookie: dnCookie } });
+const frHtml = await plain(frPage);
+report(frPage.status === 200 && frHtml.includes(frNumber) && frHtml.includes("Fällig am") && frHtml.includes("ohne Buchung") && !frHtml.includes("Fahrzeugmiete"), `${frPage.status} Freie Rechnung ${frNumber}: eigene Seite, neutral, mit Fälligkeit`);
+report(frHtml.includes("Zahlungen") && frHtml.includes("Gutschrift erstellen") && frHtml.includes("Dokument und E-Mail"), "Freie Rechnung: Zahlungen, Gegenbelege, Dokument und E-Mail");
+const frListed = await plain(await fetch(`${base}/rechnungen?art=frei`, { headers: { cookie: dnCookie } }));
+report(frListed.includes(frNumber) && frListed.includes("ohne Buchung"), "Rechnungsliste: freie Rechnung mit Fälligkeit, Filter Freie Rechnungen");
+const frClaims = await plain(await fetch(`${base}/forderungen?filter=offen&q=${encodeURIComponent(frNumber)}`, { headers: { cookie: dnCookie } }));
+report(frClaims.includes(`/rechnungen/${frDraft.id}`), "Forderungen: freie Rechnung als offene Forderung");
+const frYard = await fetch(`${base}/rechnungen/${frDraft.id}`, { headers: { cookie: `rb_session=${dnYardSession}` } });
+const frYardHtml = await plain(frYard);
+report(frYard.status === 200 && !frYardHtml.includes("Gutschrift erstellen") && !frYardHtml.includes("Rechnung bearbeiten"), `${frYard.status} Hofmitarbeiter: freie Rechnung nur lesend`);
+const frSupport = await fetch(`${base}/rechnungen/${frDraft.id}`, { headers: { cookie: dnSupportCookie }, redirect: "manual" });
+report(frSupport.status === 307 && (frSupport.headers.get("location") ?? "").includes("fehler=support"), `${frSupport.status} Supportmodus: freie Rechnung gesperrt`);
+const frForeign = await fetch(`${base}/rechnungen/${frDraft.id}`, { headers: { cookie } });
+report(frForeign.status === 404, `${frForeign.status} fremder Mandant: freie Rechnung nicht auffindbar`);
 
 // ---------------------------------------------------------------------------
 // Control Center: Navigation je interner Rolle, alle Bereiche erreichbar, Berechtigungen serverseitig, Feature-Gating,

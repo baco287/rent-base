@@ -21,8 +21,10 @@ import { parseLocalDateTime } from "@/lib/time";
 
 export type MoneyState = { error?: string; ok?: string } | undefined;
 
-function refresh(bookingId: string) {
-  for (const p of [`/buchungen/${bookingId}`, `/buchungen/${bookingId}/rechnung`, `/buchungen/${bookingId}/uebergabe`, `/buchungen/${bookingId}/rueckgabe`, "/rechnungen", "/heute"]) revalidatePath(p);
+function refresh(bookingId: string | null) {
+  // Befehl 23.1: freie Rechnungen ohne Buchung liegen unter /rechnungen/<id>
+  for (const p of [...(bookingId ? [`/buchungen/${bookingId}`, `/buchungen/${bookingId}/rechnung`, `/buchungen/${bookingId}/uebergabe`, `/buchungen/${bookingId}/rueckgabe`] : []), "/rechnungen", "/forderungen", "/heute"]) revalidatePath(p);
+  revalidatePath("/rechnungen", "layout");
 }
 
 function failure(e: unknown): MoneyState {
@@ -49,7 +51,7 @@ export async function previewPaymentAction(invoiceId: string, amount: string, me
   }
 }
 
-export async function recordPaymentAction(bookingId: string, _prev: MoneyState, formData: FormData): Promise<MoneyState> {
+export async function recordPaymentAction(bookingId: string | null, _prev: MoneyState, formData: FormData): Promise<MoneyState> {
   const { tenant, user } = await requireRole("DISPO");
   const parsed = paymentSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
@@ -93,7 +95,7 @@ export async function recordRentalPaymentAction(bookingId: string, _prev: MoneyS
 
 const cancelSchema = z.object({ id: z.string().min(1), reason: z.string().trim().min(3, "Bitte den Grund der Korrektur angeben.").max(500) });
 
-export async function cancelPaymentAction(bookingId: string, _prev: MoneyState, formData: FormData): Promise<MoneyState> {
+export async function cancelPaymentAction(bookingId: string | null, _prev: MoneyState, formData: FormData): Promise<MoneyState> {
   const { tenant, user } = await requireRole("DISPO");
   const parsed = cancelSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
@@ -179,7 +181,7 @@ export async function applyDepositOffsetAction(bookingId: string, _prev: MoneySt
   }
 }
 
-export async function cancelDepositOffsetAction(bookingId: string, _prev: MoneyState, formData: FormData): Promise<MoneyState> {
+export async function cancelDepositOffsetAction(bookingId: string | null, _prev: MoneyState, formData: FormData): Promise<MoneyState> {
   const { tenant, user } = await requireRole("DISPO");
   const parsed = cancelSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
@@ -204,7 +206,7 @@ export async function previewOffsetReturnAction(invoiceId: string, paymentId: st
 
 const returnSchema = z.object({ amount: z.string().trim().min(1, "Bitte den Betrag eingeben.").max(20), occurredAt: when, note: text(500), nonce });
 
-export async function returnOffsetToDepositAction(bookingId: string, invoiceId: string, paymentId: string, _prev: MoneyState, formData: FormData): Promise<MoneyState> {
+export async function returnOffsetToDepositAction(bookingId: string | null, invoiceId: string, paymentId: string, _prev: MoneyState, formData: FormData): Promise<MoneyState> {
   const { tenant, user } = await requireRole("DISPO");
   const parsed = returnSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
@@ -219,7 +221,7 @@ export async function returnOffsetToDepositAction(bookingId: string, invoiceId: 
   }
 }
 
-export async function cancelOffsetReturnAction(bookingId: string, _prev: MoneyState, formData: FormData): Promise<MoneyState> {
+export async function cancelOffsetReturnAction(bookingId: string | null, _prev: MoneyState, formData: FormData): Promise<MoneyState> {
   const { tenant, user } = await requireRole("DISPO");
   const parsed = cancelSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0].message };

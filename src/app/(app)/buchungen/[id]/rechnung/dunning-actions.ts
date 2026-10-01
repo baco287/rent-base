@@ -17,8 +17,9 @@ import { fmtCents } from "@/lib/money";
 export type DunningState = { error?: string; ok?: string } | undefined;
 export type DunningPlanView = { level: number; levelLabel: string; allowed: boolean; reason: string | null; principalOpenCents: number; priorFeesOpenCents: number; feeCents: number; totalCents: number; deadlineDays: number; deadline: string; recipientName: string; recipientEmail: string | null; dueDate: string | null; daysOverdue: number; invoiceNumber: string | null };
 
-function refresh(bookingId: string) {
-  for (const p of [`/buchungen/${bookingId}`, `/buchungen/${bookingId}/rechnung`, "/forderungen", "/rechnungen", "/heute"]) revalidatePath(p);
+function refresh(bookingId: string | null) {
+  for (const p of [...(bookingId ? [`/buchungen/${bookingId}`, `/buchungen/${bookingId}/rechnung`] : []), "/forderungen", "/rechnungen", "/heute"]) revalidatePath(p);
+  revalidatePath("/rechnungen", "layout");
 }
 
 function failure(e: unknown): DunningState {
@@ -46,7 +47,7 @@ export async function previewDunningAction(invoiceId: string, level: number): Pr
 const createSchema = z.object({ expectedTotalCents: z.coerce.number().int().positive("Bitte zuerst die Vorschau aufrufen."), nonce, delivery: z.enum(["EMAIL", "POST"]) });
 
 /** Erstellt das Mahnschreiben (ggf. mit Gebührenrechnung), archiviert das PDF und versendet es nur bei „per E-Mail senden“. */
-export async function createDunningAction(bookingId: string, invoiceId: string, level: number, _prev: DunningState, fd: FormData): Promise<DunningState> {
+export async function createDunningAction(bookingId: string | null, invoiceId: string, level: number, _prev: DunningState, fd: FormData): Promise<DunningState> {
   const { tenant, user } = await requireRole("DISPO");
   const parsed = createSchema.safeParse(Object.fromEntries(fd));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
@@ -77,7 +78,7 @@ export async function createDunningAction(bookingId: string, invoiceId: string, 
 const sendSchema = z.object({ id: z.string().min(1), nonce });
 
 /** Versand bzw. erneuter Versand desselben archivierten PDFs – keine neue Stufe, keine neue Gebühr, keine neue Nummer. */
-export async function sendDunningAction(bookingId: string, _prev: DunningState, fd: FormData): Promise<DunningState> {
+export async function sendDunningAction(bookingId: string | null, _prev: DunningState, fd: FormData): Promise<DunningState> {
   const { tenant, user } = await requireRole("DISPO");
   const parsed = sendSchema.safeParse(Object.fromEntries(fd));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
@@ -95,7 +96,7 @@ export async function sendDunningAction(bookingId: string, _prev: DunningState, 
 const deliveredSchema = z.object({ id: z.string().min(1), note: z.string().trim().max(300).optional() });
 
 /** Übermittlung per Post oder persönlich einmalig vermerken. */
-export async function markDunningDeliveredAction(bookingId: string, _prev: DunningState, fd: FormData): Promise<DunningState> {
+export async function markDunningDeliveredAction(bookingId: string | null, _prev: DunningState, fd: FormData): Promise<DunningState> {
   const { tenant, user } = await requireRole("DISPO");
   const parsed = deliveredSchema.safeParse(Object.fromEntries(fd));
   if (!parsed.success) return { error: parsed.error.issues[0].message };

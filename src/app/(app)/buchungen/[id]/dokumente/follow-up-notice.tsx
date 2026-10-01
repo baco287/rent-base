@@ -2,7 +2,7 @@
 // Gelesen wird der tatsächliche Stand aus Archiv und Versandprotokoll, nichts wird angenommen.
 import { db } from "@/lib/db";
 
-type Props = { tenantId: string; bookingId: string; handoverId?: string; invoiceId?: string; invoiceVersionId?: string; kind?: "PICKUP" | "RETURN" | "INVOICE"; documentType?: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION" };
+type Props = { tenantId: string; bookingId: string | null; handoverId?: string; invoiceId?: string; invoiceVersionId?: string; kind?: "PICKUP" | "RETURN" | "INVOICE"; documentType?: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION" };
 
 export async function FollowUpNotice({ tenantId, bookingId, handoverId, invoiceId, invoiceVersionId, kind = "PICKUP", documentType = "INVOICE" }: Props) {
   const wanted = kind === "PICKUP" ? ["RENTAL_CONTRACT", "PICKUP_PROTOCOL"] : kind === "RETURN" ? ["RETURN_PROTOCOL"] : [documentType];

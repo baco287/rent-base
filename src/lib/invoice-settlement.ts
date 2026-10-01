@@ -60,13 +60,16 @@ export async function finalizeInvoiceWithDepositOffset(tenantId: string, invoice
   const head = await db.invoice.findFirst({ where: { id: invoiceId, tenantId }, select: { bookingId: true, documentType: true } });
   if (!head) throw new DomainError("Rechnung nicht gefunden.");
   if (head.documentType !== "INVOICE") throw new DomainError("Verrechnet wird nur mit Rechnungen, nicht mit Gutschriften oder Stornobelegen.");
+  // Befehl 23.1: eine Kaution gehört zu ihrer Buchung – ohne Buchungsbezug keine Kautionsverrechnung
+  const bookingId = head.bookingId;
+  if (!bookingId) throw new DomainError("Diese Rechnung hat keinen Buchungsbezug und damit keine Kaution.");
   try {
     return await withNumberRetry(() =>
       db.$transaction(async (tx) => {
         // Reihenfolge der Sperren: zuerst Buchung und Kaution, dann (im Abschluss) die Rechnung
-        await lockOrCreateDeposit(tx, tenantId, head.bookingId, actor);
+        await lockOrCreateDeposit(tx, tenantId, bookingId, actor);
         const version = await finalizeInvoiceIn(tx, tenantId, invoiceId, actor, opts);
-        const result = await applyDepositOffsetIn(tx, tenantId, actor, { bookingId: head.bookingId, invoiceId, amount: offset.amount, occurredAt: offset.occurredAt, note: offset.note ?? "Bei Rechnungsabschluss ausdrücklich bestätigt", idempotencyKey: key }, key);
+        const result = await applyDepositOffsetIn(tx, tenantId, actor, { bookingId, invoiceId, amount: offset.amount, occurredAt: offset.occurredAt, note: offset.note ?? "Bei Rechnungsabschluss ausdrücklich bestätigt", idempotencyKey: key }, key);
         return { version, offset: result, created: true };
       }, TX),
     );

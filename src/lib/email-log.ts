@@ -42,7 +42,8 @@ export async function claimEmail(input: EnqueueEmailInput): Promise<{ log: Email
   const existing = await db.emailLog.findUnique({ where });
   if (existing) return { log: existing, created: false };
   try {
-    const earlier = await db.emailLog.count({ where: { tenantId: input.tenantId, bookingId: input.bookingId ?? null, template: input.template } });
+    // Befehl 23.1: ohne Buchung (freie Rechnung) zählen die Versuche je Beleg, nicht über alle buchungslosen Mails
+    const earlier = await db.emailLog.count({ where: { tenantId: input.tenantId, template: input.template, ...(input.bookingId ? { bookingId: input.bookingId } : { bookingId: null, invoiceId: input.invoiceId ?? null, payoutId: input.payoutId ?? null, dunningNoticeId: input.dunningNoticeId ?? null }) } });
     const log = await db.emailLog.create({
       data: {
         tenantId: input.tenantId,

@@ -53,6 +53,8 @@ export async function renderInvoicePdf(data: InvoiceDocumentData, logo: Uint8Arr
   pdf.y += 4;
   const subtitle = counter && data.original
     ? `${credit ? "Gutschrift" : "Storno"} zu ${damage ? "Schadenabrechnung" : "Rechnung"} ${data.original.number}${data.original.date ? ` vom ${data.original.date}` : ""}${data.original.versionNo > 1 ? ` (Fassung ${data.original.versionNo})` : ""}, ${damage ? "Mietzeitraum" : "Leistungszeitraum"} ${data.servicePeriod}`
+    : data.general
+    ? `Rechnung${data.reference.bookingNumber ? ` zur Buchung ${data.reference.bookingNumber}` : ""}, Leistungszeitraum ${data.servicePeriod}`
     : data.dunningFee
     ? `Mahngebühr zur Vermietung${data.reference.bookingNumber ? ` ${data.reference.bookingNumber}` : ""}${data.reference.contractNumber ? `, Mietvertrag ${data.reference.contractNumber}` : ""} (siehe Position)`
     : damage

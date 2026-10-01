@@ -119,7 +119,7 @@ export type NextStep =
   | { kind: "FURTHER_ACTION"; label: string };
 
 export type Receivable = {
-  invoiceId: string; number: string | null; kind: string; bookingId: string; bookingNumber: string; customerId: string | null; customerName: string; customerNumber: string | null;
+  invoiceId: string; number: string | null; kind: string; bookingId: string | null; bookingNumber: string | null; customerId: string | null; customerName: string; customerNumber: string | null;
   issueDate: Date | null; dueDate: Date | null; invoiceCents: Cents;
   financials: InvoiceFinancials;
   /** offene Forderung der Rechnung (zentrale Summierung, nie negativ) */
@@ -216,7 +216,7 @@ async function buildReceivables(client: Client, tenantId: string, rows: MainRow[
     const c = r.currentVersion!.customerSnapshot as Partial<InvoiceCustomerSnapshot>;
     const d = deriveReceivable({ principalOpenCents: f.openCents, feesOpenCents, dueDate: r.currentVersion!.paymentDueDate, notices: ns }, now);
     return {
-      invoiceId: r.id, number: r.number, kind: r.kind, bookingId: r.bookingId, bookingNumber: r.booking.number, customerId: r.customerId, customerName: personName(c), customerNumber: c?.number ?? null,
+      invoiceId: r.id, number: r.number, kind: r.kind, bookingId: r.bookingId, bookingNumber: r.booking?.number ?? null, customerId: r.customerId, customerName: personName(c), customerNumber: c?.number ?? null,
       issueDate: r.currentVersion!.issueDate, dueDate: r.currentVersion!.paymentDueDate, invoiceCents: toCents(r.currentVersion!.grossTotal),
       financials: f, principalOpenCents: f.openCents, feeClaims, feesOpenCents, totalOpenCents: f.openCents + feesOpenCents,
       notices: ns, status: d.status, statusLabel: RECEIVABLE_STATUS[d.status], daysOverdue: d.daysOverdue, next: d.next,
@@ -289,7 +289,7 @@ export async function listReceivables(tenantId: string, opts: { filter?: Receiva
 export type ReceivableSummary = {
   openCents: Cents; overdueCents: Cents; open: number; overdue: number; reminder: number; first: number; second: number; further: number; noDueDate: number;
   /** nächster möglicher Schritt je Rechnung (Erstellen oder Versand offen) */
-  actionable: { invoiceId: string; bookingId: string; number: string | null; customerName: string; next: NextStep; totalOpenCents: Cents; daysOverdue: number }[];
+  actionable: { invoiceId: string; bookingId: string | null; kind: string; number: string | null; customerName: string; next: NextStep; totalOpenCents: Cents; daysOverdue: number }[];
 };
 
 /** Kennzahlen für Dashboard und „Heute“ – dieselbe Ableitung wie die Forderungsübersicht. */
@@ -307,7 +307,7 @@ export async function receivablesSummary(tenantId: string, now = new Date()): Pr
     second: count(FILTER_MATCH.mahnung2),
     further: count(FILTER_MATCH.weitere),
     noDueDate: count(FILTER_MATCH.ohne_faelligkeit),
-    actionable: all.filter((r) => r.next.kind === "CREATE" || r.next.kind === "DELIVER").map((r) => ({ invoiceId: r.invoiceId, bookingId: r.bookingId, number: r.number, customerName: r.customerName, next: r.next, totalOpenCents: r.totalOpenCents, daysOverdue: r.daysOverdue })),
+    actionable: all.filter((r) => r.next.kind === "CREATE" || r.next.kind === "DELIVER").map((r) => ({ invoiceId: r.invoiceId, bookingId: r.bookingId, kind: r.kind, number: r.number, customerName: r.customerName, next: r.next, totalOpenCents: r.totalOpenCents, daysOverdue: r.daysOverdue })),
   };
 }
 
@@ -373,7 +373,7 @@ export type DunningSnapshot = {
   v: 1; level: DunningLevel; levelLabel: string; number: string; issuedAt: string; deadlineAt: string; deadlineDays: number;
   company: CompanySnapshot; customer: Partial<InvoiceCustomerSnapshot>; recipient: { name: string; email: string | null };
   invoice: { id: string; number: string; kind: string; versionNo: number; issueDate: string | null; dueDate: string | null; grossCents: Cents };
-  bookingNumber: string; contractNumber: string | null;
+  bookingNumber: string | null; contractNumber: string | null;
   balance: { invoiceCents: Cents; creditedCents: Cents; cancelledCents: Cents; effectiveCents: Cents; paidCents: Cents; offsetCents: Cents; openCents: Cents };
   priorNotices: { level: DunningLevel; number: string; issuedAt: string; totalCents: Cents }[];
   priorFees: { number: string | null; noticeNumber: string; grossCents: Cents; openCents: Cents }[];
@@ -426,7 +426,7 @@ export async function createDunningNotice(tenantId: string, actor: Actor, input:
         v: 1, level: plan.level, levelLabel: plan.levelLabel, number, issuedAt: now.toISOString(), deadlineAt: plan.deadlineAt.toISOString(), deadlineDays: plan.deadlineDays,
         company: companySnapshotOf(tenant), customer: row.currentVersion!.customerSnapshot as Partial<InvoiceCustomerSnapshot>, recipient,
         invoice: { id: row.id, number: row.number ?? "", kind: row.kind, versionNo: row.currentVersion!.versionNo, issueDate: row.currentVersion!.issueDate?.toISOString() ?? null, dueDate: row.currentVersion!.paymentDueDate?.toISOString() ?? null, grossCents: toCents(row.currentVersion!.grossTotal) },
-        bookingNumber: row.booking.number, contractNumber: contract?.number ?? null,
+        bookingNumber: row.booking?.number ?? null, contractNumber: contract?.number ?? null,
         balance: { invoiceCents: f.invoiceCents, creditedCents: f.creditedCents, cancelledCents: f.cancelledCents, effectiveCents: f.effectiveCents, paidCents: f.paidCents, offsetCents: f.offsetCents, openCents: f.openCents },
         priorNotices: r.notices.map((n) => ({ level: n.level, number: n.number, issuedAt: n.issuedAt.toISOString(), totalCents: n.totalCents })),
         priorFees: r.feeClaims.map((c) => ({ number: c.number, noticeNumber: c.noticeNumber, grossCents: c.grossCents, openCents: c.openCents })),

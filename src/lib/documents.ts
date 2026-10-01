@@ -20,7 +20,7 @@ import { assertKeyBelongsToTenant, buildStorageKey, getStorage, sniffImageType, 
 type Tx = Prisma.TransactionClient;
 
 export type DocumentInput = {
-  bookingId: string;
+  bookingId: string | null; // Befehl 23.1: freie Rechnung ohne Buchung (dann trägt die Rechnung/Auszahlung/Mahnung den Bezug)
   contractId?: string | null;
   handoverId?: string | null;
   invoiceId?: string | null;
@@ -40,13 +40,17 @@ export type DocumentInput = {
 export async function registerDocument(tx: Tx, tenantId: string, actorId: string | null, input: DocumentInput) {
   assertKeyBelongsToTenant(input.storageKey, tenantId);
   if (!/^[a-f0-9]{64}$/.test(input.checksum)) throw new DomainError("Die Prüfsumme des Dokuments fehlt oder ist ungültig.");
-  const booking = await tx.booking.count({ where: { id: input.bookingId, tenantId } });
-  if (booking !== 1) throw new DomainError("Buchung nicht gefunden.");
-  if (input.contractId && (await tx.rentalContract.count({ where: { id: input.contractId, tenantId, bookingId: input.bookingId } })) !== 1) throw new DomainError("Der Vertrag gehört nicht zu dieser Buchung.");
-  if (input.handoverId && (await tx.handover.count({ where: { id: input.handoverId, tenantId, bookingId: input.bookingId } })) !== 1) throw new DomainError("Das Protokoll gehört nicht zu dieser Buchung.");
+  if (input.bookingId) {
+    const booking = await tx.booking.count({ where: { id: input.bookingId, tenantId } });
+    if (booking !== 1) throw new DomainError("Buchung nicht gefunden.");
+  } else if (!input.invoiceId && !input.invoiceVersionId && !input.payoutId && !input.dunningNoticeId) {
+    throw new DomainError("Ein Dokument ohne Buchung braucht eine Rechnung, Auszahlung oder Mahnung als Bezug.");
+  }
+  if (input.contractId && (await tx.rentalContract.count({ where: { id: input.contractId, tenantId, bookingId: input.bookingId ?? "" } })) !== 1) throw new DomainError("Der Vertrag gehört nicht zu dieser Buchung.");
+  if (input.handoverId && (await tx.handover.count({ where: { id: input.handoverId, tenantId, bookingId: input.bookingId ?? "" } })) !== 1) throw new DomainError("Das Protokoll gehört nicht zu dieser Buchung.");
   if (input.invoiceId && (await tx.invoice.count({ where: { id: input.invoiceId, tenantId, bookingId: input.bookingId } })) !== 1) throw new DomainError("Die Rechnung gehört nicht zu dieser Buchung.");
   if (input.payoutId && (await tx.payout.count({ where: { id: input.payoutId, tenantId, bookingId: input.bookingId } })) !== 1) throw new DomainError("Die Auszahlung gehört nicht zu dieser Buchung.");
-  if (input.keyDropId && (await tx.keyDropReturn.count({ where: { id: input.keyDropId, tenantId, bookingId: input.bookingId } })) !== 1) throw new DomainError("Die kontaktlose Rückgabe gehört nicht zu dieser Buchung.")
+  if (input.keyDropId && (await tx.keyDropReturn.count({ where: { id: input.keyDropId, tenantId, bookingId: input.bookingId ?? "" } })) !== 1) throw new DomainError("Die kontaktlose Rückgabe gehört nicht zu dieser Buchung.")
   if (input.dunningNoticeId && (await tx.dunningNotice.count({ where: { id: input.dunningNoticeId, tenantId, bookingId: input.bookingId } })) !== 1) throw new DomainError("Das Mahnschreiben gehört nicht zu dieser Buchung.");;
 
   const last = await tx.document.findFirst({
@@ -111,7 +115,7 @@ export function documentFileName(type: DocumentType, contractNumber: string, pla
   return `${parts.join("_")}.pdf`;
 }
 
-type Subject = { type: DocumentType; bookingId: string; contractId: string | null; handoverId: string | null; invoiceId?: string | null; invoiceVersionId?: string | null; payoutId?: string | null; keyDropId?: string | null; dunningNoticeId?: string | null };
+type Subject = { type: DocumentType; bookingId: string | null; contractId: string | null; handoverId: string | null; invoiceId?: string | null; invoiceVersionId?: string | null; payoutId?: string | null; keyDropId?: string | null; dunningNoticeId?: string | null };
 
 function latestDocument(client: Tx | typeof db, tenantId: string, s: Subject) {
   return client.document.findFirst({ where: { tenantId, bookingId: s.bookingId, type: s.type, contractId: s.contractId, handoverId: s.handoverId, invoiceId: s.invoiceId ?? null, invoiceVersionId: s.invoiceVersionId ?? null, payoutId: s.payoutId ?? null, keyDropId: s.keyDropId ?? null, dunningNoticeId: s.dunningNoticeId ?? null }, orderBy: { version: "desc" } });
@@ -124,7 +128,7 @@ async function archive(tenantId: string, actorId: string | null, subject: Subjec
   const storage = opts.storage ?? getStorage(); // in Produktion ohne Object Storage: klare Fehlermeldung, nichts wird erzeugt
   const bytes = await render();
   const checksum = sha256(bytes);
-  const storageKey = buildStorageKey({ tenantId, area: "documents", bookingId: subject.bookingId, contentType: "application/pdf" });
+  const storageKey = buildStorageKey({ tenantId, area: "documents", bookingId: subject.bookingId ?? undefined, contentType: "application/pdf" });
   let stored = false;
   try {
     return await db.$transaction(

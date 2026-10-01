@@ -47,7 +47,8 @@ test("Jede Server-Action-Datei und jede Prozessseite prüft die Rolle serverseit
   const counterActions = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/rechnung/counter-actions.ts"), "utf8");
   assert.ok(!/"YARD"/.test(counterActions), "Gegenbeleg-Aktionen dürfen YARD nicht zulassen");
   for (const fn of ["createCreditNoteAction", "createCancellationAction", "saveCounterDraftAction", "finalizeCounterAction", "discardCounterAction"]) assert.ok(new RegExp(`export async function ${fn}`).test(counterActions), `${fn} vorhanden`);
-  assert.match(counterActions, /const \{ tenant, user \} = await requireRole\("DISPO"\);\n  const invoice = await db\.invoice\.findFirst\(\{ where: \{ id: invoiceId, bookingId, tenantId: tenant\.id/, "Gegenbeleg-Kontext: nur DISPO und eigener Mandant");
+  // Befehl 23.1: freie Rechnungen ohne Buchung – Buchungsbezug nur, wenn vorhanden; Rolle und Mandant bleiben Pflicht
+  assert.match(counterActions, /const \{ tenant, user \} = await requireRole\("DISPO"\);\n  const invoice = await db\.invoice\.findFirst\(\{ where: \{ id: invoiceId, \.\.\.\(bookingId \? \{ bookingId \} : \{\}\), tenantId: tenant\.id/, "Gegenbeleg-Kontext: nur DISPO und eigener Mandant");
   // Auszahlungen (Phase 18): Entwurf, Abschluss, Storno, PDF, E-Mail nur DISPO (und OWNER); YARD sieht nur; Upload nur DISPO
   const payoutActions = readFileSync(path.join(process.cwd(), "src/app/(app)/auszahlungen/actions.ts"), "utf8");
   assert.ok(!/"YARD"/.test(payoutActions), "Auszahlungsaktionen dürfen YARD nicht zulassen");

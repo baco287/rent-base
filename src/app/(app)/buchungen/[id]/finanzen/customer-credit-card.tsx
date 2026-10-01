@@ -16,7 +16,7 @@ const Tile = ({ label, value, tone }: { label: string; value: number; tone?: "go
   <div className="rounded-md bg-panel-2 p-3 min-w-0"><div className="label-xs">{label}</div><div className={`font-mono tnum text-lg font-semibold ${tone === "good" ? "text-good" : tone === "bad" && value > 0 ? "text-bad" : tone === "info" ? "text-info" : ""}`}>{fmtCents(value)}</div></div>
 );
 
-export async function CustomerCreditCard({ tenantId, bookingId, role, invoiceId }: { tenantId: string; bookingId: string; role: string; invoiceId: string }) {
+export async function CustomerCreditCard({ tenantId, bookingId, role, invoiceId }: { tenantId: string; bookingId: string | null; role: string; invoiceId: string }) {
   const o = await offsetReturnOptions(tenantId, invoiceId);
   const f = o.financials;
   if (f.customerCreditCents <= 0 && f.returnedToDepositCents <= 0 && f.completedRefundCents <= 0) return null;

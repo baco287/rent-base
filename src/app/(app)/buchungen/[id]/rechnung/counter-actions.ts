@@ -17,14 +17,15 @@ import { runInvoiceFollowUp } from "@/lib/followup";
 
 export type CounterState = { error?: string; ok?: string } | undefined;
 
-const href = (bookingId: string, invoiceId: string) => `/buchungen/${bookingId}/rechnung?nr=${invoiceId}`;
+// Befehl 23.1: Gegenbelege freier Rechnungen ohne Buchung unter /rechnungen/<id>
+const href = (bookingId: string | null, invoiceId: string) => (bookingId ? `/buchungen/${bookingId}/rechnung?nr=${invoiceId}` : `/rechnungen/${invoiceId}`);
 const withParam = (url: string, key: string, value: string) => `${url}${url.includes("?") ? "&" : "?"}${key}=${encodeURIComponent(value)}`;
-const refresh = (bookingId: string) => { for (const p of [`/buchungen/${bookingId}/rechnung`, `/buchungen/${bookingId}`, "/buchungen", "/rechnungen", "/heute", "/schaeden"]) revalidatePath(p); };
+const refresh = (bookingId: string | null) => { for (const p of [...(bookingId ? [`/buchungen/${bookingId}/rechnung`, `/buchungen/${bookingId}`] : []), "/buchungen", "/rechnungen", "/forderungen", "/heute", "/schaeden"]) revalidatePath(p); revalidatePath("/rechnungen", "layout"); };
 
-async function context(bookingId: string, invoiceId: string) {
+async function context(bookingId: string | null, invoiceId: string) {
   const { tenant, user } = await requireRole("DISPO");
-  const invoice = await db.invoice.findFirst({ where: { id: invoiceId, bookingId, tenantId: tenant.id, status: { in: ["DRAFT", "FINALIZED"] } } });
-  if (!invoice) redirect(`/buchungen/${bookingId}/rechnung`);
+  const invoice = await db.invoice.findFirst({ where: { id: invoiceId, ...(bookingId ? { bookingId } : {}), tenantId: tenant.id, status: { in: ["DRAFT", "FINALIZED"] } } });
+  if (!invoice) redirect(bookingId ? `/buchungen/${bookingId}/rechnung` : "/rechnungen");
   return { tenant, user, invoice, actor: { id: user.id, name: user.name } };
 }
 
@@ -36,7 +37,7 @@ function asState(e: unknown): CounterState {
 }
 
 /** „Gutschrift erstellen“ zur abgeschlossenen Rechnung: Entwurf mit allen offenen Positionen als Vorschlag. */
-export async function createCreditNoteAction(bookingId: string, invoiceId: string) {
+export async function createCreditNoteAction(bookingId: string | null, invoiceId: string) {
   const { tenant, invoice, actor } = await context(bookingId, invoiceId);
   let created;
   try {
@@ -50,7 +51,7 @@ export async function createCreditNoteAction(bookingId: string, invoiceId: strin
 }
 
 /** „Rechnung stornieren“: Entwurf des Stornobelegs über den verbleibenden Betrag; Abschluss erst nach Grund und Bestätigung. */
-export async function createCancellationAction(bookingId: string, invoiceId: string) {
+export async function createCancellationAction(bookingId: string | null, invoiceId: string) {
   const { tenant, invoice, actor } = await context(bookingId, invoiceId);
   let created;
   try {
@@ -72,7 +73,7 @@ const itemSchema = z.union([
 const draftSchema = z.object({ items: z.array(itemSchema).min(1, "Eine Gutschrift braucht mindestens eine Position.").optional(), reason: z.string().trim().max(500).optional(), customerNote: z.string().trim().max(2000).optional(), notes: z.string().trim().max(2000).optional() });
 
 /** Entwurf speichern. Beträge rechnet ausschließlich der Server gegen die Restbeträge der Rechnung. */
-export async function saveCounterDraftAction(bookingId: string, invoiceId: string, payload: unknown): Promise<CounterState> {
+export async function saveCounterDraftAction(bookingId: string | null, invoiceId: string, payload: unknown): Promise<CounterState> {
   const { tenant, invoice, actor } = await context(bookingId, invoiceId);
   const parsed = draftSchema.safeParse(payload);
   if (!parsed.success) return { error: parsed.error.issues[0].message };
@@ -86,7 +87,7 @@ export async function saveCounterDraftAction(bookingId: string, invoiceId: strin
 }
 
 /** Abschluss mit Pflichtgrund und ausdrücklicher Bestätigung; danach PDF und E-Mail als Nachbearbeitung (wie bei Rechnungen). */
-export async function finalizeCounterAction(bookingId: string, invoiceId: string, _prev: CounterState, formData: FormData): Promise<CounterState> {
+export async function finalizeCounterAction(bookingId: string | null, invoiceId: string, _prev: CounterState, formData: FormData): Promise<CounterState> {
   const { tenant, invoice, actor } = await context(bookingId, invoiceId);
   let version;
   try {
@@ -99,7 +100,7 @@ export async function finalizeCounterAction(bookingId: string, invoiceId: string
   redirect(withParam(href(bookingId, invoice.id), "abgeschlossen", "1"));
 }
 
-export async function discardCounterAction(bookingId: string, invoiceId: string) {
+export async function discardCounterAction(bookingId: string | null, invoiceId: string) {
   const { tenant, invoice, actor } = await context(bookingId, invoiceId);
   let originalId = invoice.originalInvoiceId ?? invoice.id;
   try {

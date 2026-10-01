@@ -71,7 +71,7 @@ export async function previewPayoutAction(ref: unknown, payload: unknown): Promi
 }
 
 /** Anlegen: als Entwurf (kein Geldfluss) oder direkt als tatsächlich erfolgt (mit Nummer, Beleg). */
-export async function createPayoutAction(ref: unknown, bookingId: string, _prev: PayoutState, formData: FormData): Promise<PayoutState> {
+export async function createPayoutAction(ref: unknown, bookingId: string | null, _prev: PayoutState, formData: FormData): Promise<PayoutState> {
   const { tenant, user } = await requireRole("DISPO");
   await requireFeature("PAYOUTS");
   const r = refSchema.safeParse(ref);
@@ -92,7 +92,7 @@ export async function createPayoutAction(ref: unknown, bookingId: string, _prev:
   }
 }
 
-export async function updatePayoutDraftAction(payoutId: string, bookingId: string, _prev: PayoutState, formData: FormData): Promise<PayoutState> {
+export async function updatePayoutDraftAction(payoutId: string, bookingId: string | null, _prev: PayoutState, formData: FormData): Promise<PayoutState> {
   const { tenant, user } = await requireRole("DISPO");
   await requireFeature("PAYOUTS");
   const p = inputSchema.safeParse(Object.fromEntries(formData));
@@ -118,7 +118,7 @@ export async function updatePayoutDraftAction(payoutId: string, bookingId: strin
 const completeSchema = z.object({ confirmed: z.preprocess((v) => v === "1" || v === "on", z.boolean()), executedAt: z.string().optional() });
 
 /** Entwurf als tatsächlich erfolgt erfassen (Sperre auf der Quelle, Rest neu gerechnet, Nummer, Beleg). */
-export async function completePayoutAction(payoutId: string, bookingId: string, _prev: PayoutState, formData: FormData): Promise<PayoutState> {
+export async function completePayoutAction(payoutId: string, bookingId: string | null, _prev: PayoutState, formData: FormData): Promise<PayoutState> {
   const { tenant, user } = await requireRole("DISPO");
   await requireFeature("PAYOUTS");
   const p = completeSchema.safeParse(Object.fromEntries(formData));
@@ -137,7 +137,7 @@ export async function completePayoutAction(payoutId: string, bookingId: string, 
 
 const cancelSchema = z.object({ reason: z.string().trim().min(3, "Bitte den Grund des Stornos angeben.").max(500) });
 
-export async function cancelPayoutAction(payoutId: string, bookingId: string, _prev: PayoutState, formData: FormData): Promise<PayoutState> {
+export async function cancelPayoutAction(payoutId: string, bookingId: string | null, _prev: PayoutState, formData: FormData): Promise<PayoutState> {
   const { tenant, user } = await requireRole("DISPO");
   await requireFeature("PAYOUTS");
   const p = cancelSchema.safeParse(Object.fromEntries(formData));
@@ -152,7 +152,7 @@ export async function cancelPayoutAction(payoutId: string, bookingId: string, _p
 }
 
 /** Auszahlungsbeleg-PDF nachträglich erzeugen (nur erfolgte Auszahlungen). */
-export async function generatePayoutPdfAction(payoutId: string, bookingId: string, _prev: PayoutState, _formData: FormData): Promise<PayoutState> {
+export async function generatePayoutPdfAction(payoutId: string, bookingId: string | null, _prev: PayoutState, _formData: FormData): Promise<PayoutState> {
   void _formData;
   const { tenant, user } = await requireRole("DISPO");
   await requireFeature("PAYOUTS");
@@ -166,7 +166,7 @@ export async function generatePayoutPdfAction(payoutId: string, bookingId: strin
 }
 
 /** Auszahlungsbeleg per E-Mail senden: bewusst manuell, einmaliger nonce, EmailLog. */
-export async function sendPayoutReceiptAction(payoutId: string, bookingId: string, _prev: PayoutState, formData: FormData): Promise<PayoutState> {
+export async function sendPayoutReceiptAction(payoutId: string, bookingId: string | null, _prev: PayoutState, formData: FormData): Promise<PayoutState> {
   const { tenant, user } = await requireRole("DISPO");
   await requireFeature("PAYOUTS");
   try {

@@ -27,6 +27,7 @@ import { deliveryMetaOf, isValidEmail, safeMailError, type MailTransport } from 
 import { sendBusinessMail } from "@/lib/tenant-mail";
 import type { StorageDriver } from "@/lib/storage";
 import { APP_TIME_ZONE } from "@/lib/time";
+import { invoiceHref } from "@/lib/invoice-links";
 
 type Tx = Prisma.TransactionClient;
 type Client = Tx | typeof db;
@@ -67,7 +68,7 @@ export function maskIban(raw: string): string {
 // ---------------------------------------------------------------------------
 
 export type PayoutSource =
-  | { sourceType: "INVOICE_REFUND"; invoiceId: string; bookingId: string; customerId: string | null; customerName: string; customerEmail: string | null; remainingCents: Cents; snapshot: PayoutSourceSnapshot; invoice: InvoiceFinancials }
+  | { sourceType: "INVOICE_REFUND"; invoiceId: string; bookingId: string | null; customerId: string | null; customerName: string; customerEmail: string | null; remainingCents: Cents; snapshot: PayoutSourceSnapshot; invoice: InvoiceFinancials }
   | { sourceType: "SECURITY_DEPOSIT_REFUND"; securityDepositId: string; bookingId: string; customerId: string | null; customerName: string; customerEmail: string | null; remainingCents: Cents; snapshot: PayoutSourceSnapshot; deposit: DepositFinancials };
 
 const nameOf = (c: { type?: string; companyName?: string | null; firstName?: string | null; lastName?: string | null } | null | undefined) => {
@@ -84,7 +85,7 @@ export async function invoiceRefundSource(client: Client, tenantId: string, invo
   const f = (await financialsFor(tenantId, [{ id: inv.id, grossTotal: inv.currentVersion.grossTotal }], client)).get(inv.id)!;
   const c = inv.currentVersion.customerSnapshot as { type?: string; companyName?: string | null; firstName?: string; lastName?: string; email?: string | null };
   const snapshot: PayoutSourceSnapshot = {
-    sourceType: "INVOICE_REFUND", bookingNumber: inv.booking.number, contractNumber: inv.contract?.number ?? null, invoiceNumber: inv.number, invoiceDate: dateFmt(inv.currentVersion.issueDate),
+    sourceType: "INVOICE_REFUND", bookingNumber: inv.booking?.number ?? null, contractNumber: inv.contract?.number ?? null, invoiceNumber: inv.number, invoiceDate: dateFmt(inv.currentVersion.issueDate),
     chain: inv.counterDocuments.map((c) => c.number).filter((n): n is string => !!n), customerName: nameOf(c), customerEmail: typeof c.email === "string" && c.email.trim() ? c.email.trim() : null,
     invoiceCents: f.invoiceCents, effectiveCents: f.effectiveCents, paidCents: f.paidCents, offsetCents: f.offsetCents, customerCreditCents: f.customerCreditCents, paidOutBeforeCents: f.completedRefundCents,
   };
@@ -229,7 +230,7 @@ async function lockSource(tx: Tx, tenantId: string, ref: SourceRef): Promise<Pay
   return payoutSource(tx, tenantId, ref);
 }
 
-const refOf = (p: { sourceType: string; invoiceId: string | null; bookingId: string }): SourceRef => (p.sourceType === "INVOICE_REFUND" ? { sourceType: "INVOICE_REFUND", invoiceId: p.invoiceId! } : { sourceType: "SECURITY_DEPOSIT_REFUND", bookingId: p.bookingId });
+const refOf = (p: { sourceType: string; invoiceId: string | null; bookingId: string | null }): SourceRef => (p.sourceType === "INVOICE_REFUND" ? { sourceType: "INVOICE_REFUND", invoiceId: p.invoiceId! } : { sourceType: "SECURITY_DEPOSIT_REFUND", bookingId: p.bookingId! }); // Kautionsrückzahlung hat immer eine Buchung
 
 function sealedPayoutContent(p: PayoutRow) {
   return {
@@ -400,7 +401,7 @@ export async function registerPayoutAttachment(tenantId: string, actor: Actor, p
 // Ansichten, Listen, Kennzahlen
 // ---------------------------------------------------------------------------
 
-export type PayoutView = PayoutRow & { documents: { id: string; type: string; fileName: string; contentType: string; sizeBytes: number; checksum: string; createdAt: Date; version: number }[]; emails: { id: string; status: string; recipient: string; sentAt: Date | null; createdAt: Date; error: string | null; attemptNo: number; trigger: string }[]; booking: { id: string; number: string }; invoice: { id: string; number: string | null } | null; customer: { id: string; firstName: string; lastName: string; companyName: string | null; type: string } | null; sourceNow: PayoutSource | null };
+export type PayoutView = PayoutRow & { documents: { id: string; type: string; fileName: string; contentType: string; sizeBytes: number; checksum: string; createdAt: Date; version: number }[]; emails: { id: string; status: string; recipient: string; sentAt: Date | null; createdAt: Date; error: string | null; attemptNo: number; trigger: string }[]; booking: { id: string; number: string } | null; invoice: { id: string; number: string | null } | null; customer: { id: string; firstName: string; lastName: string; companyName: string | null; type: string } | null; sourceNow: PayoutSource | null };
 
 export async function getPayout(tenantId: string, payoutId: string): Promise<PayoutView | null> {
   const p = await db.payout.findFirst({ where: { id: payoutId, tenantId }, include: { documents: { orderBy: [{ type: "asc" }, { createdAt: "asc" }], select: { id: true, type: true, fileName: true, contentType: true, sizeBytes: true, checksum: true, createdAt: true, version: true } }, emailLogs: { orderBy: { createdAt: "desc" }, select: { id: true, status: true, recipient: true, sentAt: true, createdAt: true, error: true, attemptNo: true, trigger: true } }, booking: { select: { id: true, number: true } }, invoice: { select: { id: true, number: true } }, customer: { select: { id: true, firstName: true, lastName: true, companyName: true, type: true } } } });
@@ -430,19 +431,19 @@ export async function listPayouts(tenantId: string, f: PayoutFilter = {}) {
   return db.payout.findMany({ where, orderBy: [{ createdAt: "desc" }], include: { booking: { select: { id: true, number: true } }, invoice: { select: { id: true, number: true } }, customer: { select: { id: true, firstName: true, lastName: true, companyName: true, type: true } } }, take: 500 });
 }
 
-export type OpenClaim = { kind: "INVOICE" | "DEPOSIT"; bookingId: string; bookingNumber: string; invoiceId: string | null; number: string; customerName: string; remainingCents: Cents; draftCents: Cents; href: string };
+export type OpenClaim = { kind: "INVOICE" | "DEPOSIT"; bookingId: string | null; bookingNumber: string | null; invoiceId: string | null; number: string; customerName: string; remainingCents: Cents; draftCents: Cents; href: string };
 
 /** Offene Ansprüche: Rechnungen mit noch auszuzahlendem Guthaben und Kautionen mit auszahlbarem Rest – auch ohne Entwurf. */
 export async function openPayoutClaims(tenantId: string): Promise<{ invoices: OpenClaim[]; deposits: OpenClaim[] }> {
   const [invRows, depRows, drafts] = await Promise.all([
-    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", documentType: "INVOICE", currentVersionId: { not: null }, payments: { some: { status: "CONFIRMED" } } }, select: { id: true, number: true, bookingId: true, booking: { select: { number: true } }, currentVersion: { select: { grossTotal: true, customerSnapshot: true } } } }),
+    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", documentType: "INVOICE", currentVersionId: { not: null }, payments: { some: { status: "CONFIRMED" } } }, select: { id: true, number: true, kind: true, bookingId: true, booking: { select: { number: true } }, currentVersion: { select: { grossTotal: true, customerSnapshot: true } } } }),
     db.securityDeposit.findMany({ where: { tenantId, events: { some: { type: "RELEASED", status: "CONFIRMED" } } }, select: { id: true, expectedAmountCents: true, bookingId: true, booking: { select: { number: true, contract: { select: { customerSnapshot: true } } } }, events: { select: { type: true, amountCents: true, status: true } } } }),
     db.payout.groupBy({ by: ["invoiceId", "securityDepositId"], where: { tenantId, status: "DRAFT" }, _sum: { amountCents: true } }),
   ]);
   const draftInv = new Map(drafts.filter((d) => d.invoiceId).map((d) => [d.invoiceId!, d._sum.amountCents ?? 0]));
   const draftDep = new Map(drafts.filter((d) => d.securityDepositId).map((d) => [d.securityDepositId!, d._sum.amountCents ?? 0]));
   const fin = await financialsFor(tenantId, invRows.map((i) => ({ id: i.id, grossTotal: i.currentVersion!.grossTotal })));
-  const invoices: OpenClaim[] = invRows.filter((i) => (fin.get(i.id)?.refundRemainingCents ?? 0) > 0).map((i) => ({ kind: "INVOICE", bookingId: i.bookingId, bookingNumber: i.booking.number, invoiceId: i.id, number: i.number ?? "", customerName: nameOf(i.currentVersion!.customerSnapshot as Parameters<typeof nameOf>[0]), remainingCents: fin.get(i.id)!.refundRemainingCents, draftCents: draftInv.get(i.id) ?? 0, href: `/buchungen/${i.bookingId}/rechnung?nr=${i.id}` }));
+  const invoices: OpenClaim[] = invRows.filter((i) => (fin.get(i.id)?.refundRemainingCents ?? 0) > 0).map((i) => ({ kind: "INVOICE", bookingId: i.bookingId, bookingNumber: i.booking?.number ?? null, invoiceId: i.id, number: i.number ?? "", customerName: nameOf(i.currentVersion!.customerSnapshot as Parameters<typeof nameOf>[0]), remainingCents: fin.get(i.id)!.refundRemainingCents, draftCents: draftInv.get(i.id) ?? 0, href: invoiceHref(i) }));
   const depFin = new Map(depRows.map((d) => [d.id, computeDepositFinancials(balanceOf(d.expectedAmountCents, d.events), 0)]));
   const paidOut = depRows.length ? await db.payout.groupBy({ by: ["securityDepositId"], where: { tenantId, securityDepositId: { in: depRows.map((d) => d.id) }, status: "COMPLETED" }, _sum: { amountCents: true } }) : [];
   const paidMap = new Map(paidOut.map((g) => [g.securityDepositId, g._sum.amountCents ?? 0]));

@@ -14,7 +14,7 @@ export type FeeState =
   | { status: "NOT_AGREED" | "NO_RENTAL"; message: string }
   | { status: "NOT_YET"; cents: number; message: string }
   | { status: "READY"; cents: number; message: string }
-  | { status: "INVOICED"; cents: number; message: string; invoice: { id: string; number: string | null; status: string; bookingId: string } };
+  | { status: "INVOICED"; cents: number; message: string; invoice: { id: string; number: string | null; status: string; bookingId: string | null } };
 
 export type FeeOutcome = { status: "CREATED" | "EXISTS" | "NOT_AGREED" | "NO_RENTAL" | "NOT_YET" | "FAILED"; message: string; invoiceId?: string };
 

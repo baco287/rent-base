@@ -4,6 +4,8 @@
 // Behördenvorgänge nur über die bewusste Fahrerbestimmung (driverCustomerId). Historische Snapshots bleiben unberührt.
 // Die Akte erfindet keine Ereignisse: Die Historie entsteht ausschließlich aus gespeicherten Zeitstempeln.
 
+import { zonedDayStart } from "@/lib/time";
+import { bookingLabel, invoiceHref } from "@/lib/invoice-links";
 import { invoiceKindWord } from "@/lib/constants";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
@@ -74,9 +76,9 @@ async function lastActivity(tenantId: string, customerId: string, customer: Cust
   const [booking, handover, payment, payout, mail, contract] = await Promise.all([
     db.booking.findFirst({ where: c, orderBy: { updatedAt: "desc" }, select: { updatedAt: true, number: true } }),
     db.handover.findFirst({ where: { tenantId, status: "FINALIZED", booking: { customerId } }, orderBy: { finalizedAt: "desc" }, select: { finalizedAt: true, type: true } }),
-    db.payment.findFirst({ where: { tenantId, booking: { customerId } }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
+    db.payment.findFirst({ where: { tenantId, OR: [{ booking: { customerId } }, { bookingId: null, invoice: { customerId } }] }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
     db.payout.findFirst({ where: c, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
-    db.emailLog.findFirst({ where: { tenantId, OR: [{ booking: { customerId } }, { payout: { customerId } }] }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
+    db.emailLog.findFirst({ where: { tenantId, OR: [{ booking: { customerId } }, { payout: { customerId } }, { bookingId: null, invoiceVersion: { invoice: { customerId } } }, { bookingId: null, dunningNotice: { customerId } }] }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
     db.rentalContract.findFirst({ where: { tenantId, customerId, status: "SIGNED" }, orderBy: { signedAt: "desc" }, select: { signedAt: true } }),
   ]);
   const candidates: { at: Date | null | undefined; what: string }[] = [
@@ -100,7 +102,7 @@ export async function customerOverview(tenantId: string, customerId: string, cus
     db.booking.count({ where: { tenantId, customerId, status: "ACTIVE" } }),
     db.booking.findFirst({ where: { tenantId, customerId, status: { in: ["ACTIVE", "RETURNED"] } }, orderBy: [{ actualPickupAt: "desc" }, { startAt: "desc" }], select: { id: true, number: true, endAt: true, actualReturnAt: true, vehicle: { select: vehSel } } }),
     db.booking.findFirst({ where: { tenantId, customerId, status: "RESERVED", startAt: { gte: now } }, orderBy: { startAt: "asc" }, select: { id: true, number: true, startAt: true, vehicle: { select: vehSel } } }),
-    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", documentType: "INVOICE", currentVersionId: { not: null }, booking: { customerId } }, select: { id: true, number: true, kind: true, bookingId: true, currentVersion: { select: { grossTotal: true, paymentDueDate: true } } } }),
+    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", documentType: "INVOICE", currentVersionId: { not: null }, OR: [{ booking: { customerId } }, { customerId, bookingId: null }] }, select: { id: true, number: true, kind: true, bookingId: true, currentVersion: { select: { grossTotal: true, paymentDueDate: true } } } }),
     db.securityDeposit.findMany({ where: { tenantId, booking: { customerId } }, select: { id: true, bookingId: true, expectedAmountCents: true, events: { select: { type: true, amountCents: true, status: true } }, booking: { select: { number: true, status: true } } } }),
     db.damageCase.count({ where: { tenantId, status: { not: "CLOSED" }, booking: { customerId } } }),
     db.authorityCase.findMany({ where: { tenantId, driverCustomerId: customerId }, select: { id: true, caseNumber: true, status: true, responseDeadline: true } }),
@@ -119,10 +121,11 @@ export async function customerOverview(tenantId: string, customerId: string, cus
     if (f.openCents > 0) {
       openInvoices++; openReceivablesCents += f.openCents;
       const due = i.currentVersion!.paymentDueDate;
-      const overdue = !!due && due < now;
-      tasks.push({ key: `inv-${i.id}`, title: `${word} ${i.number} offen`, detail: `${fmt(f.openCents)}${due ? ` · fällig ${dateText(due)}` : ""}`, href: `/buchungen/${i.bookingId}/rechnung?nr=${i.id}`, tone: overdue ? "bad" : "amber" });
+      // Befehl 23.1: dieselbe Tagesgrenze wie das Mahnwesen (überfällig ab dem Tag nach der Fälligkeit)
+      const overdue = !!due && due < zonedDayStart(now);
+      tasks.push({ key: `inv-${i.id}`, title: `${word} ${i.number} offen`, detail: `${fmt(f.openCents)}${due ? ` · fällig ${dateText(due)}` : ""}`, href: invoiceHref(i), tone: overdue ? "bad" : "amber" });
     }
-    if (f.refundOpen) { refundsOpen++; refundOpenCents += f.refundRemainingCents; tasks.push({ key: `ref-${i.id}`, title: `Erstattung zu ${word} ${i.number} offen`, detail: `Kundenguthaben ${fmt(f.refundRemainingCents)} noch nicht ausgezahlt`, href: `/buchungen/${i.bookingId}/rechnung?nr=${i.id}`, tone: "amber" }); }
+    if (f.refundOpen) { refundsOpen++; refundOpenCents += f.refundRemainingCents; tasks.push({ key: `ref-${i.id}`, title: `Erstattung zu ${word} ${i.number} offen`, detail: `Kundenguthaben ${fmt(f.refundRemainingCents)} noch nicht ausgezahlt`, href: invoiceHref(i), tone: "amber" }); }
   }
   let depositPayoutOpenCents = 0, depositPayoutsOpen = 0, depositsHeld = 0;
   for (const d of deposits) {
@@ -176,10 +179,10 @@ export function customerDriverRoles(tenantId: string, customerId: string) {
 
 export type CustomerFinance = {
   /** eine Zeile je abgeschlossenem Beleg (Rechnung, Gutschrift, Stornobeleg); Gegenbelege tragen ihr Original */
-  documents: { id: string; number: string | null; documentType: string; kind: string; issueDate: Date | null; finalizedAt: Date | null; grossCents: Cents; bookingId: string; bookingNumber: string; original: { id: string; number: string | null } | null; financials: InvoiceFinancials | null; href: string }[];
-  drafts: { id: string; documentType: string; kind: string; bookingId: string; bookingNumber: string; href: string }[];
-  payments: { id: string; paidAt: Date; amountCents: Cents; method: string; status: string; reference: string | null; invoiceNumber: string | null; bookingId: string; bookingNumber: string; cancellationReason: string | null }[];
-  payouts: { id: string; number: string | null; status: string; sourceType: string; amountCents: Cents; method: string; executedAt: Date | null; plannedAt: Date | null; invoiceNumber: string | null; bookingId: string; bookingNumber: string; ibanMasked: string | null }[];
+  documents: { id: string; number: string | null; documentType: string; kind: string; issueDate: Date | null; finalizedAt: Date | null; grossCents: Cents; bookingId: string | null; bookingNumber: string | null; original: { id: string; number: string | null } | null; financials: InvoiceFinancials | null; href: string }[];
+  drafts: { id: string; documentType: string; kind: string; bookingId: string | null; bookingNumber: string | null; href: string }[];
+  payments: { id: string; paidAt: Date; amountCents: Cents; method: string; status: string; reference: string | null; invoiceNumber: string | null; bookingId: string | null; bookingNumber: string | null; cancellationReason: string | null }[];
+  payouts: { id: string; number: string | null; status: string; sourceType: string; amountCents: Cents; method: string; executedAt: Date | null; plannedAt: Date | null; invoiceNumber: string | null; bookingId: string | null; bookingNumber: string | null; ibanMasked: string | null }[];
   sums: {
     /** wirksames Rechnungsvolumen = Rechnungen − Gutschriften − Storno (financialsFor); Kautionen sind kein Umsatz */
     effectiveInvoiceCents: Cents; invoiceCents: Cents; creditedCents: Cents; cancelledCents: Cents;
@@ -194,8 +197,8 @@ export type CustomerFinance = {
 /** Finanzen der Person über alle ihre Buchungen – Stand ausschließlich aus financialsFor; stornierte Zahlungen/Auszahlungen sichtbar, nie summiert. */
 export async function customerFinance(tenantId: string, customerId: string): Promise<CustomerFinance> {
   const [invoices, payments, payouts] = await Promise.all([
-    db.invoice.findMany({ where: { tenantId, status: { in: ["DRAFT", "FINALIZED"] }, booking: { customerId } }, orderBy: [{ finalizedAt: "desc" }, { createdAt: "desc" }], take: 500, select: { id: true, number: true, status: true, documentType: true, kind: true, bookingId: true, finalizedAt: true, booking: { select: { number: true } }, original: { select: { id: true, number: true } }, currentVersion: { select: { grossTotal: true, issueDate: true } } } }),
-    db.payment.findMany({ where: { tenantId, booking: { customerId } }, orderBy: { paidAt: "desc" }, take: 500, select: { id: true, paidAt: true, amountCents: true, method: true, status: true, reference: true, cancellationReason: true, bookingId: true, booking: { select: { number: true } }, invoice: { select: { number: true } } } }),
+    db.invoice.findMany({ where: { tenantId, status: { in: ["DRAFT", "FINALIZED"] }, OR: [{ booking: { customerId } }, { customerId, bookingId: null }] }, orderBy: [{ finalizedAt: "desc" }, { createdAt: "desc" }], take: 500, select: { id: true, number: true, status: true, documentType: true, kind: true, bookingId: true, finalizedAt: true, booking: { select: { number: true } }, original: { select: { id: true, number: true } }, currentVersion: { select: { grossTotal: true, issueDate: true } } } }),
+    db.payment.findMany({ where: { tenantId, OR: [{ booking: { customerId } }, { bookingId: null, invoice: { customerId } }] }, orderBy: { paidAt: "desc" }, take: 500, select: { id: true, paidAt: true, amountCents: true, method: true, status: true, reference: true, cancellationReason: true, bookingId: true, booking: { select: { number: true } }, invoice: { select: { number: true } } } }),
     db.payout.findMany({ where: { tenantId, OR: [{ customerId }, { booking: { customerId } }] }, orderBy: { createdAt: "desc" }, take: 500, select: { id: true, number: true, status: true, sourceType: true, amountCents: true, method: true, executedAt: true, plannedAt: true, ibanMasked: true, bookingId: true, booking: { select: { number: true } }, invoice: { select: { number: true } } } }),
   ]);
   const finalized = invoices.filter((i) => i.status === "FINALIZED" && i.currentVersion);
@@ -210,10 +213,10 @@ export async function customerFinance(tenantId: string, customerId: string): Pro
   }
   sums.payoutsCompletedCents = payouts.filter((p) => p.status === "COMPLETED").reduce((a, p) => a + p.amountCents, 0);
   return {
-    documents: finalized.map((i) => ({ id: i.id, number: i.number, documentType: i.documentType, kind: i.kind, issueDate: i.currentVersion!.issueDate, finalizedAt: i.finalizedAt, grossCents: toCents(i.currentVersion!.grossTotal), bookingId: i.bookingId, bookingNumber: i.booking.number, original: i.original, financials: fin.get(i.id) ?? null, href: `/buchungen/${i.bookingId}/rechnung?nr=${i.id}` })),
-    drafts: invoices.filter((i) => i.status === "DRAFT").map((i) => ({ id: i.id, documentType: i.documentType, kind: i.kind, bookingId: i.bookingId, bookingNumber: i.booking.number, href: `/buchungen/${i.bookingId}/rechnung?nr=${i.id}` })),
-    payments: payments.map((p) => ({ id: p.id, paidAt: p.paidAt, amountCents: p.amountCents, method: p.method, status: p.status, reference: p.reference, invoiceNumber: p.invoice?.number ?? null, bookingId: p.bookingId, bookingNumber: p.booking.number, cancellationReason: p.cancellationReason })),
-    payouts: payouts.map((p) => ({ id: p.id, number: p.number, status: p.status, sourceType: p.sourceType, amountCents: p.amountCents, method: p.method, executedAt: p.executedAt, plannedAt: p.plannedAt, invoiceNumber: p.invoice?.number ?? null, bookingId: p.bookingId, bookingNumber: p.booking.number, ibanMasked: p.ibanMasked })),
+    documents: finalized.map((i) => ({ id: i.id, number: i.number, documentType: i.documentType, kind: i.kind, issueDate: i.currentVersion!.issueDate, finalizedAt: i.finalizedAt, grossCents: toCents(i.currentVersion!.grossTotal), bookingId: i.bookingId, bookingNumber: i.booking?.number ?? null, original: i.original, financials: fin.get(i.id) ?? null, href: invoiceHref(i) })),
+    drafts: invoices.filter((i) => i.status === "DRAFT").map((i) => ({ id: i.id, documentType: i.documentType, kind: i.kind, bookingId: i.bookingId, bookingNumber: i.booking?.number ?? null, href: invoiceHref(i) })),
+    payments: payments.map((p) => ({ id: p.id, paidAt: p.paidAt, amountCents: p.amountCents, method: p.method, status: p.status, reference: p.reference, invoiceNumber: p.invoice?.number ?? null, bookingId: p.bookingId, bookingNumber: p.booking?.number ?? null, cancellationReason: p.cancellationReason })),
+    payouts: payouts.map((p) => ({ id: p.id, number: p.number, status: p.status, sourceType: p.sourceType, amountCents: p.amountCents, method: p.method, executedAt: p.executedAt, plannedAt: p.plannedAt, invoiceNumber: p.invoice?.number ?? null, bookingId: p.bookingId, bookingNumber: p.booking?.number ?? null, ibanMasked: p.ibanMasked })),
     sums,
   };
 }
@@ -251,12 +254,12 @@ export type CustomerDocument = { id: string; kind: "BOOKING" | "DAMAGE" | "AUTHO
 export async function customerDocuments(tenantId: string, customerId: string, role: string): Promise<CustomerDocument[]> {
   const canAuthority = role !== "YARD";
   const [docs, damageDocs, authorityDocs] = await Promise.all([
-    db.document.findMany({ where: { tenantId, OR: [{ booking: { customerId } }, { payout: { customerId } }] }, orderBy: { createdAt: "desc" }, take: 500, select: { id: true, type: true, fileName: true, contentType: true, sizeBytes: true, createdAt: true, version: true, bookingId: true, booking: { select: { number: true } }, invoice: { select: { number: true } }, payout: { select: { id: true, number: true } } } }),
+    db.document.findMany({ where: { tenantId, OR: [{ booking: { customerId } }, { payout: { customerId } }, { bookingId: null, invoice: { customerId } }, { bookingId: null, dunningNotice: { customerId } }] }, orderBy: { createdAt: "desc" }, take: 500, select: { id: true, type: true, fileName: true, contentType: true, sizeBytes: true, createdAt: true, version: true, bookingId: true, booking: { select: { number: true } }, invoice: { select: { number: true } }, payout: { select: { id: true, number: true } } } }),
     db.damageCaseDocument.findMany({ where: { tenantId, case: { booking: { customerId } } }, orderBy: { createdAt: "desc" }, take: 200, select: { id: true, type: true, fileName: true, contentType: true, sizeBytes: true, createdAt: true, case: { select: { id: true, caseNumber: true } } } }),
     canAuthority ? db.authorityCaseDocument.findMany({ where: { tenantId, case: { driverCustomerId: customerId } }, orderBy: { createdAt: "desc" }, take: 200, select: { id: true, type: true, fileName: true, contentType: true, sizeBytes: true, createdAt: true, case: { select: { id: true, caseNumber: true } } } }) : [],
   ]);
   const out: CustomerDocument[] = [
-    ...docs.map((d) => ({ id: d.id, kind: "BOOKING" as const, type: d.type, fileName: d.fileName, contentType: d.contentType, sizeBytes: d.sizeBytes, createdAt: d.createdAt, href: `/api/documents/${d.id}`, context: d.payout ? `Auszahlung ${d.payout.number ?? ""}` : d.invoice?.number ? `${d.invoice.number} · Buchung ${d.booking.number}` : `Buchung ${d.booking.number}`, contextHref: d.payout ? `/auszahlungen/${d.payout.id}` : `/buchungen/${d.bookingId}` })),
+    ...docs.map((d) => ({ id: d.id, kind: "BOOKING" as const, type: d.type, fileName: d.fileName, contentType: d.contentType, sizeBytes: d.sizeBytes, createdAt: d.createdAt, href: `/api/documents/${d.id}`, context: d.payout ? `Auszahlung ${d.payout.number ?? ""}` : d.invoice?.number ? `${d.invoice.number} · ${bookingLabel(d.booking?.number)}` : bookingLabel(d.booking?.number), contextHref: d.payout ? `/auszahlungen/${d.payout.id}` : d.bookingId ? `/buchungen/${d.bookingId}` : "/rechnungen" })),
     ...damageDocs.map((d) => ({ id: d.id, kind: "DAMAGE" as const, type: d.type, fileName: d.fileName, contentType: d.contentType, sizeBytes: d.sizeBytes, createdAt: d.createdAt, href: `/api/damage-documents/${d.id}`, context: `Schadenakte ${d.case.caseNumber}`, contextHref: `/schaeden/${d.case.id}` })),
     ...authorityDocs.map((d) => ({ id: d.id, kind: "AUTHORITY" as const, type: d.type, fileName: d.fileName, contentType: d.contentType, sizeBytes: d.sizeBytes, createdAt: d.createdAt, href: `/api/authority-documents/${d.id}`, context: `Behördenvorgang ${d.case.caseNumber}`, contextHref: `/behoerden/${d.case.id}` })),
   ];
@@ -268,7 +271,7 @@ export async function customerDocuments(tenantId: string, customerId: string, ro
 // ---------------------------------------------------------------------------
 
 export function customerEmails(tenantId: string, customerId: string) {
-  return db.emailLog.findMany({ where: { tenantId, OR: [{ booking: { customerId } }, { payout: { customerId } }] }, orderBy: { createdAt: "desc" }, take: 300, select: { id: true, createdAt: true, sentAt: true, lastAttemptAt: true, recipient: true, template: true, subject: true, status: true, error: true, trigger: true, attemptNo: true, bookingId: true, payoutId: true, booking: { select: { number: true } }, invoiceVersion: { select: { invoice: { select: { number: true } } } } } });
+  return db.emailLog.findMany({ where: { tenantId, OR: [{ booking: { customerId } }, { payout: { customerId } }, { bookingId: null, invoiceVersion: { invoice: { customerId } } }, { bookingId: null, dunningNotice: { customerId } }] }, orderBy: { createdAt: "desc" }, take: 300, select: { id: true, createdAt: true, sentAt: true, lastAttemptAt: true, recipient: true, template: true, subject: true, status: true, error: true, trigger: true, attemptNo: true, bookingId: true, payoutId: true, booking: { select: { number: true } }, invoiceVersion: { select: { invoice: { select: { number: true } } } } } });
 }
 
 
@@ -285,13 +288,13 @@ export async function customerTimeline(tenantId: string, customerId: string, lim
     db.booking.findMany({ where: { tenantId, customerId }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, number: true, status: true, createdAt: true, updatedAt: true, vehicle: { select: { plate: true } } } }),
     db.rentalContract.findMany({ where: { tenantId, customerId, status: { not: "DRAFT" } }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, number: true, status: true, signedAt: true, createdAt: true, bookingId: true } }),
     db.handover.findMany({ where: { tenantId, status: "FINALIZED", booking: { customerId } }, orderBy: { finalizedAt: "desc" }, take: limit, select: { id: true, number: true, type: true, finalizedAt: true, bookingId: true, mileage: true } }),
-    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", booking: { customerId } }, orderBy: { finalizedAt: "desc" }, take: limit, select: { id: true, number: true, documentType: true, kind: true, finalizedAt: true, bookingId: true, currentVersion: { select: { grossTotal: true } } } }),
-    db.payment.findMany({ where: { tenantId, booking: { customerId } }, orderBy: { paidAt: "desc" }, take: limit, select: { id: true, paidAt: true, amountCents: true, status: true, cancelledAt: true, bookingId: true, invoice: { select: { number: true } } } }),
+    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", OR: [{ booking: { customerId } }, { customerId, bookingId: null }] }, orderBy: { finalizedAt: "desc" }, take: limit, select: { id: true, number: true, documentType: true, kind: true, finalizedAt: true, bookingId: true, currentVersion: { select: { grossTotal: true } } } }),
+    db.payment.findMany({ where: { tenantId, OR: [{ booking: { customerId } }, { bookingId: null, invoice: { customerId } }] }, orderBy: { paidAt: "desc" }, take: limit, select: { id: true, paidAt: true, amountCents: true, status: true, cancelledAt: true, bookingId: true, invoice: { select: { number: true } } } }),
     db.securityDepositEvent.findMany({ where: { tenantId, deposit: { booking: { customerId } } }, orderBy: { occurredAt: "desc" }, take: limit, select: { id: true, type: true, amountCents: true, status: true, occurredAt: true, cancelledAt: true, deposit: { select: { bookingId: true, booking: { select: { number: true } } } } } }),
     db.payout.findMany({ where: { tenantId, OR: [{ customerId }, { booking: { customerId } }] }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, number: true, status: true, amountCents: true, completedAt: true, executedAt: true, cancelledAt: true, createdAt: true } }),
     db.damageCase.findMany({ where: { tenantId, booking: { customerId } }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, caseNumber: true, createdAt: true, closedAt: true, description: true } }),
     db.authorityCase.findMany({ where: { tenantId, driverCustomerId: customerId }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, caseNumber: true, createdAt: true, authorityName: true } }),
-    db.emailLog.findMany({ where: { tenantId, status: "SENT", OR: [{ booking: { customerId } }, { payout: { customerId } }] }, orderBy: { sentAt: "desc" }, take: limit, select: { id: true, sentAt: true, createdAt: true, subject: true, bookingId: true, payoutId: true } }),
+    db.emailLog.findMany({ where: { tenantId, status: "SENT", OR: [{ booking: { customerId } }, { payout: { customerId } }, { bookingId: null, invoiceVersion: { invoice: { customerId } } }, { bookingId: null, dunningNotice: { customerId } }] }, orderBy: { sentAt: "desc" }, take: limit, select: { id: true, sentAt: true, createdAt: true, subject: true, bookingId: true, payoutId: true } }),
   ]);
   const e: TimelineEntry[] = [];
   if (customer) e.push({ key: "created", at: customer.createdAt, kind: "Kunde", title: "Kunde angelegt", detail: null, href: null });
@@ -302,7 +305,7 @@ export async function customerTimeline(tenantId: string, customerId: string, lim
   }
   for (const c of contracts) if (c.status === "SIGNED" && c.signedAt) e.push({ key: `c-${c.id}`, at: c.signedAt, kind: "Vertrag", title: `Mietvertrag ${c.number} abgeschlossen`, detail: null, href: `/buchungen/${c.bookingId}/vertrag` });
   for (const h of handovers) if (h.finalizedAt) e.push({ key: `h-${h.id}`, at: h.finalizedAt, kind: h.type === "PICKUP" ? "Übergabe" : "Rückgabe", title: `${h.type === "PICKUP" ? "Übergabe" : "Rückgabe"} ${h.number}`, detail: h.mileage != null ? `${h.mileage.toLocaleString("de-DE")} km` : null, href: `/buchungen/${h.bookingId}/${h.type === "PICKUP" ? "uebergabe" : "rueckgabe"}` });
-  for (const i of invoices) if (i.finalizedAt) e.push({ key: `i-${i.id}`, at: i.finalizedAt, kind: i.documentType === "INVOICE" ? (invoiceKindWord(i.kind)) : i.documentType === "CREDIT_NOTE" ? "Gutschrift" : "Stornobeleg", title: `${i.documentType === "INVOICE" ? (invoiceKindWord(i.kind)) : i.documentType === "CREDIT_NOTE" ? "Gutschrift" : "Stornobeleg"} ${i.number ?? ""} abgeschlossen`, detail: fmt(toCents(i.currentVersion?.grossTotal ?? 0)), href: `/buchungen/${i.bookingId}/rechnung?nr=${i.id}` });
+  for (const i of invoices) if (i.finalizedAt) e.push({ key: `i-${i.id}`, at: i.finalizedAt, kind: i.documentType === "INVOICE" ? (invoiceKindWord(i.kind)) : i.documentType === "CREDIT_NOTE" ? "Gutschrift" : "Stornobeleg", title: `${i.documentType === "INVOICE" ? (invoiceKindWord(i.kind)) : i.documentType === "CREDIT_NOTE" ? "Gutschrift" : "Stornobeleg"} ${i.number ?? ""} abgeschlossen`, detail: fmt(toCents(i.currentVersion?.grossTotal ?? 0)), href: invoiceHref(i) });
   for (const p of payments) {
     e.push({ key: `p-${p.id}`, at: p.paidAt, kind: "Zahlung", title: `Zahlung ${fmt(p.amountCents)}${p.invoice?.number ? ` zu ${p.invoice.number}` : ""}`, detail: p.status === "CANCELLED" ? "storniert" : null, href: `/buchungen/${p.bookingId}/finanzen` });
     if (p.status === "CANCELLED" && p.cancelledAt) e.push({ key: `pc-${p.id}`, at: p.cancelledAt, kind: "Zahlung", title: `Zahlung ${fmt(p.amountCents)} storniert`, detail: null, href: `/buchungen/${p.bookingId}/finanzen` });

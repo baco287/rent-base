@@ -84,6 +84,11 @@ export function companySnapshotOf(t: TenantRow): CompanySnapshot {
   return { name: t.name, legalForm: t.legalForm, street: t.street, zip: t.zip, city: t.city, country: t.country, email: t.email, phone: t.phone, vatId: t.vatId, taxNumber: t.taxNumber, bankName: t.bankName, iban: t.iban, bic: t.bic, invoiceFooter: t.invoiceFooter, website: t.website, logo: logoRefOf(t) };
 }
 
+/** Befehl 23.1: Rechnungsempfänger direkt aus dem Kundenstamm (freie Rechnung) – nur Rechnungsdaten, keine Ausweis-/Führerscheindaten. */
+export function customerSnapshotFromCustomer(c: { number: string | null; type: string; companyName: string | null; firstName: string; lastName: string; street: string | null; zip: string | null; city: string | null; country: string | null; email: string | null }): InvoiceCustomerSnapshot {
+  return { number: c.number ?? null, type: c.type ?? "PRIVATE", companyName: c.companyName ?? null, firstName: c.firstName ?? "", lastName: c.lastName ?? "", street: c.street ?? null, zip: c.zip ?? null, city: c.city ?? null, country: c.country ?? "DE", email: c.email ?? null };
+}
+
 export function customerSnapshotFromContract(c: Partial<CustomerSnapshot>): InvoiceCustomerSnapshot {
   return { number: c.number ?? null, type: c.type ?? "PRIVATE", companyName: c.companyName ?? null, firstName: c.firstName ?? "", lastName: c.lastName ?? "", street: c.street ?? null, zip: c.zip ?? null, city: c.city ?? null, country: c.country ?? "DE", email: c.email ?? null };
 }
@@ -421,6 +426,51 @@ export async function createDunningFeeInvoiceDraft(tx: Tx, tenantId: string, act
   return invoice;
 }
 
+/**
+ * Befehl 23.1: freie Rechnung (kind GENERAL) als Entwurf ohne Positionen. Rechnungsempfänger = bestehender Kunde (Kopie aus
+ * dem Kundenstamm, beim Abschluss versiegelt); optionaler Buchungsbezug nur zur Zuordnung (muss zum Kunden gehören) –
+ * es werden keine Mietpositionen übernommen, Kaution und Buchung bleiben unberührt. Zahlungsziel = Mandantenstandard,
+ * je Rechnung änderbar. Doppelklick: derselbe Formularschlüssel liefert denselben Entwurf (sourceHash).
+ */
+export async function createGeneralInvoiceDraft(tenantId: string, actor: Actor, input: { customerId: string; bookingId?: string | null; nonce: string }): Promise<{ invoice: InvoiceRow; created: boolean }> {
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(input.nonce ?? "")) throw new DomainError("Die Seite ist veraltet. Bitte neu laden.");
+  const sourceHash = sha256(`general:${tenantId}:${input.nonce}`);
+  return db.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Customer" WHERE "id" = ${input.customerId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+    if (locked.length === 0) throw new DomainError("Kunde nicht gefunden.");
+    const existing = await tx.invoice.findFirst({ where: { tenantId, kind: "GENERAL", sourceHash } });
+    if (existing) return { invoice: existing, created: false };
+    const customer = await tx.customer.findUniqueOrThrow({ where: { id: input.customerId } });
+    let booking: { id: string; number: string; customerId: string } | null = null;
+    if (input.bookingId) {
+      booking = await tx.booking.findFirst({ where: { id: input.bookingId, tenantId }, select: { id: true, number: true, customerId: true } });
+      if (!booking) throw new DomainError("Buchung nicht gefunden.");
+      if (booking.customerId !== customer.id) throw new DomainError("Die gewählte Buchung gehört nicht zu diesem Kunden.");
+    }
+    const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+    const missing = invoiceSettingsMissing(tenant);
+    if (missing.length > 0) throw new DomainError(`Bevor Rechnungen erstellt werden können, muss der Inhaber in den Einstellungen ergänzen: ${missing.join("; ")}.`);
+    const now = new Date();
+    const invoice = await tx.invoice.create({
+      data: {
+        tenantId, bookingId: booking?.id ?? null, customerId: customer.id, kind: "GENERAL", sourceHash, createdById: actor.id,
+        changeLog: [{ at: now.toISOString(), by: actor.name, versionNo: 1, summary: `Freie Rechnung als Entwurf angelegt${booking ? ` (Bezug Buchung ${booking.number})` : " (ohne Buchungsbezug)"}` }],
+      },
+    });
+    await tx.invoiceVersion.create({
+      data: {
+        tenantId, invoiceId: invoice.id, versionNo: 1, kind: "ORIGINAL",
+        servicePeriodStart: now, servicePeriodEnd: now, pricesIncludeTax: tenant.pricesIncludeTax ?? true,
+        customerSnapshot: customerSnapshotFromCustomer(customer), companySnapshot: companySnapshotOf(tenant),
+        paymentTermDays: tenant.paymentTermDays, taxNote: tenant.taxNote,
+        createdById: actor.id, createdByName: actor.name,
+      },
+    });
+    await recordAudit(tx, tenantId, actor, { action: "INVOICE_DRAFT_CREATED", bookingId: booking?.id ?? null, invoiceId: invoice.id, details: { kind: "GENERAL", customerId: customer.id, bookingNumber: booking?.number ?? null } });
+    return { invoice, created: true };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Übermittlung und Bearbeitungsmodus
 // ---------------------------------------------------------------------------
@@ -693,8 +743,9 @@ async function collectIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, draf
   const issues: InvoiceIssue[] = [];
   const err = (code: string, message: string) => issues.push({ code, severity: "error", message });
   const warn = (code: string, message: string) => issues.push({ code, severity: "warning", message });
-  const booking = await tx.booking.findFirst({ where: { id: invoice.bookingId, tenantId }, include: { contract: { select: { status: true } } } });
-  if (!booking) err("BOOKING_MISSING", "Buchung nicht gefunden.");
+  // Befehl 23.1: freie Rechnungen (GENERAL) und deren Mahngebühren dürfen ohne Buchung bestehen; alle anderen Arten brauchen ihre Buchung
+  const booking = invoice.bookingId ? await tx.booking.findFirst({ where: { id: invoice.bookingId, tenantId }, include: { contract: { select: { status: true } } } }) : null;
+  if (!booking && (invoice.bookingId || (invoice.kind !== "GENERAL" && invoice.kind !== "DUNNING_FEE"))) err("BOOKING_MISSING", "Buchung nicht gefunden.");
   if (draft.versionNo === 1 && invoice.kind === "DAMAGE") {
     // Schadenabrechnung: braucht Vertrag (Rechnungsempfänger) und eine Schadenakte mit bestätigter Kundenverantwortung
     if (booking && booking.contract?.status !== "SIGNED") err("CONTRACT", "Zu dieser Buchung gibt es keinen abgeschlossenen Mietvertrag.");
@@ -715,6 +766,12 @@ async function collectIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, draf
     for (const m of invoiceSettingsMissing(tenant)) err("COMPANY", `Firmendaten unvollständig: ${m}.`);
   } else if (draft.versionNo === 1 && invoice.kind === "DUNNING_FEE") {
     // Befehl 23: Mahngebühr – entsteht nur im Mahnvorgang; braucht vollständige Firmendaten
+    const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+    for (const m of invoiceSettingsMissing(tenant)) err("COMPANY", `Firmendaten unvollständig: ${m}.`);
+  } else if (draft.versionNo === 1 && invoice.kind === "GENERAL") {
+    // Befehl 23.1: freie Rechnung – Kunde als Empfänger; eine Buchung ist nur Bezug (keine Mietpositionen, keine Kaution)
+    if (!invoice.customerId) err("CUSTOMER", "Bitte einen Rechnungsempfänger (Kunden) wählen.");
+    if (booking && invoice.customerId && booking.customerId !== invoice.customerId) err("BOOKING_CUSTOMER", "Die gewählte Buchung gehört nicht zu diesem Kunden.");
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
     for (const m of invoiceSettingsMissing(tenant)) err("COMPANY", `Firmendaten unvollständig: ${m}.`);
   } else if (draft.versionNo === 1) {
@@ -758,6 +815,7 @@ async function collectIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, draf
   }
   if (draft.taxTreatment !== "NON_TAXABLE_DAMAGE_COMPENSATION" && draft.items.some((it) => toBasisPoints(it.taxRate) === 0) && !draft.taxNote?.trim()) err("TAX_NOTE", "Es gibt Positionen mit 0 % Steuer. Bitte den Steuerhinweis für die Rechnung angeben.");
   if (totals.total.gross === 0) warn("ZERO", "Der Rechnungsbetrag ist 0,00 €.");
+  if (invoice.kind === "GENERAL" && totals.total.gross <= 0 && draft.items.length > 0) err("AMOUNT", "Der Rechnungsbetrag einer freien Rechnung muss größer als 0,00 € sein.");
   if (mode && mode.completedRefundCents > 0 && mode.completedRefundCents > Math.max(0, mode.paidCents - totals.total.gross)) err("REFUNDED", `Zu dieser Rechnung wurden bereits ${fmtCents(mode.completedRefundCents)} an den Kunden erstattet. Der neue Rechnungsbetrag würde dieses Guthaben unterschreiten. Bitte zuerst die Auszahlung stornieren.`);
   if (mode && mode.paidCents > totals.total.gross) warn("OVERPAID", `Für diese Rechnung wurden bereits ${fmtCents(mode.paidCents)} Zahlungen dokumentiert. Der neue Rechnungsbetrag beträgt ${fmtCents(totals.total.gross)}. Dadurch entsteht eine Überzahlung von ${fmtCents(mode.paidCents - totals.total.gross)}. Rent-Base führt keine automatische Erstattung durch.`);
   return issues;
@@ -791,7 +849,7 @@ export async function getInvoiceState(tenantId: string, invoiceId: string): Prom
 }
 
 /** Versiegelter Inhalt einer Fassung (Grundlage der Prüfsumme). */
-function sealedContent(invoice: { number: string | null; bookingId: string; contractId: string | null; returnHandoverId: string | null }, v: VersionWithItems) {
+function sealedContent(invoice: { number: string | null; bookingId: string | null; contractId: string | null; returnHandoverId: string | null }, v: VersionWithItems) {
   return {
     number: invoice.number,
     versionNo: v.versionNo,
@@ -822,7 +880,7 @@ function sealedContent(invoice: { number: string | null; bookingId: string; cont
 }
 
 /** Prüfsumme der Fassung 1 aus Phase 8/9 (vor der Fassungsarchitektur), damit bestehende Prüfsummen weiter verifizierbar sind. */
-function legacySealedContent(invoice: { number: string | null; bookingId: string; contractId: string | null; returnHandoverId: string | null }, v: VersionWithItems) {
+function legacySealedContent(invoice: { number: string | null; bookingId: string | null; contractId: string | null; returnHandoverId: string | null }, v: VersionWithItems) {
   const s = sealedContent(invoice, v);
   return { number: s.number, bookingId: s.bookingId, contractId: s.contractId, returnHandoverId: s.returnHandoverId, issueDate: s.issueDate, servicePeriodStart: s.servicePeriodStart, servicePeriodEnd: s.servicePeriodEnd, currency: s.currency, pricesIncludeTax: s.pricesIncludeTax, customer: s.customer, company: s.company, netTotal: s.netTotal, taxTotal: s.taxTotal, grossTotal: s.grossTotal, paymentTermDays: s.paymentTermDays, paymentDueDate: s.paymentDueDate, customerNote: s.customerNote, taxNote: s.taxNote, items: s.items };
 }
@@ -923,7 +981,7 @@ export async function finalizeInvoiceIn(tx: Tx, tenantId: string, invoiceId: str
   }
   // Erste Fassung der Mietrechnung: vorab an der Buchung erfasste Mietzahlungen werden ihr zugeordnet (Buchung gesperrt)
   const linksRentalPayments = draft.versionNo === 1 && invoice.kind === "RENTAL";
-  const prepaidCents = linksRentalPayments ? await lockUnlinkedRentalPayments(tx, tenantId, invoice.bookingId) : 0;
+  const prepaidCents = linksRentalPayments ? await lockUnlinkedRentalPayments(tx, tenantId, invoice.bookingId!) : 0;
   if (prepaidCents > newGross && !opts.confirmOverpayment) {
     throw new DomainError(`Zu dieser Buchung wurden bereits ${fmtCents(prepaidCents)} Mietzahlungen dokumentiert. Der Rechnungsbetrag beträgt ${fmtCents(newGross)}. Dadurch entsteht eine Überzahlung von ${fmtCents(prepaidCents - newGross)}. Rent-Base führt keine automatische Erstattung durch. Bitte die Überzahlung ausdrücklich bestätigen.`);
   }
@@ -958,7 +1016,7 @@ export async function finalizeInvoiceIn(tx: Tx, tenantId: string, invoiceId: str
     : `Fassung ${draft.versionNo} abgeschlossen (${finalized.kind === "CORRECTION" ? "Berichtigung" : "Neufassung"}, ${diff!.entries.length} Änderungen, Betrag ${diff!.grossBefore} → ${diff!.grossAfter})${finalized.reason ? `: ${finalized.reason}` : ""}`;
   if (draft.versionNo === 1) {
     await tx.invoice.update({ where: { id: invoice.id }, data: { number, status: "FINALIZED", finalizedAt: now, currentVersionId: finalized.id, changeLog: [...log, { at: now.toISOString(), by: actor.name, versionNo: 1, summary }] } });
-    if (linksRentalPayments) await linkRentalPaymentsToInvoice(tx, tenantId, actor, { id: invoice.id, bookingId: invoice.bookingId, number });
+    if (linksRentalPayments) await linkRentalPaymentsToInvoice(tx, tenantId, actor, { id: invoice.id, bookingId: invoice.bookingId!, number });
   } else {
     await tx.invoice.update({ where: { id: invoice.id }, data: { currentVersionId: finalized.id, changeLog: [...log, { at: now.toISOString(), by: actor.name, versionNo: draft.versionNo, summary }] } });
     await recordAudit(tx, tenantId, actor, {

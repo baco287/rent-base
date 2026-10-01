@@ -106,7 +106,7 @@ ${f.returnedAt ? `<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Rückgabe
 
 export type PickupMailPlan = {
   kind: MailKind;
-  bookingId: string;
+  bookingId: string | null; // Befehl 23.1: freie Rechnung ohne Buchung
   handoverId: string | null;
   invoiceId?: string | null;
   invoiceVersionId?: string | null;
@@ -150,7 +150,7 @@ export async function planHandoverMail(tenantId: string, handoverId: string): Pr
 export const planPickupMail = planHandoverMail;
 
 /** Rechnung: neutraler Text, nur das Rechnungs-PDF. Keine Aussage zu Schäden oder Verantwortung. */
-export type InvoiceMailFacts = PickupMailFacts & { invoiceNumber: string; invoiceKind?: "RENTAL" | "DAMAGE"; grossTotal: string; dueDate: string | null; correction?: { versionNo: number; supersededVersionNo: number | null } | null; documentType?: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION"; original?: { number: string; date: string | null } | null };
+export type InvoiceMailFacts = PickupMailFacts & { invoiceNumber: string; invoiceKind?: "RENTAL" | "DAMAGE" | "GENERAL"; grossTotal: string; dueDate: string | null; correction?: { versionNo: number; supersededVersionNo: number | null } | null; documentType?: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION"; original?: { number: string; date: string | null } | null };
 
 /**
  * Gutschrift / Stornobeleg: eigene, neutrale Vorlage. Keine Aussage, dass Geld erstattet wurde – aus dem Beleg kann sich ein
@@ -167,17 +167,14 @@ export function composeCounterDocumentMail(f: InvoiceMailFacts): { subject: stri
   const note = "Soweit die Rechnung bereits bezahlt wurde, kann sich aus diesem Beleg ein Guthaben zu Ihren Gunsten ergeben. Eine Erstattung ist mit dieser E-Mail nicht verbunden; wir stimmen sie gesondert mit Ihnen ab.";
   const lines = [
     `Guten Tag ${f.renterName},`, "", intro, "",
-    `Fahrzeug: ${f.vehicleTitle}`, `Kennzeichen: ${f.plate}`, `Vertragsnummer: ${f.contractNumber}`, `${credit ? "Gutschriftbetrag" : "Stornobetrag"}: ${f.grossTotal}`, "",
+    ...vehicleLines(f), `${credit ? "Gutschriftbetrag" : "Stornobetrag"}: ${f.grossTotal}`, "",
     note, "", "Im Anhang:", `- ${word}`, "", "Bei Fragen melden Sie sich gern bei uns.", "", "Freundliche Grüße", f.landlordName, ...(f.landlordContact ? [f.landlordContact] : []),
   ];
   const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#1a2230">
 <p>Guten Tag ${esc(f.renterName)},</p>
 <p>${esc(intro)}</p>
 <table style="border-collapse:collapse;font-size:15px" cellpadding="0" cellspacing="0">
-<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Fahrzeug</td><td>${esc(f.vehicleTitle)}</td></tr>
-<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Kennzeichen</td><td>${esc(f.plate)}</td></tr>
-<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Vertragsnummer</td><td>${esc(f.contractNumber)}</td></tr>
-<tr><td style="padding:2px 16px 2px 0;color:#4a5568">${credit ? "Gutschriftbetrag" : "Stornobetrag"}</td><td><b>${esc(f.grossTotal)}</b></td></tr>
+${vehicleRows(f)}<tr><td style="padding:2px 16px 2px 0;color:#4a5568">${credit ? "Gutschriftbetrag" : "Stornobetrag"}</td><td><b>${esc(f.grossTotal)}</b></td></tr>
 </table>
 <p>${esc(note)}</p>
 <p>Im Anhang:</p>
@@ -188,6 +185,17 @@ export function composeCounterDocumentMail(f: InvoiceMailFacts): { subject: stri
   return { subject, text: lines.join("\n"), html };
 }
 
+/** Befehl 23.1: Fahrzeug-/Vertragsangaben nur, wenn die Rechnung einen Mietvertrag hat (freie Rechnungen: keine). */
+function vehicleLines(f: PickupMailFacts): string[] {
+  return f.vehicleTitle ? [`Fahrzeug: ${f.vehicleTitle}`, `Kennzeichen: ${f.plate}`, `Vertragsnummer: ${f.contractNumber}`] : [];
+}
+function vehicleRows(f: PickupMailFacts): string {
+  return f.vehicleTitle ? `<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Fahrzeug</td><td>${esc(f.vehicleTitle)}</td></tr>
+<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Kennzeichen</td><td>${esc(f.plate)}</td></tr>
+<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Vertragsnummer</td><td>${esc(f.contractNumber)}</td></tr>
+` : "";
+}
+
 /** Rechnungsmail; bei einer Berichtigung neutral formuliert: die neue Fassung ersetzt die zuvor übermittelte. */
 export function composeInvoiceMail(f: InvoiceMailFacts): { subject: string; text: string; html: string } {
   const corr = f.correction ?? null;
@@ -195,17 +203,16 @@ export function composeInvoiceMail(f: InvoiceMailFacts): { subject: string; text
   const dmg = f.invoiceKind === "DAMAGE";
   const word = dmg ? "Schadenabrechnung" : "Rechnung";
   const subject = corr ? `Korrigierte ${word} ${f.invoiceNumber}` : `Ihre ${word} ${f.invoiceNumber}`;
+  const about = f.vehicleTitle ? " zu Ihrer Fahrzeugmiete" : "";
   const intro = corr
-    ? `anbei erhalten Sie die berichtigte ${word} ${f.invoiceNumber} (Fassung ${corr.versionNo}) zu Ihrer Fahrzeugmiete. Sie ersetzt die Ihnen zuvor übermittelte Fassung${corr.supersededVersionNo ? ` ${corr.supersededVersionNo}` : ""} dieser ${word}.`
-    : `anbei erhalten Sie die ${word} ${f.invoiceNumber} zu Ihrer Fahrzeugmiete.`;
+    ? `anbei erhalten Sie die berichtigte ${word} ${f.invoiceNumber} (Fassung ${corr.versionNo})${about}. Sie ersetzt die Ihnen zuvor übermittelte Fassung${corr.supersededVersionNo ? ` ${corr.supersededVersionNo}` : ""} dieser ${word}.`
+    : `anbei erhalten Sie die ${word} ${f.invoiceNumber}${about}.`;
   const lines = [
     `Guten Tag ${f.renterName},`,
     "",
     intro,
     "",
-    `Fahrzeug: ${f.vehicleTitle}`,
-    `Kennzeichen: ${f.plate}`,
-    `Vertragsnummer: ${f.contractNumber}`,
+    ...vehicleLines(f),
     `Rechnungsbetrag: ${f.grossTotal}`,
     ...(f.dueDate ? [`Zahlbar bis: ${f.dueDate}`] : []),
     "",
@@ -222,10 +229,7 @@ export function composeInvoiceMail(f: InvoiceMailFacts): { subject: string; text
 <p>Guten Tag ${esc(f.renterName)},</p>
 <p>${esc(intro)}</p>
 <table style="border-collapse:collapse;font-size:15px" cellpadding="0" cellspacing="0">
-<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Fahrzeug</td><td>${esc(f.vehicleTitle)}</td></tr>
-<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Kennzeichen</td><td>${esc(f.plate)}</td></tr>
-<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Vertragsnummer</td><td>${esc(f.contractNumber)}</td></tr>
-<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Rechnungsbetrag</td><td><b>${esc(f.grossTotal)}</b></td></tr>
+${vehicleRows(f)}<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Rechnungsbetrag</td><td><b>${esc(f.grossTotal)}</b></td></tr>
 ${f.dueDate ? `<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Zahlbar bis</td><td>${esc(f.dueDate)}</td></tr>` : ""}
 </table>
 <p>Im Anhang:</p>
@@ -236,7 +240,7 @@ ${f.dueDate ? `<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Zahlbar bis<
   return { subject, text: lines.join("\n"), html };
 }
 
-export type InvoiceMailPlan = PickupMailPlan & { invoice: { number: string; kind: "RENTAL" | "DAMAGE"; grossTotal: string; dueDate: string | null; correction: { versionNo: number; supersededVersionNo: number | null } | null; documentType: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION"; original: { number: string; date: string | null } | null } };
+export type InvoiceMailPlan = PickupMailPlan & { invoice: { number: string; kind: "RENTAL" | "DAMAGE" | "GENERAL"; grossTotal: string; dueDate: string | null; correction: { versionNo: number; supersededVersionNo: number | null } | null; documentType: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION"; original: { number: string; date: string | null } | null } };
 
 /** Stellt zusammen, was für eine Rechnungsfassung verschickt würde: ausschließlich das archivierte PDF dieser Fassung an die Adresse aus der Rechnungskopie. */
 export async function planInvoiceMail(tenantId: string, versionId: string): Promise<InvoiceMailPlan> {
@@ -245,10 +249,10 @@ export async function planInvoiceMail(tenantId: string, versionId: string): Prom
   const inv = await db.invoice.findFirst({ where: { id: v.invoiceId, tenantId }, select: { id: true, bookingId: true, contractId: true, status: true, number: true, kind: true, documentType: true } });
   if (!inv) throw new DomainError("Rechnung nicht gefunden.");
   if (v.status !== "FINALIZED" || inv.status !== "FINALIZED" || !inv.number) throw new DomainError("Ein Beleg wird erst nach dem Abschluss versendet.");
-  if (!inv.contractId) throw new DomainError("Zu dieser Rechnung gibt es keinen Mietvertrag.");
-  const contract = await loadContractDocumentData(tenantId, inv.contractId);
-  const d = contract.doc;
+  // Befehl 23.1: freie Rechnungen haben keinen Mietvertrag – Empfänger und Absender dann aus der Rechnungskopie
+  const d = inv.contractId ? (await loadContractDocumentData(tenantId, inv.contractId)).doc : null;
   const invoiceData = await loadInvoiceDocumentData(tenantId, v.id);
+  const company = invoiceData.doc.company;
   const doc = await db.document.findFirst({ where: { tenantId, type: invoiceData.documentType, invoiceVersionId: v.id }, orderBy: { version: "desc" } });
   return {
     kind: "INVOICE",
@@ -256,12 +260,14 @@ export async function planInvoiceMail(tenantId: string, versionId: string): Prom
     handoverId: null,
     invoiceId: inv.id,
     invoiceVersionId: v.id,
-    recipient: invoiceData.renterEmail ?? d.renterEmail,
-    facts: { renterName: d.renterName, contractNumber: d.number, vehicleTitle: d.vehicleTitle, plate: d.plate, startAt: d.startAt, landlordName: d.landlord.name, landlordContact: d.landlord.contact },
-    replyTo: d.landlord.email,
+    recipient: invoiceData.renterEmail ?? d?.renterEmail ?? null,
+    facts: d
+      ? { renterName: d.renterName, contractNumber: d.number, vehicleTitle: d.vehicleTitle, plate: d.plate, startAt: d.startAt, landlordName: d.landlord.name, landlordContact: d.landlord.contact }
+      : { renterName: invoiceData.doc.customer.name, contractNumber: "", vehicleTitle: "", plate: "", startAt: "", landlordName: company.fullName, landlordContact: [company.phone, company.email].filter(Boolean).join(" · ") },
+    replyTo: d ? d.landlord.email : company.email ?? null,
     documents: doc ? [doc] : [],
     missing: doc ? [] : [invoiceData.doc.title],
-    invoice: { number: inv.number, kind: inv.kind === "DAMAGE" ? "DAMAGE" : "RENTAL", grossTotal: invoiceData.doc.totals.gross, dueDate: invoiceData.doc.paymentDueDate, correction: v.kind === "CORRECTION" ? { versionNo: v.versionNo, supersededVersionNo: invoiceData.doc.version.supersedes?.versionNo ?? null } : null, documentType: invoiceData.documentType, original: invoiceData.doc.original ? { number: invoiceData.doc.original.number, date: invoiceData.doc.original.date } : null },
+    invoice: { number: inv.number, kind: inv.kind === "DAMAGE" ? "DAMAGE" : inv.kind === "GENERAL" ? "GENERAL" : "RENTAL", grossTotal: invoiceData.doc.totals.gross, dueDate: invoiceData.doc.paymentDueDate, correction: v.kind === "CORRECTION" ? { versionNo: v.versionNo, supersededVersionNo: invoiceData.doc.version.supersedes?.versionNo ?? null } : null, documentType: invoiceData.documentType, original: invoiceData.doc.original ? { number: invoiceData.doc.original.number, date: invoiceData.doc.original.date } : null },
   };
 }
 

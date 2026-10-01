@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { zonedDayStart } from "@/lib/time";
+import { invoiceHref } from "@/lib/invoice-links";
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { Card, Chip, Content, Empty, PageHeader } from "@/components/ui";
@@ -26,6 +28,7 @@ const KINDS: { key: string; label: string; kind: string | null }[] = [
   { key: "schaden", label: "Schadensrechnungen", kind: "DAMAGE" },
   { key: "behoerde", label: "Bearbeitungsentgelte Behörde", kind: "AUTHORITY_FEE" },
   { key: "mahngebuehr", label: "Mahngebühren", kind: "DUNNING_FEE" },
+  { key: "frei", label: "Freie Rechnungen", kind: "GENERAL" },
 ];
 const DOCS: { key: string; label: string; types: string[] }[] = [
   { key: "rechnungen", label: "Rechnungen", types: ["INVOICE"] },
@@ -34,7 +37,7 @@ const DOCS: { key: string; label: string; types: string[] }[] = [
   { key: "alle", label: "Alle Belege", types: ["INVOICE", "CREDIT_NOTE", "CANCELLATION"] },
 ];
 const PAGE = 50;
-const KindChip = ({ kind }: { kind: string }) => (kind === "DAMAGE" ? <Chip tone="amber">Schaden</Chip> : kind === "AUTHORITY_FEE" ? <Chip tone="info">Behörde</Chip> : <Chip>Miete</Chip>);
+const KindChip = ({ kind }: { kind: string }) => (kind === "DAMAGE" ? <Chip tone="amber">Schaden</Chip> : kind === "AUTHORITY_FEE" ? <Chip tone="info">Behörde</Chip> : kind === "DUNNING_FEE" ? <Chip tone="bad">Mahngebühr</Chip> : kind === "GENERAL" ? <Chip tone="info">Frei</Chip> : <Chip>Miete</Chip>);
 const DocChip = ({ type }: { type: string }) => (type === "CREDIT_NOTE" ? <Chip tone="info">Gutschrift</Chip> : type === "CANCELLATION" ? <Chip tone="bad">Storno</Chip> : null);
 
 /** Belegstatus in mehreren Dimensionen: Zahlungsstand · Belegkette · Erstattungsbedarf – alles aus der zentralen Summierung, nie gespeichert. */
@@ -56,7 +59,7 @@ function StatusCell({ f }: { f: InvoiceFinancials }) {
  * wer noch etwas schuldet: offen > 0 und Fälligkeit überschritten (ein Guthaben ist nie überfällig).
  */
 export default async function InvoicesPage({ searchParams }: PageProps<"/rechnungen">) {
-  const { tenant } = await requireSession();
+  const { tenant, user } = await requireSession();
   const sp = await searchParams;
   const filter = FILTERS.find((f) => f.key === sp.filter) ?? FILTERS[FILTERS.length - 1];
   const kindF = KINDS.find((k) => k.key === sp.art) ?? KINDS[0];
@@ -84,12 +87,17 @@ export default async function InvoicesPage({ searchParams }: PageProps<"/rechnun
     const person = `${s.firstName ?? ""} ${s.lastName ?? ""}`.trim();
     return s.type === "COMPANY" && s.companyName ? s.companyName : person || "–";
   };
-  const today = new Date();
-  const href = (bookingId: string, id: string) => `/buchungen/${bookingId}/rechnung?nr=${id}`;
+  // Befehl 23.1: dieselbe Tagesgrenze wie das Mahnwesen – fällig am Tag X, überfällig ab X+1 (Europe/Berlin)
+  const today = zonedDayStart(new Date());
+  // Befehl 23.1: freie Rechnungen/Belege ohne Buchung unter /rechnungen/<id> (lib/invoice-links.ts)
+  const href = (bookingId: string | null, id: string) => invoiceHref({ id, bookingId });
 
   return (
     <>
-      <PageHeader title="Rechnungen" sub={`${rows.length} ${filter.label.toLowerCase()} · offen ${fmtCents(totalOpen)}${totalCredit > 0 ? ` · noch zu erstatten ${fmtCents(totalCredit)}` : ""}`} />
+      <PageHeader title="Rechnungen" sub={`${rows.length} ${filter.label.toLowerCase()} · offen ${fmtCents(totalOpen)}${totalCredit > 0 ? ` · noch zu erstatten ${fmtCents(totalCredit)}` : ""}`}>
+        {/* Befehl 23.1: freie Rechnung – Disposition und Inhaber (Hof und Supportmodus ohne Finanzbuchungen) */}
+        {user.role !== "YARD" && <Link href="/rechnungen/neu" className="btn btn-primary !py-2.5 w-full sm:w-auto justify-center text-center">+ Neue Rechnung</Link>}
+      </PageHeader>
       <Content>
         <div className="flex gap-1.5 flex-wrap">
           {FILTERS.map((f) => (
@@ -161,7 +169,7 @@ export default async function InvoicesPage({ searchParams }: PageProps<"/rechnun
                           <td className="px-3 py-2.5 text-right tnum">{i.documentType === "INVOICE" ? <>{i.versionNo}{i.versionCount > 1 ? <span className="text-ink-3 text-xs"> / {i.versionCount}</span> : null}</> : "–"}</td>
                           <td className="px-3 py-2.5 font-mono tnum">{fmtDate(i.issueDate)}</td>
                           <td className="px-3 py-2.5">{customerOf(i.customerSnapshot)}</td>
-                          <td className="px-3 py-2.5 font-mono tnum"><Link href={`/buchungen/${i.bookingId}`} className="hover:underline">{i.booking.number}</Link></td>
+                          <td className="px-3 py-2.5 font-mono tnum">{i.bookingId ? <Link href={`/buchungen/${i.bookingId}`} className="hover:underline">{i.booking?.number}</Link> : <span className="text-ink-3 font-sans">ohne Buchung</span>}</td>
                           <td className={`px-3 py-2.5 font-mono tnum ${overdue ? "text-bad font-semibold" : ""}`}>{f && i.paymentDueDate ? fmtDate(i.paymentDueDate) : "–"}{overdue ? " (überfällig)" : ""}</td>
                           <td className="px-3 py-2.5 text-right font-mono tnum">{f ? <>{fmtCents(f.effectiveCents)}{f.effectiveCents !== f.invoiceCents && <div className="text-xs text-ink-3 font-normal">Rechnung {fmtCents(f.invoiceCents)}</div>}</> : <span className="text-bad">− {fmtCents(toCents(i.grossTotal))}</span>}</td>
                           <td className="px-3 py-2.5 text-right font-mono tnum text-good">{f ? fmtCents(f.paidCents) : "–"}</td>

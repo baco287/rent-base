@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { invoiceHref } from "@/lib/invoice-links";
 import { requireSession } from "@/lib/auth";
 import { Card, Chip, Content, Empty, PageHeader } from "@/components/ui";
 import { PAYOUT_METHODS, PAYOUT_SOURCE_TYPES, type PayoutMethod, type PayoutSourceType } from "@/lib/constants";
@@ -39,7 +40,7 @@ export default async function PayoutsPage({ searchParams }: PageProps<"/auszahlu
 
   const rows = await listPayouts(tenant.id, { status, source, method, from, to: to ? new Date(to.getTime() + 60_000) : null, q });
   const claims = status === "offen" ? await openPayoutClaims(tenant.id) : { invoices: [], deposits: [] };
-  const openClaims = [...(source !== "kaution" ? claims.invoices : []), ...(source !== "rechnung" ? claims.deposits : [])].filter((c) => !q || c.number.toLowerCase().includes(q.toLowerCase()) || c.customerName.toLowerCase().includes(q.toLowerCase()) || c.bookingNumber.toLowerCase().includes(q.toLowerCase()));
+  const openClaims = [...(source !== "kaution" ? claims.invoices : []), ...(source !== "rechnung" ? claims.deposits : [])].filter((c) => !q || c.number.toLowerCase().includes(q.toLowerCase()) || c.customerName.toLowerCase().includes(q.toLowerCase()) || (c.bookingNumber ?? "").toLowerCase().includes(q.toLowerCase()));
   const totalOpen = openClaims.reduce((a, c) => a + c.remainingCents, 0);
   const totalRows = rows.filter((p) => p.status === "COMPLETED").reduce((a, p) => a + p.amountCents, 0);
   const sub = status === "offen" ? `${openClaims.length} offene Ansprüche · ${fmtCents(totalOpen)} noch auszuzahlen · ${rows.length} Entwürfe` : `${rows.length} Auszahlungen${status === "abgeschlossen" || status === "alle" ? ` · ausgezahlt ${fmtCents(totalRows)}` : ""}`;
@@ -106,7 +107,7 @@ export default async function PayoutsPage({ searchParams }: PageProps<"/auszahlu
                       <tr key={p.id} className="border-b border-line-soft last:border-0 hover:bg-panel-2/60">
                         <td className="px-3 py-2.5 font-mono tnum"><Link href={`/auszahlungen/${p.id}`} className="hover:underline font-medium">{p.number ?? "Entwurf"}</Link></td>
                         <td className="px-3 py-2.5"><PayoutStatusChip status={p.status} />{p.historicalEntry && <> <Chip tone="grey">nacherfasst</Chip></>}</td>
-                        <td className="px-3 py-2.5 text-xs">{PAYOUT_SOURCE_TYPES[p.sourceType as PayoutSourceType]}<div className="text-ink-3">{p.invoice?.number ? <Link href={`/buchungen/${p.booking.id}/rechnung?nr=${p.invoice.id}`} className="font-mono tnum hover:underline">{p.invoice.number}</Link> : <Link href={`/buchungen/${p.booking.id}#kaution`} className="font-mono tnum hover:underline">{p.booking.number}</Link>}</div></td>
+                        <td className="px-3 py-2.5 text-xs">{PAYOUT_SOURCE_TYPES[p.sourceType as PayoutSourceType]}<div className="text-ink-3">{p.invoice?.number ? <Link href={invoiceHref({ id: p.invoice.id, bookingId: p.booking?.id ?? null })} className="font-mono tnum hover:underline">{p.invoice.number}</Link> : <Link href={`/buchungen/${p.booking?.id}#kaution`} className="font-mono tnum hover:underline">{p.booking?.number}</Link>}</div></td>
                         <td className="px-3 py-2.5">{p.customer ? <Link href={`/kunden/${p.customer.id}`} className="hover:underline">{customerName(p.customer)}</Link> : "–"}{p.recipientDeviates && <div className="text-xs text-ink-3">Empfänger: {p.recipientName}</div>}</td>
                         <td className="px-3 py-2.5 text-xs">{PAYOUT_METHODS[p.method as PayoutMethod]}{p.ibanMasked && <div className="text-ink-3 font-mono">{p.ibanMasked}</div>}</td>
                         <td className="px-3 py-2.5 font-mono tnum text-xs">{p.executedAt ? fmtDateTime(p.executedAt) : p.plannedAt ? `geplant ${fmtDate(p.plannedAt)}` : "–"}</td>

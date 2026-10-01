@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { bookingLabel, invoiceHref } from "@/lib/invoice-links";
 import { requireSession } from "@/lib/auth";
 import { Card, Chip, Content, Empty, KPI, PageHeader } from "@/components/ui";
 import { DUNNING_HELP } from "@/lib/constants";
@@ -9,7 +10,7 @@ import { receivableTone } from "../buchungen/[id]/rechnung/dunning-card";
 
 export const metadata = { title: "Forderungen" };
 
-const href = (r: Receivable) => `/buchungen/${r.bookingId}/rechnung?nr=${r.invoiceId}`;
+const href = (r: Receivable) => invoiceHref({ id: r.invoiceId, bookingId: r.bookingId, kind: r.kind });
 const stage = (r: Receivable) => { const top = [...r.notices].sort((a, b) => b.level - a.level)[0]; return top ? `${top.label}${top.delivered ? "" : " (Versand offen)"}` : "–"; };
 const nextText = (r: Receivable) => (r.next.kind === "WAIT_DUE" || r.next.kind === "WAIT_DEADLINE" ? `${r.next.label} bis ${fmtDate(r.next.until)}` : r.next.label);
 
@@ -76,7 +77,7 @@ export default async function ReceivablesPage({ searchParams }: PageProps<"/ford
                     </div>
                     <div className="text-xs text-ink-3 flex flex-wrap gap-x-2">
                       <Link href={href(r)} className="font-mono tnum underline">{r.number}</Link>
-                      <span>· Buchung {r.bookingNumber}</span>
+                      <span>· {bookingLabel(r.bookingNumber)}</span>
                       {r.customerNumber && <span>· {r.customerNumber}</span>}
                       <span>· Rechnung {fmtCents(r.invoiceCents)} vom {fmtDate(r.issueDate)}</span>
                     </div>
@@ -101,7 +102,7 @@ export default async function ReceivablesPage({ searchParams }: PageProps<"/ford
                       <tr key={r.invoiceId} className="border-b border-line-soft align-top">
                         <td className="px-3 py-2.5"><div className="font-medium">{r.customerName}</div>{r.customerNumber && <div className="text-xs text-ink-3 font-mono">{r.customerNumber}</div>}</td>
                         <td className="px-3 py-2.5"><Link href={href(r)} className="font-mono tnum hover:underline">{r.number}</Link></td>
-                        <td className="px-3 py-2.5 font-mono tnum"><Link href={`/buchungen/${r.bookingId}`} className="hover:underline">{r.bookingNumber}</Link></td>
+                        <td className="px-3 py-2.5 font-mono tnum">{r.bookingId ? <Link href={`/buchungen/${r.bookingId}`} className="hover:underline">{r.bookingNumber}</Link> : <span className="text-ink-3 font-sans">ohne Buchung</span>}</td>
                         <td className="px-3 py-2.5 font-mono tnum">{fmtDate(r.issueDate)}</td>
                         <td className="px-3 py-2.5 font-mono tnum">{r.dueDate ? fmtDate(r.dueDate) : "–"}</td>
                         <td className="px-3 py-2.5 font-mono tnum text-right">{fmtCents(r.invoiceCents)}</td>

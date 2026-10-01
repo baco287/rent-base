@@ -10,6 +10,8 @@ import { fmtCents, fmtRate, toCents } from "@/lib/money";
 import type { EditModeInfo } from "@/lib/invoices";
 import { DocumentsPanel } from "../dokumente/documents-panel";
 import { FollowUpNotice } from "../dokumente/follow-up-notice";
+import { InvoiceDocumentsCard } from "../dokumente/invoice-documents-card";
+import { bookingLabel } from "@/lib/invoice-links";
 import { CustomerCreditCard } from "../finanzen/customer-credit-card";
 import { createCancellationAction, createCreditNoteAction, discardCounterAction, finalizeCounterAction, saveCounterDraftAction } from "./counter-actions";
 import { CreditNoteEditor, type ManualRow, type SourceRow } from "./credit-note-editor";
@@ -21,7 +23,9 @@ const de = (v: unknown, digits = 2) => Number(String(v)).toLocaleString("de-DE",
 type Booking = { id: string; number: string; vehicle: { plate: string } };
 type Sp = Record<string, string | string[] | undefined>;
 
-export async function CounterDocumentPage({ tenantId, role, booking, invoiceId, sp }: { tenantId: string; role: string; booking: Booking; invoiceId: string; sp: Sp }) {
+export async function CounterDocumentPage({ tenantId, role, booking, invoiceId, sp }: { tenantId: string; role: string; booking: Booking | null; invoiceId: string; sp: Sp }) {
+  // Befehl 23.1: Gegenbelege freier Rechnungen ohne Buchung (Adresse /rechnungen/<id>)
+  const bookingId = booking?.id ?? null;
   const st = await getCounterDocumentState(tenantId, invoiceId);
   const canEdit = role !== "YARD";
   const word = INVOICE_DOCUMENT_TYPES[st.type];
@@ -47,10 +51,10 @@ export async function CounterDocumentPage({ tenantId, role, booking, invoiceId, 
     const effect = { invoice: fmtCents(st.financials.invoiceCents), creditedBefore: fmtCents(st.financials.creditedCents + st.financials.cancelledCents), thisDocument: fmtCents(draftGross), effectiveAfter: fmtCents(st.effectiveAfter), paid: fmtCents(st.paidCents), customerCreditAfter: fmtCents(st.customerCreditAfter), openAfter: fmtCents(Math.max(0, st.effectiveAfter - st.paidCents)) };
     return (
       <>
-        <PageHeader title={`${word} (Entwurf)`} sub={<>{originalLine} · Buchung {booking.number} · {doc.customer.name}</>}>
+        <PageHeader title={`${word} (Entwurf)`} sub={<>{originalLine} · {bookingLabel(booking?.number)} · {doc.customer.name}</>}>
           <Chip tone="amber">Entwurf</Chip>
           <Link href={st.original.href} className="btn">Zur Rechnung {st.original.number}</Link>
-          <form action={discardCounterAction.bind(null, booking.id, st.invoice.id)}><button className="btn btn-danger">Entwurf verwerfen</button></form>
+          <form action={discardCounterAction.bind(null, bookingId, st.invoice.id)}><button className="btn btn-danger">Entwurf verwerfen</button></form>
         </PageHeader>
         <Content>
           {hint && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{hint}</p>}
@@ -72,7 +76,7 @@ export async function CounterDocumentPage({ tenantId, role, booking, invoiceId, 
               notes={st.invoice.notes ?? ""}
               totalGross={fmtCents(draftGross)}
               remainingGross={fmtCents(st.residuals.remaining.gross)}
-              save={saveCounterDraftAction.bind(null, booking.id, st.invoice.id)}
+              save={saveCounterDraftAction.bind(null, bookingId, st.invoice.id)}
             />
           ) : (
             <Card title="Storno der Rechnung" right={<Chip tone="bad">{fmtCents(draftGross)}</Chip>}>
@@ -86,7 +90,7 @@ export async function CounterDocumentPage({ tenantId, role, booking, invoiceId, 
             </Card>
           )}
           <Card title="Vorschau des Belegs"><div className="p-4"><InvoiceDocumentView doc={doc} /></div></Card>
-          <FinalizeCounterForm action={finalizeCounterAction.bind(null, booking.id, st.invoice.id)} type={st.type} reason={st.draft.reason ?? ""} blocking={blockingIssues.length > 0} blockingReason={blockingIssues.length > 0 ? "Bitte zuerst die offenen Punkte aus der Prüfung lösen (Entwurf speichern)." : undefined} effect={effect} />
+          <FinalizeCounterForm action={finalizeCounterAction.bind(null, bookingId, st.invoice.id)} type={st.type} reason={st.draft.reason ?? ""} blocking={blockingIssues.length > 0} blockingReason={blockingIssues.length > 0 ? "Bitte zuerst die offenen Punkte aus der Prüfung lösen (Entwurf speichern)." : undefined} effect={effect} />
           <Card title="Änderungsprotokoll"><div className="p-4 text-sm"><ChangeLog entries={changeLog} /></div></Card>
         </Content>
       </>
@@ -98,21 +102,21 @@ export async function CounterDocumentPage({ tenantId, role, booking, invoiceId, 
   const finished = sp.abgeschlossen === "1";
   return (
     <>
-      <PageHeader title={`${word} ${st.invoice.number}`} sub={<>{originalLine} · Buchung {booking.number} · {doc.customer.name}</>}>
+      <PageHeader title={`${word} ${st.invoice.number}`} sub={<>{originalLine} · {bookingLabel(booking?.number)} · {doc.customer.name}</>}>
         <Chip tone="good">Finalisiert</Chip>
         <Chip tone="info">Wirkung: Minderung {fmtCents(toCents(st.current.grossTotal))}</Chip>
         <Link href={st.original.href} className="btn">Zur Rechnung {st.original.number}</Link>
-        <Link href={`/buchungen/${booking.id}`} className="btn">Zur Buchung</Link>
+        {booking ? <Link href={`/buchungen/${booking.id}`} className="btn">Zur Buchung</Link> : <Link href="/rechnungen" className="btn">Rechnungen</Link>}
       </PageHeader>
       <Content>
         {hint && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{hint}</p>}
         {finished && <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 font-medium">{word} {st.invoice.number} ist abgeschlossen und versiegelt. Betrag {fmtCents(toCents(st.current.grossTotal))}. Die Rechnung {st.original.number} bleibt unverändert; Zahlungen wurden nicht verändert.</p>}
-        {finished && <FollowUpNotice tenantId={tenantId} bookingId={booking.id} invoiceId={st.invoice.id} invoiceVersionId={st.current.id} kind="INVOICE" documentType={st.type} />}
+        {finished && <FollowUpNotice tenantId={tenantId} bookingId={bookingId} invoiceId={st.invoice.id} invoiceVersionId={st.current.id} kind="INVOICE" documentType={st.type} />}
         <FinancialSummary f={st.financials} numberLabel={st.original.number} />
         {/* Befehl 22: das entstandene Kundenguthaben gehört zur Rechnung – hier sichtbar und direkt bearbeitbar */}
-        <CustomerCreditCard tenantId={tenantId} bookingId={booking.id} role={role} invoiceId={st.original.id} />
+        <CustomerCreditCard tenantId={tenantId} bookingId={bookingId} role={role} invoiceId={st.original.id} />
         <ChainCard tenantId={tenantId} invoiceId={st.original.id} currentId={st.invoice.id} canEdit={false} mode={null} />
-        <DocumentsPanel tenantId={tenantId} bookingId={booking.id} role={role} invoiceId={st.invoice.id} />
+        {booking ? <DocumentsPanel tenantId={tenantId} bookingId={booking.id} role={role} invoiceId={st.invoice.id} /> : <InvoiceDocumentsCard tenantId={tenantId} invoiceId={st.invoice.id} role={role} />}
         <InvoiceDocumentView doc={doc} />
         <div className="text-xs text-ink-3 flex flex-wrap gap-x-3">
           <span>Abgeschlossen {fmtDateTime(st.current.finalizedAt)}{st.current.finalizedByName ? ` von ${st.current.finalizedByName}` : ""}</span>
@@ -148,7 +152,7 @@ export function FinancialSummary({ f, numberLabel }: { f: InvoiceFinancials; num
 }
 
 /** Belegkette: Rechnung → Gutschriften → Storno, anklickbar, mit Beträgen und verbleibender Forderung; dazu die Aktionen. */
-export async function ChainCard({ tenantId, invoiceId, currentId, canEdit, mode, bookingId }: { tenantId: string; invoiceId: string; currentId: string; canEdit: boolean; mode: EditModeInfo | null; bookingId?: string }) {
+export async function ChainCard({ tenantId, invoiceId, currentId, canEdit, mode, bookingId }: { tenantId: string; invoiceId: string; currentId: string; canEdit: boolean; mode: EditModeInfo | null; bookingId?: string | null }) {
   const { original, counters, financials: f } = await documentChain(tenantId, invoiceId);
   const canCounter = canEdit && !f.fullyNeutralized && !f.hasDraftCounter && f.effectiveCents > 0;
   const tone = (t: string, status: string) => (status === "DRAFT" ? "amber" : t === "CANCELLATION" ? "bad" : t === "CREDIT_NOTE" ? "info" : "good");
@@ -169,8 +173,8 @@ export async function ChainCard({ tenantId, invoiceId, currentId, canEdit, mode,
       {canEdit && (
         <div className="px-4 pb-4 flex flex-col gap-3 text-sm">
           <div className="flex flex-wrap gap-2">
-            {canCounter && bookingId && <form action={createCreditNoteAction.bind(null, bookingId, invoiceId)}><button className="btn btn-primary">Gutschrift erstellen</button></form>}
-            {canCounter && bookingId && <form action={createCancellationAction.bind(null, bookingId, invoiceId)}><button className="btn btn-danger">Rechnung stornieren</button></form>}
+            {canCounter && bookingId !== undefined && <form action={createCreditNoteAction.bind(null, bookingId, invoiceId)}><button className="btn btn-primary">Gutschrift erstellen</button></form>}
+            {canCounter && bookingId !== undefined && <form action={createCancellationAction.bind(null, bookingId, invoiceId)}><button className="btn btn-danger">Rechnung stornieren</button></form>}
             {f.hasDraftCounter && <span className="text-amber">Ein Entwurf eines Gegenbelegs ist offen (siehe Kette).</span>}
             {f.fullyNeutralized && <span className="text-ink-3">{f.chain === "CANCELLED" ? "Die Rechnung ist storniert; weitere Gegenbelege sind nicht möglich." : "Die Rechnung ist vollständig gutgeschrieben; weitere Gegenbelege sind nicht möglich."}</span>}
           </div>

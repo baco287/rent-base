@@ -203,7 +203,7 @@ async function photoFilesOf(tenantId: string, h: { photos: { id: string; storage
   return [...files.values()];
 }
 
-export type InvoiceData = { doc: InvoiceDocumentData; bookingId: string; invoiceId: string; versionId: string; versionNo: number; sourceHash: string; renterEmail: string | null; documentType: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION" };
+export type InvoiceData = { doc: InvoiceDocumentData; bookingId: string | null; invoiceId: string; versionId: string; versionNo: number; sourceHash: string; renterEmail: string | null; documentType: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION" };
 
 /** Rechnungsfassung für Ansicht und PDF. Nur die versiegelte Fassung selbst; Nummer, Vertrags- und Buchungsnummer sind reine Verweise. */
 export async function loadInvoiceDocumentData(tenantId: string, versionId: string, opts: { allowDraft?: boolean } = {}): Promise<InvoiceData> {
@@ -212,7 +212,7 @@ export async function loadInvoiceDocumentData(tenantId: string, versionId: strin
   if (!opts.allowDraft && (v.status !== "FINALIZED" || !v.contentHash)) throw new DomainError("Ein Rechnungs-PDF gibt es erst, wenn die Rechnungsfassung abgeschlossen ist.");
   const inv = await db.invoice.findFirstOrThrow({ where: { id: v.invoiceId, tenantId } });
   const [booking, contract, ret, prev, damageCase] = await Promise.all([
-    db.booking.findFirst({ where: { id: inv.bookingId, tenantId }, select: { number: true } }),
+    inv.bookingId ? db.booking.findFirst({ where: { id: inv.bookingId, tenantId }, select: { number: true } }) : null,
     inv.contractId ? db.rentalContract.findFirst({ where: { id: inv.contractId, tenantId }, select: { number: true } }) : null,
     inv.returnHandoverId ? db.handover.findFirst({ where: { id: inv.returnHandoverId, tenantId }, select: { number: true } }) : null,
     v.supersedesVersionId ? db.invoiceVersion.findFirst({ where: { id: v.supersedesVersionId, tenantId }, select: { versionNo: true, finalizedAt: true } }) : null,
@@ -236,7 +236,7 @@ export async function loadInvoiceDocumentData(tenantId: string, versionId: strin
 // Auszahlungsbeleg (Phase 18): versiegelter Auszahlungsdatensatz mit Quellen-Snapshot; Firmendaten aus den Einstellungen
 // ---------------------------------------------------------------------------
 
-export type PayoutData = { doc: PayoutDocumentData; bookingId: string; payoutId: string; sourceHash: string; recipientEmail: string | null };
+export type PayoutData = { doc: PayoutDocumentData; bookingId: string | null; payoutId: string; sourceHash: string; recipientEmail: string | null };
 
 export async function loadPayoutDocumentData(tenantId: string, payoutId: string, opts: { allowDraft?: boolean } = {}): Promise<PayoutData> {
   const p = await db.payout.findFirst({ where: { id: payoutId, tenantId } });

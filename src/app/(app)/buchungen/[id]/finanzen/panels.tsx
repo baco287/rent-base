@@ -30,10 +30,11 @@ export function PaymentStatusChip({ status }: { status: PaymentSummary["status"]
  * Zahlungen zu einer abgeschlossenen Rechnung: Saldo, Erfassen, Historie mit Storno.
  * invoiceId: eine bestimmte Rechnung (z. B. Schadenabrechnung); ohne Angabe die Mietrechnung der Buchung.
  */
-export async function PaymentsPanel({ tenantId, bookingId, role, compact = false, invoiceId = null, title }: { tenantId: string; bookingId: string; role: string; compact?: boolean; invoiceId?: string | null; title?: string }) {
-  const invoice = await db.invoice.findFirst({ where: { tenantId, bookingId, status: "FINALIZED", documentType: "INVOICE", ...(invoiceId ? { id: invoiceId } : { kind: "RENTAL" }) }, select: { id: true, number: true, kind: true, grossTotal: true } });
+export async function PaymentsPanel({ tenantId, bookingId, role, compact = false, invoiceId = null, title }: { tenantId: string; bookingId: string | null; role: string; compact?: boolean; invoiceId?: string | null; title?: string }) {
+  // Befehl 23.1: freie Rechnung ohne Buchung – immer über die Rechnungs-Id (mandantengebunden)
+  const invoice = bookingId || invoiceId ? await db.invoice.findFirst({ where: { tenantId, ...(bookingId ? { bookingId } : {}), status: "FINALIZED", documentType: "INVOICE", ...(invoiceId ? { id: invoiceId } : { kind: "RENTAL" }) }, select: { id: true, number: true, kind: true, grossTotal: true } }) : null;
   const canManage = role !== "YARD";
-  const heading = title ?? (invoice?.kind === "DAMAGE" ? "Zahlungen zur Schadenabrechnung" : invoice?.kind === "AUTHORITY_FEE" ? "Zahlungen zum Bearbeitungsentgelt" : "Zahlungen");
+  const heading = title ?? (invoice?.kind === "DAMAGE" ? "Zahlungen zur Schadenabrechnung" : invoice?.kind === "AUTHORITY_FEE" ? "Zahlungen zum Bearbeitungsentgelt" : invoice?.kind === "DUNNING_FEE" ? "Zahlungen zur Mahngebühr" : "Zahlungen");
   if (!invoice) {
     return (
       <Card title={heading}>
@@ -42,7 +43,7 @@ export async function PaymentsPanel({ tenantId, bookingId, role, compact = false
     );
   }
   const [summary, payments] = await Promise.all([invoicePaymentSummary(tenantId, invoice.id), listInvoicePayments(tenantId, invoice.id)]);
-  const invoiceHref = `/buchungen/${bookingId}/rechnung${isSideInvoice(invoice.kind) ? `?nr=${invoice.id}` : ""}`;
+  const invoiceHref = bookingId && invoice.kind !== "GENERAL" ? `/buchungen/${bookingId}/rechnung${isSideInvoice(invoice.kind) ? `?nr=${invoice.id}` : ""}` : `/rechnungen/${invoice.id}`;
   return (
     <Card title={heading} right={summary.grossCents > 0 || summary.paidCents > 0 ? <PaymentStatusChip status={summary.status} /> : <Chip tone={summary.chain === "CANCELLED" ? "bad" : "info"}>{summary.chain === "CANCELLED" ? "Storniert" : "Gutgeschrieben"}</Chip>}>
       <div className="p-4 flex flex-col gap-4">

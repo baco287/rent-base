@@ -17,7 +17,7 @@ export function PayoutStatusChip({ status }: { status: string }) {
   return <Chip tone={tone}>{PAYOUT_STATUS[status as PayoutStatus] ?? status}</Chip>;
 }
 
-export async function PayoutPanel({ tenantId, role, sourceRef, bookingId, title }: { tenantId: string; role: string; sourceRef: SourceRef; bookingId: string; title?: string }) {
+export async function PayoutPanel({ tenantId, role, sourceRef, bookingId, title }: { tenantId: string; role: string; sourceRef: SourceRef; bookingId: string | null; title?: string }) {
   const canManage = role !== "YARD";
   let source;
   try {

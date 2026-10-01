@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { invoiceHref } from "@/lib/invoice-links";
 import { notFound } from "next/navigation";
 import { randomUUID } from "node:crypto";
 import { requireSession } from "@/lib/auth";
@@ -31,7 +32,7 @@ export default async function PayoutPage({ params }: PageProps<"/auszahlungen/[i
   const attachments = p.documents.filter((d) => d.type === "PAYOUT_ATTACHMENT");
   const check = p.contentHash ? await verifyPayout(tenant.id, p.id) : null;
   const sourceRef = p.sourceType === "INVOICE_REFUND" ? { sourceType: "INVOICE_REFUND" as const, invoiceId: p.invoiceId! } : { sourceType: "SECURITY_DEPOSIT_REFUND" as const, bookingId: p.bookingId };
-  const sourceHref = p.sourceType === "INVOICE_REFUND" ? `/buchungen/${p.bookingId}/rechnung?nr=${p.invoiceId}` : `/buchungen/${p.bookingId}#kaution`;
+  const sourceHref = p.sourceType === "INVOICE_REFUND" ? invoiceHref({ id: p.invoiceId!, bookingId: p.bookingId }) : `/buchungen/${p.bookingId}#kaution`;
   const snapshot = doc.snapshot;
   const remainingNow = p.sourceNow?.remainingCents ?? 0;
 
@@ -40,7 +41,7 @@ export default async function PayoutPage({ params }: PageProps<"/auszahlungen/[i
       <PageHeader title={`${doc.title} ${doc.number}`} sub={<>{PAYOUT_SOURCE_TYPES[p.sourceType as PayoutSourceType]} · {doc.referenceLine}</>}>
         <PayoutStatusChip status={p.status} />
         {p.historicalEntry && <Chip tone="grey">historisch nacherfasst</Chip>}
-        <Link href={sourceHref} className="btn">{p.sourceType === "INVOICE_REFUND" ? `Zur Rechnung ${p.invoice?.number ?? ""}` : `Zur Buchung ${p.booking.number}`}</Link>
+        <Link href={sourceHref} className="btn">{p.sourceType === "INVOICE_REFUND" ? `Zur Rechnung ${p.invoice?.number ?? ""}` : `Zur Buchung ${p.booking?.number ?? ""}`}</Link>
         <Link href="/auszahlungen" className="btn">Alle Auszahlungen</Link>
       </PageHeader>
       <Content>

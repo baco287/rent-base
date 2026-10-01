@@ -209,6 +209,7 @@ export async function cancelDepositOffset(tenantId: string, actor: Actor, paymen
       const p0 = await tx.payment.findFirst({ where: { id: paymentId, tenantId } });
       if (!p0) throw new DomainError("Verrechnung nicht gefunden.");
       if (p0.type !== "DEPOSIT_OFFSET" || !p0.invoiceId) throw new DomainError("Dieser Eintrag ist keine Kautionsverrechnung.");
+      if (!p0.bookingId) throw new DomainError("Diese Verrechnung hat keinen Buchungsbezug.");
       const { row: deposit } = await lockOrCreateDeposit(tx, tenantId, p0.bookingId, actor);
       await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${p0.invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
       const locked = await tx.$queryRaw<{ id: string; status: string }[]>`SELECT "id", "status" FROM "Payment" WHERE "id" = ${paymentId} AND "tenantId" = ${tenantId} FOR UPDATE`;

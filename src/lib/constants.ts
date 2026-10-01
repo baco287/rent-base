@@ -468,6 +468,7 @@ export const AUDIT_ACTIONS = {
   DUNNING_FEE_CREATED: "Mahngebühr berechnet",
   DUNNING_SETTINGS_UPDATED: "Mahnwesen-Einstellungen geändert",
   DEPOSIT_CORRECTION: "Kautionsbewegung storniert",
+  INVOICE_DRAFT_CREATED: "Freie Rechnung als Entwurf angelegt",
   INVOICE_VERSION_CREATED: "Rechnungsbearbeitung begonnen",
   INVOICE_REVISED: "Rechnung neu gefasst",
   INVOICE_CORRECTED: "Rechnung berichtigt",
@@ -671,12 +672,12 @@ export const DAMAGE_CASE_EVENT_TYPES = {
   PHOTO_ADDED: "Foto hinzugefügt", DOCUMENT_ADDED: "Dokument hinzugefügt", NOTE_ADDED: "Notiz ergänzt", VEHICLE_BLOCKED: "Fahrzeug gesperrt", VEHICLE_RELEASED: "Fahrzeug freigegeben",
   CUSTOMER_CHARGE_CREATED: "Kundenbelastung festgelegt", INVOICE_CREATED: "Schadenabrechnung erstellt", CLOSED: "Akte geschlossen", REOPENED: "Akte wieder geöffnet",
 } as const;
-export const INVOICE_KINDS = { RENTAL: "Mietrechnung", DAMAGE: "Schadenabrechnung", AUTHORITY_FEE: "Bearbeitungsentgelt Behörde", DUNNING_FEE: "Mahngebühr" } as const;
+export const INVOICE_KINDS = { RENTAL: "Mietrechnung", DAMAGE: "Schadenabrechnung", AUTHORITY_FEE: "Bearbeitungsentgelt Behörde", DUNNING_FEE: "Mahngebühr", GENERAL: "Freie Rechnung" } as const;
 export type InvoiceKind = keyof typeof INVOICE_KINDS;
 /** Kurzes Wort für Listen und Knöpfe („Rechnung RE-…“, „Schadenabrechnung RE-…“). */
 export const invoiceKindWord = (kind: string | null | undefined) => (kind === "DAMAGE" ? "Schadenabrechnung" : kind === "AUTHORITY_FEE" ? "Bearbeitungsentgelt" : kind === "DUNNING_FEE" ? "Mahngebühr" : "Rechnung");
 /** Nebenrechnungen (nicht die Mietrechnung der Buchung) werden über ?nr=<id> adressiert. */
-export const isSideInvoice = (kind: string | null | undefined) => kind === "DAMAGE" || kind === "AUTHORITY_FEE" || kind === "DUNNING_FEE";
+export const isSideInvoice = (kind: string | null | undefined) => kind === "DAMAGE" || kind === "AUTHORITY_FEE" || kind === "DUNNING_FEE" || kind === "GENERAL";
 
 // Befehl 23: Mahnwesen. Stufen sind fortlaufend (keine Stufe wird übersprungen); nichts wird automatisch erstellt oder versendet.
 export const DUNNING_LEVELS = { 1: "Zahlungserinnerung", 2: "1. Mahnung", 3: "2. Mahnung" } as const;

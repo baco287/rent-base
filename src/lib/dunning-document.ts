@@ -18,7 +18,7 @@ export type DunningDocumentData = {
   company: { fullName: string; addressLines: string[]; contact: string; bankLines: string[]; taxLine: string | null; footer: string | null };
   customer: { name: string; number: string | null; addressLines: string[] };
   invoice: { number: string; issueDate: string; dueDate: string | null };
-  bookingNumber: string;
+  bookingNumber: string | null;
   contractNumber: string | null;
   priorNotices: { label: string; number: string; date: string }[];
   rows: { label: string; value: string; bold?: boolean }[];
@@ -71,7 +71,7 @@ export function buildDunningDocument(s: DunningSnapshot, hash: string): DunningD
   };
 }
 
-export async function loadDunningDocumentData(tenantId: string, noticeId: string): Promise<{ bookingId: string; contentHash: string; fileWord: string; doc: DunningDocumentData; logoRef: LogoRef | null; recipientEmail: string | null; snapshot: DunningSnapshot }> {
+export async function loadDunningDocumentData(tenantId: string, noticeId: string): Promise<{ bookingId: string | null; contentHash: string; fileWord: string; doc: DunningDocumentData; logoRef: LogoRef | null; recipientEmail: string | null; snapshot: DunningSnapshot }> {
   const n = await db.dunningNotice.findFirst({ where: { id: noticeId, tenantId } });
   if (!n) throw new DomainError("Mahnschreiben nicht gefunden.");
   const s = n.snapshot as unknown as DunningSnapshot;

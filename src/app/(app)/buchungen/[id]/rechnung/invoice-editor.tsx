@@ -38,6 +38,8 @@ type Props = {
    * verrechnen (keine offene Forderung, keine verfügbare Kaution, Miete nicht zurückgegeben). Nie vorausgewählt.
    */
   depositOffset?: DepositOffsetChoice | null;
+  /** Befehl 23.1: Standard-Zahlungsziel des Mandanten (Einstellungen → Geschäftsregeln → Mahnwesen); nur Vorschlag */
+  defaultPaymentTermDays?: number | null;
   save: (payload: unknown) => Promise<InvoiceState>;
   finalize: (prev: InvoiceState, fd: FormData) => Promise<InvoiceState>;
 };
@@ -162,7 +164,7 @@ const Field = ({ label, children, className = "" }: { label: string; children: R
   <label className={`flex flex-col gap-1 ${className}`}><span className="label-xs">{label}</span>{children}</label>
 );
 
-function EditorBody({ doc, items: initial, allowedRates, draft, kind, versionNo, invoiceKind, save, onSaved, onDirty }: Props & { onSaved: (s: InvoiceState) => void; onDirty: (d: boolean) => void }) {
+function EditorBody({ doc, items: initial, allowedRates, draft, kind, versionNo, invoiceKind, defaultPaymentTermDays = null, save, onSaved, onDirty }: Props & { onSaved: (s: InvoiceState) => void; onDirty: (d: boolean) => void }) {
   const router = useRouter();
   const [items, setItems] = useState(initial.map((i) => ({ ...i })));
   const [customerNote, setCustomerNote] = useState(draft.customerNote);
@@ -314,7 +316,7 @@ function EditorBody({ doc, items: initial, allowedRates, draft, kind, versionNo,
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
         <div className="card p-4 flex flex-col gap-3">
-          <label className="flex flex-col gap-1"><span className="label-xs">Zahlungsziel in Tagen (leer = keins)</span><input value={paymentTermDays} onChange={(e) => { setPaymentTermDays(e.target.value); setDirty(true); }} type="number" min={0} max={365} className="input tnum max-w-[10rem]" /></label>
+          <PaymentTermField value={paymentTermDays} standardDays={defaultPaymentTermDays} onChange={(v) => { setPaymentTermDays(v); setDirty(true); }} />
           <label className="flex flex-col gap-1"><span className="label-xs">Text auf der Rechnung (optional)</span><textarea value={customerNote} onChange={(e) => { setCustomerNote(e.target.value); setDirty(true); }} rows={2} className="input" /></label>
           {nonTaxable ? (
             <div className="flex flex-col gap-1"><span className="label-xs">Hinweis auf dem Dokument (fest, aus der gewählten Behandlung)</span><p className="text-sm text-ink-2">{doc.taxTreatmentNote}</p></div>
@@ -339,5 +341,48 @@ function EditorBody({ doc, items: initial, allowedRates, draft, kind, versionNo,
         <span className="text-xs text-ink-3">„Rechnung prüfen“ passiert beim Speichern und beim Laden automatisch, siehe Prüfliste oben.{dirty ? " Vor dem Abschluss bitte speichern." : ""}</span>
       </div>
     </div>
+  );
+}
+
+/**
+ * Befehl 23.1: Zahlungsziel dieser Rechnung. Vorschlag = Mandantenstandard; Änderungen gelten nur für diesen Entwurf (nie für
+ * die Geschäftsregel). Fällig wird die Rechnung am Tag des Abschlusses plus Zahlungsziel – dieses Datum wird beim Abschluss
+ * mit der Fassung versiegelt und ist die einzige Fälligkeitsquelle des Mahnwesens. Ein Datum vor dem Rechnungsdatum ist
+ * nicht wählbar (eine Rechnung kann nicht vor ihrer Ausstellung fällig sein). Überfällig ist sie ab dem Folgetag.
+ */
+function PaymentTermField({ value, standardDays, onChange }: { value: string; standardDays: number | null; onChange: (v: string) => void }) {
+  const tz = "Europe/Berlin";
+  const today = new Date();
+  const ymd = (d: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
+  const de = (d: Date) => d.toLocaleDateString("de-DE", { timeZone: tz, weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" });
+  const days = value.trim() === "" ? null : Number(value);
+  const valid = days === null || (Number.isInteger(days) && days >= 0 && days <= 365);
+  const due = days !== null && valid ? new Date(today.getTime() + days * 86_400_000) : null;
+  const dayDiff = (iso: string) => { const [y, m, d] = iso.split("-").map(Number); const [ty, tm, td] = ymd(today).split("-").map(Number); return Math.round((Date.UTC(y, m - 1, d) - Date.UTC(ty, tm - 1, td)) / 86_400_000); };
+  const quick: { label: string; v: string }[] = [
+    { label: "Sofort fällig", v: "0" }, { label: "7 Tage", v: "7" }, { label: "14 Tage", v: "14" }, { label: "30 Tage", v: "30" },
+    ...(standardDays != null && ![0, 7, 14, 30].includes(standardDays) ? [{ label: `Standard (${standardDays} Tage)`, v: String(standardDays) }] : []),
+    { label: "Ohne Zahlungsziel", v: "" },
+  ];
+  return (
+    <fieldset className="flex flex-col gap-2">
+      <legend className="label-xs mb-1">Zahlungsziel</legend>
+      <div className="flex flex-wrap gap-1.5" role="group" aria-label="Zahlungsziel wählen">
+        {quick.map((q) => (
+          <button key={q.label} type="button" onClick={() => onChange(q.v)} aria-pressed={value === q.v} className={`btn !py-2 text-xs ${value === q.v ? "!bg-brand !text-brand-ink !border-brand" : ""}`}>{q.label}</button>
+        ))}
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <label className="flex flex-col gap-1"><span className="label-xs">Tage nach Rechnungsdatum</span><input value={value} onChange={(e) => onChange(e.target.value)} type="number" min={0} max={365} inputMode="numeric" className="input tnum" placeholder="leer = keins" /></label>
+        <label className="flex flex-col gap-1"><span className="label-xs">oder fällig am (eigenes Datum)</span><input type="date" min={ymd(today)} value={due ? ymd(due) : ""} onChange={(e) => { if (!e.target.value) return; const n = dayDiff(e.target.value); if (n >= 0 && n <= 365) onChange(String(n)); }} className="input tnum" /></label>
+      </div>
+      {!valid ? (
+        <p role="alert" className="text-sm text-bad">Das Zahlungsziel liegt zwischen 0 und 365 Tagen.</p>
+      ) : due ? (
+        <p className="rounded-md bg-panel-2 px-3 py-2 text-sm"><span className="font-medium">Zahlungsziel: {days === 0 ? "sofort fällig" : `${days} ${days === 1 ? "Tag" : "Tage"}`}</span> · Fällig am <span className="font-mono tnum font-semibold">{de(due)}</span> <span className="text-ink-3">(bei Abschluss heute; überfällig ab dem Folgetag)</span>{standardDays != null && days !== standardDays ? <span className="text-ink-3"> · abweichend vom Standard {standardDays} Tage, nur für diese Rechnung</span> : null}</p>
+      ) : (
+        <p className="rounded-md bg-amber-soft text-amber px-3 py-2 text-sm">Ohne Zahlungsziel hat die Rechnung kein Fälligkeitsdatum – sie wird nicht überfällig und kann nicht gemahnt werden.</p>
+      )}
+    </fieldset>
   );
 }

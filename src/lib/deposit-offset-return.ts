@@ -42,7 +42,7 @@ export type ReturnableOffset = {
 export type OffsetReturnOptions = {
   invoiceId: string;
   invoiceNumber: string | null;
-  bookingId: string;
+  bookingId: string | null;
   financials: InvoiceFinancials;
   /** Gutschriften/Stornobelege, aus denen das Guthaben (auch) stammt */
   counterDocuments: { id: string; number: string | null; documentType: string; grossCents: Cents }[];
@@ -61,8 +61,9 @@ async function offsetsOf(client: Client, tenantId: string, invoiceId: string): P
   });
 }
 
-async function depositStateOf(client: Client, tenantId: string, bookingId: string) {
-  const dep = await client.securityDeposit.findFirst({ where: { tenantId, bookingId }, include: { events: { select: { type: true, amountCents: true, status: true } } } });
+async function depositStateOf(client: Client, tenantId: string, bookingId: string | null) {
+  // Befehl 23.1: freie Rechnung ohne Buchung – keine Kaution
+  const dep = bookingId ? await client.securityDeposit.findFirst({ where: { tenantId, bookingId }, include: { events: { select: { type: true, amountCents: true, status: true } } } }) : null;
   if (!dep) return { depositId: null, receivedCents: 0, offsetGrossCents: 0, offsetReturnedCents: 0, offsetNetCents: 0, availableCents: 0, completedPayoutCents: 0 };
   const paidOut = (await client.payout.aggregate({ where: { tenantId, securityDepositId: dep.id, status: "COMPLETED" }, _sum: { amountCents: true } }))._sum.amountCents ?? 0;
   const b = balanceOf(dep.expectedAmountCents, dep.events);
@@ -74,7 +75,7 @@ function blockedOf(inv: { status: string; documentType: string }, f: InvoiceFina
   if (f.refundRemainingCents <= 0) return f.customerCreditCents > 0 ? "Das Kundenguthaben dieser Rechnung ist bereits vollständig ausgezahlt oder zur Kaution zurückgeführt." : "Zu dieser Rechnung besteht kein Kundenguthaben.";
   if (offsets.length === 0) return "Diese Rechnung wurde nicht aus der Kaution ausgeglichen; das Guthaben kann nur ausgezahlt werden.";
   if (!offsets.some((o) => o.returnableCents > 0)) return "Die Kautionsverrechnungen dieser Rechnung sind bereits vollständig zurückgeführt.";
-  if (!deposit.depositId) return "Zu dieser Buchung gibt es keine Kaution.";
+  if (!deposit.depositId) return "Zu dieser Rechnung gibt es keine Kaution (ohne Buchungsbezug oder ohne Kaution).";
   if (deposit.completedPayoutCents > 0) return "Die Kaution wurde bereits (teilweise) an den Kunden zurückgezahlt und ist damit abgewickelt. Das Guthaben bleibt bestehen und kann über „Guthaben auszahlen“ erstattet werden.";
   return null;
 }
@@ -143,6 +144,7 @@ export async function returnOffsetToDeposit(tenantId: string, actor: Actor, inpu
   if (!head) throw new DomainError("Rechnung nicht gefunden.");
   try {
     return await db.$transaction(async (tx) => {
+      if (!head.bookingId) throw new DomainError("Diese Rechnung hat keinen Buchungsbezug und damit keine Kaution.");
       const { row: deposit, balance } = await lockOrCreateDeposit(tx, tenantId, head.bookingId, actor);
       const inv = await tx.$queryRaw<{ id: string; status: string; documentType: string; bookingId: string; number: string | null }[]>`SELECT "id", "status", "documentType", "bookingId", "number" FROM "Invoice" WHERE "id" = ${input.invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
       if (inv.length === 0) throw new DomainError("Rechnung nicht gefunden.");
