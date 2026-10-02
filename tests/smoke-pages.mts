@@ -41,6 +41,8 @@ import { setMailTransport, type MailMessage, type MailTransport } from "../src/l
 import { saveMailSettings } from "../src/lib/tenant-mail";
 import { authorizeKeyDrop, confirmKeyDrop, saveKeyDropSettings, sendKeyDropLink } from "../src/lib/key-drop";
 import { pickedUpWorld } from "./rental-flow";
+import { createAmendmentDraft, getAmendmentContentHash, saveAmendmentSignature, signAmendment, updateAmendmentDraft } from "../src/lib/amendments";
+import { ensureAmendmentDocument } from "../src/lib/documents";
 import { discardEmptyReturnDraft } from "../src/lib/handovers";
 
 const args = process.argv.slice(2);
@@ -1005,6 +1007,66 @@ const frSupport = await fetch(`${base}/rechnungen/${frDraft.id}`, { headers: { c
 report(frSupport.status === 307 && (frSupport.headers.get("location") ?? "").includes("fehler=support"), `${frSupport.status} Supportmodus: freie Rechnung gesperrt`);
 const frForeign = await fetch(`${base}/rechnungen/${frDraft.id}`, { headers: { cookie } });
 report(frForeign.status === 404, `${frForeign.status} fremder Mandant: freie Rechnung nicht auffindbar`);
+
+// ---------------------------------------------------------------------------
+// Befehl 25: Vertragsnachträge. Laufende Miete im Mahn-Testmandanten (eigenes Fahrzeug): Karte „Vertrag & Nachträge“,
+// Entwurf anlegen, Nachtragsseite (Änderungsarten, alt/neu, Unterschrift), Wirksamwerden, PDF, Buchungsseite mit „geändert
+// durch“, Rollen (Hof nur Ansicht), Supportmodus nur Ansicht, fremder Mandant ohne Zugriff. Nur Testdaten.
+// ---------------------------------------------------------------------------
+const amw = await pickedUpWorld("smoke-nt", { within: dnWorld });
+const amBooking = await db.booking.findUniqueOrThrow({ where: { id: amw.bookingId } });
+const amBookingHtml = await plain(await fetch(`${base}/buchungen/${amw.bookingId}`, { headers: { cookie: dnCookie } }));
+report(amBookingHtml.includes("Vertrag &amp; Nachträge") && amBookingHtml.includes("Aktuell vereinbart") && amBookingHtml.includes("+ Vertrag ändern / Nachtrag erstellen") && amBookingHtml.includes("ohne Nachtrag"), "Buchung: Karte „Vertrag &amp; Nachträge“ mit wirksamem Stand und Knopf (Inhaber)");
+const amYardBooking = await plain(await fetch(`${base}/buchungen/${amw.bookingId}`, { headers: { cookie: `rb_session=${dnYardSession}` } }));
+report(amYardBooking.includes("Vertrag &amp; Nachträge") && !amYardBooking.includes("+ Vertrag ändern / Nachtrag erstellen") && amYardBooking.includes("Nachträge erstellt die Disposition"), "Hofmitarbeiter: Karte lesend, kein Knopf");
+const amDraft = (await createAmendmentDraft(amw.tenantId, amw.actor, { bookingId: amw.bookingId, nonce: `smoke-nt-${Date.now()}` })).amendment;
+const amUrl = `${base}/buchungen/${amw.bookingId}/nachtrag/${amDraft.id}`;
+const amPage = await fetch(amUrl, { headers: { cookie: dnCookie } });
+const amHtml = await plain(amPage);
+report(amPage.status === 200 && amHtml.includes("Nachtrag zum Mietvertrag") && amHtml.includes("Entwurf") && amHtml.includes("1. Was wird geändert?") && amHtml.includes("Mietdauer / geplante Rückgabe ändern") && amHtml.includes("Mietpreis ändern") && amHtml.includes("Kilometervereinbarung ändern") && amHtml.includes("Vereinbarte Kaution ändern") && amHtml.includes("Rückgabeort ändern") && amHtml.includes("Sonstige Vereinbarung") && amHtml.includes("+ Zusatzfahrer aufnehmen"), `${amPage.status} Nachtrag-Entwurf: alle Änderungsarten, Fahrer, Hinweis „Entwurf ändert nichts“`);
+report(amHtml.includes("Ein Entwurf ändert nichts") && amHtml.includes("Noch keine Änderung erfasst") && amHtml.includes("Nachtrag verwerfen"), "Nachtrag-Entwurf: Hinweise und Verwerfen");
+const amBookingDraft = await plain(await fetch(`${base}/buchungen/${amw.bookingId}`, { headers: { cookie: dnCookie } }));
+report(amBookingDraft.includes("Nachtrag-Entwurf fortsetzen") && !amBookingDraft.includes("+ Vertrag ändern / Nachtrag erstellen"), "Buchung: offener Entwurf wird fortgesetzt, kein zweiter Knopf");
+const amContract = await db.rentalContract.findUniqueOrThrow({ where: { id: amw.contractId } });
+const amNewEnd = new Date(amContract.endAt.getTime() + 2 * 86400_000);
+const amRow = await updateAmendmentDraft(amw.tenantId, amw.actor, amDraft.id, { newEndAt: amNewEnd, newDepositCents: 60000 });
+await updateAmendmentDraft(amw.tenantId, amw.actor, amDraft.id, { priceDeltaCents: amRow.priceProposalCents });
+const amDraftHtml = await plain(await fetch(amUrl, { headers: { cookie: dnCookie } }));
+report(amDraftHtml.includes("Zusammenfassung alt / neu") && amDraftHtml.includes("Vorschlag der Preislogik") && amDraftHtml.includes("Unterschrift Mieter") && amDraftHtml.includes("Nachtrag unterschreiben und wirksam machen") && amDraftHtml.includes("Alle Voraussetzungen erfüllt"), "Nachtrag-Entwurf: alt/neu, Preisvorschlag, Unterschrift, Wirksam machen");
+const amYardDraft = await fetch(amUrl, { headers: { cookie: `rb_session=${dnYardSession}` }, redirect: "manual" });
+report(amYardDraft.status === 307, `${amYardDraft.status} Hofmitarbeiter: Nachtrag-Entwurf gesperrt`);
+const amSupportDraft = await fetch(amUrl, { headers: { cookie: dnSupportCookie }, redirect: "manual" });
+report(amSupportDraft.status === 307, `${amSupportDraft.status} Supportmodus: Nachtrag-Entwurf nur Ansicht (Umleitung)`);
+await saveAmendmentSignature(amw.tenantId, amw.actor, amDraft.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(3), seenHash: await getAmendmentContentHash(amw.tenantId, amDraft.id) });
+const amSigned = (await signAmendment(amw.tenantId, amw.actor, amDraft.id)).amendment;
+const amDoc = (await ensureAmendmentDocument(amw.tenantId, amDraft.id, amw.actor.id)).document;
+const amSignedPage = await fetch(`${amUrl}?wirksam=1`, { headers: { cookie: dnCookie } });
+const amSignedHtml = await plain(amSignedPage);
+report(amSignedPage.status === 200 && amSignedHtml.includes(`Nachtrag ${amSigned.number}`) && amSignedHtml.includes("Unterschrieben und wirksam") && amSignedHtml.includes("Geänderte Vereinbarungen") && amSignedHtml.includes("Stand nach diesem Nachtrag") && amSignedHtml.includes(amDoc.fileName) && amSignedHtml.includes("Nachtrag per E-Mail senden") && amSignedHtml.includes("nicht geändert oder gelöscht"), `${amSignedPage.status} Nachtrag ${amSigned.number}: wirksam, versiegelt, PDF, Versand nur bewusst`);
+const amPdf = await fetch(`${base}/api/documents/${amDoc.id}?download=1`, { headers: { cookie: dnCookie } });
+report(amPdf.status === 200 && (amPdf.headers.get("content-type") ?? "").includes("pdf"), `${amPdf.status} Nachtrags-PDF abrufbar`);
+const amBookingSigned = await plain(await fetch(`${base}/buchungen/${amw.bookingId}`, { headers: { cookie: dnCookie } }));
+report(amBookingSigned.includes(amSigned.number!) && amBookingSigned.includes(`geändert durch ${amSigned.number}`) && amBookingSigned.includes("1 Nachtrag wirksam") && amBookingSigned.includes("+ Vertrag ändern / Nachtrag erstellen"), "Buchung: wirksamer Nachtrag in Liste, „geändert durch“, weiterer Nachtrag möglich");
+report((await db.booking.findUniqueOrThrow({ where: { id: amw.bookingId } })).endAt.getTime() === amNewEnd.getTime() && amBooking.endAt.getTime() !== amNewEnd.getTime(), "Buchung: Zeitraum durch Nachtrag materialisiert (Disposition/Rückgabe)");
+report(amBookingSigned.includes("Nachträge zum Mietvertrag") && amBookingSigned.includes(amDoc.fileName), "Dokumente: Nachtrags-PDF im Dokumentenbereich");
+const amContractHtml = await plain(await fetch(`${base}/buchungen/${amw.bookingId}/vertrag`, { headers: { cookie: dnCookie } }));
+report(amContractHtml.includes("Nachtrag geändert") && amContractHtml.includes(amSigned.number!), "Mietvertrag: Hinweis auf Nachtrag, Original unverändert");
+const amDispo = await fetch(`${base}/dispo`, { headers: { cookie: dnCookie } });
+report(amDispo.status === 200, `${amDispo.status} Disposition lädt mit verlängerter Buchung`);
+const amYardSigned = await fetch(amUrl, { headers: { cookie: `rb_session=${dnYardSession}` } });
+const amYardSignedHtml = await plain(amYardSigned);
+report(amYardSigned.status === 200 && amYardSignedHtml.includes("Unterschrieben und wirksam") && !amYardSignedHtml.includes("Nachtrag per E-Mail senden"), `${amYardSigned.status} Hofmitarbeiter: wirksamer Nachtrag lesend, kein Versand`);
+// Supportmodus: Nachtragsseite wie die Vertragsseite gesperrt (requireRole), die Karte auf der Buchungsseite bleibt lesbar
+const amSupportSigned = await fetch(amUrl, { headers: { cookie: dnSupportCookie }, redirect: "manual" });
+report(amSupportSigned.status === 307 && (amSupportSigned.headers.get("location") ?? "").includes("fehler=support"), `${amSupportSigned.status} Supportmodus: Nachtragsseite gesperrt`);
+const amSupportBooking = await plain(await fetch(`${base}/buchungen/${amw.bookingId}`, { headers: { cookie: dnSupportCookie } }));
+report(amSupportBooking.includes("SUPPORTMODUS") && amSupportBooking.includes(amSigned.number!) && amSupportBooking.includes("Im Supportmodus nur Ansicht") && !amSupportBooking.includes("+ Vertrag ändern / Nachtrag erstellen"), "Supportmodus: Karte „Vertrag &amp; Nachträge“ lesend, kein Knopf");
+const amForeign = await fetch(amUrl, { headers: { cookie } });
+report(amForeign.status === 404, `${amForeign.status} fremder Mandant: Nachtrag nicht auffindbar`);
+const amForeignPdf = await fetch(`${base}/api/documents/${amDoc.id}`, { headers: { cookie } });
+report(amForeignPdf.status === 404 || amForeignPdf.status === 403, `${amForeignPdf.status} fremder Mandant: Nachtrags-PDF gesperrt`);
+const amRangesHtml = await plain(await fetch(`${base}/einstellungen/nummernkreise`, { headers: { cookie: dnCookie } }));
+report(amRangesHtml.includes("Präfix Nachträge") && amRangesHtml.includes("NT-") && amRangesHtml.includes("Unterschriebene Nachträge zum Mietvertrag"), "Nummernkreise: Kreis Nachträge mit Zähler");
 
 // ---------------------------------------------------------------------------
 // Control Center: Navigation je interner Rolle, alle Bereiche erreichbar, Berechtigungen serverseitig, Feature-Gating,

@@ -3,12 +3,12 @@
 // (Index Invoice.tenantId + number), nie wiederverwendet, nach dem Abschluss unveränderlich. Frei von Server-Importen.
 
 export type InvoiceDocumentType = "INVOICE" | "CREDIT_NOTE" | "CANCELLATION";
-export type NumberRangeKey = "invoice" | "creditNote" | "cancellation" | "payout" | "dunning";
+export type NumberRangeKey = "invoice" | "creditNote" | "cancellation" | "payout" | "dunning" | "amendment";
 export type NumberRanges = Record<NumberRangeKey, { prefix: string }>;
 
-export const DEFAULT_NUMBER_RANGES: NumberRanges = { invoice: { prefix: "RE" }, creditNote: { prefix: "GS" }, cancellation: { prefix: "ST" }, payout: { prefix: "AZ" }, dunning: { prefix: "MA" } };
+export const DEFAULT_NUMBER_RANGES: NumberRanges = { invoice: { prefix: "RE" }, creditNote: { prefix: "GS" }, cancellation: { prefix: "ST" }, payout: { prefix: "AZ" }, dunning: { prefix: "MA" }, amendment: { prefix: "NT" } };
 // Befehl 23: ein Kreis für alle Mahnschreiben (Zahlungserinnerung, 1. und 2. Mahnung); die Stufe steht im Dokument
-export const NUMBER_RANGE_LABELS: Record<NumberRangeKey, string> = { invoice: "Rechnungen", creditNote: "Gutschriften", cancellation: "Stornobelege", payout: "Auszahlungen", dunning: "Mahnungen" };
+export const NUMBER_RANGE_LABELS: Record<NumberRangeKey, string> = { invoice: "Rechnungen", creditNote: "Gutschriften", cancellation: "Stornobelege", payout: "Auszahlungen", dunning: "Mahnungen", amendment: "Nachträge" };
 export const RANGE_OF_TYPE: Record<InvoiceDocumentType, NumberRangeKey> = { INVOICE: "invoice", CREDIT_NOTE: "creditNote", CANCELLATION: "cancellation" };
 
 const PREFIX = /^[A-Z]{1,6}$/;
@@ -18,7 +18,7 @@ export class NumberRangeError extends Error {}
 
 /** Gespeicherte Konfiguration lesen; unbekannte oder ungültige Einträge fallen still auf den Standard zurück. */
 export function numberRangesOf(stored: unknown): NumberRanges {
-  const out: NumberRanges = { invoice: { ...DEFAULT_NUMBER_RANGES.invoice }, creditNote: { ...DEFAULT_NUMBER_RANGES.creditNote }, cancellation: { ...DEFAULT_NUMBER_RANGES.cancellation }, payout: { ...DEFAULT_NUMBER_RANGES.payout }, dunning: { ...DEFAULT_NUMBER_RANGES.dunning } };
+  const out: NumberRanges = { invoice: { ...DEFAULT_NUMBER_RANGES.invoice }, creditNote: { ...DEFAULT_NUMBER_RANGES.creditNote }, cancellation: { ...DEFAULT_NUMBER_RANGES.cancellation }, payout: { ...DEFAULT_NUMBER_RANGES.payout }, dunning: { ...DEFAULT_NUMBER_RANGES.dunning }, amendment: { ...DEFAULT_NUMBER_RANGES.amendment } };
   if (!stored || typeof stored !== "object" || Array.isArray(stored)) return out;
   for (const k of Object.keys(out) as NumberRangeKey[]) {
     const v = (stored as Record<string, unknown>)[k];
@@ -45,6 +45,7 @@ export function validateNumberRanges(input: Partial<Record<NumberRangeKey, strin
 export const rangePrefix = (ranges: NumberRanges, type: InvoiceDocumentType, year: number) => `${ranges[RANGE_OF_TYPE[type]].prefix}-${year}-`;
 export const payoutPrefix = (ranges: NumberRanges, year: number) => `${ranges.payout.prefix}-${year}-`;
 export const dunningPrefix = (ranges: NumberRanges, year: number) => `${ranges.dunning.prefix}-${year}-`;
+export const amendmentPrefix = (ranges: NumberRanges, year: number) => `${ranges.amendment.prefix}-${year}-`;
 
 /** Nächste Nummer eines Kreises aus der höchsten vergebenen Nummer desselben Präfixes und Jahres. */
 export function nextInRange(prefix: string, last: string | null | undefined): string {

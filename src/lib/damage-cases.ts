@@ -10,6 +10,7 @@ import { db } from "@/lib/db";
 import { recordAudit, type Actor } from "@/lib/audit";
 import { DAMAGE_CASE_PRIORITY, DAMAGE_CASE_STATUS, DAMAGE_CASE_TRANSITIONS, DAMAGE_TAX_TREATMENTS, LIABILITY_STATUS, type DamageCaseStatus, type DamageTaxTreatment } from "@/lib/constants";
 import { balanceOf } from "@/lib/deposits";
+import { loadEffectiveDepositCents } from "@/lib/amendments";
 import { DomainError } from "@/lib/integrity";
 import { createDamageInvoiceDraft } from "@/lib/invoices";
 import { fmtCents, toCents, type Cents } from "@/lib/money";
@@ -387,7 +388,7 @@ export async function caseView(tenantId: string, caseId: string) {
   let deposit: ReturnType<typeof balanceOf> | null = null;
   if (c.bookingId) {
     const dep = await db.securityDeposit.findFirst({ where: { tenantId, bookingId: c.bookingId }, include: { events: { select: { type: true, amountCents: true, status: true } } } });
-    const expected = dep ? dep.expectedAmountCents : c.booking?.contract?.status === "SIGNED" ? toCents(c.booking.contract.deposit) : 0;
+    const expected = dep ? dep.expectedAmountCents : c.booking?.contract?.status === "SIGNED" ? await loadEffectiveDepositCents(db, tenantId, c.booking.contract) : 0;
     deposit = balanceOf(expected, dep?.events ?? []);
   }
   const otherCharges = c.bookingId ? await db.extraCharge.findMany({ where: { tenantId, damageId: c.damageId }, select: { id: true, description: true, amount: true } }) : [];

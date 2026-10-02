@@ -118,6 +118,7 @@ model Tenant {
   authorityReceipts        AuthoritySubmissionReceipt[]
   authorityCaseEvents      AuthorityCaseEvent[]
   dunningNotices           DunningNotice[]
+  contractAmendments       ContractAmendment[]
   authorityContacts        AuthorityContact[]
   authorityUploads         AuthorityUpload[]
   rentalTermsVersions      RentalTermsVersion[]
@@ -553,6 +554,7 @@ model Booking {
   driverDocumentCopies DriverDocumentCopy[]
   keyDropReturns       KeyDropReturn[]
   dunningNotices       DunningNotice[]
+  contractAmendments   ContractAmendment[]
 
   @@unique([tenantId, number])
   @@index([tenantId, vehicleId, startAt, endAt])
@@ -658,6 +660,7 @@ model RentalContract {
   authorityCases      AuthorityCase[]
   driverVerifications DriverVerification[]
   rentalTermsVersion  RentalTermsVersion?  @relation(fields: [rentalTermsVersionId], references: [id], onDelete: Restrict)
+  amendments          ContractAmendment[] // Befehl 25: versiegelte Nachträge, chronologisch (sequenceNo)
 
   @@unique([tenantId, number])
   @@index([tenantId, status])
@@ -687,16 +690,22 @@ model ContractDriver {
   licenseCountry    String    @default("DE")
   licenseIssuedBy   String?
 
-  createdAt DateTime @default(now())
+  // Befehl 25: Aufnahme/Herausnahme durch einen Nachtrag; wirksam erst, wenn der Nachtrag unterschrieben ist. Zeilen bleiben.
+  addedByAmendmentId   String?
+  removedByAmendmentId String?
+  createdAt            DateTime @default(now())
 
   tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contract       RentalContract       @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  addedBy        ContractAmendment?   @relation("AmendmentAddedDrivers", fields: [addedByAmendmentId], references: [id], onDelete: Restrict)
+  removedBy      ContractAmendment?   @relation("AmendmentRemovedDrivers", fields: [removedByAmendmentId], references: [id], onDelete: SetNull)
   customer       Customer?            @relation(fields: [customerId], references: [id], onDelete: SetNull)
   verifications  DriverVerification[]
   documentCopies DriverDocumentCopy[]
 
   @@index([tenantId, contractId])
   @@index([tenantId, customerId])
+  @@index([tenantId, addedByAmendmentId])
 }
 
 // Übergabe (PICKUP) und Rückgabe (RETURN) in einem Modell.
@@ -919,6 +928,7 @@ model Signature {
   id            String   @id @default(cuid())
   tenantId      String
   keyDropId     String? // Befehl 20.6: Kundenangabe bei kontaktloser Rückgabe
+  amendmentId   String? // Befehl 25: Unterschrift zu einem Nachtrag
   handoverId    String?
   contractId    String?
   role          String // RENTER | EMPLOYEE
@@ -936,10 +946,12 @@ model Signature {
   handover Handover?       @relation(fields: [handoverId], references: [id], onDelete: SetNull)
   contract RentalContract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
 
-  keyDrop KeyDropReturn? @relation(fields: [keyDropId], references: [id], onDelete: SetNull)
+  keyDrop   KeyDropReturn?     @relation(fields: [keyDropId], references: [id], onDelete: SetNull)
+  amendment ContractAmendment? @relation(fields: [amendmentId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, handoverId])
   @@index([tenantId, contractId])
+  @@index([tenantId, amendmentId])
 }
 
 // Erzeugtes Dokument (PDF). Unveränderlich archiviert: einmal erzeugt, nie überschrieben.
@@ -954,6 +966,7 @@ model Document {
   invoiceVersionId String? // Rechnungsfassung, aus der das PDF entstand
   payoutId         String? // Auszahlung (Phase 18): Auszahlungsbeleg (PAYOUT_RECEIPT) oder hochgeladener Nachweis (PAYOUT_ATTACHMENT)
   dunningNoticeId  String? // Befehl 23: Zahlungserinnerung / Mahnung (DUNNING_NOTICE)
+  amendmentId      String? // Befehl 25: Nachtrag zum Mietvertrag (CONTRACT_AMENDMENT)
   type             String // RENTAL_CONTRACT | PICKUP_PROTOCOL | RETURN_PROTOCOL | INVOICE | CREDIT_NOTE | CANCELLATION | PAYOUT_RECEIPT | PAYOUT_ATTACHMENT
   storageKey       String   @unique
   fileName         String
@@ -965,20 +978,22 @@ model Document {
   createdAt        DateTime @default(now())
   createdById      String?
 
-  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  booking        Booking?        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
-  contract       RentalContract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
-  handover       Handover?       @relation(fields: [handoverId], references: [id], onDelete: SetNull)
-  invoice        Invoice?        @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
-  invoiceVersion InvoiceVersion? @relation(fields: [invoiceVersionId], references: [id], onDelete: SetNull)
-  payout         Payout?         @relation(fields: [payoutId], references: [id], onDelete: SetNull)
-  dunningNotice  DunningNotice?  @relation(fields: [dunningNoticeId], references: [id], onDelete: SetNull)
+  tenant         Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking        Booking?           @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  contract       RentalContract?    @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  handover       Handover?          @relation(fields: [handoverId], references: [id], onDelete: SetNull)
+  invoice        Invoice?           @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  invoiceVersion InvoiceVersion?    @relation(fields: [invoiceVersionId], references: [id], onDelete: SetNull)
+  payout         Payout?            @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+  dunningNotice  DunningNotice?     @relation(fields: [dunningNoticeId], references: [id], onDelete: SetNull)
+  amendment      ContractAmendment? @relation(fields: [amendmentId], references: [id], onDelete: SetNull)
 
   keyDrop KeyDropReturn? @relation(fields: [keyDropId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, bookingId, type])
   @@index([tenantId, payoutId])
   @@index([tenantId, dunningNoticeId])
+  @@index([tenantId, amendmentId])
 }
 
 // Zusatzkosten mit vollständiger Rechengrundlage, z. B. 342 km × 0,25 € = 85,50 €.
@@ -1030,6 +1045,7 @@ model EmailLog {
   invoiceVersionId  String? // welche Rechnungsfassung versendet wurde (Anhang = deren PDF)
   payoutId          String? // Auszahlungsbeleg (Phase 18), nur Referenz
   dunningNoticeId   String? // Befehl 23: Mahnschreiben, nur Referenz
+  amendmentId       String? // Befehl 25: Nachtrag, nur Referenz
   trigger           String    @default("AUTO") // AUTO = nach Abschluss | MANUAL = "erneut senden"
   attemptNo         Int       @default(1) // fortlaufender Versuch je Buchung und Vorlage
   createdById       String?
@@ -1042,11 +1058,12 @@ model EmailLog {
   fromAddress       String? // Absenderadresse als Snapshot, nie Zugangsdaten
   errorCode         String? // abstrakte Fehlerart (SMTP_ERROR_CODES)
 
-  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  booking        Booking?        @relation(fields: [bookingId], references: [id], onDelete: SetNull)
-  invoiceVersion InvoiceVersion? @relation(fields: [invoiceVersionId], references: [id], onDelete: SetNull)
-  payout         Payout?         @relation(fields: [payoutId], references: [id], onDelete: SetNull)
-  dunningNotice  DunningNotice?  @relation(fields: [dunningNoticeId], references: [id], onDelete: SetNull)
+  tenant         Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking        Booking?           @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  invoiceVersion InvoiceVersion?    @relation(fields: [invoiceVersionId], references: [id], onDelete: SetNull)
+  payout         Payout?            @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+  dunningNotice  DunningNotice?     @relation(fields: [dunningNoticeId], references: [id], onDelete: SetNull)
+  amendment      ContractAmendment? @relation(fields: [amendmentId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, status])
@@ -1054,6 +1071,7 @@ model EmailLog {
   @@index([tenantId, invoiceVersionId])
   @@index([tenantId, payoutId])
   @@index([tenantId, dunningNoticeId])
+  @@index([tenantId, amendmentId])
 }
 
 // Fahrzeughistorie, nur anfügen.
@@ -1150,6 +1168,7 @@ model Invoice {
   depositOffsetReturns SecurityDepositEvent[] @relation("DepositOffsetReturns")
   dunningNotices       DunningNotice[]        @relation("DunningNoticeInvoice")
   dunningFeeOf         DunningNotice?         @relation("DunningNoticeFee")
+  settlesAmendment     ContractAmendment?     @relation("AmendmentSettlement")
   versions             InvoiceVersion[]       @relation("InvoiceVersions")
   currentVersion       InvoiceVersion?        @relation("InvoiceCurrentVersion", fields: [currentVersionId], references: [id])
   damageCase           DamageCase?            @relation(fields: [damageCaseId], references: [id])
@@ -1479,17 +1498,20 @@ model InvoiceVersionItem {
   source                     String // RENTAL | EXTRA_CHARGE | MANUAL
   extraChargeId              String? // nur Referenz auf die Quelle der Fassung 1
   reference                  String? // Bezug; bei manuellen Gutschriftpositionen der Grund
+  amendmentId                String? // Befehl 25: Position aus einem Nachtrag (Verlängerung, Preisänderung) – Abrechnungsbezug
   // Phase 17: nur Positionen eines Gegenbelegs: die Position der Originalfassung, die (teilweise) gutgeschrieben oder storniert wird
   sourceInvoiceVersionItemId String?
   createdAt                  DateTime @default(now())
 
   tenant     Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   version    InvoiceVersion       @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  amendment  ContractAmendment?   @relation(fields: [amendmentId], references: [id], onDelete: SetNull)
   sourceItem InvoiceVersionItem?  @relation("CreditedItem", fields: [sourceInvoiceVersionItemId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   creditedBy InvoiceVersionItem[] @relation("CreditedItem")
 
   @@index([tenantId, versionId])
   @@index([sourceInvoiceVersionItemId])
+  @@index([tenantId, amendmentId])
 }
 
 // ============================================================================
@@ -2028,7 +2050,8 @@ model DriverVerification {
   tenantId              String
   bookingId             String
   contractId            String
-  handoverId            String
+  handoverId            String?
+  amendmentId           String? // Befehl 25: Prüfung im Rahmen eines Nachtrags (statt der Übergabe)
   contractDriverId      String
   customerId            String? // nur Referenz (Kundenakte); maßgeblich sind die Snapshots
   version               Int     @default(1) // Korrektur = neue Fassung, die alte bleibt (supersededById)
@@ -2088,7 +2111,8 @@ model DriverVerification {
   tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   booking        Booking              @relation(fields: [bookingId], references: [id])
   contract       RentalContract       @relation(fields: [contractId], references: [id])
-  handover       Handover             @relation(fields: [handoverId], references: [id])
+  handover       Handover?            @relation(fields: [handoverId], references: [id], onDelete: Restrict)
+  amendment      ContractAmendment?   @relation(fields: [amendmentId], references: [id], onDelete: Restrict)
   contractDriver ContractDriver       @relation(fields: [contractDriverId], references: [id])
   customer       Customer?            @relation(fields: [customerId], references: [id], onDelete: SetNull)
   documentCopies DriverDocumentCopy[]
@@ -2097,6 +2121,7 @@ model DriverVerification {
 
   @@unique([tenantId, handoverId, contractDriverId, version])
   @@index([tenantId, handoverId])
+  @@index([tenantId, amendmentId])
   @@index([tenantId, customerId, verifiedAt])
   @@index([tenantId, bookingId])
   @@index([tenantId, basedOnVerificationId])
@@ -2193,4 +2218,59 @@ model DunningNotice {
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, issuedAt])
   @@index([tenantId, bookingId])
+}
+
+// ============================================================================
+// Befehl 25: Nachtrag zum Mietvertrag. Der unterschriebene Vertrag bleibt unverändert; jede spätere Vereinbarung ist ein
+// eigener Nachtrag mit alt/neu, der erst nach Unterschrift wirksam wird (SIGNED) und dann versiegelt ist (snapshot,
+// contentHash, rb_guard_amendment). Der aktuell wirksame Vertragsstand wird zentral abgeleitet (lib/amendments.ts
+// effectiveContractState): Vertrag + alle unterschriebenen Nachträge in der Reihenfolge sequenceNo.
+// ============================================================================
+model ContractAmendment {
+  id                  String    @id @default(cuid())
+  tenantId            String
+  contractId          String
+  bookingId           String
+  status              String    @default("DRAFT") // DRAFT | SIGNED | DISCARDED
+  number              String? // NT-JJJJ-NNNNNN, erst bei Unterschrift
+  sequenceNo          Int? // Reihenfolge der wirksamen Nachträge je Vertrag (1, 2, 3 …), erst bei Unterschrift
+  newEndAt            DateTime? // Mietdauer: neue geplante Rückgabe
+  priceDeltaCents     Int? // Preisänderung (+/−) gegenüber dem bis dahin wirksamen Gesamtpreis
+  priceProposalCents  Int? // Vorschlag aus der Preislogik des Vertrags (nur Nachvollziehbarkeit)
+  priceReason         String?
+  newKmIncludedPerDay Int?
+  newExtraKmRate      Decimal?
+  newDepositCents     Int? // vereinbarte Kaution neu (nie eine Kautionsbewegung)
+  newReturnLocation   String?
+  agreementText       String? // sonstige Vereinbarung, reiner Text
+  snapshot            Json? // eingefrorener Inhalt bei Unterschrift (Firma, Kunde, Fahrzeug, Vertrag, Stand vorher/nachher, Fahrer, Unterzeichner)
+  contentHash         String?
+  signedAt            DateTime?
+  signedById          String?
+  signedByName        String?
+  settlementInvoiceId String?   @unique // nach finaler Mietrechnung: freie Rechnung oder Gutschrift, aus diesem Nachtrag erstellt
+  idempotencyKey      String
+  createdById         String?
+  createdByName       String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  discardedAt         DateTime?
+
+  tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contract            RentalContract       @relation(fields: [contractId], references: [id], onDelete: Restrict)
+  booking             Booking              @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  settlementInvoice   Invoice?             @relation("AmendmentSettlement", fields: [settlementInvoiceId], references: [id], onDelete: SetNull)
+  addedDrivers        ContractDriver[]     @relation("AmendmentAddedDrivers")
+  removedDrivers      ContractDriver[]     @relation("AmendmentRemovedDrivers")
+  signatures          Signature[]
+  documents           Document[]
+  emailLogs           EmailLog[]
+  invoiceItems        InvoiceVersionItem[]
+  driverVerifications DriverVerification[]
+
+  @@unique([tenantId, number])
+  @@unique([tenantId, idempotencyKey])
+  @@unique([tenantId, contractId, sequenceNo])
+  @@index([tenantId, bookingId])
+  @@index([tenantId, contractId, status])
 }

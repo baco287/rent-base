@@ -28,6 +28,7 @@ export type DocumentInput = {
   payoutId?: string | null;
   keyDropId?: string | null;
   dunningNoticeId?: string | null;
+  amendmentId?: string | null; // Befehl 25: Nachtrag zum Mietvertrag
   type: DocumentType;
   storageKey: string;
   fileName: string;
@@ -51,10 +52,11 @@ export async function registerDocument(tx: Tx, tenantId: string, actorId: string
   if (input.invoiceId && (await tx.invoice.count({ where: { id: input.invoiceId, tenantId, bookingId: input.bookingId } })) !== 1) throw new DomainError("Die Rechnung gehört nicht zu dieser Buchung.");
   if (input.payoutId && (await tx.payout.count({ where: { id: input.payoutId, tenantId, bookingId: input.bookingId } })) !== 1) throw new DomainError("Die Auszahlung gehört nicht zu dieser Buchung.");
   if (input.keyDropId && (await tx.keyDropReturn.count({ where: { id: input.keyDropId, tenantId, bookingId: input.bookingId ?? "" } })) !== 1) throw new DomainError("Die kontaktlose Rückgabe gehört nicht zu dieser Buchung.")
-  if (input.dunningNoticeId && (await tx.dunningNotice.count({ where: { id: input.dunningNoticeId, tenantId, bookingId: input.bookingId } })) !== 1) throw new DomainError("Das Mahnschreiben gehört nicht zu dieser Buchung.");;
+  if (input.dunningNoticeId && (await tx.dunningNotice.count({ where: { id: input.dunningNoticeId, tenantId, bookingId: input.bookingId } })) !== 1) throw new DomainError("Das Mahnschreiben gehört nicht zu dieser Buchung.");
+  if (input.amendmentId && (await tx.contractAmendment.count({ where: { id: input.amendmentId, tenantId, bookingId: input.bookingId ?? "", status: "SIGNED" } })) !== 1) throw new DomainError("Der Nachtrag gehört nicht zu dieser Buchung oder ist nicht wirksam.");
 
   const last = await tx.document.findFirst({
-    where: { tenantId, bookingId: input.bookingId, type: input.type, contractId: input.contractId ?? null, handoverId: input.handoverId ?? null, invoiceId: input.invoiceId ?? null, invoiceVersionId: input.invoiceVersionId ?? null, payoutId: input.payoutId ?? null, keyDropId: input.keyDropId ?? null, dunningNoticeId: input.dunningNoticeId ?? null },
+    where: { tenantId, bookingId: input.bookingId, type: input.type, contractId: input.contractId ?? null, handoverId: input.handoverId ?? null, invoiceId: input.invoiceId ?? null, invoiceVersionId: input.invoiceVersionId ?? null, payoutId: input.payoutId ?? null, keyDropId: input.keyDropId ?? null, dunningNoticeId: input.dunningNoticeId ?? null, amendmentId: input.amendmentId ?? null },
     orderBy: { version: "desc" },
     select: { version: true },
   });
@@ -69,6 +71,7 @@ export async function registerDocument(tx: Tx, tenantId: string, actorId: string
       payoutId: input.payoutId ?? null,
       keyDropId: input.keyDropId ?? null,
       dunningNoticeId: input.dunningNoticeId ?? null,
+      amendmentId: input.amendmentId ?? null,
       type: input.type,
       storageKey: input.storageKey,
       fileName: input.fileName,
@@ -115,10 +118,10 @@ export function documentFileName(type: DocumentType, contractNumber: string, pla
   return `${parts.join("_")}.pdf`;
 }
 
-type Subject = { type: DocumentType; bookingId: string | null; contractId: string | null; handoverId: string | null; invoiceId?: string | null; invoiceVersionId?: string | null; payoutId?: string | null; keyDropId?: string | null; dunningNoticeId?: string | null };
+type Subject = { type: DocumentType; bookingId: string | null; contractId: string | null; handoverId: string | null; invoiceId?: string | null; invoiceVersionId?: string | null; payoutId?: string | null; keyDropId?: string | null; dunningNoticeId?: string | null; amendmentId?: string | null };
 
 function latestDocument(client: Tx | typeof db, tenantId: string, s: Subject) {
-  return client.document.findFirst({ where: { tenantId, bookingId: s.bookingId, type: s.type, contractId: s.contractId, handoverId: s.handoverId, invoiceId: s.invoiceId ?? null, invoiceVersionId: s.invoiceVersionId ?? null, payoutId: s.payoutId ?? null, keyDropId: s.keyDropId ?? null, dunningNoticeId: s.dunningNoticeId ?? null }, orderBy: { version: "desc" } });
+  return client.document.findFirst({ where: { tenantId, bookingId: s.bookingId, type: s.type, contractId: s.contractId, handoverId: s.handoverId, invoiceId: s.invoiceId ?? null, invoiceVersionId: s.invoiceVersionId ?? null, payoutId: s.payoutId ?? null, keyDropId: s.keyDropId ?? null, dunningNoticeId: s.dunningNoticeId ?? null, amendmentId: s.amendmentId ?? null }, orderBy: { version: "desc" } });
 }
 
 async function archive(tenantId: string, actorId: string | null, subject: Subject, opts: EnsureOptions, sourceHash: string, fileName: (version: number) => string, render: () => Promise<Buffer>): Promise<EnsureResult> {
@@ -134,7 +137,8 @@ async function archive(tenantId: string, actorId: string | null, subject: Subjec
     return await db.$transaction(
       async (tx) => {
         // Zeilensperre auf dem Vertrag bzw. Protokoll: gleichzeitige Anfragen laufen nacheinander
-        if (subject.dunningNoticeId) await tx.$queryRaw`SELECT "id" FROM "DunningNotice" WHERE "id" = ${subject.dunningNoticeId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+        if (subject.amendmentId) await tx.$queryRaw`SELECT "id" FROM "ContractAmendment" WHERE "id" = ${subject.amendmentId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+        else if (subject.dunningNoticeId) await tx.$queryRaw`SELECT "id" FROM "DunningNotice" WHERE "id" = ${subject.dunningNoticeId} AND "tenantId" = ${tenantId} FOR UPDATE`;
         else if (subject.keyDropId) await tx.$queryRaw`SELECT "id" FROM "KeyDropReturn" WHERE "id" = ${subject.keyDropId} AND "tenantId" = ${tenantId} FOR UPDATE`;
         else if (subject.payoutId) await tx.$queryRaw`SELECT "id" FROM "Payout" WHERE "id" = ${subject.payoutId} AND "tenantId" = ${tenantId} FOR UPDATE`;
         else if (subject.invoiceVersionId) await tx.$queryRaw`SELECT "id" FROM "InvoiceVersion" WHERE "id" = ${subject.invoiceVersionId} AND "tenantId" = ${tenantId} FOR UPDATE`;
@@ -316,6 +320,22 @@ export async function ensureDunningDocument(tenantId: string, noticeId: string, 
     data.contentHash,
     (v) => `${data.fileWord}_${safeFilePart(data.doc.number) || "ohne-Nummer"}${v > 1 ? `_v${v}` : ""}.pdf`,
     async () => (await renderDunningPdf(data.doc, await loadLogo(tenantId, data.logoRef, opts.storage))).bytes,
+  );
+}
+
+/** Befehl 25: Nachtrags-PDF – nur für unterschriebene Nachträge, einmalig je Fassung, Unterschriften wie beim Vertrag. */
+export async function ensureAmendmentDocument(tenantId: string, amendmentId: string, actorId: string | null, opts: EnsureOptions = {}): Promise<EnsureResult> {
+  const { loadAmendmentDocumentData } = await import("@/lib/amendment-document");
+  const { renderAmendmentPdf } = await import("@/lib/pdf/amendment-pdf");
+  const data = await loadAmendmentDocumentData(tenantId, amendmentId);
+  return archive(
+    tenantId,
+    actorId,
+    { type: "CONTRACT_AMENDMENT", bookingId: data.bookingId, contractId: data.contractId, handoverId: null, amendmentId },
+    opts,
+    data.contentHash,
+    (v) => `Nachtrag_${safeFilePart(data.doc.number) || "ohne-Nummer"}${v > 1 ? `_v${v}` : ""}.pdf`,
+    async () => (await renderAmendmentPdf(data.doc, data.signatureImages, await loadLogo(tenantId, data.logoRef, opts.storage))).bytes,
   );
 }
 

@@ -17,6 +17,7 @@ import { readContractRules, resolveRules, type BusinessRules } from "@/lib/busin
 import { CHARGE_UNITS, EXTRA_CHARGE_TYPES, FUEL_POLICIES, energyRequirements, type ExtraChargeType } from "@/lib/constants";
 import { extraMileageCharge, flatCharge, fuelCharge, saveExtraCharge, type ChargeDraft } from "@/lib/extra-charges";
 import { touchHandover } from "@/lib/handovers";
+import { loadEffectiveContract } from "@/lib/amendments";
 import { DomainError, assertHandoverDraft } from "@/lib/integrity";
 import { rentalDays } from "@/lib/pricing";
 import type { VehicleSnapshot } from "@/lib/contracts";
@@ -40,7 +41,7 @@ export type ReturnComparison = {
   fuel: { pickup: number | null; return: number | null; diff: number | null } | null;
   battery: { pickup: number | null; return: number | null; diff: number | null } | null;
   time: { start: Date; plannedEnd: Date; actualEnd: Date; lateMinutes: number; rentalDays: number };
-  contract: { number: string; kmIncludedPerDay: number; includedKm: number; extraKmRate: number; fuelPolicy: string; fuelPolicyLabel: string; fuelPolicyNote: string | null; fuelPricePerLiter: number | null; deposit: number; deductible: number; tankCapacityLiters: number | null };
+  contract: { number: string; amendmentNumbers: string[]; kmIncludedPerDay: number; includedKm: number; extraKmRate: number; fuelPolicy: string; fuelPolicyLabel: string; fuelPolicyNote: string | null; fuelPricePerLiter: number | null; deposit: number; deductible: number; tankCapacityLiters: number | null };
   /** Literpreis, der für die Rechnung gilt: aus dem Vertrag, sonst der bei der Rückgabe angegebene */
   effectiveFuelPrice: { value: number; origin: "Vertrag" | "Rückgabe" } | null;
   proposals: Proposal[];
@@ -115,14 +116,16 @@ async function loadReturn(tx: Tx, tenantId: string, handoverId: string) {
   if (!contract || contract.status !== "SIGNED") throw new DomainError("Zu dieser Miete gibt es keinen abgeschlossenen Mietvertrag.");
   if (!pickup) throw new DomainError("Zu dieser Miete gibt es kein abgeschlossenes Übergabeprotokoll.");
   const accessories = await accessoryContext(tx, tenantId, h, contract, pickup);
-  return { h, booking, contract, pickup, accessories };
+  // Befehl 25: die Rückgabe rechnet mit dem wirksamen Vertragsstand (Vertrag + unterschriebene Nachträge), nie mit dem Original allein
+  return { h, booking, contract: await loadEffectiveContract(tx, tenantId, contract), pickup, accessories };
 }
 
 /** Der komplette Vergleich Übergabe/Rückgabe samt Vorschlägen. Rechnet nur mit Snapshots. */
 export function buildComparison(input: {
   handover: Prisma.HandoverGetPayload<{ include: { extraCharges: true } }>;
   booking: { startAt: Date; endAt: Date; actualPickupAt: Date | null };
-  contract: Prisma.RentalContractGetPayload<object>;
+  /** wirksamer Vertragsstand (lib/amendments overlayAmendments); der Original-Vertrag allein wäre nach einem Nachtrag falsch */
+  contract: Prisma.RentalContractGetPayload<object> & { amended?: { numbers: string[] } };
   pickup: Prisma.HandoverGetPayload<object>;
   /** Befehl 20.9: ohne Kontext werden keine Zubehörvorschläge gebildet */
   accessories?: AccessoryContext | null;
@@ -199,6 +202,7 @@ export function buildComparison(input: {
     time: { start, plannedEnd: contract.endAt, actualEnd, lateMinutes, rentalDays: days },
     contract: {
       number: contract.number,
+      amendmentNumbers: contract.amended?.numbers ?? [],
       kmIncludedPerDay: contract.kmIncludedPerDay,
       includedKm: contract.kmIncludedPerDay * days,
       extraKmRate: Number(contract.extraKmRate),
@@ -328,5 +332,5 @@ export async function loadSealedComparison(tx: Tx, tenantId: string, handoverId:
     tx.handover.findFirst({ where: { tenantId, bookingId: h.bookingId, type: "PICKUP", status: "FINALIZED" }, orderBy: { finalizedAt: "desc" }, include: { checklistItems: answerSelect } }),
   ]);
   if (!booking || !contract || !pickup) return null;
-  return buildComparison({ handover: h, booking, contract, pickup, accessories: await accessoryContext(tx, tenantId, h, contract, pickup) });
+  return buildComparison({ handover: h, booking, contract: await loadEffectiveContract(tx, tenantId, contract), pickup, accessories: await accessoryContext(tx, tenantId, h, contract, pickup) });
 }

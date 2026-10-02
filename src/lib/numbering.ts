@@ -1,7 +1,7 @@
 // Fortlaufende Nummern je Mandant und Jahr: Präfix-JJJJ-NNNN.
 // Gleiche Logik wie die Buchungsnummer, für Verträge und Protokolle wiederverwendet.
 import type { Prisma } from "@prisma/client";
-import { dunningPrefix, nextInRange, numberRangesOf, payoutPrefix, rangePrefix, type InvoiceDocumentType, type NumberRanges } from "@/lib/number-ranges";
+import { amendmentPrefix, dunningPrefix, nextInRange, numberRangesOf, payoutPrefix, rangePrefix, type InvoiceDocumentType, type NumberRanges } from "@/lib/number-ranges";
 
 type Tx = Prisma.TransactionClient;
 
@@ -88,9 +88,17 @@ export async function nextDunningNumber(tx: Tx, tenantId: string, date = new Dat
   return nextInRange(prefix, last?.number);
 }
 
+/** Befehl 25: Nachtrag zum Mietvertrag (Kreis „Nachträge“, Standard NT-JJJJ-NNNNNN), erst bei Unterschrift; Index + withNumberRetry. */
+export async function nextAmendmentNumber(tx: Tx, tenantId: string, date = new Date()) {
+  const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { numberRanges: true } });
+  const prefix = amendmentPrefix(numberRangesOf(tenant.numberRanges), date.getFullYear());
+  const last = await tx.contractAmendment.findFirst({ where: { tenantId, number: { startsWith: prefix } }, orderBy: { number: "desc" }, select: { number: true } });
+  return nextInRange(prefix, last?.number);
+}
+
 /** Vorschau der nächsten Nummer je Kreis (Einstellungen); vergibt nichts. */
 export async function previewNextNumbers(client: Tx, tenantId: string, ranges: NumberRanges, date = new Date()) {
-  const out: Record<InvoiceDocumentType | "PAYOUT" | "DUNNING", string> = { INVOICE: "", CREDIT_NOTE: "", CANCELLATION: "", PAYOUT: "", DUNNING: "" };
+  const out: Record<InvoiceDocumentType | "PAYOUT" | "DUNNING" | "AMENDMENT", string> = { INVOICE: "", CREDIT_NOTE: "", CANCELLATION: "", PAYOUT: "", DUNNING: "", AMENDMENT: "" };
   for (const type of ["INVOICE", "CREDIT_NOTE", "CANCELLATION"] as InvoiceDocumentType[]) {
     const prefix = rangePrefix(ranges, type, date.getFullYear());
     const last = await client.invoice.findFirst({ where: { tenantId, number: { startsWith: prefix } }, orderBy: { number: "desc" }, select: { number: true } });
@@ -102,6 +110,9 @@ export async function previewNextNumbers(client: Tx, tenantId: string, ranges: N
   const dp = dunningPrefix(ranges, date.getFullYear());
   const lastDunning = await client.dunningNotice.findFirst({ where: { tenantId, number: { startsWith: dp } }, orderBy: { number: "desc" }, select: { number: true } });
   out.DUNNING = nextInRange(dp, lastDunning?.number);
+  const ap = amendmentPrefix(ranges, date.getFullYear());
+  const lastAmendment = await client.contractAmendment.findFirst({ where: { tenantId, number: { startsWith: ap } }, orderBy: { number: "desc" }, select: { number: true } });
+  out.AMENDMENT = nextInRange(ap, lastAmendment?.number);
   return out;
 }
 

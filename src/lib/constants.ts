@@ -218,6 +218,7 @@ export const MAIL_TEMPLATE_CATEGORY: Record<string, MailCategory> = {
   KEY_DROP_LINK: "TENANT_BUSINESS", // Befehl 20.6: persönlicher Link zur kontaktlosen Rückgabe (nur durch bewussten Klick)
   KEY_DROP_CONFIRMATION: "TENANT_BUSINESS", // Eingangsbestätigung der Kundenmeldung (keine Zustandsbestätigung)
   DUNNING_NOTICE: "TENANT_BUSINESS", // Befehl 23: Zahlungserinnerung / Mahnung – nur nach bewusster Bestätigung, nie automatisch
+  CONTRACT_AMENDMENT: "TENANT_BUSINESS", // Befehl 25: Nachtrag zum Mietvertrag – nur nach bewusster Bestätigung
 };
 export const mailCategoryOf = (template: string): MailCategory => MAIL_TEMPLATE_CATEGORY[template] ?? "TENANT_BUSINESS";
 export const MAIL_CHANNELS = { PLATFORM_SMTP: "RentBase-Versanddienst", TENANT_SMTP: "Eigener SMTP des Vermieters" } as const;
@@ -368,6 +369,7 @@ export const DOCUMENT_TYPES = {
   PAYOUT_ATTACHMENT: "Auszahlungsnachweis",
   KEY_DROP_CONFIRMATION: "Bestätigung kontaktlose Rückgabe",
   DUNNING_NOTICE: "Mahnschreiben",
+  CONTRACT_AMENDMENT: "Nachtrag zum Mietvertrag",
 } as const;
 export type DocumentType = keyof typeof DOCUMENT_TYPES;
 
@@ -386,7 +388,7 @@ export const COUNTER_DOCUMENT_HELP = {
   CREDIT_NOTE: "Gutschrift: Ein Teil der Forderung oder die ganze Forderung wird dem Kunden erlassen. Eigener Beleg mit eigener Nummer; die Rechnung bleibt unverändert. Mehrere Teilgutschriften sind möglich.",
   CANCELLATION: "Stornieren: Die Rechnung soll insgesamt nicht mehr gelten. Ein Stornobeleg mit eigener Nummer hebt den noch offenen Rest vollständig auf; die Rechnung und ihr PDF bleiben archiviert.",
 } as const;
-export const INVOICE_ITEM_SOURCES = { RENTAL: "Fahrzeugmiete laut Vertrag", EXTRA_CHARGE: "Bestätigte Zusatzkosten der Rückgabe", MANUAL: "Manuell erfasst" } as const;
+export const INVOICE_ITEM_SOURCES = { RENTAL: "Fahrzeugmiete laut Vertrag", EXTRA_CHARGE: "Bestätigte Zusatzkosten der Rückgabe", AMENDMENT: "Vertragsänderung laut Nachtrag", MANUAL: "Manuell erfasst" } as const;
 export const INVOICE_UNITS = ["pauschal", "Tag", "km", "l", "kWh", "h", "Stk"] as const;
 
 // Phase 9: Zahlungen und Kaution. CARD und BANK_TRANSFER heißen nur: außerhalb von Rent-Base ausgeführt und hier dokumentiert.
@@ -467,6 +469,19 @@ export const AUDIT_ACTIONS = {
   DUNNING_DELIVERED: "Mahnschreiben als übermittelt vermerkt",
   DUNNING_FEE_CREATED: "Mahngebühr berechnet",
   DUNNING_SETTINGS_UPDATED: "Mahnwesen-Einstellungen geändert",
+  // Befehl 25: Nachträge zum Mietvertrag – nur bewusste Handlungen; der wirksame Vertragsstand wird nie gespeichert
+  AMENDMENT_CREATED: "Nachtrag angelegt",
+  AMENDMENT_DISCARDED: "Nachtrag verworfen",
+  AMENDMENT_SIGNED: "Nachtrag unterschrieben und wirksam",
+  AMENDMENT_PERIOD_CHANGED: "Nachtrag: Mietdauer geändert",
+  AMENDMENT_PRICE_CHANGED: "Nachtrag: Preis geändert",
+  AMENDMENT_KM_CHANGED: "Nachtrag: Kilometervereinbarung geändert",
+  AMENDMENT_DRIVER_ADDED: "Nachtrag: Zusatzfahrer aufgenommen",
+  AMENDMENT_DRIVER_REMOVED: "Nachtrag: Zusatzfahrer herausgenommen",
+  AMENDMENT_DEPOSIT_CHANGED: "Nachtrag: vereinbarte Kaution geändert",
+  AMENDMENT_RETURN_LOCATION_CHANGED: "Nachtrag: Rückgabeort geändert",
+  AMENDMENT_SENT: "Nachtrag versendet",
+  AMENDMENT_SETTLEMENT_CREATED: "Nachtrag: Abrechnungsbeleg erstellt",
   DEPOSIT_CORRECTION: "Kautionsbewegung storniert",
   INVOICE_DRAFT_CREATED: "Freie Rechnung als Entwurf angelegt",
   INVOICE_VERSION_CREATED: "Rechnungsbearbeitung begonnen",
@@ -680,6 +695,28 @@ export const invoiceKindWord = (kind: string | null | undefined) => (kind === "D
 export const isSideInvoice = (kind: string | null | undefined) => kind === "DAMAGE" || kind === "AUTHORITY_FEE" || kind === "DUNNING_FEE" || kind === "GENERAL";
 
 // Befehl 23: Mahnwesen. Stufen sind fortlaufend (keine Stufe wird übersprungen); nichts wird automatisch erstellt oder versendet.
+// Befehl 25: Nachträge zum Mietvertrag
+export const AMENDMENT_STATUS = { DRAFT: "Entwurf", SIGNED: "Unterschrieben", DISCARDED: "Verworfen" } as const;
+export type AmendmentStatus = keyof typeof AMENDMENT_STATUS;
+export const AMENDMENT_CHANGE_KINDS = {
+  PERIOD: "Mietdauer / geplante Rückgabe",
+  PRICE: "Mietpreis",
+  KM: "Kilometervereinbarung",
+  DRIVER_ADDED: "Zusatzfahrer aufgenommen",
+  DRIVER_REMOVED: "Zusatzfahrer herausgenommen",
+  DEPOSIT: "Vereinbarte Kaution",
+  RETURN_LOCATION: "Rückgabeort",
+  AGREEMENT: "Sonstige Vereinbarung",
+} as const;
+export type AmendmentChangeKind = keyof typeof AMENDMENT_CHANGE_KINDS;
+export const AMENDMENT_HELP = {
+  NO_EFFECT_DRAFT: "Ein Entwurf ändert nichts: Buchung, Preis, Kilometer, Fahrer, Kaution und Rechnung bleiben, bis der Nachtrag unterschrieben ist.",
+  ORIGINAL_UNCHANGED: "Der ursprüngliche Mietvertrag und frühere Nachträge bleiben unverändert. Was dieser Nachtrag nicht ändert, gilt weiter.",
+  DEPOSIT: "Die vereinbarte Kaution ist nicht die erhaltene: Ein zusätzlicher Eingang wird wie bisher als Kautionsbewegung dokumentiert; eine Reduzierung zahlt nichts automatisch aus.",
+  KM: "Eine geänderte Kilometervereinbarung gilt als neue Gesamtkondition für die gesamte Mietdauer dieses Vertrags (Freikilometer je Tag × Miettage); eine anteilige Aufteilung gibt es nicht.",
+  SHORTEN: "Eine frühere Rückgabe ändert den Preis nicht von selbst. Eine Preisänderung ist eine eigene, ausdrückliche Vereinbarung.",
+} as const;
+
 export const DUNNING_LEVELS = { 1: "Zahlungserinnerung", 2: "1. Mahnung", 3: "2. Mahnung" } as const;
 export type DunningLevel = 1 | 2 | 3;
 export const dunningLevelLabel = (level: number) => DUNNING_LEVELS[level as DunningLevel] ?? `Stufe ${level}`;

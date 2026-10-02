@@ -107,7 +107,7 @@ test("Nummernkreise: Standard RE/GS/ST, Präfix-Prüfung (Form, verschieden), ge
   assert.equal(numberRangesOf({ cancellation: { prefix: "st" } }).cancellation.prefix, "ST", "ungültiges Präfix → Standard");
   assert.throws(() => validateNumberRanges({ invoice: "RE", creditNote: "RE", cancellation: "ST", payout: "AZ" }), /unterscheiden/);
   assert.throws(() => validateNumberRanges({ invoice: "RE-1", creditNote: "GS", cancellation: "ST", payout: "AZ" }), /1 bis 6 Großbuchstaben/);
-  assert.deepEqual(validateNumberRanges({ invoice: "re", creditNote: " gs ", cancellation: "STORNO", payout: "az" }), { invoice: { prefix: "RE" }, creditNote: { prefix: "GS" }, cancellation: { prefix: "STORNO" }, payout: { prefix: "AZ" }, dunning: { prefix: "MA" } });
+  assert.deepEqual(validateNumberRanges({ invoice: "re", creditNote: " gs ", cancellation: "STORNO", payout: "az" }), { invoice: { prefix: "RE" }, creditNote: { prefix: "GS" }, cancellation: { prefix: "STORNO" }, payout: { prefix: "AZ" }, dunning: { prefix: "MA" }, amendment: { prefix: "NT" } });
   // Befehl 23: fünfter Kreis „Mahnungen“ – eigenes Präfix, ebenfalls geprüft und verschieden
   assert.equal(validateNumberRanges({ invoice: "RE", creditNote: "GS", cancellation: "ST", payout: "AZ", dunning: "mahn" }).dunning.prefix, "MAHN");
   assert.throws(() => validateNumberRanges({ invoice: "RE", creditNote: "GS", cancellation: "ST", payout: "AZ", dunning: "RE" }), /unterscheiden/);

@@ -453,7 +453,7 @@ export type DriverInput = {
   licenseIssuedBy?: string | null;
 };
 
-function driverData(input: DriverInput) {
+export function driverData(input: DriverInput) {
   return {
     customerId: input.customerId ?? null,
     firstName: input.firstName.trim(),
@@ -472,7 +472,7 @@ function driverData(input: DriverInput) {
   };
 }
 
-async function assertLinkedCustomer(tx: Tx, tenantId: string, customerId: string | null | undefined) {
+export async function assertLinkedCustomer(tx: Tx, tenantId: string, customerId: string | null | undefined) {
   if (!customerId) return;
   if ((await tx.customer.count({ where: { id: customerId, tenantId } })) !== 1) throw new DomainError("Der verknüpfte Kunde gehört nicht zu diesem Mandanten.");
 }

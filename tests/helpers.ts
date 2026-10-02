@@ -79,6 +79,7 @@ export async function purgeTenants(tenantIds: string[]) {
         await tx.authorityContact.deleteMany(w);
         await tx.authorityCase.deleteMany(w);
         await tx.contractDriver.deleteMany(w);
+        await tx.contractAmendment.deleteMany(w); // Befehl 25: nach Fahrern, Signaturen, Prüfvermerken, Dokumenten, Rechnungspositionen
         await tx.rentalContract.deleteMany(w);
         await tx.rentalTermsVersion.deleteMany(w);
         await tx.checklistTemplate.deleteMany(w);

@@ -15,7 +15,8 @@
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { balanceOf } from "@/lib/deposits";
-import { fmtCents, toCents } from "@/lib/money";
+import { loadEffectiveDepositCents } from "@/lib/amendments";
+import { fmtCents } from "@/lib/money";
 import { DAMAGE_KINDS, DAMAGE_SEVERITY, DAMAGE_VIEWS, PHOTO_CATEGORIES, REQUIRED_PHOTO_CATEGORIES, RETURN_ATTENTION_ON_YES, VISIBLE_DAMAGE_STATUS, energyRequirements, type HandoverType } from "@/lib/constants";
 import { DomainError, assertHandoverDraft, contentHash, sha256 } from "@/lib/integrity";
 import { nextHandoverNumber } from "@/lib/numbering";
@@ -740,8 +741,8 @@ async function collectIssues(tx: Tx, tenantId: string, handoverId: string, opts:
 
   // Übergabe: Kaution laut Vertrag noch nicht als erhalten dokumentiert – nur Hinweis, blockiert nie (Entscheidung Phase 9)
   if (h.type === "PICKUP" && booking.contract?.status === "SIGNED") {
-    const contract = await tx.rentalContract.findFirst({ where: { bookingId: h.bookingId, tenantId }, select: { deposit: true } });
-    const expected = contract ? toCents(contract.deposit) : 0;
+    const contract = await tx.rentalContract.findFirst({ where: { bookingId: h.bookingId, tenantId }, select: { id: true, deposit: true } });
+    const expected = contract ? await loadEffectiveDepositCents(tx, tenantId, contract) : 0;
     if (expected > 0) {
       const dep = await tx.securityDeposit.findFirst({ where: { tenantId, bookingId: h.bookingId }, include: { events: { select: { type: true, amountCents: true, status: true } } } });
       const received = dep ? balanceOf(dep.expectedAmountCents, dep.events).receivedCents : 0;

@@ -90,6 +90,8 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
     // Befehl 21: nach dem Abschluss ist die Übergabe der nächste Schritt – bestehender Entwurf wird fortgesetzt, nie dupliziert
     const handovers = await db.handover.findMany({ where: { tenantId: tenant.id, bookingId: booking.id, correctsId: null }, select: { type: true, status: true } });
     const next = contract.status === "SIGNED" ? pickupAction(booking, contract, handovers) : { kind: "NONE" as const, label: "" };
+    // Befehl 25: der Vertrag selbst bleibt unverändert; wirksame Nachträge werden hier nur genannt (Stand auf der Buchungsseite)
+    const signedAmendments = contract.status === "SIGNED" ? await db.contractAmendment.findMany({ where: { tenantId: tenant.id, contractId: contract.id, status: "SIGNED" }, orderBy: { sequenceNo: "asc" }, select: { id: true, number: true, signedAt: true } }) : [];
     return (
       <>
         <PageHeader title={`Mietvertrag ${contract.number}`} sub={`Buchung ${booking.number}`}>
@@ -111,6 +113,11 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
             </section>
           )}
           {next.kind === "VIEW" && <p className="text-sm text-ink-2">Die Übergabe ist abgeschlossen. <Link href={`/buchungen/${booking.id}/uebergabe`} className="underline">Übergabeprotokoll anzeigen</Link></p>}
+          {signedAmendments.length > 0 && (
+            <p className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm">
+              Dieser Vertrag wurde durch {signedAmendments.length === 1 ? "einen Nachtrag" : `${signedAmendments.length} Nachträge`} geändert: {signedAmendments.map((n, i) => <span key={n.id}>{i > 0 && ", "}<Link href={`/buchungen/${booking.id}/nachtrag/${n.id}`} className="underline font-mono tnum">{n.number}</Link>{n.signedAt ? ` (${fmtDate(n.signedAt)})` : ""}</span>)}. Unten steht der ursprüngliche Vertragstext; der aktuell vereinbarte Stand steht auf der <Link href={`/buchungen/${booking.id}#vertrag`} className="underline">Buchungsseite</Link>.
+            </p>
+          )}
           <ContractDocumentView doc={doc} />
         </Content>
       </>

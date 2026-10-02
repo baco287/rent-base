@@ -18,6 +18,8 @@ import { MoneyOverview } from "./finanzen/money-overview";
 import { DepositPanel, RentalPaymentsPanel } from "./finanzen/panels";
 import { DamageCasesPanel } from "../../schaeden/damages-panel";
 import { AuthorityCasesPanel } from "../../behoerden/authority-panel";
+import { AmendmentsCard } from "./nachtrag/amendments-card";
+import { effectiveStateForBooking } from "@/lib/amendments";
 
 export default async function BookingPage({ params, searchParams }: PageProps<"/buchungen/[id]">) {
   const { tenant, user, supportSession } = await requireSession();
@@ -36,6 +38,8 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
 
   const stage = bookingStage(b, b.contract);
   const contractSigned = b.contract?.status === "SIGNED";
+  // Befehl 25: wirksamer Vertragsstand (Vertrag + unterschriebene Nachträge) – zentral abgeleitet, hier nur angezeigt
+  const effective = contractSigned ? await effectiveStateForBooking(tenant.id, b.id) : null;
   const pickupDraft = b.handovers.find((h) => h.type === "PICKUP" && h.status === "DRAFT");
   const pickupDone = b.handovers.find((h) => h.type === "PICKUP" && h.status === "FINALIZED");
   const returnDraft = b.handovers.find((h) => h.type === "RETURN" && h.status === "DRAFT");
@@ -150,6 +154,8 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
         )}
 
         {(b.status === "ACTIVE" || b.status === "RETURNED") && pickupDone && <KeyDropPanel tenantId={tenant.id} booking={{ id: b.id, status: b.status, endAt: b.endAt, vehicleId: b.vehicleId }} role={user.role} supportMode={Boolean(supportSession)} returnStarted={Boolean(returnDraft || returnDone)} />}
+        {/* Befehl 25: Vertrag & Nachträge – Änderungen während der Miete nur als unterschriebener Nachtrag */}
+        <AmendmentsCard tenantId={tenant.id} bookingId={b.id} role={user.role} supportMode={Boolean(supportSession)} />
         <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
         {(b.status === "RETURNED" || b.status === "ACTIVE") && <DamageCasesPanel tenantId={tenant.id} where={{ OR: [{ bookingId: b.id }, { discoveredIn: { bookingId: b.id, type: "RETURN" } }] }} title="Schäden dieser Vermietung" empty="Zu dieser Vermietung wurde kein Schaden festgestellt." />}
         <AuthorityCasesPanel tenantId={tenant.id} scope={{ bookingId: b.id }} canManage={user.role !== "YARD"} />
@@ -178,12 +184,12 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
               />
             ) : (
               <dl className="grid grid-cols-[140px_1fr] gap-y-2 text-sm">
-                {contractSigned && <><dt className="label-xs self-center">Vertrag</dt><dd>{b.contract!.number}. Zeitraum, Fahrzeug und Preis sind festgeschrieben.</dd></>}
+                {contractSigned && <><dt className="label-xs self-center">Vertrag</dt><dd>{b.contract!.number}. Zeitraum, Fahrzeug und Preis sind festgeschrieben{effective?.amendments.length ? <>; geändert durch Nachtrag {effective.amendments.map((a) => a.number).join(", ")} (siehe <a href="#vertrag" className="underline">Vertrag &amp; Nachträge</a>)</> : <>. Änderungen nur per <a href="#vertrag" className="underline">Nachtrag</a></>}.</dd></>}
                 <dt className="label-xs self-center">Kunde</dt><dd><Link href={`/kunden/${b.customerId}`} className="hover:underline font-medium">{customerName(b.customer)}</Link></dd>
                 <dt className="label-xs self-center">Fahrzeug</dt><dd><Link href={`/fahrzeuge/${b.vehicleId}`} className="hover:underline">{b.vehicle.make} {b.vehicle.model}</Link></dd>
                 <dt className="label-xs self-center">Abholung</dt><dd className="font-mono tnum">{fmtDateTime(b.startAt)}</dd>
-                <dt className="label-xs self-center">Rückgabe</dt><dd className="font-mono tnum">{fmtDateTime(b.endAt)}</dd>
-                <dt className="label-xs self-center">Kilometer</dt><dd className="font-mono tnum">{(b.kmIncludedPerDay ?? b.vehicle.kmIncludedPerDay).toLocaleString("de-DE")} km/Tag frei · {fmtEur(Number(b.extraKmRate ?? b.vehicle.extraKmRate))} je Mehrkilometer{contractSigned ? " (laut Vertrag)" : ""}</dd>
+                <dt className="label-xs self-center">Rückgabe</dt><dd className="font-mono tnum">{fmtDateTime(b.endAt)}{effective?.changedBy.endAt && <span className="block text-[11px] text-ink-3 font-sans">geändert durch {effective.changedBy.endAt}</span>}</dd>
+                <dt className="label-xs self-center">Kilometer</dt><dd className="font-mono tnum">{effective ? <>{effective.kmIncludedPerDay.toLocaleString("de-DE")} km/Tag frei · {fmtEur(effective.extraKmRate)} je Mehrkilometer (laut Vertrag{effective.changedBy.km ? `, geändert durch ${effective.changedBy.km}` : ""})</> : <>{(b.kmIncludedPerDay ?? b.vehicle.kmIncludedPerDay).toLocaleString("de-DE")} km/Tag frei · {fmtEur(Number(b.extraKmRate ?? b.vehicle.extraKmRate))} je Mehrkilometer</>}</dd>
                 <dt className="label-xs self-center">Notizen</dt><dd>{b.notes || "–"}</dd>
               </dl>
             )}
@@ -212,6 +218,18 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
               </Card>
             )}
             <Card title="Kosten">
+              {effective ? (
+                <div className="p-4 text-sm flex flex-col">
+                  <div className="text-xs text-ink-3 pb-1">laut Mietvertrag {b.contract!.number}{effective.amendments.length ? ` und Nachtrag ${effective.amendments.map((a) => a.number).join(", ")}` : ""}</div>
+                  <div className="flex justify-between py-1.5 border-b border-line-soft"><span>Mietpreis laut Vertrag</span><span className="font-mono tnum">{fmtEur(effective.original.totalCents / 100)}</span></div>
+                  {effective.amendments.filter((a) => a.priceDeltaCents).map((a) => (
+                    <div key={a.id} className="flex justify-between py-1.5 border-b border-line-soft"><span>Nachtrag {a.number}</span><span className="font-mono tnum">{(a.priceDeltaCents ?? 0) > 0 ? "+" : "−"}{fmtEur(Math.abs(a.priceDeltaCents ?? 0) / 100)}</span></div>
+                  ))}
+                  <div className="flex justify-between py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>Gesamtmietpreis</span><span className="font-mono tnum">{fmtEur(effective.totalCents / 100)}</span></div>
+                  <div className="flex justify-between py-1.5 text-ink-3"><span>zzgl. vereinbarte Kaution</span><span className="font-mono tnum">{fmtEur(effective.depositCents / 100)}</span></div>
+                  <p className="text-xs text-ink-3 mt-2">Mehrkilometer, Tank und weitere Positionen werden bei der Rückgabe geprüft und erscheinen dann als Zusatzkosten.</p>
+                </div>
+              ) : (
               <div className="p-4 text-sm flex flex-col">
                 <div className="text-xs text-ink-3 pb-1">{price.days} Miettage</div>
                 {price.lines.map((l) => (
@@ -224,6 +242,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                 <div className="flex justify-between py-1.5 text-ink-3"><span>zzgl. Kaution</span><span className="font-mono tnum">{fmtEur(b.deposit)}</span></div>
                 <p className="text-xs text-ink-3 mt-2">Mehrkilometer, Tank und weitere Positionen werden bei der Rückgabe geprüft und erscheinen dann als Zusatzkosten.</p>
               </div>
+              )}
             </Card>
             <Card title="Kunde">
               <div className="p-4 text-sm flex flex-col gap-1">

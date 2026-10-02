@@ -24,6 +24,7 @@ export type EnqueueEmailInput = {
   invoiceVersionId?: string | null;
   payoutId?: string | null;
   dunningNoticeId?: string | null;
+  amendmentId?: string | null; // Befehl 25: Nachtrag zum Mietvertrag
   recipient: string;
   subject: string;
   template: string;
@@ -53,6 +54,7 @@ export async function claimEmail(input: EnqueueEmailInput): Promise<{ log: Email
         invoiceVersionId: input.invoiceVersionId ?? null,
         payoutId: input.payoutId ?? null,
         dunningNoticeId: input.dunningNoticeId ?? null,
+        amendmentId: input.amendmentId ?? null,
         recipient: input.recipient.trim().toLowerCase().slice(0, 320),
         subject: input.subject,
         template: input.template,

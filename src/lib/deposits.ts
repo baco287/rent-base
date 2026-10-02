@@ -9,6 +9,7 @@
 
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
+import { SIGNED_AMENDMENTS_SELECT, effectiveDepositCents, loadEffectiveDepositCents } from "@/lib/amendments";
 import { recordAudit, type Actor } from "@/lib/audit";
 import { PAYMENT_METHODS, type DepositStatus, type PaymentMethod } from "@/lib/constants";
 import { DomainError } from "@/lib/integrity";
@@ -80,10 +81,11 @@ export async function depositFinancialsFor(tenantId: string, deposits: { id: str
 
 /** Zentrale Auszahlungsrechnung einer Kaution (Buchung). Ohne Kautionszeile ist nichts auszahlbar. */
 export async function securityDepositFinancials(tenantId: string, bookingId: string, client: Tx | typeof db = db): Promise<DepositFinancials & { depositId: string | null }> {
-  const booking = await client.booking.findFirst({ where: { id: bookingId, tenantId }, select: { contract: { select: { status: true, deposit: true } }, securityDeposit: { include: { events: { select: { type: true, amountCents: true, status: true } } } } } });
+  const booking = await client.booking.findFirst({ where: { id: bookingId, tenantId }, select: { contract: { select: { status: true, deposit: true, amendments: SIGNED_AMENDMENTS_SELECT } }, securityDeposit: { include: { events: { select: { type: true, amountCents: true, status: true } } } } } });
   if (!booking) throw new DomainError("Buchung nicht gefunden.");
   const dep = booking.securityDeposit;
-  const expected = dep ? dep.expectedAmountCents : booking.contract?.status === "SIGNED" ? toCents(booking.contract.deposit) : 0;
+  // Befehl 25: ohne Kautionszeile gilt die vereinbarte Kaution laut wirksamem Vertragsstand (Vertrag + Nachträge)
+  const expected = dep ? dep.expectedAmountCents : booking.contract?.status === "SIGNED" ? effectiveDepositCents(booking.contract.deposit, booking.contract.amendments) : 0;
   if (!dep) return { ...computeDepositFinancials(balanceOf(expected, []), 0), depositId: null };
   const m = await depositFinancialsFor(tenantId, [dep], client);
   return { ...m.get(dep.id)!, depositId: dep.id };
@@ -113,11 +115,11 @@ export function depositReceiptState(agreedCents: Cents, receivedCents: Cents): D
 
 /** Stand der Kaution einer Buchung. Ohne gespeicherte Kaution gilt der Vertragswert als vereinbart und nichts als erhalten. */
 export async function depositView(tenantId: string, bookingId: string): Promise<DepositView> {
-  const booking = await db.booking.findFirst({ where: { id: bookingId, tenantId }, select: { status: true, deposit: true, contract: { select: { number: true, status: true, deposit: true } }, securityDeposit: { include: { events: { orderBy: [{ occurredAt: "desc" }, { createdAt: "desc" }] } } } } });
+  const booking = await db.booking.findFirst({ where: { id: bookingId, tenantId }, select: { status: true, deposit: true, contract: { select: { number: true, status: true, deposit: true, amendments: SIGNED_AMENDMENTS_SELECT } }, securityDeposit: { include: { events: { orderBy: [{ occurredAt: "desc" }, { createdAt: "desc" }] } } } } });
   if (!booking) throw new DomainError("Buchung nicht gefunden.");
   const signed = booking.contract?.status === "SIGNED";
   const deposit = booking.securityDeposit;
-  const expected = deposit ? deposit.expectedAmountCents : signed ? toCents(booking.contract!.deposit) : 0;
+  const expected = deposit ? deposit.expectedAmountCents : signed ? effectiveDepositCents(booking.contract!.deposit, booking.contract!.amendments) : 0;
   const events = deposit?.events ?? [];
   const fin = deposit ? (await depositFinancialsFor(tenantId, [deposit])).get(deposit.id)! : computeDepositFinancials(balanceOf(expected, []), 0);
   return { ...fin, deposit, events, contractNumber: booking.contract?.number ?? null, contractSigned: signed, bookingStatus: booking.status, bookingDepositCents: toCents(booking.deposit) };
@@ -136,7 +138,8 @@ export async function lockOrCreateDeposit(tx: Tx, tenantId: string, bookingId: s
   if (!row) {
     const contract = await tx.rentalContract.findFirst({ where: { tenantId, bookingId }, select: { id: true, status: true, deposit: true } });
     if (contract && contract.status === "SIGNED") {
-      row = await tx.securityDeposit.create({ data: { tenantId, bookingId, contractId: contract.id, expectedAmountCents: toCents(contract.deposit), createdById: actor.id } });
+      // Befehl 25: vereinbart ist die Kaution laut wirksamem Vertragsstand (ein Nachtrag kann sie geändert haben)
+      row = await tx.securityDeposit.create({ data: { tenantId, bookingId, contractId: contract.id, expectedAmountCents: await loadEffectiveDepositCents(tx, tenantId, contract), createdById: actor.id } });
     } else if (opts.fromBooking) {
       const expected = toCents(bookingLock[0].deposit);
       if (expected <= 0) throw new DomainError("Zu dieser Buchung ist keine Kaution vereinbart. Bitte zuerst den Kautionsbetrag der Buchung eintragen.");

@@ -24,6 +24,7 @@ import { DomainError, contentHash, sha256 } from "@/lib/integrity";
 import { centsToDecimalString, fmtCents, fmtRate, lineAmounts, summarize, toBasisPoints, toCents, toHundredths, type Cents } from "@/lib/money";
 import { isUniqueViolation, nextInvoiceNumber, withNumberRetry } from "@/lib/numbering";
 import { rentalDays } from "@/lib/pricing";
+import { overlayAmendments } from "@/lib/amendments";
 import { linkRentalPaymentsToInvoice, lockUnlinkedRentalPayments } from "@/lib/rental-payment-link";
 import { APP_TIME_ZONE } from "@/lib/time";
 
@@ -124,12 +125,13 @@ export type ItemInput = {
   unit: string;
   unitPrice: number | string; // brutto oder netto laut pricesIncludeTax
   taxRate: number | string; // Prozent
-  source?: "RENTAL" | "EXTRA_CHARGE" | "MANUAL";
+  source?: "RENTAL" | "EXTRA_CHARGE" | "AMENDMENT" | "MANUAL";
   extraChargeId?: string | null;
+  amendmentId?: string | null; // Befehl 25: Position aus einem Nachtrag (Abrechnungsbezug, nie doppelt)
   reference?: string | null;
 };
 
-type ComputedItem = { description: string; unit: string; source: string; extraChargeId: string | null; reference: string | null; quantityH: number; unitPriceC: Cents; taxRateBp: number; amounts: ReturnType<typeof lineAmounts> };
+type ComputedItem = { description: string; unit: string; source: string; extraChargeId: string | null; amendmentId: string | null; reference: string | null; quantityH: number; unitPriceC: Cents; taxRateBp: number; amounts: ReturnType<typeof lineAmounts> };
 
 function computeItem(mode: "NET" | "GROSS", it: ItemInput): ComputedItem {
   const description = it.description.trim();
@@ -144,7 +146,7 @@ function computeItem(mode: "NET" | "GROSS", it: ItemInput): ComputedItem {
     throw new DomainError(`Position „${description}“: ${(e as Error).message}`);
   }
   try {
-    return { description, unit: it.unit, source: it.source ?? "MANUAL", extraChargeId: it.extraChargeId ?? null, reference: it.reference ?? null, quantityH, unitPriceC, taxRateBp, amounts: lineAmounts(mode, quantityH, unitPriceC, taxRateBp) };
+    return { description, unit: it.unit, source: it.source ?? "MANUAL", extraChargeId: it.extraChargeId ?? null, amendmentId: it.amendmentId ?? null, reference: it.reference ?? null, quantityH, unitPriceC, taxRateBp, amounts: lineAmounts(mode, quantityH, unitPriceC, taxRateBp) };
   } catch (e) {
     throw new DomainError(`Position „${description}“: ${(e as Error).message}`);
   }
@@ -165,6 +167,7 @@ function itemData(tenantId: string, versionId: string, sortOrder: number, c: Com
     grossAmount: centsToDecimalString(c.amounts.gross),
     source: c.source,
     extraChargeId: c.extraChargeId,
+    amendmentId: c.amendmentId,
     reference: c.reference,
   };
 }
@@ -186,7 +189,20 @@ async function loadSources(tx: Tx, tenantId: string, bookingId: string) {
   const ret = await tx.handover.findFirst({ where: { tenantId, bookingId, type: "RETURN", status: "FINALIZED" }, orderBy: { finalizedAt: "desc" }, include: { extraCharges: { orderBy: { createdAt: "asc" } } } });
   if (!ret || !ret.contentHash) throw new DomainError("Zu dieser Buchung gibt es keine abgeschlossene Rückgabe.");
   const pickup = await tx.handover.findFirst({ where: { tenantId, bookingId, type: "PICKUP", status: "FINALIZED" }, orderBy: { finalizedAt: "desc" } });
-  return { booking, contract: booking.contract, tenant: booking.tenant, ret, pickup };
+  // Befehl 25: unterschriebene Nachträge – der Mietpreis ist der wirksame Gesamtpreis; Erhöhungen werden als eigene Positionen ausgewiesen
+  const amendments = await tx.contractAmendment.findMany({ where: { tenantId, contractId: booking.contract.id, status: "SIGNED" }, orderBy: { sequenceNo: "asc" } });
+  return { booking, contract: overlayAmendments(booking.contract, amendments), amendments, tenant: booking.tenant, ret, pickup };
+}
+
+/** Befehl 25: Positionstext einer Preiserhöhung aus einem Nachtrag (Verlängerung oder vereinbarte Preisänderung). */
+export function amendmentItemDescription(a: { number: string | null; newEndAt: Date | null; priceReason: string | null; snapshot: Prisma.JsonValue | null }, contractNumber: string): string {
+  const snap = a.snapshot as { before?: { endAt?: string } } | null;
+  const before = snap?.before?.endAt ? new Date(snap.before.endAt) : null;
+  if (a.newEndAt && before && a.newEndAt > before) {
+    const extraDays = rentalDays(before, a.newEndAt);
+    return `Verlängerung der Mietdauer bis ${dateFmt(a.newEndAt)} (${extraDays} ${extraDays === 1 ? "Tag" : "Tage"}), laut Nachtrag ${a.number} zum Mietvertrag ${contractNumber}`;
+  }
+  return `Vertragsänderung laut Nachtrag ${a.number} zum Mietvertrag ${contractNumber}${a.priceReason ? `: ${a.priceReason}` : ""}`;
 }
 
 /**
@@ -202,7 +218,7 @@ export async function ensureInvoiceDraft(tenantId: string, bookingId: string, ac
     if (locked.length === 0) throw new DomainError("Buchung nicht gefunden.");
     const again = await tx.invoice.findFirst({ where: { tenantId, bookingId, kind: "RENTAL", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } } });
     if (again) return again;
-    const { booking, contract, tenant, ret, pickup } = await loadSources(tx, tenantId, bookingId);
+    const { booking, contract, amendments, tenant, ret, pickup } = await loadSources(tx, tenantId, bookingId);
     const missing = invoiceSettingsMissing(tenant);
     if (missing.length > 0) throw new DomainError(`Bevor Rechnungen erstellt werden können, muss der Inhaber in den Einstellungen ergänzen: ${missing.join("; ")}.`);
     const mode = tenant.pricesIncludeTax ? "GROSS" : "NET";
@@ -217,25 +233,47 @@ export async function ensureInvoiceDraft(tenantId: string, bookingId: string, ac
     const priceSnap = contract.priceSnapshot as { extras?: { label: string; quantity: number; unitPrice: number; amount: number }[]; extrasTotal?: number } | null;
     const extras = priceSnap?.extras ?? [];
     const extrasTotal = extras.reduce((a, e) => a + Math.round(e.amount * 100), 0);
-    const rentalCents = Math.round(Number(contract.totalAmount) * 100) - extrasTotal;
+    // Befehl 25: Preiserhöhungen aus Nachträgen sind eigene Positionen (Abrechnungsbezug amendmentId); Preisminderungen können
+    // keine negative Position sein und mindern den Mietpreis (notfalls die Vertragspositionen). Summe = wirksamer Gesamtpreis.
+    const increases = amendments.filter((a) => (a.priceDeltaCents ?? 0) > 0);
+    const reductionTotal = amendments.reduce((sum, a) => sum + Math.min(0, a.priceDeltaCents ?? 0), 0);
+    let rentalCents = contract.amended.original.totalCents - extrasTotal + reductionTotal;
+    const extraAmounts = extras.map((e) => Math.round(e.amount * 100));
+    if (rentalCents < 0) {
+      let rest = -rentalCents;
+      rentalCents = 0;
+      for (let i = extraAmounts.length - 1; i >= 0 && rest > 0; i--) { const take = Math.min(extraAmounts[i], rest); extraAmounts[i] -= take; rest -= take; }
+    }
+    const periodNote = contract.amended.changedBy.endAt ? ` und Nachtrag ${contract.amended.changedBy.endAt}` : "";
+    const reductionNote = reductionTotal < 0 ? ` (Preisminderung ${fmtCents(reductionTotal)} laut Nachtrag berücksichtigt)` : "";
     const items: ItemInput[] = [
       {
-        description: `Fahrzeugmiete ${[v.make, v.model].filter(Boolean).join(" ")}${v.plate ? ` (${v.plate})` : ""}, ${dateFmt(contract.startAt)} bis ${dateFmt(contract.endAt)}, ${days} ${days === 1 ? "Tag" : "Tage"}, laut Mietvertrag ${contract.number}`,
+        description: `Fahrzeugmiete ${[v.make, v.model].filter(Boolean).join(" ")}${v.plate ? ` (${v.plate})` : ""}, ${dateFmt(contract.startAt)} bis ${dateFmt(contract.endAt)}, ${days} ${days === 1 ? "Tag" : "Tage"}, laut Mietvertrag ${contract.number}${periodNote}${reductionNote}`,
         quantity: 1,
         unit: "pauschal",
-        unitPrice: extras.length ? (rentalCents / 100).toFixed(2) : String(contract.totalAmount),
+        unitPrice: (rentalCents / 100).toFixed(2),
         taxRate: rate,
         source: "RENTAL",
         reference: `Mietvertrag ${contract.number}`,
       },
-      ...extras.map((e): ItemInput => ({
+      ...extras.map((e, i): ItemInput => ({
         description: `${e.label}, laut Mietvertrag ${contract.number}`,
         quantity: 1,
         unit: "pauschal",
-        unitPrice: e.amount.toFixed(2),
+        unitPrice: (extraAmounts[i] / 100).toFixed(2),
         taxRate: rate,
         source: "RENTAL",
         reference: `Mietvertrag ${contract.number}`,
+      })),
+      ...increases.map((a): ItemInput => ({
+        description: amendmentItemDescription(a, contract.number),
+        quantity: 1,
+        unit: "pauschal",
+        unitPrice: ((a.priceDeltaCents ?? 0) / 100).toFixed(2),
+        taxRate: rate,
+        source: "AMENDMENT",
+        amendmentId: a.id,
+        reference: `Nachtrag ${a.number}`,
       })),
       ...ret.extraCharges.map((e): ItemInput => ({
         description: `${EXTRA_CHARGE_TYPES[e.type as ExtraChargeType] ?? e.type}: ${e.description}`,
@@ -266,9 +304,9 @@ export async function ensureInvoiceDraft(tenantId: string, bookingId: string, ac
         customerId: booking.customerId,
         contractId: contract.id,
         returnHandoverId: ret.id,
-        sourceHash: sha256(`${contract.contentHash}:${ret.contentHash}`),
+        sourceHash: sha256(`${contract.contentHash}:${ret.contentHash}${amendments.map((a) => `:${a.contentHash}`).join("")}`),
         createdById: actor.id,
-        changeLog: [{ at: now.toISOString(), by: actor.name, versionNo: 1, summary: `Entwurf aus Mietvertrag ${contract.number} und Rückgabe ${ret.number} erstellt (${computed.length} Positionen)` }],
+        changeLog: [{ at: now.toISOString(), by: actor.name, versionNo: 1, summary: `Entwurf aus Mietvertrag ${contract.number}${amendments.length ? `, Nachtrag ${amendments.map((a) => a.number).join(", ")}` : ""} und Rückgabe ${ret.number} erstellt (${computed.length} Positionen)` }],
       },
     });
     const version = await tx.invoiceVersion.create({
@@ -471,6 +509,64 @@ export async function createGeneralInvoiceDraft(tenantId: string, actor: Actor, 
   });
 }
 
+/**
+ * Befehl 25 (Absicherung): Preiserhöhung aus einem Nachtrag, der in der bereits abgeschlossenen Mietrechnung nicht enthalten
+ * ist, als eigene freie Rechnung (Entwurf, Bezug Buchung) mit genau einer Position (Abrechnungsbezug amendmentId). Die
+ * abgeschlossene Rechnung bleibt unverändert; der Nachtrag merkt sich den Abrechnungsbeleg (einmalig, Datenbank-Trigger).
+ */
+export async function createAmendmentSettlementDraft(tenantId: string, actor: Actor, input: { amendmentId: string; nonce: string }): Promise<{ invoice: InvoiceRow; created: boolean }> {
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(input.nonce ?? "")) throw new DomainError("Die Seite ist veraltet. Bitte neu laden.");
+  const sourceHash = sha256(`amendment-settlement:${tenantId}:${input.amendmentId}`);
+  return db.$transaction(async (tx) => {
+    const lockedA = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "ContractAmendment" WHERE "id" = ${input.amendmentId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+    if (lockedA.length === 0) throw new DomainError("Nachtrag nicht gefunden.");
+    const a = await tx.contractAmendment.findUniqueOrThrow({ where: { id: input.amendmentId }, include: { booking: { select: { id: true, number: true, customerId: true, status: true } }, contract: { select: { number: true } } } });
+    if (a.status !== "SIGNED" || !a.number) throw new DomainError("Abgerechnet wird nur ein unterschriebener, wirksamer Nachtrag.");
+    if (!a.priceDeltaCents || a.priceDeltaCents <= 0) throw new DomainError("Dieser Nachtrag enthält keine Preiserhöhung. Eine Preisminderung nach abgeschlossener Rechnung wird als Gutschrift zur Mietrechnung erstellt.");
+    if (a.settlementInvoiceId) {
+      const existing = await tx.invoice.findFirst({ where: { id: a.settlementInvoiceId, tenantId } });
+      if (existing) return { invoice: existing, created: false };
+    }
+    const sameSource = await tx.invoice.findFirst({ where: { tenantId, kind: "GENERAL", sourceHash } });
+    if (sameSource) return { invoice: sameSource, created: false };
+    const billed = await tx.invoiceVersionItem.count({ where: { tenantId, amendmentId: a.id, version: { status: "FINALIZED" } } });
+    if (billed > 0) throw new DomainError("Diese Vertragsänderung ist bereits in einer abgeschlossenen Rechnung enthalten.");
+    const rental = await tx.invoice.findFirst({ where: { tenantId, bookingId: a.bookingId, kind: "RENTAL", documentType: "INVOICE", status: "FINALIZED" }, select: { number: true } });
+    if (!rental) throw new DomainError("Die Mietrechnung ist noch nicht abgeschlossen; die Vertragsänderung wird dort als Position aufgenommen.");
+    const customer = await tx.customer.findUniqueOrThrow({ where: { id: a.booking.customerId } });
+    const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+    const missing = invoiceSettingsMissing(tenant);
+    if (missing.length > 0) throw new DomainError(`Bevor Rechnungen erstellt werden können, muss der Inhaber in den Einstellungen ergänzen: ${missing.join("; ")}.`);
+    const mode = tenant.pricesIncludeTax ? "GROSS" : "NET";
+    const item = computeItem(mode, { description: amendmentItemDescription(a, a.contract.number), quantity: 1, unit: "pauschal", unitPrice: centsToDecimalString(a.priceDeltaCents), taxRate: Number(tenant.defaultTaxRate), source: "AMENDMENT", amendmentId: a.id, reference: `Nachtrag ${a.number}` });
+    const totals = summarize([{ taxRateBp: item.taxRateBp, amounts: item.amounts }]);
+    const snap = a.snapshot as { before?: { endAt?: string } } | null;
+    const periodStart = snap?.before?.endAt ? new Date(snap.before.endAt) : a.signedAt ?? new Date();
+    const periodEnd = a.newEndAt && a.newEndAt > periodStart ? a.newEndAt : periodStart;
+    const now = new Date();
+    const invoice = await tx.invoice.create({
+      data: {
+        tenantId, bookingId: a.bookingId, customerId: customer.id, contractId: a.contractId, kind: "GENERAL", sourceHash, createdById: actor.id,
+        changeLog: [{ at: now.toISOString(), by: actor.name, versionNo: 1, summary: `Abrechnung der Vertragsänderung laut Nachtrag ${a.number} als Entwurf angelegt (Mietrechnung ${rental.number} bereits abgeschlossen, Bezug Buchung ${a.booking.number})` }],
+      },
+    });
+    const version = await tx.invoiceVersion.create({
+      data: {
+        tenantId, invoiceId: invoice.id, versionNo: 1, kind: "ORIGINAL",
+        servicePeriodStart: periodStart, servicePeriodEnd: periodEnd, pricesIncludeTax: mode === "GROSS",
+        customerSnapshot: customerSnapshotFromCustomer(customer), companySnapshot: companySnapshotOf(tenant),
+        netTotal: centsToDecimalString(totals.total.net), taxTotal: centsToDecimalString(totals.total.tax), grossTotal: centsToDecimalString(totals.total.gross),
+        paymentTermDays: tenant.paymentTermDays, taxNote: tenant.taxNote,
+        createdById: actor.id, createdByName: actor.name,
+      },
+    });
+    await tx.invoiceVersionItem.create({ data: itemData(tenantId, version.id, 0, item) });
+    await tx.contractAmendment.update({ where: { id: a.id }, data: { settlementInvoiceId: invoice.id } });
+    await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_SETTLEMENT_CREATED", bookingId: a.bookingId, invoiceId: invoice.id, amountCents: a.priceDeltaCents, details: { amendmentId: a.id, number: a.number, rentalInvoice: rental.number } });
+    return { invoice, created: true };
+  }, TX);
+}
+
 // ---------------------------------------------------------------------------
 // Übermittlung und Bearbeitungsmodus
 // ---------------------------------------------------------------------------
@@ -566,7 +662,7 @@ export async function startInvoiceEdit(tenantId: string, invoiceId: string, acto
         },
       });
       await tx.invoiceVersionItem.createMany({
-        data: current.items.map((i) => ({ tenantId, versionId: draft.id, sortOrder: i.sortOrder, description: i.description, quantity: i.quantity, unit: i.unit, unitPrice: i.unitPrice, netAmount: i.netAmount, taxRate: i.taxRate, taxAmount: i.taxAmount, grossAmount: i.grossAmount, source: i.source, extraChargeId: i.extraChargeId, reference: i.reference })),
+        data: current.items.map((i) => ({ tenantId, versionId: draft.id, sortOrder: i.sortOrder, description: i.description, quantity: i.quantity, unit: i.unit, unitPrice: i.unitPrice, netAmount: i.netAmount, taxRate: i.taxRate, taxAmount: i.taxAmount, grossAmount: i.grossAmount, source: i.source, extraChargeId: i.extraChargeId, amendmentId: i.amendmentId, reference: i.reference })),
       });
       const log = Array.isArray(invoice.changeLog) ? (invoice.changeLog as Prisma.JsonArray) : [];
       await tx.invoice.update({ where: { id: invoiceId }, data: { changeLog: [...log, { at: new Date().toISOString(), by: actor.name, versionNo, summary: `Bearbeitung begonnen: Entwurf der Fassung ${versionNo} aus Fassung ${current.versionNo} (${info.nextKind === "CORRECTION" ? "Berichtigung, Vorfassung bereits übermittelt" : "Neufassung, Vorfassung nicht übermittelt"})` }] } });
@@ -657,7 +753,7 @@ export async function updateInvoiceDraft(tenantId: string, invoiceId: string, ac
     const computed = input.items.map((it) => {
       const prev = it.id ? before.get(it.id) : undefined;
       // Echter Schadensersatz: keine Position trägt einen Steuersatz – unabhängig von der Eingabe
-      const ci = computeItem(mode, { ...it, taxRate: nonTaxable ? "0" : it.taxRate, source: prev?.source as ItemInput["source"] | undefined ?? "MANUAL", extraChargeId: prev?.extraChargeId ?? null, reference: prev?.reference ?? it.reference ?? null });
+      const ci = computeItem(mode, { ...it, taxRate: nonTaxable ? "0" : it.taxRate, source: prev?.source as ItemInput["source"] | undefined ?? "MANUAL", extraChargeId: prev?.extraChargeId ?? null, amendmentId: prev?.amendmentId ?? null, reference: prev?.reference ?? it.reference ?? null });
       if (!nonTaxable && !allowedRates.has(ci.taxRateBp)) throw new DomainError(`Position „${ci.description}“: Der Steuersatz ${fmtRate(ci.taxRateBp)} ist nicht konfiguriert. Erlaubt sind ${[...allowedRates].map(fmtRate).join(" und ")}.`);
       return ci;
     });

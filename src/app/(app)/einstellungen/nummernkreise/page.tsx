@@ -15,10 +15,11 @@ export default async function NumberRangesPage() {
   const isOwner = user.role === "OWNER";
   const ranges = numberRangesOf(tenant.numberRanges);
   const next = await previewNextNumbers(db, tenant.id, ranges);
-  const nextByKey = { ...Object.fromEntries((Object.keys(RANGE_OF_TYPE) as InvoiceDocumentType[]).map((t) => [RANGE_OF_TYPE[t], next[t]])), payout: next.PAYOUT, dunning: next.DUNNING } as Record<NumberRangeKey, string>;
+  const nextByKey = { ...Object.fromEntries((Object.keys(RANGE_OF_TYPE) as InvoiceDocumentType[]).map((t) => [RANGE_OF_TYPE[t], next[t]])), payout: next.PAYOUT, dunning: next.DUNNING, amendment: next.AMENDMENT } as Record<NumberRangeKey, string>;
   const counts = await db.invoice.groupBy({ by: ["documentType"], where: { tenantId: tenant.id, status: "FINALIZED" }, _count: true });
   const payoutCount = await db.payout.count({ where: { tenantId: tenant.id, status: { in: ["COMPLETED", "CANCELLED"] } } });
   const dunningCount = await db.dunningNotice.count({ where: { tenantId: tenant.id } });
+  const amendmentCount = await db.contractAmendment.count({ where: { tenantId: tenant.id, status: "SIGNED" } });
   const countOf = (t: InvoiceDocumentType) => counts.find((c) => c.documentType === t)?._count ?? 0;
 
   return (
@@ -31,7 +32,7 @@ export default async function NumberRangesPage() {
         <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-4 items-start">
           <Card title="Präfixe" right={<Chip>{isOwner ? "Inhaber" : "nur lesend"}</Chip>}>
             {isOwner ? (
-              <NumberRangesForm prefixes={{ invoice: ranges.invoice.prefix, creditNote: ranges.creditNote.prefix, cancellation: ranges.cancellation.prefix, payout: ranges.payout.prefix, dunning: ranges.dunning.prefix }} next={nextByKey} />
+              <NumberRangesForm prefixes={{ invoice: ranges.invoice.prefix, creditNote: ranges.creditNote.prefix, cancellation: ranges.cancellation.prefix, payout: ranges.payout.prefix, dunning: ranges.dunning.prefix, amendment: ranges.amendment.prefix }} next={nextByKey} />
             ) : (
               <dl className="p-5 grid grid-cols-[180px_1fr] gap-y-1.5 text-sm">
                 {(Object.keys(NUMBER_RANGE_LABELS) as NumberRangeKey[]).map((k) => (
@@ -54,6 +55,7 @@ export default async function NumberRangesPage() {
                 <dt>Abgeschlossene Stornobelege</dt><dd className="font-mono tnum text-right">{countOf("CANCELLATION")}</dd>
                 <dt>Abgeschlossene Auszahlungen (inkl. stornierte)</dt><dd className="font-mono tnum text-right">{payoutCount}</dd>
                 <dt>Mahnschreiben (Zahlungserinnerungen und Mahnungen)</dt><dd className="font-mono tnum text-right">{dunningCount}</dd>
+                <dt>Unterschriebene Nachträge zum Mietvertrag</dt><dd className="font-mono tnum text-right">{amendmentCount}</dd>
               </dl>
             </div>
           </Card>

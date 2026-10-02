@@ -71,7 +71,10 @@ export type RequiredDriver = {
 
 /** Fahrer, die laut finalisiertem Vertrag geprüft werden müssen: Hauptfahrer und alle Zusatzfahrer (nie aus Customer abgeleitet). */
 export async function requiredDriversFor(tenantId: string, contractId: string, client: Tx | typeof db = db): Promise<RequiredDriver[]> {
-  const rows = await client.contractDriver.findMany({ where: { tenantId, contractId }, orderBy: [{ role: "asc" }, { createdAt: "asc" }] });
+  // Befehl 25: nur wirksame Fahrer – durch einen unterschriebenen Nachtrag aufgenommene zählen, herausgenommene nicht;
+  // Fahrer eines Nachtrag-Entwurfs werden erst mit dessen Unterschrift wirksam
+  const rows = (await client.contractDriver.findMany({ where: { tenantId, contractId }, orderBy: [{ role: "asc" }, { createdAt: "asc" }], include: { addedBy: { select: { status: true } }, removedBy: { select: { status: true } } } }))
+    .filter((r) => (!r.addedByAmendmentId || r.addedBy?.status === "SIGNED") && !(r.removedByAmendmentId && r.removedBy?.status === "SIGNED"));
   return rows.map((r) => ({
     contractDriverId: r.id,
     role: r.role as "PRIMARY_DRIVER" | "ADDITIONAL_DRIVER",
@@ -87,26 +90,49 @@ export async function requiredDriversFor(tenantId: string, contractId: string, c
   }));
 }
 
+/** Befehl 25: Fahrer, die ein Nachtrag im Entwurf neu aufnimmt – sie müssen vor der Unterschrift geprüft sein. */
+export async function amendmentDriversFor(tenantId: string, amendmentId: string, client: Tx | typeof db = db): Promise<RequiredDriver[]> {
+  const rows = await client.contractDriver.findMany({ where: { tenantId, addedByAmendmentId: amendmentId }, orderBy: { createdAt: "asc" } });
+  return rows.map((r) => ({ contractDriverId: r.id, role: r.role as "PRIMARY_DRIVER" | "ADDITIONAL_DRIVER", firstName: r.firstName, lastName: r.lastName, birthDate: r.birthDate, customerId: r.customerId, licenseNumber: r.licenseNumber, licenseClass: r.licenseClass, licenseCountry: r.licenseCountry, licenseIssuedAt: r.licenseIssuedAt, licenseValidUntil: r.licenseValidUntil }));
+}
+
 // ---------------------------------------------------------------------------
 // Prüfvermerk: Anlegen, Identität, Führerschein, Bestätigen, Blockieren
 // ---------------------------------------------------------------------------
 
 export type VerificationRow = Prisma.DriverVerificationGetPayload<object>;
 
-async function loadOpenHandover(tx: Tx, tenantId: string, handoverId: string) {
-  const h = await tx.handover.findFirst({ where: { id: handoverId, tenantId }, select: { id: true, status: true, type: true, bookingId: true, contractId: true } });
-  if (!h) throw new DomainError("Protokoll nicht gefunden.");
-  if (h.status !== "DRAFT") throw new ImmutableError("Das Protokoll ist finalisiert. Fahrerprüfungen können nicht mehr geändert werden.");
-  if (h.type !== "PICKUP") throw new DomainError("Die Fahrerprüfung gehört zur Übergabe, nicht zur Rückgabe.");
-  if (!h.contractId) throw new DomainError("Zu diesem Protokoll gehört kein Mietvertrag.");
-  return h as { id: string; status: string; type: string; bookingId: string; contractId: string };
+/**
+ * Befehl 25: Kontext einer Fahrerprüfung – die Übergabe (Entwurf) oder ein Nachtrag im Entwurf (Zusatzfahrer während
+ * laufender Miete). Ein string ist die Protokoll-Id (bisherige Aufrufe bleiben unverändert).
+ */
+export type VerificationScope = string | { amendmentId: string };
+type OpenContext = { bookingId: string; contractId: string; handoverId: string | null; amendmentId: string | null; /** geplante Rückgabe, gegen die der Führerschein-Ablauf geprüft wird */ endAt: Date };
+const scopeOf = (v: { handoverId: string | null; amendmentId: string | null }): VerificationScope => (v.handoverId ? v.handoverId : { amendmentId: v.amendmentId! });
+const scopeWhere = (scope: VerificationScope): Prisma.DriverVerificationWhereInput => (typeof scope === "string" ? { handoverId: scope } : { amendmentId: scope.amendmentId });
+/** Referenzprüfungen: alle bestätigten Vermerke außerhalb dieses Kontexts (auch die aus Übergaben bzw. Nachträgen). */
+const excludeScopeWhere = (scope: VerificationScope): Prisma.DriverVerificationWhereInput => (typeof scope === "string" ? { OR: [{ handoverId: null }, { handoverId: { not: scope } }] } : { OR: [{ amendmentId: null }, { amendmentId: { not: scope.amendmentId } }] });
+
+async function loadOpenContext(tx: Tx | typeof db, tenantId: string, scope: VerificationScope): Promise<OpenContext> {
+  if (typeof scope === "string") {
+    const h = await tx.handover.findFirst({ where: { id: scope, tenantId }, select: { id: true, status: true, type: true, bookingId: true, contractId: true, booking: { select: { endAt: true } } } });
+    if (!h) throw new DomainError("Protokoll nicht gefunden.");
+    if (h.status !== "DRAFT") throw new ImmutableError("Das Protokoll ist finalisiert. Fahrerprüfungen können nicht mehr geändert werden.");
+    if (h.type !== "PICKUP") throw new DomainError("Die Fahrerprüfung gehört zur Übergabe, nicht zur Rückgabe.");
+    if (!h.contractId) throw new DomainError("Zu diesem Protokoll gehört kein Mietvertrag.");
+    return { bookingId: h.bookingId, contractId: h.contractId, handoverId: h.id, amendmentId: null, endAt: h.booking.endAt };
+  }
+  const a = await tx.contractAmendment.findFirst({ where: { id: scope.amendmentId, tenantId }, select: { id: true, status: true, bookingId: true, contractId: true, newEndAt: true, booking: { select: { endAt: true } } } });
+  if (!a) throw new DomainError("Nachtrag nicht gefunden.");
+  if (a.status !== "DRAFT") throw new ImmutableError("Der Nachtrag ist unterschrieben oder verworfen. Fahrerprüfungen können nicht mehr geändert werden.");
+  return { bookingId: a.bookingId, contractId: a.contractId, handoverId: null, amendmentId: a.id, endAt: a.newEndAt ?? a.booking.endAt };
 }
 
 /** Legt den Prüfvermerk eines Fahrers an oder liefert den bestehenden Entwurf zurück; füllt aus dem Vertrags-Snapshot vor. */
-export async function startOrGetVerification(tenantId: string, actor: Actor, handoverId: string, contractDriverId: string): Promise<VerificationRow> {
+export async function startOrGetVerification(tenantId: string, actor: Actor, scope: VerificationScope, contractDriverId: string): Promise<VerificationRow> {
   return db.$transaction(async (tx) => {
-    const h = await loadOpenHandover(tx, tenantId, handoverId);
-    const existing = await tx.driverVerification.findFirst({ where: { tenantId, handoverId, contractDriverId }, orderBy: { version: "desc" } });
+    const h = await loadOpenContext(tx, tenantId, scope);
+    const existing = await tx.driverVerification.findFirst({ where: { tenantId, ...scopeWhere(scope), contractDriverId }, orderBy: { version: "desc" } });
     if (existing && existing.status !== "CONFIRMED") return existing;
     if (existing && existing.status === "CONFIRMED") return existing; // bestätigt: unverändert anzeigen, keine neue Fassung ohne Anlass
 
@@ -114,13 +140,13 @@ export async function startOrGetVerification(tenantId: string, actor: Actor, han
     if (!driver) throw new DomainError("Der Fahrer gehört nicht zu diesem Mietvertrag.");
     const row = await tx.driverVerification.create({
       data: {
-        tenantId, bookingId: h.bookingId, contractId: h.contractId, handoverId, contractDriverId,
+        tenantId, bookingId: h.bookingId, contractId: h.contractId, handoverId: h.handoverId, amendmentId: h.amendmentId, contractDriverId,
         customerId: driver.customerId, version: 1,
         driverRole: driver.role, driverFirstNameSnapshot: driver.firstName, driverLastNameSnapshot: driver.lastName, driverBirthDateSnapshot: driver.birthDate,
         status: "IN_PROGRESS", createdById: actor.id,
       },
     });
-    await recordAudit(tx, tenantId, actor, { action: "DRIVER_VERIFICATION_STARTED", bookingId: h.bookingId, details: { handoverId, contractDriverId, role: driver.role } });
+    await recordAudit(tx, tenantId, actor, { action: "DRIVER_VERIFICATION_STARTED", bookingId: h.bookingId, details: { handoverId: h.handoverId, amendmentId: h.amendmentId, contractDriverId, role: driver.role } });
     return row;
   }, TX);
 }
@@ -143,7 +169,7 @@ export async function recordIdentityCheck(tenantId: string, actor: Actor, verifi
     const v = await tx.driverVerification.findFirst({ where: { id: verificationId, tenantId } });
     if (!v) throw new DomainError("Prüfvermerk nicht gefunden.");
     assertEditable(v);
-    await loadOpenHandover(tx, tenantId, v.handoverId);
+    await loadOpenContext(tx, tenantId, scopeOf(v));
     if (!input.originalSeen) throw new DomainError("Ohne Vorlage des Originaldokuments kann die Identität nicht als geprüft gelten.");
     const blocked = !input.nameMatched || !input.birthDateMatched;
     const reasons = new Set(v.blockedReasons);
@@ -187,10 +213,11 @@ export async function recordLicenseCheck(tenantId: string, actor: Actor, verific
     const v = await tx.driverVerification.findFirst({ where: { id: verificationId, tenantId } });
     if (!v) throw new DomainError("Prüfvermerk nicht gefunden.");
     assertEditable(v);
-    const h = await loadOpenHandover(tx, tenantId, v.handoverId);
+    const h = await loadOpenContext(tx, tenantId, scopeOf(v));
     if (!input.originalSeen) throw new DomainError("Ohne Vorlage des Originalführerscheins kann die Prüfung nicht gespeichert werden.");
 
-    const booking = await tx.booking.findFirstOrThrow({ where: { id: h.bookingId, tenantId }, select: { endAt: true, vehicleId: true } });
+    // Rückgabe laut Kontext: im Nachtrag ggf. die verlängerte Rückgabe
+    const booking = { ...(await tx.booking.findFirstOrThrow({ where: { id: h.bookingId, tenantId }, select: { vehicleId: true } })), endAt: h.endAt };
     const vehicle = await tx.vehicle.findFirstOrThrow({ where: { id: booking.vehicleId, tenantId }, select: { requiredLicenseClass: true, group: { select: { requiredLicenseClass: true, bodyType: true } } } });
     const requiredClass = requiredLicenseClassFor(vehicle, vehicle.group);
     const classes = [...new Set(input.licenseClasses.map((c) => c.trim().toUpperCase()).filter(Boolean))];
@@ -245,7 +272,7 @@ export async function confirmVerification(tenantId: string, actor: Actor, verifi
     const v = await tx.driverVerification.findFirst({ where: { id: verificationId, tenantId } });
     if (!v) throw new DomainError("Prüfvermerk nicht gefunden.");
     assertEditable(v);
-    await loadOpenHandover(tx, tenantId, v.handoverId);
+    await loadOpenContext(tx, tenantId, scopeOf(v));
     if (v.blockedReasons.length > 0) throw new DomainError("Es gibt noch offene Punkte bei diesem Fahrer. Bitte zuerst klären.");
     if (!v.identityOriginalSeen || v.identityNameMatched !== true || v.identityBirthDateMatched !== true) throw new DomainError("Die Identitätsprüfung ist noch nicht vollständig.");
     if (!v.licenseOriginalSeen || v.licenseDocumentValid !== true || v.licenseNameMatched !== true || v.licenseClassSatisfied !== true) throw new DomainError("Die Führerscheinprüfung ist noch nicht vollständig.");
@@ -293,7 +320,7 @@ export type OneStepCheckInput = {
   notes?: string | null;
 };
 
-export async function verifyDriverInOneStep(tenantId: string, actor: Actor, handoverId: string, contractDriverId: string, input: OneStepCheckInput): Promise<{ row: VerificationRow; confirmed: boolean; blockers: string[] }> {
+export async function verifyDriverInOneStep(tenantId: string, actor: Actor, handoverId: VerificationScope, contractDriverId: string, input: OneStepCheckInput): Promise<{ row: VerificationRow; confirmed: boolean; blockers: string[] }> {
   const started = await startOrGetVerification(tenantId, actor, handoverId, contractDriverId);
   if (started.status === "CONFIRMED") return { row: started, confirmed: true, blockers: [] };
   await recordIdentityCheck(tenantId, actor, started.id, { documentType: input.documentType, originalSeen: true, nameMatched: true, birthDateMatched: true, notes: input.notes ?? null });
@@ -336,10 +363,10 @@ export type RepeatReference = {
 type ReferenceRow = Prisma.DriverVerificationGetPayload<{ include: { booking: { select: { number: true } } } }>;
 
 /** Jüngster vollständig bestätigter Prüfvermerk desselben Fahrers aus einer anderen Übergabe (per Kunde, sonst per Name + Geburtsdatum). */
-async function latestConfirmedReference(client: Tx | typeof db, tenantId: string, driver: Pick<RequiredDriver, "customerId" | "firstName" | "lastName" | "birthDate">, excludeHandoverId: string): Promise<ReferenceRow | null> {
+async function latestConfirmedReference(client: Tx | typeof db, tenantId: string, driver: Pick<RequiredDriver, "customerId" | "firstName" | "lastName" | "birthDate">, excludeScope: VerificationScope): Promise<ReferenceRow | null> {
   const where: Prisma.DriverVerificationWhereInput = driver.customerId
-    ? { tenantId, customerId: driver.customerId, status: "CONFIRMED", handoverId: { not: excludeHandoverId } }
-    : { tenantId, status: "CONFIRMED", handoverId: { not: excludeHandoverId }, driverFirstNameSnapshot: driver.firstName, driverLastNameSnapshot: driver.lastName, driverBirthDateSnapshot: driver.birthDate };
+    ? { tenantId, customerId: driver.customerId, status: "CONFIRMED", ...excludeScopeWhere(excludeScope) }
+    : { tenantId, status: "CONFIRMED", ...excludeScopeWhere(excludeScope), driverFirstNameSnapshot: driver.firstName, driverLastNameSnapshot: driver.lastName, driverBirthDateSnapshot: driver.birthDate };
   return client.driverVerification.findFirst({ where, orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }], include: { booking: { select: { number: true } } } });
 }
 
@@ -372,17 +399,17 @@ export type RepeatConfirmations = { originalsPresented: boolean; identityChecked
  * Wiederholungsprüfung bestätigen: legt für DIESE Übergabe einen eigenen, sofort bestätigten Prüfvermerk an (Fahrer,
  * Buchung/Übergabe, Zeitpunkt, Mitarbeiter, Referenz + Snapshot der verwendeten Daten, Prüfart REPEAT).
  */
-export async function repeatVerification(tenantId: string, actor: Actor, handoverId: string, contractDriverId: string, confirmations: RepeatConfirmations): Promise<VerificationRow> {
+export async function repeatVerification(tenantId: string, actor: Actor, handoverId: VerificationScope, contractDriverId: string, confirmations: RepeatConfirmations): Promise<VerificationRow> {
   if (!Object.values(confirmations).every(Boolean)) throw new DomainError("Bitte alle Punkte bestätigen: Originale vorgelegt, Identität geprüft, Führerschein vorgelegt, Daten unverändert, Klasse vorhanden, Dokumente gültig.");
   return db.$transaction(async (tx) => {
-    const h = await loadOpenHandover(tx, tenantId, handoverId);
+    const h = await loadOpenContext(tx, tenantId, handoverId);
     const driver = await tx.contractDriver.findFirst({ where: { id: contractDriverId, tenantId, contractId: h.contractId } });
     if (!driver) throw new DomainError("Der Fahrer gehört nicht zu diesem Mietvertrag.");
-    const existing = await tx.driverVerification.findFirst({ where: { tenantId, handoverId, contractDriverId }, orderBy: { version: "desc" } });
+    const existing = await tx.driverVerification.findFirst({ where: { tenantId, ...scopeWhere(handoverId), contractDriverId }, orderBy: { version: "desc" } });
     if (existing?.status === "CONFIRMED") return existing;
     if (existing) throw new DomainError("Für diesen Fahrer wurde bereits die vollständige Prüfung begonnen. Bitte dort fortsetzen.");
 
-    const booking = await tx.booking.findFirstOrThrow({ where: { id: h.bookingId, tenantId }, select: { endAt: true, vehicleId: true } });
+    const booking = { ...(await tx.booking.findFirstOrThrow({ where: { id: h.bookingId, tenantId }, select: { vehicleId: true } })), endAt: h.endAt };
     const vehicle = await tx.vehicle.findFirstOrThrow({ where: { id: booking.vehicleId, tenantId }, select: { requiredLicenseClass: true, group: { select: { requiredLicenseClass: true, bodyType: true } } } });
     const requiredClass = requiredLicenseClassFor(vehicle, vehicle.group);
     const ref = await latestConfirmedReference(tx, tenantId, driver, handoverId);
@@ -398,7 +425,7 @@ export async function repeatVerification(tenantId: string, actor: Actor, handove
     };
     const row = await tx.driverVerification.create({
       data: {
-        tenantId, bookingId: h.bookingId, contractId: h.contractId, handoverId, contractDriverId, customerId: driver.customerId, version: 1,
+        tenantId, bookingId: h.bookingId, contractId: h.contractId, handoverId: h.handoverId, amendmentId: h.amendmentId, contractDriverId, customerId: driver.customerId, version: 1,
         checkKind: "REPEAT", basedOnVerificationId: ref.id,
         driverRole: driver.role, driverFirstNameSnapshot: driver.firstName, driverLastNameSnapshot: driver.lastName, driverBirthDateSnapshot: driver.birthDate,
         status: "CONFIRMED",
@@ -425,14 +452,19 @@ export async function repeatVerification(tenantId: string, actor: Actor, handove
 export type DriverVerificationView = { driver: RequiredDriver; verification: VerificationRow | null; status: "NOT_STARTED" | "IN_PROGRESS" | "CONFIRMED" | "BLOCKED"; requiredLicenseClass: string | null; customerDeviates: boolean; /** Befehl 20.9: frühere vollständige Prüfung (nur solange hier keine Prüfung begonnen wurde) */ repeat: RepeatReference | null };
 
 /** Vollständiger Stand: jeder laut Vertrag vorgesehene Fahrer mit seinem aktuellen Prüfvermerk (falls vorhanden). */
-export async function driverVerificationOverview(tenantId: string, handoverId: string, client: Tx | typeof db = db): Promise<DriverVerificationView[]> {
-  const h = await client.handover.findFirst({ where: { id: handoverId, tenantId }, select: { contractId: true, bookingId: true } });
+export async function driverVerificationOverview(tenantId: string, handoverId: VerificationScope, client: Tx | typeof db = db): Promise<DriverVerificationView[]> {
+  // Befehl 25: im Nachtrag sind nur die durch diesen Nachtrag aufgenommenen Fahrer zu prüfen (Rückgabe = ggf. verlängerte)
+  const h = typeof handoverId === "string"
+    ? await client.handover.findFirst({ where: { id: handoverId, tenantId }, select: { contractId: true, bookingId: true } })
+    : await client.contractAmendment.findFirst({ where: { id: handoverId.amendmentId, tenantId }, select: { contractId: true, bookingId: true, newEndAt: true } });
   if (!h?.contractId) return [];
-  const [drivers, verifications, booking] = await Promise.all([
-    requiredDriversFor(tenantId, h.contractId, client),
-    client.driverVerification.findMany({ where: { tenantId, handoverId }, orderBy: { version: "desc" } }),
+  const [drivers, verifications, booking0] = await Promise.all([
+    typeof handoverId === "string" ? requiredDriversFor(tenantId, h.contractId, client) : amendmentDriversFor(tenantId, handoverId.amendmentId, client),
+    client.driverVerification.findMany({ where: { tenantId, ...scopeWhere(handoverId) }, orderBy: { version: "desc" } }),
     client.booking.findFirst({ where: { id: h.bookingId, tenantId }, select: { vehicleId: true, endAt: true } }),
   ]);
+  const amendedEnd: Date | null = "newEndAt" in h ? (h.newEndAt as Date | null) : null;
+  const booking = booking0 ? { ...booking0, endAt: amendedEnd ?? booking0.endAt } : null;
   const vehicle = booking ? await client.vehicle.findFirst({ where: { id: booking.vehicleId, tenantId }, select: { requiredLicenseClass: true, group: { select: { requiredLicenseClass: true, bodyType: true } } } }) : null;
   const requiredClass = vehicle ? requiredLicenseClassFor(vehicle, vehicle.group) : null;
   const byDriver = new Map<string, VerificationRow>();
@@ -457,11 +489,12 @@ export async function driverVerificationOverview(tenantId: string, handoverId: s
 /** Blocker für den Übergabeabschluss: jeder vorgesehene Fahrer, der nicht bestätigt ist. Serverseitig, kein reiner UI-Hinweis.
  *  Nimmt optional den Transaktions-Client entgegen, damit der Aufruf innerhalb von finalizeHandover keine zweite
  *  Datenbankverbindung braucht (sonst blockiert sich die Transaktion bei knappem Verbindungslimit selbst). */
-export async function driverVerificationBlockers(tenantId: string, handoverId: string, client: Tx | typeof db = db): Promise<{ code: string; message: string }[]> {
+export async function driverVerificationBlockers(tenantId: string, handoverId: VerificationScope, client: Tx | typeof db = db): Promise<{ code: string; message: string }[]> {
   const overview = await driverVerificationOverview(tenantId, handoverId, client);
+  const before = typeof handoverId === "string" ? "bevor übergeben werden kann" : "bevor der Nachtrag unterschrieben werden kann";
   return overview.filter((o) => o.status !== "CONFIRMED").map((o) => {
     const who = `${o.driver.firstName} ${o.driver.lastName}`;
-    if (o.status === "BLOCKED") return { code: "DRIVER_BLOCKED", message: `${who}: Prüfung ist blockiert und muss geklärt werden, bevor übergeben werden kann.` };
+    if (o.status === "BLOCKED") return { code: "DRIVER_BLOCKED", message: `${who}: Prüfung ist blockiert und muss geklärt werden, ${before}.` };
     if (o.status === "IN_PROGRESS") return { code: "DRIVER_INCOMPLETE", message: `${who}: Identitäts- oder Führerscheinprüfung ist noch nicht vollständig.` };
     // Befehl 20.9: bekannter Fahrer – die Stammdaten liegen vor, nur die Bestätigung für diese Übergabe fehlt
     if (o.repeat) return { code: "DRIVER_NOT_VERIFIED", message: `${who}: Dokumente für diese Übergabe noch nicht bestätigt.` };
