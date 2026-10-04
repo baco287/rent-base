@@ -120,6 +120,14 @@ export async function renderInvoicePdf(data: InvoiceDocumentData, logo: Uint8Arr
     sy += 3;
     row(amountLabel, data.totals.gross, { bold: true, size: 11 });
   }
+  // Befehl 27: Zahlungsstand (Saldoinformation, keine Rechnungsposition)
+  const pay = !counter ? data.paymentStatus ?? null : null;
+  if (pay) {
+    sy += 6;
+    pdf.textAt(`Zahlungsstand am ${pay.asOf}`, sx, sy, sw, { size: 8, color: COLORS.ink3 });
+    sy += 12;
+    for (const l of pay.lines) row(l.label, l.value, l.bold ? { bold: true, size: 10.5 } : {});
+  }
   pdf.y = sy + 6;
 
   const lines: string[] = [];
@@ -127,12 +135,15 @@ export async function renderInvoicePdf(data: InvoiceDocumentData, logo: Uint8Arr
   if (data.taxTreatmentNote) lines.push(data.taxTreatmentNote);
   else if (data.taxTreatmentLabel) lines.push(`Steuerliche Behandlung: ${data.taxTreatmentLabel}.`);
   if (counter) lines.push("Aus diesem Beleg kann sich ein Guthaben zu Ihren Gunsten ergeben, soweit die Rechnung bereits bezahlt wurde. Eine Erstattung ist mit diesem Beleg nicht verbunden; sie wird gesondert abgestimmt.");
+  else if (pay?.settled) lines.push(`Der Rechnungsbetrag ist vollständig ausgeglichen. Es ist keine Zahlung mehr erforderlich.${pay.creditCents > 0 ? ` Ein Guthaben von ${pay.credit} zu Ihren Gunsten wird gesondert abgestimmt.` : ""}`);
+  else if (pay && data.paymentDueDate) lines.push(`Bitte zahlen Sie den offenen Betrag von ${pay.open} bis ${data.paymentDueDate} ohne Abzug.`);
+  else if (pay) lines.push(`Bitte überweisen Sie den offenen Betrag von ${pay.open} unter Angabe der Rechnungsnummer.`);
   else if (data.paymentDueDate) lines.push(`Zahlbar bis ${data.paymentDueDate}${data.paymentTermDays != null ? ` (${data.paymentTermDays} Tage nach Rechnungsdatum)` : ""} ohne Abzug.`);
   else if (data.company.bankLines.length > 0) lines.push("Bitte überweisen Sie den Rechnungsbetrag unter Angabe der Rechnungsnummer.");
   if (data.taxNote && data.hasZeroRate) lines.push(data.taxNote);
   if (data.customerNote) lines.push(data.customerNote);
   for (const l of lines) pdf.paragraph(l, { size: 9, gapAfter: 5 });
-  if (data.company.bankLines.length > 0 && !counter) {
+  if (data.company.bankLines.length > 0 && !counter && !pay?.settled) {
     pdf.gap(2);
     pdf.keyValues(data.company.bankLines.map((l) => { const [label, ...rest] = l.split(": "); return { label, value: rest.join(": ") }; }), 1);
   }

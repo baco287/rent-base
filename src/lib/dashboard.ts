@@ -15,7 +15,7 @@ import { openDepositRows } from "@/lib/deposits";
 import { pickupDriverCheckStatus } from "@/lib/driver-verification";
 import { customerName, fmtDate, fmtDateTime, fmtTime } from "@/lib/format";
 import { maintenanceCounts } from "@/lib/maintenance";
-import { fmtCents, toCents, type Cents } from "@/lib/money";
+import { fmtCents, type Cents } from "@/lib/money";
 import { openPayoutClaims } from "@/lib/payouts";
 import { zonedDayRange, zonedDayStartPlus, zonedDaysBetween } from "@/lib/time";
 
@@ -106,7 +106,7 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
     db.emailLog.findMany({ where: { tenantId, status: "FAILED" }, select: { id: true, template: true, recipient: true, error: true, bookingId: true, payoutId: true, createdAt: true, lastAttemptAt: true, booking: { select: { number: true } } }, orderBy: { createdAt: "desc" }, take: LIST_CAP }),
     db.rentalContract.findMany({ where: { tenantId, status: "SIGNED", documents: { none: { type: "RENTAL_CONTRACT" } } }, select: { id: true, number: true, bookingId: true, signedAt: true, createdAt: true }, orderBy: { createdAt: "desc" }, take: LIST_CAP }),
     db.handover.findMany({ where: { tenantId, status: "FINALIZED", correctsId: null, corrections: { none: {} }, documents: { none: {} } }, select: { id: true, number: true, type: true, bookingId: true, finalizedAt: true }, orderBy: { finalizedAt: "desc" }, take: LIST_CAP }),
-    db.invoiceVersion.findMany({ where: { tenantId, status: "FINALIZED", documents: { none: {} }, invoice: { status: "FINALIZED" } }, select: { id: true, versionNo: true, invoice: { select: { id: true, number: true, documentType: true, bookingId: true, currentVersionId: true, finalizedAt: true } } }, orderBy: { finalizedAt: "desc" }, take: LIST_CAP * 2 }),
+    db.invoiceVersion.findMany({ where: { tenantId, status: "FINALIZED", documents: { none: {} }, invoice: { status: "FINALIZED" } }, select: { id: true, versionNo: true, invoice: { select: { id: true, number: true, documentType: true, kind: true, bookingId: true, currentVersionId: true, finalizedAt: true } } }, orderBy: { finalizedAt: "desc" }, take: LIST_CAP * 2 }),
     db.payout.findMany({ where: { tenantId, status: "COMPLETED", documents: { none: { type: "PAYOUT_RECEIPT" } } }, select: { id: true, number: true, completedAt: true, executedAt: true }, orderBy: { completedAt: "desc" }, take: LIST_CAP }),
   ]);
 
@@ -224,7 +224,7 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
   // --- Kautionen: Semantik aus Phase 15/18 (balanceOf, openPayoutClaims). Keine Verrechnung, keine Auslösung. ---
   for (const b of depositRows.expectedActive) {
     counts.depositsExpected++;
-    add({ area: "DEPOSIT", href: `/buchungen/${b.id}#kaution`, key: `deposit-expected-${b.id}`, group: "NOTE", title: `Kaution noch nicht erhalten · ${customerName(b.customer)}`, detail: `Buchung ${b.number} unterwegs · vereinbart ${fmtCents(toCents(b.contract?.deposit ?? 0))}`, at: b.startAt, status: "Eingang offen" });
+    add({ area: "DEPOSIT", href: `/buchungen/${b.id}#kaution`, key: `deposit-expected-${b.id}`, group: "NOTE", title: `Kaution noch nicht erhalten · ${customerName(b.customer)}`, detail: `Buchung ${b.number} unterwegs · vereinbart ${fmtCents(b.expectedDepositCents)}`, at: b.startAt, status: "Eingang offen" });
   }
   for (const d of depositRows.held) {
     counts.depositsHeld++;
@@ -289,7 +289,7 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
   // --- Fehlende Dokumente: nur wo die Architektur ein PDF vorsieht (abgeschlossene Verträge, Protokolle, Belege, Auszahlungen) ---
   for (const c of contractsNoDoc) { counts.documentsMissing++; add({ area: "DOCUMENT", href: `/buchungen/${c.bookingId}`, key: `doc-contract-${c.id}`, group: "NOTE", title: `Mietvertrag-PDF fehlt · ${c.number}`, detail: `abgeschlossen ${fmtDate(c.signedAt ?? c.createdAt)}`, at: c.signedAt ?? c.createdAt, status: "PDF noch nicht erzeugt" }); }
   for (const h of handoversNoDoc) { counts.documentsMissing++; add({ area: "DOCUMENT", href: `/buchungen/${h.bookingId}`, key: `doc-handover-${h.id}`, group: "NOTE", title: `${h.type === "PICKUP" ? "Übergabeprotokoll" : "Rückgabeprotokoll"}-PDF fehlt · ${h.number}`, detail: `finalisiert ${fmtDate(h.finalizedAt)}`, at: h.finalizedAt, status: "PDF noch nicht erzeugt" }); }
-  for (const v of versionsNoDoc.filter((x) => x.invoice.currentVersionId === x.id)) { counts.documentsMissing++; const t = (v.invoice.documentType === "CREDIT_NOTE" ? "CREDIT_NOTE" : v.invoice.documentType === "CANCELLATION" ? "CANCELLATION" : "INVOICE") as DocumentType; add({ area: "DOCUMENT", href: `/buchungen/${v.invoice.bookingId}/rechnung?nr=${v.invoice.id}`, key: `doc-invoice-${v.id}`, group: "NOTE", title: `${DOCUMENT_TYPES[t]}-PDF fehlt · ${v.invoice.number ?? ""}`, detail: `Fassung ${v.versionNo} · abgeschlossen ${fmtDate(v.invoice.finalizedAt)}`, at: v.invoice.finalizedAt, status: "PDF noch nicht erzeugt" }); }
+  for (const v of versionsNoDoc.filter((x) => x.invoice.currentVersionId === x.id)) { counts.documentsMissing++; const t = (v.invoice.documentType === "CREDIT_NOTE" ? "CREDIT_NOTE" : v.invoice.documentType === "CANCELLATION" ? "CANCELLATION" : "INVOICE") as DocumentType; add({ area: "DOCUMENT", href: invoiceHref(v.invoice), key: `doc-invoice-${v.id}`, group: "NOTE", title: `${DOCUMENT_TYPES[t]}-PDF fehlt · ${v.invoice.number ?? ""}`, detail: `Fassung ${v.versionNo} · abgeschlossen ${fmtDate(v.invoice.finalizedAt)}`, at: v.invoice.finalizedAt, status: "PDF noch nicht erzeugt" }); }
   for (const p of payoutsNoDoc) { counts.documentsMissing++; add({ area: "DOCUMENT", href: `/auszahlungen/${p.id}`, key: `doc-payout-${p.id}`, group: "NOTE", title: `Auszahlungsbeleg-PDF fehlt · ${p.number ?? ""}`, detail: `erfasst ${fmtDate(p.completedAt ?? p.executedAt)}`, at: p.completedAt ?? p.executedAt, status: "PDF noch nicht erzeugt" }); }
 
   // Sortierung: innerhalb der Gruppe nach Zeitpunkt (ältester/dringendster zuerst), ohne Zeitpunkt zuletzt, dann Bereich und Titel

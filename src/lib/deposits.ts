@@ -21,42 +21,9 @@ const TX = { timeout: 20_000, maxWait: 10_000 };
 export type DepositRow = Prisma.SecurityDepositGetPayload<object>;
 export type DepositEventRow = Prisma.SecurityDepositEventGetPayload<object>;
 
-/**
- * offsetCents (Befehl 20.7): mit Forderungen verrechnete Kaution – verbraucht, nicht mehr verfügbar, kein Einbehalt.
- * Befehl 22: offsetCents ist NETTO (Verrechnungen − Rückführungen aus Kundenguthaben); alle Salden rechnen damit.
- * offsetGrossCents / offsetReturnedCents zeigen die Herkunft: 95 verrechnet, davon 40 zurückgeführt, netto 55.
- */
-export type DepositBalance = { expectedCents: Cents; receivedCents: Cents; releasedCents: Cents; retainedCents: Cents; offsetCents: Cents; offsetGrossCents: Cents; offsetReturnedCents: Cents; remainingCents: Cents; status: DepositStatus };
-
-/**
- * Status aus den Summen. Nach einer Entscheidung (Freigabe/Einbehalt/Verrechnung) ist immer die ganze erhaltene Kaution
- * zugeordnet. Verrechnete Kaution zählt für den Status wie einbehalten (kein sechster Status – alle Anzeigen schalten auf
- * die fünf bekannten Werte); die Anzeige unterscheidet über offsetCents.
- */
-export function deriveDepositStatus(receivedCents: Cents, releasedCents: Cents, retainedCents: Cents, offsetCents: Cents = 0): DepositStatus {
-  if (receivedCents <= 0) return "EXPECTED";
-  const kept = retainedCents + offsetCents;
-  const settled = releasedCents + kept;
-  if (settled <= 0) return "RECEIVED";
-  if (settled < receivedCents) return "PARTIALLY_RELEASED";
-  if (kept === 0) return "RELEASED";
-  if (releasedCents === 0) return "RETAINED";
-  return "PARTIALLY_RELEASED";
-}
-
-export function balanceOf(expectedCents: Cents, events: { type: string; amountCents: number; status: string }[]): DepositBalance {
-  let receivedCents = 0, releasedCents = 0, retainedCents = 0, offsetGrossCents = 0, offsetReturnedCents = 0;
-  for (const e of events) {
-    if (e.status !== "CONFIRMED") continue;
-    if (e.type === "RECEIVED") receivedCents += e.amountCents;
-    else if (e.type === "RELEASED") releasedCents += e.amountCents;
-    else if (e.type === "RETAINED") retainedCents += e.amountCents;
-    else if (e.type === "OFFSET") offsetGrossCents += e.amountCents;
-    else if (e.type === "OFFSET_RETURN") offsetReturnedCents += e.amountCents;
-  }
-  const offsetCents = offsetGrossCents - offsetReturnedCents;
-  return { expectedCents, receivedCents, releasedCents, retainedCents, offsetCents, offsetGrossCents, offsetReturnedCents, remainingCents: receivedCents - releasedCents - retainedCents - offsetCents, status: deriveDepositStatus(receivedCents, releasedCents, retainedCents, offsetCents) };
-}
+// Befehl 27: reine Saldenrechnung in deposit-balance.ts (ohne Datenbank, ohne Zyklus zu lib/amendments); hier weiter exportiert
+export { balanceOf, deriveDepositStatus, type DepositBalance } from "@/lib/deposit-balance";
+import { balanceOf, deriveDepositStatus, type DepositBalance } from "@/lib/deposit-balance";
 
 /**
  * Phase 18: Kautionsstand mit Auszahlungsdimension. Freigabe (RELEASED) ist die Entscheidung, Auszahlung (Payout COMPLETED) der
@@ -394,7 +361,9 @@ export async function cancelDepositEvent(tenantId: string, actor: Actor, eventId
 export async function openDepositRows(tenantId: string) {
   const [candidates, expectedActive] = await Promise.all([
     db.securityDeposit.findMany({ where: { tenantId, status: { in: ["RECEIVED", "PARTIALLY_RELEASED"] }, booking: { status: { in: ["RETURNED", "CANCELLED"] } } }, include: { events: { select: { type: true, amountCents: true, status: true } }, booking: { select: { id: true, number: true, actualReturnAt: true, endAt: true, customer: { select: { type: true, firstName: true, lastName: true, companyName: true } } } } } }),
-    db.booking.findMany({ where: { tenantId, status: "ACTIVE", contract: { status: "SIGNED", deposit: { gt: 0 } }, OR: [{ securityDeposit: null }, { securityDeposit: { status: "EXPECTED" } }] }, select: { id: true, number: true, startAt: true, endAt: true, contract: { select: { deposit: true } }, customer: { select: { type: true, firstName: true, lastName: true, companyName: true } } }, orderBy: { startAt: "asc" } }),
+    // Befehl 27: vereinbart ist die Kaution laut wirksamem Vertragsstand (Vertrag + unterschriebene Nachträge)
+    db.booking.findMany({ where: { tenantId, status: "ACTIVE", contract: { status: "SIGNED" }, OR: [{ securityDeposit: null }, { securityDeposit: { status: "EXPECTED" } }] }, select: { id: true, number: true, startAt: true, endAt: true, contract: { select: { deposit: true, amendments: SIGNED_AMENDMENTS_SELECT } }, customer: { select: { type: true, firstName: true, lastName: true, companyName: true } } }, orderBy: { startAt: "asc" } })
+      .then((rows) => rows.map((b) => ({ ...b, expectedDepositCents: b.contract ? effectiveDepositCents(b.contract.deposit, b.contract.amendments) : 0 })).filter((b) => b.expectedDepositCents > 0)),
   ]);
   const held = candidates.map((d) => ({ ...d, balance: balanceOf(d.expectedAmountCents, d.events) })).filter((d) => d.balance.remainingCents > 0);
   return { held, expectedActive };

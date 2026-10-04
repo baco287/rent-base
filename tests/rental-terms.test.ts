@@ -264,7 +264,7 @@ test("Historie: abgeschlossener Vertrag behält Fassung, Text und PDF nach neuer
   assert.equal((await termsOverview(w.tenantId)).versions.find((v) => v.id === p1.id)?.usedInContracts, 1);
   await assert.rejects(() => db.rentalTermsVersion.delete({ where: { id: p1.id } }));
   // Storno: Fassung und Text bleiben
-  await changeBookingStatus(w.tenantId, w.bookingId, "CANCELLED");
+  await changeBookingStatus(w.tenantId, w.bookingId, "CANCELLED", { actor: w.actor, reason: "Test-Storno" });
   const cancelled = await db.rentalContract.findUniqueOrThrow({ where: { id: c.id } });
   assert.equal(cancelled.status, "CANCELLED");
   assert.equal(cancelled.rentalTermsVersionId, p1.id);

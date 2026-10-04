@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { customerName, fmtTime, toDateInput } from "@/lib/format";
+import { customerName, fmtDateTime, fmtTime, toDateInput } from "@/lib/format";
 import { Content, Empty, PageHeader, Plate } from "@/components/ui";
+import { isOverdue, occupiedUntil, occupyingWhere } from "@/lib/bookings";
 
 export const metadata = { title: "Dispo-Kalender" };
 
@@ -36,7 +37,8 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
   const [vehicles, bookings] = await Promise.all([
     db.vehicle.findMany({ where: { tenantId: tenant.id, status: { not: "INACTIVE" } }, include: { group: true }, orderBy: [{ group: { sortOrder: "asc" } }, { plate: "asc" }] }),
     db.booking.findMany({
-      where: { tenantId: tenant.id, status: { in: ["RESERVED", "ACTIVE"] }, startAt: { lt: to }, endAt: { gt: from } },
+      // Befehl 27: überfällige laufende Mieten bleiben sichtbar, bis die Rückgabe abgeschlossen ist (zentrale Definition)
+      where: { tenantId: tenant.id, ...occupyingWhere(from, to, new Date()) },
       include: { customer: true },
     }),
   ]);
@@ -119,8 +121,8 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
                       )}
                       {list.map((b) => {
                         const left = pct(b.startAt);
-                        const right = pct(b.endAt);
-                        const overdue = b.status === "ACTIVE" && b.endAt < now;
+                        const right = pct(occupiedUntil(b, now));
+                        const overdue = isOverdue(b, now);
                         const cls = overdue
                           ? "bg-bad-soft text-bad border-bad/50"
                           : b.status === "ACTIVE"
@@ -130,12 +132,13 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
                           <Link
                             key={b.id}
                             href={`/buchungen/${b.id}`}
-                            title={`${b.number} · ${customerName(b.customer)} · ${fmtTime(b.startAt)} bis ${fmtTime(b.endAt)}`}
+                            title={`${b.number} · ${customerName(b.customer)} · ${fmtTime(b.startAt)} bis ${fmtTime(b.endAt)}${overdue ? ` · Rückgabe überfällig (geplant ${fmtDateTime(b.endAt)})` : ""}`}
                             className={`absolute top-2 h-8 rounded-md border px-2 flex items-center gap-2 font-medium whitespace-nowrap overflow-hidden text-[12px] ${cls}`}
                             style={{ left: `calc(${left}% + 2px)`, width: `calc(${Math.max(right - left, 1.5)}% - 4px)` }}
                           >
+                            {overdue && <b className="font-semibold">Rückgabe überfällig</b>}
                             {customerName(b.customer)}
-                            <small className="opacity-80 font-normal">{fmtTime(b.startAt)}</small>
+                            <small className="opacity-80 font-normal">{overdue ? `geplant ${fmtDateTime(b.endAt)}` : fmtTime(b.startAt)}</small>
                           </Link>
                         );
                       })}

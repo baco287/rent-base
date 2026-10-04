@@ -528,6 +528,11 @@ model Booking {
   extraKmRate      Decimal?
   actualPickupAt   DateTime? // gesetzt beim Finalisieren der Übergabe
   actualReturnAt   DateTime? // gesetzt beim Finalisieren der Rückgabe
+  // Befehl 27: Storno mit Pflichtgrund (ältere Stornos ohne Angaben); zusätzlich Audit BOOKING_CANCELLED
+  cancelledAt        DateTime?
+  cancellationReason String?
+  cancelledById      String?
+  cancelledByName    String?
   notes            String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
@@ -803,6 +808,7 @@ model Damage {
   reportedById           String?
   repairedAt             DateTime?
   repairNote             String?
+  note                   String? // Befehl 27: interne Notiz bei manueller Erfassung (ohne Protokoll)
   settlementReview       Boolean   @default(false) // bei Rückgabe festgestellt: Schadenabrechnung ist intern zu prüfen (keine Haftungsfeststellung)
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
@@ -2240,6 +2246,7 @@ model ContractAmendment {
   priceReason         String?
   newKmIncludedPerDay Int?
   newExtraKmRate      Decimal?
+  newKmPolicy         String? // Befehl 27: UNLIMITED | FREE_KILOMETERS (Kilometerregel neu)
   newDepositCents     Int? // vereinbarte Kaution neu (nie eine Kautionsbewegung)
   newReturnLocation   String?
   agreementText       String? // sonstige Vereinbarung, reiner Text

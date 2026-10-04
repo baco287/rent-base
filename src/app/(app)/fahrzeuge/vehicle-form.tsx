@@ -30,6 +30,7 @@ export type VehicleFormValues = {
   vin: string;
   color: string;
   mileage: string;
+  tankCapacityLiters: string;
   huDate: string;
   dailyRate: string;
   workWeekRate: string;
@@ -44,7 +45,7 @@ export type VehicleFormValues = {
 
 export const emptyVehicle: VehicleFormValues = {
   plate: "", make: "", model: "", groupId: "", fuel: "DIESEL", status: "AVAILABLE",
-  year: "", vin: "", color: "", mileage: "0", huDate: "", dailyRate: "", workWeekRate: "", weeklyRate: "", monthlyRate: "",
+  year: "", vin: "", color: "", mileage: "0", tankCapacityLiters: "", huDate: "", dailyRate: "", workWeekRate: "", weeklyRate: "", monthlyRate: "",
   kmIncludedPerDay: "200", extraKmRate: "0,25", deposit: "", notes: "", requiredLicenseClass: "",
 };
 
@@ -63,6 +64,10 @@ export function VehicleForm({
 }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   const [groupId, setGroupId] = useState(values.groupId);
+  const [fuel, setFuel] = useState(values.fuel);
+  const [mileage, setMileage] = useState(values.mileage);
+  // Befehl 27: Korrektur nach unten nur mit Grund (Prüfung im Server; hier nur das passende Feld einblenden)
+  const lowering = values.mileage !== "" && mileage !== "" && Number(mileage) < Number(values.mileage);
   const [prices, setPrices] = useState({
     dailyRate: values.dailyRate,
     workWeekRate: values.workWeekRate,
@@ -100,7 +105,7 @@ export function VehicleForm({
         <input id="plate" name="plate" defaultValue={v.plate} required className="input font-mono uppercase" placeholder="H-MB 2041" />
       </Field>
       <Field label="Kraftstoff" htmlFor="fuel">
-        <select id="fuel" name="fuel" defaultValue={v.fuel} className="input">
+        <select id="fuel" name="fuel" value={fuel} onChange={(e) => setFuel(e.target.value)} className="input">
           {Object.entries(FUELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
         </select>
       </Field>
@@ -120,8 +125,18 @@ export function VehicleForm({
         <input id="vin" name="vin" defaultValue={v.vin} className="input font-mono" maxLength={17} />
       </Field>
       <Field label="Kilometerstand" htmlFor="mileage">
-        <input id="mileage" name="mileage" type="number" min={0} defaultValue={v.mileage} required className="input tnum" />
+        <input id="mileage" name="mileage" type="number" min={0} value={mileage} onChange={(e) => setMileage(e.target.value)} required className="input tnum" />
       </Field>
+      {lowering && (
+        <Field label="Grund der Kilometerkorrektur" htmlFor="mileageCorrectionReason" hint={`Der dokumentierte Stand ist ${Number(values.mileage).toLocaleString("de-DE")} km. Eine Korrektur nach unten wird mit Grund in der Fahrzeughistorie festgehalten.`}>
+          <input id="mileageCorrectionReason" name="mileageCorrectionReason" required minLength={3} maxLength={300} className="input" placeholder="z. B. Tippfehler bei der Erfassung" />
+        </Field>
+      )}
+      {fuel !== "ELEKTRO" && (
+        <Field label="Tankgröße (Liter)" htmlFor="tankCapacityLiters" hint="Für die Berechnung fehlenden Kraftstoffs bei der Rückgabe">
+          <input id="tankCapacityLiters" name="tankCapacityLiters" type="number" min={5} max={300} step={1} inputMode="numeric" defaultValue={v.tankCapacityLiters} className="input tnum" placeholder="z. B. 70" />
+        </Field>
+      )}
       <Field label="HU fällig" htmlFor="huDate" hint="Hauptuntersuchung, Datum aus der Plakette">
         <input id="huDate" name="huDate" type="date" defaultValue={v.huDate} className="input" />
       </Field>

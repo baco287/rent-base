@@ -6,6 +6,8 @@
 // Erweiterbarkeit: neue Regeln (Wochenendpreise, Saison, Mindestmiete) kommen als weitere Strategie
 // oder als Schritt in der Pipeline dazu, ohne dass Aufrufer sich ändern.
 
+import { zoneOffsetMinutes } from "@/lib/time";
+
 export type PriceTier = "DAY" | "WORK_WEEK" | "WEEK" | "MONTH";
 
 /** Preisstufen in Euro brutto. Nicht gesetzte Stufen werden ignoriert. */
@@ -57,11 +59,17 @@ export function toNumber(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Anzahl Miettage: angefangene 24 Stunden zählen als voller Tag, mindestens 1. */
+/**
+ * Anzahl Miettage: angefangene 24 Stunden zählen als voller Tag, mindestens 1.
+ * Befehl 27: gezählt wird in Ortszeit (Wandzeit Europe/Berlin), nicht in absoluten Stunden. Samstag 10:00 bis Montag 10:00
+ * sind damit immer 2 Tage – auch über die Zeitumstellung (Ende Oktober 49 echte Stunden, Ende März 47). Eine echte
+ * Überziehung (z. B. Montag 10:01) beginnt weiterhin einen neuen Tag.
+ */
 export function rentalDays(start: Date, end: Date): number {
   const ms = end.getTime() - start.getTime();
   if (!Number.isFinite(ms) || ms <= 0) return 0;
-  return Math.max(1, Math.ceil(ms / (24 * 60 * 60 * 1000)));
+  const wallMs = ms + (zoneOffsetMinutes(end) - zoneOffsetMinutes(start)) * 60_000;
+  return Math.max(1, Math.ceil(wallMs / (24 * 60 * 60 * 1000)));
 }
 
 function normalizeRates(r: RateCard) {

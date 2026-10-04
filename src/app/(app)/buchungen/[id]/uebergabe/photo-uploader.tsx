@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 const MAX_EDGE = 2000;
 
 /** Verkleinert ein Foto im Browser auf höchstens 2000 px Kantenlänge und wandelt es in JPEG. Spart Datenvolumen auf dem Hof. */
-async function downscale(file: File): Promise<Blob> {
+export async function downscale(file: File): Promise<Blob> {
   try {
     const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
     const scale = Math.min(1, MAX_EDGE / Math.max(bitmap.width, bitmap.height));

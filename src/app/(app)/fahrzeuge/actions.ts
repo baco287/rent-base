@@ -11,6 +11,7 @@ import { RuleError } from "@/lib/business-rules";
 import { overridesFromForm } from "@/lib/business-rules-form";
 import { FUELS, VEHICLE_STATUS } from "@/lib/constants";
 import { assertVehicleLimit } from "@/lib/subscriptions";
+import { normalizeTankCapacity, updateVehicleMasterData } from "@/lib/vehicle-master";
 import { DomainError } from "@/lib/integrity";
 import { normalizePlate } from "@/lib/format";
 
@@ -33,6 +34,9 @@ const vehicleSchema = z.object({
   vin: optStr,
   color: optStr,
   mileage: num("Kilometerstand muss eine Zahl sein.").pipe(z.number().int().min(0)),
+  // Befehl 27: Tankgröße in ganzen Litern (Verbrenner/Hybrid); Grund nur für eine Korrektur des Kilometerstands nach unten
+  tankCapacityLiters: z.preprocess((v) => (v === "" || v == null ? undefined : typeof v === "string" ? v.replace(",", ".").trim() : v), z.coerce.number({ message: "Tankgröße: bitte eine Zahl in Litern eingeben." }).optional()),
+  mileageCorrectionReason: optStr,
   huDate: optDate,
   requiredLicenseClass: optStr,
   dailyRate: num("Tagespreis muss eine Zahl sein.").pipe(z.number().min(0)),
@@ -45,9 +49,12 @@ const vehicleSchema = z.object({
   notes: optStr,
 });
 
-function toData(d: z.infer<typeof vehicleSchema>) {
+function toData(raw: z.infer<typeof vehicleSchema>) {
+  const { mileageCorrectionReason, ...d } = raw;
+  void mileageCorrectionReason;
   return {
     ...d,
+    tankCapacityLiters: normalizeTankCapacity(d.fuel, d.tankCapacityLiters ?? null),
     vin: d.vin ?? null,
     color: d.color ?? null,
     year: d.year ?? null,
@@ -82,6 +89,7 @@ export async function createVehicleAction(_prev: FormState, formData: FormData):
     const v = await db.vehicle.create({ data: { tenantId: tenant.id, ...toData(parsed.data) } });
     id = v.id;
   } catch (e) {
+    if (e instanceof DomainError) return { error: e.message };
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")
       return { error: `Das Kennzeichen ${parsed.data.plate} ist bereits angelegt.` };
     throw e;
@@ -91,18 +99,18 @@ export async function createVehicleAction(_prev: FormState, formData: FormData):
 }
 
 export async function updateVehicleAction(id: string, _prev: FormState, formData: FormData): Promise<FormState> {
-  const { tenant } = await requireRole("DISPO");
+  const { tenant, user } = await requireRole("DISPO");
   const parsed = vehicleSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   if (!(await groupBelongsToTenant(parsed.data.groupId, tenant.id))) return { error: "Fahrzeuggruppe nicht gefunden." };
 
   try {
-    // tenantId in der where-Klausel: niemand kann fremde Fahrzeuge ändern.
-    const r = await db.vehicle.updateMany({ where: { id, tenantId: tenant.id }, data: toData(parsed.data) });
-    if (r.count === 0) return { error: "Fahrzeug nicht gefunden." };
-    // HU/AU-Plan und HU-Datum am Fahrzeug bleiben synchron (der Plan ist die Fälligkeit, das Datum die Stammdatenansicht)
-    await db.maintenancePlan.updateMany({ where: { tenantId: tenant.id, vehicleId: id, type: "HU_AU", isActive: true }, data: { nextDueDate: parsed.data.huDate ?? null } });
+    // Befehl 27: Status und Kilometerstand nicht still – zentrale Prüfung, Historie und Audit (lib/vehicle-master.ts);
+    // Fahrzeug wird über tenantId gesperrt und gelesen, fremde Fahrzeuge sind „nicht gefunden“
+    const data = toData(parsed.data);
+    await updateVehicleMasterData(tenant.id, { id: user.id, name: user.name }, id, { ...data, huDate: data.huDate }, { mileageCorrectionReason: parsed.data.mileageCorrectionReason ?? null });
   } catch (e) {
+    if (e instanceof DomainError) return { error: e.message };
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")
       return { error: `Das Kennzeichen ${parsed.data.plate} ist bereits angelegt.` };
     throw e;

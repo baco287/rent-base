@@ -16,8 +16,10 @@
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { recordAudit, type Actor } from "@/lib/audit";
-import { assertVehicleBookable, vehicleStatusProblem } from "@/lib/bookings";
-import { AMENDMENT_CHANGE_KINDS, type AmendmentChangeKind } from "@/lib/constants";
+import { assertVehicleBookable, findConflicts, vehicleStatusProblem } from "@/lib/bookings";
+import { readContractRules } from "@/lib/business-rules";
+import { balanceOf } from "@/lib/deposit-balance";
+import { AMENDMENT_CHANGE_KINDS, KM_POLICIES, type AmendmentChangeKind, type KmPolicy } from "@/lib/constants";
 import { assertLinkedCustomer, driverData, type CustomerSnapshot, type DriverInput, type VehicleSnapshot } from "@/lib/contracts";
 import { driverVerificationBlockers } from "@/lib/driver-verification";
 import { fmtDate, fmtDateTime } from "@/lib/format";
@@ -49,6 +51,8 @@ export type EffectiveContractState = {
   totalCents: Cents;
   kmIncludedPerDay: number;
   extraKmRate: number;
+  /** Befehl 27: Kilometerregel laut Vertrag (Geschäftsregel-Schnappschuss) bzw. letztem Nachtrag; ohne Schnappschuss Freikilometer */
+  kmPolicy: KmPolicy;
   depositCents: Cents;
   returnLocation: string | null;
   pickupLocation: string | null;
@@ -60,8 +64,14 @@ export type EffectiveContractState = {
   changedBy: { endAt: string | null; total: string | null; km: string | null; deposit: string | null; returnLocation: string | null };
   amendments: AmendmentRow[];
   /** Stand des Originalvertrags (nie verändert) */
-  original: { endAt: Date; totalCents: Cents; kmIncludedPerDay: number; extraKmRate: number; depositCents: Cents; returnLocation: string | null };
+  original: { endAt: Date; totalCents: Cents; kmIncludedPerDay: number; extraKmRate: number; kmPolicy: KmPolicy; depositCents: Cents; returnLocation: string | null };
 };
+
+/** Kilometerregel aus dem eingefrorenen Regel-Schnappschuss des Vertrags (ältere Verträge ohne Schnappschuss: Freikilometer). */
+export function contractKmPolicy(conditions: unknown): KmPolicy {
+  const v = readContractRules(conditions)?.values.kmPolicy;
+  return v && v in KM_POLICIES ? (v as KmPolicy) : "FREE_KILOMETERS";
+}
 
 export async function effectiveContractState(tenantId: string, contractId: string, client: Client = db): Promise<EffectiveContractState> {
   const c = await client.rentalContract.findFirst({ where: { id: contractId, tenantId }, include: { drivers: { orderBy: [{ role: "desc" }, { createdAt: "asc" }] }, amendments: { where: { status: "SIGNED" }, orderBy: { sequenceNo: "asc" } } } });
@@ -72,7 +82,7 @@ export async function effectiveContractState(tenantId: string, contractId: strin
 /** Reine Ableitung (testbar ohne Datenbank): Vertrag + unterschriebene Nachträge in sequenceNo-Reihenfolge. */
 export function applyAmendments(c: Prisma.RentalContractGetPayload<object>, drivers: DriverRow[], signed: AmendmentRow[]): EffectiveContractState {
   const ordered = [...signed].filter((a) => a.status === "SIGNED").sort((a, b) => (a.sequenceNo ?? 0) - (b.sequenceNo ?? 0));
-  const original = { endAt: c.endAt, totalCents: toCents(c.totalAmount), kmIncludedPerDay: c.kmIncludedPerDay, extraKmRate: toNumber(c.extraKmRate) ?? 0, depositCents: toCents(c.deposit), returnLocation: c.returnLocation };
+  const original = { endAt: c.endAt, totalCents: toCents(c.totalAmount), kmIncludedPerDay: c.kmIncludedPerDay, extraKmRate: toNumber(c.extraKmRate) ?? 0, kmPolicy: contractKmPolicy(c.conditions), depositCents: toCents(c.deposit), returnLocation: c.returnLocation };
   const state = { ...original, pickupLocation: c.pickupLocation };
   const changedBy = { endAt: null as string | null, total: null as string | null, km: null as string | null, deposit: null as string | null, returnLocation: null as string | null };
   const agreements: { number: string; text: string }[] = [];
@@ -81,6 +91,7 @@ export function applyAmendments(c: Prisma.RentalContractGetPayload<object>, driv
     if (a.priceDeltaCents) { state.totalCents += a.priceDeltaCents; changedBy.total = a.number; }
     if (a.newKmIncludedPerDay != null) { state.kmIncludedPerDay = a.newKmIncludedPerDay; changedBy.km = a.number; }
     if (a.newExtraKmRate != null) { state.extraKmRate = toNumber(a.newExtraKmRate) ?? state.extraKmRate; changedBy.km = a.number; }
+    if (a.newKmPolicy && a.newKmPolicy in KM_POLICIES) { state.kmPolicy = a.newKmPolicy as KmPolicy; changedBy.km = a.number; }
     if (a.newDepositCents != null) { state.depositCents = a.newDepositCents; changedBy.deposit = a.number; }
     if (a.newReturnLocation != null) { state.returnLocation = a.newReturnLocation; changedBy.returnLocation = a.number; }
     if (a.agreementText) agreements.push({ number: a.number ?? "", text: a.agreementText });
@@ -97,12 +108,12 @@ export function applyAmendments(c: Prisma.RentalContractGetPayload<object>, driv
  * Rechnung, Kaution, Übergabe und Anzeige, damit vorhandene Logik unverändert „den Vertrag“ liest. Die Zeile in der
  * Datenbank bleibt unverändert; der Originalstand steht in `amended.original`.
  */
-export type EffectiveContractRow = Prisma.RentalContractGetPayload<object> & { amended: { numbers: string[]; changedBy: EffectiveContractState["changedBy"]; original: EffectiveContractState["original"]; totalCents: Cents } };
+export type EffectiveContractRow = Prisma.RentalContractGetPayload<object> & { amended: { numbers: string[]; changedBy: EffectiveContractState["changedBy"]; original: EffectiveContractState["original"]; totalCents: Cents; kmPolicy: KmPolicy } };
 
 export function overlayAmendments(contract: Prisma.RentalContractGetPayload<object>, signed: AmendmentRow[]): EffectiveContractRow {
   const st = applyAmendments(contract, [], signed);
   const dec = (cents: Cents) => new Prisma.Decimal((cents / 100).toFixed(2));
-  return { ...contract, endAt: st.endAt, totalAmount: dec(st.totalCents), kmIncludedPerDay: st.kmIncludedPerDay, extraKmRate: new Prisma.Decimal(st.extraKmRate), deposit: dec(st.depositCents), returnLocation: st.returnLocation, amended: { numbers: st.amendments.map((a) => a.number ?? ""), changedBy: st.changedBy, original: st.original, totalCents: st.totalCents } };
+  return { ...contract, endAt: st.endAt, totalAmount: dec(st.totalCents), kmIncludedPerDay: st.kmIncludedPerDay, extraKmRate: new Prisma.Decimal(st.extraKmRate), deposit: dec(st.depositCents), returnLocation: st.returnLocation, amended: { numbers: st.amendments.map((a) => a.number ?? ""), changedBy: st.changedBy, original: st.original, totalCents: st.totalCents, kmPolicy: st.kmPolicy } };
 }
 
 /** Lädt die unterschriebenen Nachträge zum Vertrag und überlagert sie (bei nicht unterschriebenem Vertrag unverändert). */
@@ -192,6 +203,8 @@ export type AmendmentChangesInput = {
   priceReason?: string | null;
   newKmIncludedPerDay?: number | null;
   newExtraKmRate?: number | null;
+  /** Befehl 27: Kilometerregel neu (Unbegrenzt / Freikilometer); null = Änderung entfernen */
+  newKmPolicy?: "UNLIMITED" | "FREE_KILOMETERS" | null;
   newDepositCents?: Cents | null;
   newReturnLocation?: string | null;
   agreementText?: string | null;
@@ -210,6 +223,21 @@ export function extensionPriceProposal(contract: Prisma.RentalContractGetPayload
   if (!rates || typeof rates.dailyRate !== "number") return null;
   const price = (end: Date) => calculateRentalPrice({ start: contract.startAt, end, rates: { dailyRate: rates.dailyRate ?? 0, workWeekRate: rates.workWeekRate ?? null, weeklyRate: rates.weeklyRate ?? null, monthlyRate: rates.monthlyRate ?? null }, discountPercent: contract.discountPercent, strategy: snap?.strategy }).total;
   return Math.round((price(newEndAt) - price(currentEndAt)) * 100);
+}
+
+/**
+ * Befehl 27: Die vereinbarte Kaution darf nie unter die bestätigt erhaltene Kaution sinken – dieselbe Regel, die die Datenbank
+ * bei jeder Kautionsbewegung prüft (rb_check_deposit_event: „Mehr Kaution erhalten als vereinbart“) und seit Migration
+ * 20261019 auch bei der Änderung der vereinbarten Höhe (rb_check_deposit). Maßgeblich ist die zentrale Saldenrechnung
+ * (balanceOf): nur bestätigte Eingänge, stornierte Bewegungen zählen nicht. Freigaben, Einbehalte und Verrechnungen ändern
+ * „erhalten“ nicht – sie verteilen die erhaltene Kaution.
+ */
+export async function depositFloorProblem(client: Client, tenantId: string, bookingId: string, newDepositCents: Cents): Promise<string | null> {
+  const dep = await client.securityDeposit.findFirst({ where: { tenantId, bookingId }, select: { expectedAmountCents: true, events: { select: { type: true, amountCents: true, status: true } } } });
+  if (!dep) return null;
+  const { receivedCents } = balanceOf(dep.expectedAmountCents, dep.events);
+  if (newDepositCents >= receivedCents) return null;
+  return `Die vereinbarte Kaution kann nicht auf ${fmtCents(newDepositCents)} reduziert werden, da bereits ${fmtCents(receivedCents)} Kaution als erhalten dokumentiert wurden.`;
 }
 
 /** Entwurf ändern. Jede Änderung macht vorhandene Unterschriften ungültig (sie werden entfernt). */
@@ -243,9 +271,18 @@ export async function updateAmendmentDraft(tenantId: string, actor: Actor, amend
       if (input.newExtraKmRate != null && (!Number.isFinite(input.newExtraKmRate) || input.newExtraKmRate < 0 || input.newExtraKmRate > 100)) throw new DomainError("Mehrkilometerpreis: bitte einen Betrag ab 0,00 € je km angeben.");
       data.newExtraKmRate = input.newExtraKmRate;
     }
+    if (input.newKmPolicy !== undefined) {
+      if (input.newKmPolicy != null && !(input.newKmPolicy === "UNLIMITED" || input.newKmPolicy === "FREE_KILOMETERS")) throw new DomainError("Unbekannte Kilometerregel.");
+      if (input.newKmPolicy != null && input.newKmPolicy === eff.kmPolicy) throw new DomainError(`Die Kilometerregel „${KM_POLICIES[eff.kmPolicy]}“ ist bereits vereinbart.`);
+      data.newKmPolicy = input.newKmPolicy;
+    }
     if (input.newDepositCents !== undefined) {
       if (input.newDepositCents != null && (!Number.isInteger(input.newDepositCents) || input.newDepositCents < 0)) throw new DomainError("Die vereinbarte Kaution darf nicht negativ sein.");
       if (input.newDepositCents != null && input.newDepositCents === eff.depositCents) throw new DomainError("Die vereinbarte Kaution entspricht der bisherigen.");
+      if (input.newDepositCents != null) {
+        const floor = await depositFloorProblem(tx, tenantId, a.bookingId, input.newDepositCents);
+        if (floor) throw new DomainError(floor);
+      }
       data.newDepositCents = input.newDepositCents;
     }
     if (input.newReturnLocation !== undefined) data.newReturnLocation = input.newReturnLocation === null ? null : cleanText(input.newReturnLocation, 200);
@@ -336,9 +373,13 @@ export function describeChanges(a: AmendmentRow, eff: EffectiveContractState, dr
   if (a.priceDeltaCents) {
     out.push({ kind: "PRICE", label: AMENDMENT_CHANGE_KINDS.PRICE, before: eur(eff.totalCents), after: eur(eff.totalCents + a.priceDeltaCents), note: `Änderung ${a.priceDeltaCents > 0 ? "+" : "−"}${eur(Math.abs(a.priceDeltaCents))}${a.priceReason ? ` · ${a.priceReason}` : ""}` });
   }
-  if (a.newKmIncludedPerDay != null || a.newExtraKmRate != null) {
+  if (a.newKmIncludedPerDay != null || a.newExtraKmRate != null || a.newKmPolicy) {
     const rate = (v: number) => `${v.toLocaleString("de-DE", { minimumFractionDigits: 2 })} €/km`;
-    out.push({ kind: "KM", label: AMENDMENT_CHANGE_KINDS.KM, before: `${eff.kmIncludedPerDay} km/Tag · ${rate(eff.extraKmRate)}`, after: `${a.newKmIncludedPerDay ?? eff.kmIncludedPerDay} km/Tag · ${rate(a.newExtraKmRate != null ? toNumber(a.newExtraKmRate) ?? eff.extraKmRate : eff.extraKmRate)}`, note: "gilt für die gesamte Mietdauer" });
+    const label = (policy: string, km: number, r: number) => (policy === "UNLIMITED" ? KM_POLICIES.UNLIMITED : `${km} km/Tag · ${rate(r)}`);
+    const newPolicy = (a.newKmPolicy as KmPolicy | null) ?? eff.kmPolicy;
+    const newKm = a.newKmIncludedPerDay ?? eff.kmIncludedPerDay;
+    const newRate = a.newExtraKmRate != null ? toNumber(a.newExtraKmRate) ?? eff.extraKmRate : eff.extraKmRate;
+    out.push({ kind: "KM", label: AMENDMENT_CHANGE_KINDS.KM, before: label(eff.kmPolicy, eff.kmIncludedPerDay, eff.extraKmRate), after: label(newPolicy, newKm, newRate), note: newPolicy === "UNLIMITED" ? "keine Mehrkilometer für die gesamte Mietdauer" : "gilt für die gesamte Mietdauer" });
   }
   for (const d of drivers.filter((d) => d.addedByAmendmentId === a.id)) out.push({ kind: "DRIVER_ADDED", label: AMENDMENT_CHANGE_KINDS.DRIVER_ADDED, before: "–", after: `${d.firstName} ${d.lastName} (${fmtDate(d.birthDate)}, Klasse ${d.licenseClass})` });
   for (const d of drivers.filter((d) => d.removedByAmendmentId === a.id)) out.push({ kind: "DRIVER_REMOVED", label: AMENDMENT_CHANGE_KINDS.DRIVER_REMOVED, before: `${d.firstName} ${d.lastName}`, after: "nicht mehr als Zusatzfahrer vereinbart" });
@@ -355,7 +396,7 @@ function signedContent(a: LoadedAmendment, eff: EffectiveContractState) {
   return {
     contractId: a.contractId, contractNumber: a.contract.number, contractHash: a.contract.contentHash, bookingId: a.bookingId,
     base: { endAt: eff.endAt, totalCents: eff.totalCents, kmIncludedPerDay: eff.kmIncludedPerDay, extraKmRate: eff.extraKmRate, depositCents: eff.depositCents, returnLocation: eff.returnLocation, priorAmendments: eff.amendments.map((x) => x.number) },
-    changes: { newEndAt: a.newEndAt, priceDeltaCents: a.priceDeltaCents, priceReason: a.priceReason, newKmIncludedPerDay: a.newKmIncludedPerDay, newExtraKmRate: toNumber(a.newExtraKmRate), newDepositCents: a.newDepositCents, newReturnLocation: a.newReturnLocation, agreementText: a.agreementText, added, removed },
+    changes: { newEndAt: a.newEndAt, priceDeltaCents: a.priceDeltaCents, priceReason: a.priceReason, newKmIncludedPerDay: a.newKmIncludedPerDay, newExtraKmRate: toNumber(a.newExtraKmRate), ...(a.newKmPolicy ? { newKmPolicy: a.newKmPolicy } : {}), newDepositCents: a.newDepositCents, newReturnLocation: a.newReturnLocation, agreementText: a.agreementText, added, removed },
   };
 }
 
@@ -372,23 +413,27 @@ async function collectIssues(client: Client, tenantId: string, a: LoadedAmendmen
   const eff = applyAmendments(a.contract, a.contract.drivers, a.contract.amendments);
   const added = a.contract.drivers.filter((d) => d.addedByAmendmentId === a.id);
   const removed = a.contract.drivers.filter((d) => d.removedByAmendmentId === a.id);
-  const hasChange = !!a.newEndAt || !!a.priceDeltaCents || a.newKmIncludedPerDay != null || a.newExtraKmRate != null || a.newDepositCents != null || a.newReturnLocation != null || !!a.agreementText || added.length > 0 || removed.length > 0;
+  const hasChange = !!a.newEndAt || !!a.priceDeltaCents || a.newKmIncludedPerDay != null || a.newExtraKmRate != null || !!a.newKmPolicy || a.newDepositCents != null || a.newReturnLocation != null || !!a.agreementText || added.length > 0 || removed.length > 0;
   if (!hasChange) err("NO_CHANGES", "Der Nachtrag enthält noch keine Änderung.");
   if (a.booking.status === "RETURNED" || a.booking.status === "CANCELLED") err("BOOKING_STATUS", "Die Miete ist beendet oder storniert; der Nachtrag kann nicht mehr wirksam werden.");
   if (a.newEndAt) {
     const vehicle = await client.vehicle.findFirst({ where: { id: a.booking.vehicleId, tenantId }, select: { status: true, plate: true } });
     const problem = vehicle ? vehicleStatusProblem(vehicle.status) : null;
     if (problem) err("VEHICLE_STATUS", problem);
-    const conflicts = await client.booking.findMany({ where: { tenantId, vehicleId: a.booking.vehicleId, status: { in: ["RESERVED", "ACTIVE"] }, id: { not: a.bookingId }, startAt: { lt: a.newEndAt }, endAt: { gt: a.contract.startAt } }, select: { number: true, startAt: true }, orderBy: { startAt: "asc" } });
+    const conflicts = await findConflicts(client, tenantId, a.booking.vehicleId, a.contract.startAt, a.newEndAt, a.bookingId);
     for (const c of conflicts) err("CONFLICT", `Verlängerung nicht möglich. Das Fahrzeug ist ab ${fmtDateTime(c.startAt)} bereits für Buchung ${c.number} eingeplant.`);
   }
-  if (a.newEndAt || a.newKmIncludedPerDay != null || a.newExtraKmRate != null) {
+  if (a.newEndAt || a.newKmIncludedPerDay != null || a.newExtraKmRate != null || a.newKmPolicy) {
     // Mietdauer/Kilometer fließen in den Rückgabevergleich: eine bereits begonnene Rückgabe wird nicht unter der Hand verändert
     const openReturn = await client.handover.findFirst({ where: { tenantId, bookingId: a.bookingId, type: "RETURN", status: "DRAFT" }, select: { number: true } });
     if (openReturn) err("RETURN_STARTED", `Die Rückgabe (${openReturn.number}) ist bereits begonnen. Mietdauer und Kilometervereinbarung können jetzt nicht mehr durch Nachtrag geändert werden.`);
   }
   if (a.priceDeltaCents && a.priceDeltaCents !== (a.priceProposalCents ?? null) && !(a.priceReason && a.priceReason.trim().length >= 3)) err("PRICE_REASON", "Bitte die Preisänderung begründen (abweichend vom Vorschlag der Preislogik bzw. manuelle Preisänderung).");
   if (a.priceDeltaCents && eff.totalCents + a.priceDeltaCents < 0) err("PRICE_NEGATIVE", "Der Vertragsgesamtpreis würde negativ.");
+  if (a.newDepositCents != null) {
+    const floor = await depositFloorProblem(client, tenantId, a.bookingId, a.newDepositCents);
+    if (floor) err("DEPOSIT_BELOW_RECEIVED", floor);
+  }
   if (added.length > 0) for (const b of await driverVerificationBlockers(tenantId, { amendmentId: a.id }, client)) err(b.code, b.message);
   if (removed.some((d) => d.role === "PRIMARY_DRIVER")) err("PRIMARY_DRIVER", "Der Hauptfahrer kann nicht herausgenommen werden.");
   if (opts.requireSignature) {
@@ -450,8 +495,8 @@ export type AmendmentSnapshot = {
   contract: { id: string; number: string; contentHash: string | null; startAt: string; signedAt: string | null };
   bookingNumber: string;
   priorAmendments: { number: string; signedAt: string | null }[];
-  before: { endAt: string; totalCents: Cents; kmIncludedPerDay: number; extraKmRate: number; depositCents: Cents; returnLocation: string | null; drivers: { role: string; name: string }[] };
-  after: { endAt: string; totalCents: Cents; kmIncludedPerDay: number; extraKmRate: number; depositCents: Cents; returnLocation: string | null; drivers: { role: string; name: string }[] };
+  before: { endAt: string; totalCents: Cents; kmIncludedPerDay: number; extraKmRate: number; kmPolicy?: KmPolicy; depositCents: Cents; returnLocation: string | null; drivers: { role: string; name: string }[] };
+  after: { endAt: string; totalCents: Cents; kmIncludedPerDay: number; extraKmRate: number; kmPolicy?: KmPolicy; depositCents: Cents; returnLocation: string | null; drivers: { role: string; name: string }[] };
   changes: AmendmentChange[];
   priceProposalCents: Cents | null;
   signatures: { role: string; signerName: string; signedAt: string }[];
@@ -470,6 +515,9 @@ export async function signAmendment(tenantId: string, actor: Actor, amendmentId:
     const now = opts.now ?? new Date();
     const lockedBooking = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Booking" WHERE "id" = (SELECT "bookingId" FROM "ContractAmendment" WHERE "id" = ${amendmentId} AND "tenantId" = ${tenantId}) FOR UPDATE`;
     if (lockedBooking.length === 0) throw new DomainError("Nachtrag nicht gefunden.");
+    // Befehl 27: Kautionszeile sperren (Reihenfolge Buchung → Kaution wie in lib/deposits), damit kein gleichzeitiger Eingang
+    // die Prüfung „vereinbart ≥ erhalten“ unterläuft; geprüft wird in collectIssues unter dieser Sperre
+    await tx.$queryRaw`SELECT "id" FROM "SecurityDeposit" WHERE "bookingId" = ${lockedBooking[0].id} AND "tenantId" = ${tenantId} FOR UPDATE`;
     await tx.$queryRaw`SELECT "id" FROM "RentalContract" WHERE "id" = (SELECT "contractId" FROM "ContractAmendment" WHERE "id" = ${amendmentId}) FOR UPDATE`;
     await tx.$queryRaw`SELECT "id" FROM "ContractAmendment" WHERE "id" = ${amendmentId} FOR UPDATE`;
     const a = await loadAmendment(tx, tenantId, amendmentId);
@@ -488,7 +536,7 @@ export async function signAmendment(tenantId: string, actor: Actor, amendmentId:
     const number = await nextAmendmentNumber(tx, tenantId, now);
     const sequenceNo = (await tx.contractAmendment.count({ where: { tenantId, contractId: a.contractId, status: "SIGNED" } })) + 1;
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
-    const after = { ...eff, endAt: a.newEndAt ?? eff.endAt, totalCents: eff.totalCents + (a.priceDeltaCents ?? 0), kmIncludedPerDay: a.newKmIncludedPerDay ?? eff.kmIncludedPerDay, extraKmRate: a.newExtraKmRate != null ? toNumber(a.newExtraKmRate) ?? eff.extraKmRate : eff.extraKmRate, depositCents: a.newDepositCents ?? eff.depositCents, returnLocation: a.newReturnLocation ?? eff.returnLocation };
+    const after = { ...eff, endAt: a.newEndAt ?? eff.endAt, totalCents: eff.totalCents + (a.priceDeltaCents ?? 0), kmIncludedPerDay: a.newKmIncludedPerDay ?? eff.kmIncludedPerDay, extraKmRate: a.newExtraKmRate != null ? toNumber(a.newExtraKmRate) ?? eff.extraKmRate : eff.extraKmRate, kmPolicy: (a.newKmPolicy as KmPolicy | null) ?? eff.kmPolicy, depositCents: a.newDepositCents ?? eff.depositCents, returnLocation: a.newReturnLocation ?? eff.returnLocation };
     const driverName = (d: { role: string; firstName: string; lastName: string }) => ({ role: d.role, name: `${d.firstName} ${d.lastName}` });
     const afterDrivers = a.contract.drivers.filter((d) => (!d.addedByAmendmentId || d.addedByAmendmentId === a.id || eff.amendments.some((x) => x.id === d.addedByAmendmentId)) && !(d.removedByAmendmentId && (d.removedByAmendmentId === a.id || eff.amendments.some((x) => x.id === d.removedByAmendmentId))));
     const changes = describeChanges(a, eff, a.contract.drivers);
@@ -498,8 +546,8 @@ export async function signAmendment(tenantId: string, actor: Actor, amendmentId:
       contract: { id: a.contract.id, number: a.contract.number, contentHash: a.contract.contentHash, startAt: a.contract.startAt.toISOString(), signedAt: a.contract.signedAt?.toISOString() ?? null },
       bookingNumber: a.booking.number,
       priorAmendments: eff.amendments.map((x) => ({ number: x.number ?? "", signedAt: x.signedAt?.toISOString() ?? null })),
-      before: { endAt: eff.endAt.toISOString(), totalCents: eff.totalCents, kmIncludedPerDay: eff.kmIncludedPerDay, extraKmRate: eff.extraKmRate, depositCents: eff.depositCents, returnLocation: eff.returnLocation, drivers: eff.drivers.map(driverName) },
-      after: { endAt: after.endAt.toISOString(), totalCents: after.totalCents, kmIncludedPerDay: after.kmIncludedPerDay, extraKmRate: after.extraKmRate, depositCents: after.depositCents, returnLocation: after.returnLocation, drivers: afterDrivers.map(driverName) },
+      before: { endAt: eff.endAt.toISOString(), totalCents: eff.totalCents, kmIncludedPerDay: eff.kmIncludedPerDay, extraKmRate: eff.extraKmRate, kmPolicy: eff.kmPolicy, depositCents: eff.depositCents, returnLocation: eff.returnLocation, drivers: eff.drivers.map(driverName) },
+      after: { endAt: after.endAt.toISOString(), totalCents: after.totalCents, kmIncludedPerDay: after.kmIncludedPerDay, extraKmRate: after.extraKmRate, kmPolicy: after.kmPolicy, depositCents: after.depositCents, returnLocation: after.returnLocation, drivers: afterDrivers.map(driverName) },
       changes, priceProposalCents: a.priceProposalCents,
       signatures: a.signatures.map((s) => ({ role: s.role, signerName: s.signerName, signedAt: s.signedAt.toISOString() })),
       createdByName: a.createdByName, signedByName: actor.name,
@@ -516,7 +564,7 @@ export async function signAmendment(tenantId: string, actor: Actor, amendmentId:
     await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_SIGNED", ...base, amountCents: a.priceDeltaCents ?? null, details: { ...base.details, sequenceNo, changes: changes.map((c) => c.kind).join(", ") } });
     if (a.newEndAt) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_PERIOD_CHANGED", ...base, details: { ...base.details, before: eff.endAt.toISOString(), after: a.newEndAt.toISOString() } });
     if (a.priceDeltaCents) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_PRICE_CHANGED", ...base, amountCents: a.priceDeltaCents, details: { ...base.details, before: eff.totalCents, delta: a.priceDeltaCents, after: after.totalCents, proposal: a.priceProposalCents, reason: a.priceReason } });
-    if (a.newKmIncludedPerDay != null || a.newExtraKmRate != null) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_KM_CHANGED", ...base, details: { ...base.details, before: `${eff.kmIncludedPerDay} km/Tag · ${eff.extraKmRate} €/km`, after: `${after.kmIncludedPerDay} km/Tag · ${after.extraKmRate} €/km` } });
+    if (a.newKmIncludedPerDay != null || a.newExtraKmRate != null || a.newKmPolicy) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_KM_CHANGED", ...base, details: { ...base.details, before: `${eff.kmPolicy} · ${eff.kmIncludedPerDay} km/Tag · ${eff.extraKmRate} €/km`, after: `${after.kmPolicy} · ${after.kmIncludedPerDay} km/Tag · ${after.extraKmRate} €/km` } });
     for (const d of a.contract.drivers.filter((d) => d.addedByAmendmentId === a.id)) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_DRIVER_ADDED", ...base, details: { ...base.details, contractDriverId: d.id, driver: `${d.firstName} ${d.lastName}` } });
     for (const d of a.contract.drivers.filter((d) => d.removedByAmendmentId === a.id)) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_DRIVER_REMOVED", ...base, details: { ...base.details, contractDriverId: d.id, driver: `${d.firstName} ${d.lastName}` } });
     if (a.newDepositCents != null) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_DEPOSIT_CHANGED", ...base, amountCents: a.newDepositCents, details: { ...base.details, before: eff.depositCents, after: a.newDepositCents } });
@@ -531,11 +579,11 @@ export function listAmendments(tenantId: string, bookingId: string, client: Clie
 }
 
 /** Kurzbeschreibung der Änderungsarten eines Nachtrags (Listen). */
-export function amendmentKindsLabel(a: { newEndAt: Date | null; priceDeltaCents: number | null; newKmIncludedPerDay: number | null; newExtraKmRate: unknown; newDepositCents: number | null; newReturnLocation: string | null; agreementText: string | null; addedDrivers: unknown[]; removedDrivers: unknown[] }): string {
+export function amendmentKindsLabel(a: { newEndAt: Date | null; priceDeltaCents: number | null; newKmIncludedPerDay: number | null; newExtraKmRate: unknown; newKmPolicy?: string | null; newDepositCents: number | null; newReturnLocation: string | null; agreementText: string | null; addedDrivers: unknown[]; removedDrivers: unknown[] }): string {
   const parts: string[] = [];
   if (a.newEndAt) parts.push("Mietdauer");
   if (a.priceDeltaCents) parts.push(a.priceDeltaCents > 0 ? "Preis +" : "Preis −");
-  if (a.newKmIncludedPerDay != null || a.newExtraKmRate != null) parts.push("Kilometer");
+  if (a.newKmIncludedPerDay != null || a.newExtraKmRate != null || a.newKmPolicy) parts.push("Kilometer");
   if (a.addedDrivers.length) parts.push("Zusatzfahrer +");
   if (a.removedDrivers.length) parts.push("Zusatzfahrer −");
   if (a.newDepositCents != null) parts.push("Kaution");

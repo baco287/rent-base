@@ -22,7 +22,7 @@ import { toCents, type Cents } from "@/lib/money";
 import { isUniqueViolation, nextAuthorityCaseNumber, withNumberRetry } from "@/lib/numbering";
 import { renderAuthorityResponsePdf, type AuthorityResponsePdfData } from "@/lib/pdf/authority-pdf";
 import { assertKeyBelongsToTenant, buildStorageKey, getStorage, type StorageDriver } from "@/lib/storage";
-import { APP_TIME_ZONE, parseLocalDateTime, zonedDayRange, zonedDayStartPlus } from "@/lib/time";
+import { APP_TIME_ZONE, parseLocalDateTime, zonedDayRange, zonedDayStart, zonedDayStartPlus } from "@/lib/time";
 
 type Tx = Prisma.TransactionClient;
 const TX = { timeout: 20_000, maxWait: 10_000 };
@@ -292,10 +292,21 @@ export async function assignBooking(tenantId: string, id: string, actor: Actor, 
 
 export type DriverCandidate = { contractDriverId: string; customerId: string | null; role: "PRIMARY_DRIVER" | "ADDITIONAL_DRIVER"; roleLabel: string; firstName: string; lastName: string; birthDate: Date; street: string; zip: string; city: string; country: string };
 
-export async function driverCandidatesOf(tx: Tx | typeof db, tenantId: string, contractId: string | null): Promise<DriverCandidate[]> {
+/**
+ * Befehl 27: Fahrerkandidaten aus dem zum Tatzeitpunkt wirksamen Vertragsstand. Ein Nachtrag wirkt ab seiner Unterschrift
+ * (ContractAmendment.signedAt) – Entwürfe und verworfene Nachträge nie, spätere Nachträge nicht rückwirkend:
+ * - aufgenommener Zusatzfahrer: Kandidat, wenn der Nachtrag bis zur Tatzeit unterschrieben war;
+ * - herausgenommener Fahrer: Kandidat, solange die Herausnahme zur Tatzeit noch nicht unterschrieben war.
+ * Ist nur der Tattag bekannt (offenseTimeKnown = false), gilt der ganze Tag (Europe/Berlin): Kandidat ist, wer an diesem Tag
+ * möglicherweise berechtigt war – eine Aufnahme bis Tagesende zählt, eine Herausnahme erst ab Tagesbeginn.
+ */
+export async function driverCandidatesOf(tx: Tx | typeof db, tenantId: string, contractId: string | null, offense: { offenseAt: Date; offenseTimeKnown: boolean }): Promise<DriverCandidate[]> {
   if (!contractId) return [];
-  const rows = await tx.contractDriver.findMany({ where: { tenantId, contractId }, orderBy: [{ role: "desc" }, { createdAt: "asc" }] });
-  return rows.map((d) => ({ contractDriverId: d.id, customerId: d.customerId, role: d.role === "PRIMARY_DRIVER" ? "PRIMARY_DRIVER" : "ADDITIONAL_DRIVER", roleLabel: d.role === "PRIMARY_DRIVER" ? "Vertraglicher Hauptfahrer" : "Zusätzlicher Vertragsfahrer", firstName: d.firstName, lastName: d.lastName, birthDate: d.birthDate, street: d.street, zip: d.zip, city: d.city, country: d.country }));
+  const rows = await tx.contractDriver.findMany({ where: { tenantId, contractId }, orderBy: [{ role: "desc" }, { createdAt: "asc" }], include: { addedBy: { select: { status: true, signedAt: true } }, removedBy: { select: { status: true, signedAt: true } } } });
+  const windowStart = offense.offenseTimeKnown ? offense.offenseAt : zonedDayStart(offense.offenseAt);
+  const windowEnd = offense.offenseTimeKnown ? new Date(offense.offenseAt.getTime() + 1) : zonedDayStartPlus(offense.offenseAt, 1);
+  const signedBefore = (a: { status: string; signedAt: Date | null } | null, limit: Date) => !!a && a.status === "SIGNED" && !!a.signedAt && a.signedAt < limit;
+  return rows.filter((d) => (!d.addedByAmendmentId || signedBefore(d.addedBy, windowEnd)) && !(d.removedByAmendmentId && signedBefore(d.removedBy, offense.offenseTimeKnown ? windowEnd : windowStart))).map((d) => ({ contractDriverId: d.id, customerId: d.customerId, role: d.role === "PRIMARY_DRIVER" ? "PRIMARY_DRIVER" : "ADDITIONAL_DRIVER", roleLabel: d.role === "PRIMARY_DRIVER" ? "Vertraglicher Hauptfahrer" : "Zusätzlicher Vertragsfahrer", firstName: d.firstName, lastName: d.lastName, birthDate: d.birthDate, street: d.street, zip: d.zip, city: d.city, country: d.country }));
 }
 
 export type DriverSnapshot = { source: "CONTRACT_DRIVER" | "OTHER_PERSON"; role: string | null; firstName: string; lastName: string; birthDate: string | null; street: string | null; zip: string | null; city: string | null; country: string | null };
@@ -320,7 +331,7 @@ export async function setDriver(tenantId: string, id: string, actor: Actor, inpu
       let customerId: string | null = null;
       if (input.mode === "CONTRACT") {
         if (!input.confirmed) throw new DomainError("Bitte bestätigen Sie ausdrücklich, dass für die Benennung dieser Person eine ausreichende Grundlage vorliegt.");
-        const cand = (await driverCandidatesOf(tx, tenantId, c.contractId)).find((d) => d.contractDriverId === input.contractDriverId);
+        const cand = (await driverCandidatesOf(tx, tenantId, c.contractId, c)).find((d) => d.contractDriverId === input.contractDriverId);
         if (!cand) throw new DomainError("Der ausgewählte Fahrer gehört nicht zum zugeordneten Mietvertrag.");
         status = "CONTRACT_DRIVER_SELECTED";
         contractDriverId = cand.contractDriverId;
@@ -396,7 +407,7 @@ async function buildResponseContent(tx: Tx | typeof db, tenantId: string, c: Cas
     if (!driver || !driverDetermined) throw new DomainError("„Fahrer benannt“ setzt eine bewusste Fahrerbestimmung voraus (Vertragsfahrer ausgewählt oder andere Person erfasst).");
     persons = [{ role: driver.role === "PRIMARY_DRIVER" ? "Vertraglicher Hauptfahrer" : driver.role === "ADDITIONAL_DRIVER" ? "Zusätzlicher Vertragsfahrer" : "Benannte Person", fields: personFields(driver, !!input.includeBirthDate, !!input.includeAddress) }];
   } else if (responseType === "MULTIPLE_POSSIBLE_DRIVERS") {
-    const cands = await driverCandidatesOf(tx, tenantId, c.contractId);
+    const cands = await driverCandidatesOf(tx, tenantId, c.contractId, c);
     if (cands.length === 0) throw new DomainError("Zu diesem Vorgang ist kein Mietvertrag mit Fahrern zugeordnet.");
     persons = cands.map((d) => ({ role: d.roleLabel, fields: personFields({ source: "CONTRACT_DRIVER", role: d.role, firstName: d.firstName, lastName: d.lastName, birthDate: d.birthDate.toISOString().slice(0, 10), street: d.street, zip: d.zip, city: d.city, country: d.country }, !!input.includeBirthDate, !!input.includeAddress) }));
   } else if (responseType === "CUSTOM_RESPONSE" && !input.freeText?.trim()) {
@@ -739,7 +750,7 @@ export async function authorityCaseView(tenantId: string, id: string, now = new 
   const [ambiguousVehicles, candidates, drivers] = await Promise.all([
     c.vehicleMatch === "AMBIGUOUS" || !c.vehicleId ? db.vehicle.findMany({ where: { tenantId, status: { not: "INACTIVE" } }, select: { id: true, plate: true, make: true, model: true }, orderBy: { plate: "asc" } }) : Promise.resolve([]),
     c.vehicleId ? rentalInputs(db, tenantId, c.vehicleId, c.offenseAt).then((rows) => matchRentals(rows, c.offenseAt, c.offenseTimeKnown).candidates) : Promise.resolve([] as RentalCandidate[]),
-    driverCandidatesOf(db, tenantId, c.contractId),
+    driverCandidatesOf(db, tenantId, c.contractId, c),
   ]);
   const plateHits = ambiguousVehicles.filter((v) => plateKey(v.plate) === c.licensePlateNormalized);
   return {

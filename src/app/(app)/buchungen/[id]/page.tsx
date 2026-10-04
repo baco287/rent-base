@@ -7,9 +7,10 @@ import { customerName, fmtDateTime, fmtEur, toDateTimeInput } from "@/lib/format
 import { calculateRentalPrice, rateCardFrom } from "@/lib/pricing";
 import { BookingStageChip, Card, Chip, Content, PageHeader, Plate } from "@/components/ui";
 import { EXTRA_CHARGE_TYPES, type ExtraChargeType } from "@/lib/constants";
-import { bookingStage, canCancel, pickupAction, returnAction } from "@/lib/booking-status";
+import { bookingStage, canCancel, cancellationCheck, pickupAction, returnAction } from "@/lib/booking-status";
 import { startContractAction } from "./vertrag/actions";
-import { setBookingStatusAction, updateBookingAction } from "../actions";
+import { cancelBookingAction, setBookingStatusAction, updateBookingAction } from "../actions";
+import { CancelBookingDialog } from "../cancel-dialog";
 import { BookingForm } from "../booking-form";
 import { customerOptionOf } from "../customer-option";
 import { loadBookingOptions } from "../options";
@@ -55,7 +56,8 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const update = updateBookingAction.bind(null, b.id);
   const startContract = startContractAction.bind(null, b.id);
   const finish = setBookingStatusAction.bind(null, b.id, "RETURNED");
-  const cancel = setBookingStatusAction.bind(null, b.id, "CANCELLED");
+  // Befehl 27: Storno nur über den Dialog mit Grund; was an der Buchung hängt, prüft der Server (cancellationCheck)
+  const cancelCheck = canCancel(b) && user.role !== "YARD" && !supportSession ? await cancellationCheck(tenant.id, b.id) : null;
   // Befehl 21: „Was ist als Nächstes zu tun?“ – eine deutliche Aktion je Stand, abgeleitet aus denselben Regeln wie die Kopfzeile
   const pickupNext = pickupAction(b, b.contract, b.handovers);
   const returnNext = returnAction(b, b.contract, b.handovers);
@@ -86,14 +88,22 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
         {b.status === "ACTIVE" && !pickupDone && (
           <form action={finish}><button className="btn btn-primary">Fahrzeug zurücknehmen</button></form>
         )}
-        {canCancel(b) && user.role !== "YARD" && (
-          <form action={cancel}><button className="btn btn-danger">Stornieren</button></form>
+        {cancelCheck && (
+          <CancelBookingDialog
+            action={cancelBookingAction.bind(null, b.id)}
+            check={{ ...cancelCheck, booking: { number: cancelCheck.booking.number, customerName: cancelCheck.booking.customerName, vehicle: cancelCheck.booking.vehicle, plate: cancelCheck.booking.plate, period: `${fmtDateTime(cancelCheck.booking.startAt)} – ${fmtDateTime(cancelCheck.booking.endAt)}` } }}
+          />
         )}
       </PageHeader>
       <Content>
         {sp.gespeichert === "1" && <Chip tone="good">Gespeichert</Chip>}
         {sp.fehler === "status" && <Chip tone="bad">Dieser Statuswechsel ist nicht möglich.</Chip>}
         {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
+        {b.status === "CANCELLED" && (
+          <p className="rounded-md bg-panel-2 px-3.5 py-2.5 text-sm text-ink-2">
+            <b>Storniert</b>{b.cancelledAt ? ` am ${fmtDateTime(b.cancelledAt)}` : ""}{b.cancelledByName ? ` von ${b.cancelledByName}` : ""}{b.cancellationReason ? <> · Grund: {b.cancellationReason}</> : " · ohne erfassten Grund (Storno vor der Grundpflicht)"}
+          </p>
+        )}
         {nextStep && (
           <section aria-label="Nächster Schritt" className="rounded-xl border-2 border-brand bg-panel p-4 md:p-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5">
             <div className="flex-1 min-w-0">

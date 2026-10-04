@@ -145,7 +145,7 @@ test("Race: veralteter Entwurf, veraltete Unterschrift und gleichzeitiges Storno
   await db.handoverDamage.deleteMany({ where: { handoverId: p.id, marker: "NEW" } });
   await fillHandover(w, p.id, 50_010);
   await verifyAllDriversForPickup(w.tenantId, w.actor, p.id, c.id);
-  const r = await Promise.allSettled([finalizeHandover(w.tenantId, p.id, w.actor), changeBookingStatus(w.tenantId, w.bookingId, "CANCELLED")]);
+  const r = await Promise.allSettled([finalizeHandover(w.tenantId, p.id, w.actor), changeBookingStatus(w.tenantId, w.bookingId, "CANCELLED", { actor: w.actor, reason: "Test-Storno" })]);
   const after = await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } });
   const handover = await db.handover.findFirst({ where: { id: p.id } });
   if (after.status === "ACTIVE") { assert.equal(r[1].status, "rejected"); assert.equal(handover?.status, "FINALIZED"); }
@@ -159,7 +159,7 @@ test("Statusmaschine und Storno je Phase", async () => {
 
   // A) ohne Vertrag
   const a = await world("storno-a");
-  await changeBookingStatus(a.tenantId, a.bookingId, "CANCELLED");
+  await changeBookingStatus(a.tenantId, a.bookingId, "CANCELLED", { actor: a.actor, reason: "Test-Storno" });
   assert.equal(bookingStage(await db.booking.findUniqueOrThrow({ where: { id: a.bookingId } }), null), "CANCELLED");
   await assert.rejects(() => ensureContractDraft(a.tenantId, a.bookingId, a.actor), /nur für reservierte/);
   await assert.rejects(() => changeBookingStatus(a.tenantId, a.bookingId, "CANCELLED"), /bereits storniert/);
@@ -171,7 +171,7 @@ test("Statusmaschine und Storno je Phase", async () => {
   // B) Vertragsentwurf: Entwurf wird verworfen
   const bw = await world("storno-b");
   const bc = await ensureContractDraft(bw.tenantId, bw.bookingId, bw.actor);
-  await changeBookingStatus(bw.tenantId, bw.bookingId, "CANCELLED");
+  await changeBookingStatus(bw.tenantId, bw.bookingId, "CANCELLED", { actor: bw.actor, reason: "Test-Storno" });
   assert.equal(await db.rentalContract.count({ where: { id: bc.id } }), 0);
 
   // C) finalisierter Vertrag ohne Übergabe: Vertrag, Unterschrift und Dokument bleiben, Status CANCELLED, kein neuer Vertrag
@@ -180,7 +180,7 @@ test("Statusmaschine und Storno je Phase", async () => {
   await signContract(cw, cc.id);
   await finalizeContract(cw.tenantId, cc.id);
   await ensureContractDocument(cw.tenantId, cc.id, null, { storage });
-  await changeBookingStatus(cw.tenantId, cw.bookingId, "CANCELLED");
+  await changeBookingStatus(cw.tenantId, cw.bookingId, "CANCELLED", { actor: cw.actor, reason: "Test-Storno" });
   const kept = await db.rentalContract.findUniqueOrThrow({ where: { id: cc.id } });
   assert.equal(kept.status, "CANCELLED");
   assert.ok(kept.cancelledAt);
@@ -196,7 +196,7 @@ test("Statusmaschine und Storno je Phase", async () => {
   await finalizeContract(dw.tenantId, dc.id);
   const dp = await startHandover(dw.tenantId, dw.bookingId, "PICKUP", dw.actor);
   await fillHandover(dw, dp.id, 50_010);
-  const { orphanedStorageKeys } = await changeBookingStatus(dw.tenantId, dw.bookingId, "CANCELLED");
+  const { orphanedStorageKeys } = await changeBookingStatus(dw.tenantId, dw.bookingId, "CANCELLED", { actor: dw.actor, reason: "Test-Storno" });
   assert.equal(orphanedStorageKeys.length, REQUIRED_PHOTO_CATEGORIES.length);
   assert.equal(await db.handover.count({ where: { bookingId: dw.bookingId } }), 0);
   assert.equal(await db.photo.count({ where: { tenantId: dw.tenantId } }), 0);
@@ -234,7 +234,7 @@ test("Fahrzeugverfügbarkeit: Status, Überschneidung, Zeitgrenzen [start, end),
   const other = await world("avail-other");
   await assert.rejects(() => db.$transaction((tx) => assertVehicleBookable(tx, other.tenantId, w.vehicleId, b.endAt, new Date(b.endAt.getTime() + DAY))), /Fahrzeug nicht gefunden/);
   // stornierte Buchung blockiert nicht mehr
-  await changeBookingStatus(w.tenantId, w.bookingId, "CANCELLED");
+  await changeBookingStatus(w.tenantId, w.bookingId, "CANCELLED", { actor: w.actor, reason: "Test-Storno" });
   await db.$transaction(async (tx) => assert.equal((await findConflicts(tx, w.tenantId, w.vehicleId, b.startAt, b.endAt)).length, 0));
   // Parallele Buchungen desselben Zeitraums: nur eine kommt durch
   const start = new Date(Date.now() + 40 * DAY);
@@ -399,7 +399,7 @@ test("Mandantentrennung: jede ID eines anderen Mandanten ist unauffindbar", asyn
   const sig = await db.signature.findFirstOrThrow({ where: { handoverId: a.pickupId } });
   const ph = await db.photo.findFirstOrThrow({ where: { handoverId: a.pickupId } });
   const checks: [string, () => Promise<unknown>][] = [
-    ["Buchung", () => changeBookingStatus(b.tenantId, a.w.bookingId, "CANCELLED")],
+    ["Buchung", () => changeBookingStatus(b.tenantId, a.w.bookingId, "CANCELLED", { actor: b.actor, reason: "Test-Storno" })],
     ["Vertrag", () => getContractContentHash(b.tenantId, a.contractId)],
     ["Protokoll", () => updateHandoverDraft(b.tenantId, a.pickupId, { notes: "x" })],
     ["Rückgabe", () => startHandover(b.tenantId, a.w.bookingId, "RETURN", b.actor)],
@@ -542,7 +542,8 @@ test("Zeitzone: Eingaben und Anzeigen laufen in Europe/Berlin, auch über die Um
   const a = parseLocalDateTime("2026-10-24T10:00")!;
   const b = parseLocalDateTime("2026-10-26T10:00")!;
   assert.equal((b.getTime() - a.getTime()) / 3600_000, 49);
-  assert.equal(rentalDays(a, b), 3);
+  // Befehl 27: Miettage zählen in Wandzeit – Sa 10:00 bis Mo 10:00 sind 2 Tage, obwohl es 49 echte Stunden sind (vorher 3 = Audit-Fehler)
+  assert.equal(rentalDays(a, b), 2);
   for (const bad of ["", "2026-13-01T10:00", "2026-02-30T10:00", "2026-01-01T24:00", "gestern", "2026-10-25", null, 42]) assert.equal(parseLocalDateTime(bad), null, String(bad));
 });
 

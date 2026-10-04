@@ -72,7 +72,7 @@ export async function BookingsTab({ tenantId, customerId, page, now }: { tenantI
                       <td className="px-3 py-2.5 font-mono tnum">{fmtDateTime(b.actualPickupAt ?? b.startAt)}{b.actualPickupAt && <span className="block text-[11px] text-ink-3">geplant {fmtDateTime(b.startAt)}</span>}</td>
                       <td className={`px-3 py-2.5 font-mono tnum ${overdue ? "text-bad font-semibold" : ""}`}>{fmtDateTime(b.actualReturnAt ?? b.endAt)}{b.actualReturnAt && <span className="block text-[11px] text-ink-3">geplant {fmtDateTime(b.endAt)}</span>}</td>
                       <td className="px-3 py-2.5">{b.contract ? <Link href={`/buchungen/${b.id}/vertrag`} className="font-mono tnum hover:underline">{b.contract.number}</Link> : <span className="text-ink-3">–</span>}{b.contract && <span className="block text-[11px] text-ink-3">{CONTRACT_STATUS[b.contract.status as keyof typeof CONTRACT_STATUS] ?? b.contract.status}</span>}</td>
-                      <td className="px-3 py-2.5 text-right font-mono tnum">{inv ? <Link href={`/buchungen/${b.id}/rechnung?nr=${inv.id}`} className="hover:underline">{fmtEur(inv.currentVersion?.grossTotal)}</Link> : b.contract?.status === "SIGNED" ? fmtEur(b.contract.totalAmount) : "–"}{inv && <span className="block text-[11px] text-ink-3">{inv.number}</span>}</td>
+                      <td className="px-3 py-2.5 text-right font-mono tnum">{inv ? <Link href={`/buchungen/${b.id}/rechnung?nr=${inv.id}`} className="hover:underline">{fmtEur(inv.currentVersion?.grossTotal)}</Link> : b.contractTotalCents != null ? fmtCents(b.contractTotalCents) : "–"}{inv && <span className="block text-[11px] text-ink-3">{inv.number}</span>}</td>
                       <td className="px-3 py-2.5">{overdue ? <Chip tone="bad">Überfällig</Chip> : <BookingStatusChip status={b.status} />}</td>
                     </tr>
                   );
@@ -138,6 +138,7 @@ export async function FinanceTab({ tenantId, customerId }: { tenantId: string; c
                       <td className="px-3 py-2.5">{fin ? (
                         <div className="flex flex-wrap gap-1">
                           {(fin.effectiveCents > 0 || fin.paidCents > 0) && <PaymentStatusChip status={fin.refundRequired ? "OVERPAID" : fin.paymentStatus} />}
+                          {d.dunning && <Link href={d.href} className="chip bg-bad-soft text-bad hover:underline" title={`Mahnschreiben ${d.dunning.number}`}>{d.dunning.label}</Link>}
                           {fin.chain !== "NONE" && <Chip tone={fin.chain === "CANCELLED" ? "bad" : "info"}>{INVOICE_CHAIN_STATUS[fin.chain]}</Chip>}
                           {fin.refundOpen && <Chip tone="bad">Guthaben {fmtCents(fin.refundRemainingCents)} offen</Chip>}
                           {fin.refundRequired && !fin.refundOpen && <Chip tone="good">{fin.returnedToDepositCents > 0 ? `Guthaben erledigt (${fmtCents(fin.returnedToDepositCents)} zur Kaution)` : `Erstattet ${fmtCents(fin.completedRefundCents)}`}</Chip>}
@@ -155,7 +156,7 @@ export async function FinanceTab({ tenantId, customerId }: { tenantId: string; c
         <Card title="Zahlungen" right={<Chip>{f.payments.filter((p) => p.status === "CONFIRMED").length}</Chip>}>
           {f.payments.length === 0 ? <p className="p-4 text-sm text-ink-3">Keine Zahlungen erfasst.</p> : (
             <ul className="divide-y divide-line-soft">
-              {f.payments.map((p) => <Row key={p.id}><span className="font-mono tnum text-xs text-ink-3">{fmtDateTime(p.paidAt)}</span><span className={`font-mono tnum font-semibold ${p.status === "CANCELLED" ? "line-through text-ink-3" : ""}`}>{fmtCents(p.amountCents)}</span><span className="text-ink-2">{p.method === DEPOSIT_OFFSET_METHOD ? <Chip tone="info">{DEPOSIT_OFFSET_LABEL}</Chip> : PAYMENT_METHODS[p.method as PaymentMethod] ?? p.method}</span>{p.invoiceNumber && <Link href={`/buchungen/${p.bookingId}/finanzen`} className="text-xs underline">zu {p.invoiceNumber}</Link>}{p.reference && <span className="text-xs text-ink-3">{p.reference}</span>}{p.status === "CANCELLED" && <Chip tone="bad">Storniert{p.cancellationReason ? ` · ${p.cancellationReason}` : ""}</Chip>}</Row>)}
+              {f.payments.map((p) => <Row key={p.id}><span className="font-mono tnum text-xs text-ink-3">{fmtDateTime(p.paidAt)}</span><span className={`font-mono tnum font-semibold ${p.status === "CANCELLED" ? "line-through text-ink-3" : ""}`}>{fmtCents(p.amountCents)}</span><span className="text-ink-2">{p.method === DEPOSIT_OFFSET_METHOD ? <Chip tone="info">{DEPOSIT_OFFSET_LABEL}</Chip> : PAYMENT_METHODS[p.method as PaymentMethod] ?? p.method}</span>{p.href && <Link href={p.href} className="text-xs underline">{p.invoiceNumber ? `zu ${p.invoiceNumber}` : p.bookingNumber ? `Buchung ${p.bookingNumber}` : "anzeigen"}</Link>}{p.reference && <span className="text-xs text-ink-3">{p.reference}</span>}{p.status === "CANCELLED" && <Chip tone="bad">Storniert{p.cancellationReason ? ` · ${p.cancellationReason}` : ""}</Chip>}</Row>)}
             </ul>
           )}
         </Card>

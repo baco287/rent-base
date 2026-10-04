@@ -6,7 +6,7 @@ import { notFound, redirect } from "next/navigation";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { Card, Chip, Content, PageHeader } from "@/components/ui";
-import { AMENDMENT_HELP, AMENDMENT_STATUS, DRIVER_ROLES, DRIVER_VERIFICATION_STATUS, type AmendmentStatus, type DriverRole, type DriverVerificationStatus } from "@/lib/constants";
+import { AMENDMENT_HELP, AMENDMENT_STATUS, DRIVER_ROLES, KM_POLICIES, DRIVER_VERIFICATION_STATUS, type AmendmentStatus, type DriverRole, type DriverVerificationStatus } from "@/lib/constants";
 import { getAmendmentState, type AmendmentSnapshot } from "@/lib/amendments";
 import { DRIVER_BLOCKER_LABELS, driverVerificationOverview } from "@/lib/driver-verification";
 import { fmtDate, fmtDateTime, toDateTimeInput } from "@/lib/format";
@@ -62,7 +62,7 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
                 <dl className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
                   <div><dt className="text-ink-3">Geplante Rückgabe</dt><dd className="font-mono tnum">{fmtDateTime(new Date(snap.after.endAt))}</dd></div>
                   <div><dt className="text-ink-3">Gesamtmietpreis</dt><dd className="font-mono tnum">{fmtCents(snap.after.totalCents)}</dd></div>
-                  <div><dt className="text-ink-3">Kilometer</dt><dd className="font-mono tnum">{snap.after.kmIncludedPerDay.toLocaleString("de-DE")} km/Tag · {snap.after.extraKmRate.toLocaleString("de-DE", { minimumFractionDigits: 2 })} €/km</dd></div>
+                  <div><dt className="text-ink-3">Kilometer</dt><dd className="font-mono tnum">{snap.after.kmPolicy === "UNLIMITED" ? KM_POLICIES.UNLIMITED : `${snap.after.kmIncludedPerDay.toLocaleString("de-DE")} km/Tag · ${snap.after.extraKmRate.toLocaleString("de-DE", { minimumFractionDigits: 2 })} €/km`}</dd></div>
                   <div><dt className="text-ink-3">Vereinbarte Kaution</dt><dd className="font-mono tnum">{fmtCents(snap.after.depositCents)}</dd></div>
                   <div><dt className="text-ink-3">Rückgabeort</dt><dd>{snap.after.returnLocation ?? "wie Abholort"}</dd></div>
                   <div><dt className="text-ink-3">Fahrer</dt><dd>{snap.after.drivers.map((d) => `${d.name}${d.role === "PRIMARY_DRIVER" ? " (Hauptfahrer)" : ""}`).join(", ")}</dd></div>
@@ -144,8 +144,8 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
                 <ChangesForm
                   action={saveAmendmentChangesAction.bind(null, id, a.id)}
                   locked={!canEdit}
-                  values={{ newEndAt: toDateTimeInput(a.newEndAt), priceDeltaCents: a.priceDeltaCents, priceProposalCents: a.priceProposalCents, priceReason: a.priceReason ?? "", newKmIncludedPerDay: a.newKmIncludedPerDay, newExtraKmRate: a.newExtraKmRate != null ? dec(a.newExtraKmRate) : "", newDepositCents: a.newDepositCents, newReturnLocation: a.newReturnLocation, agreementText: a.agreementText }}
-                  current={{ endAt: fmtDateTime(eff.endAt), totalEur: dec(eff.totalCents / 100), kmIncludedPerDay: eff.kmIncludedPerDay, extraKmRateEur: dec(eff.extraKmRate), depositEur: dec(eff.depositCents / 100), returnLocation: eff.returnLocation ?? eff.pickupLocation ?? "wie Abholort" }}
+                  values={{ newEndAt: toDateTimeInput(a.newEndAt), priceDeltaCents: a.priceDeltaCents, priceProposalCents: a.priceProposalCents, priceReason: a.priceReason ?? "", newKmIncludedPerDay: a.newKmIncludedPerDay, newExtraKmRate: a.newExtraKmRate != null ? dec(a.newExtraKmRate) : "", newKmPolicy: a.newKmPolicy, newDepositCents: a.newDepositCents, newReturnLocation: a.newReturnLocation, agreementText: a.agreementText }}
+                  current={{ endAt: fmtDateTime(eff.endAt), totalEur: dec(eff.totalCents / 100), kmIncludedPerDay: eff.kmIncludedPerDay, extraKmRateEur: dec(eff.extraKmRate), kmPolicy: eff.kmPolicy, kmPolicyLabel: KM_POLICIES[eff.kmPolicy], depositEur: dec(eff.depositCents / 100), returnLocation: eff.returnLocation ?? eff.pickupLocation ?? "wie Abholort" }}
                 />
               </div>
             </Card>

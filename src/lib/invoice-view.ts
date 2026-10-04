@@ -58,6 +58,11 @@ export type InvoiceDocumentData = {
   taxTreatmentNote: string | null;
   nonTaxable: boolean;
   contentHash: string | null;
+  /**
+   * Befehl 27: Zahlungsstand zum Erzeugungszeitpunkt (nur Rechnungen, nur die aktuelle Fassung). Kein Teil der versiegelten
+   * Fassung und keine Rechnungsposition: Rechnungsbetrag und Positionen bleiben unverändert.
+   */
+  paymentStatus?: InvoicePaymentBlock | null;
 };
 
 const date = (d: Date | null | undefined) => (d ? d.toLocaleDateString("de-DE", { timeZone: APP_TIME_ZONE, day: "2-digit", month: "2-digit", year: "numeric" }) : null);
@@ -68,6 +73,27 @@ type VersionFull = Prisma.InvoiceVersionGetPayload<{ include: { items: true } }>
 export type DocumentRefs = { number: string | null; kind: string; contractNumber: string | null; bookingNumber: string | null; returnNumber: string | null; caseNumber: string | null; isCurrent: boolean; supersedes: { versionNo: number; finalizedAt: Date | null } | null; documentType?: string; original?: { number: string; issueDate: string | null; versionNo: number; grossTotal: string; customerName: string } | null };
 
 export const DOCUMENT_TITLES = { INVOICE: "Rechnung", CREDIT_NOTE: "Gutschrift", CANCELLATION: "Stornobeleg" } as const;
+
+export type InvoicePaymentBlock = { asOf: string; lines: { label: string; value: string; bold?: boolean }[]; open: string; openCents: number; settled: boolean; creditCents: number; credit: string };
+
+/**
+ * Befehl 27: Saldoblock aus der zentralen Summierung (counter-documents financialsFor). Zahlungen und Kautionsverrechnung
+ * getrennt (Verrechnung ist kein Geldeingang), Gutschriften/Storno mindern die Forderung. null, wenn nichts die Forderung
+ * mindert – dann bleibt die bisherige Zahlungsaufforderung über den Rechnungsbetrag.
+ */
+export function invoicePaymentBlock(f: { invoiceCents: number; creditedCents: number; cancelledCents: number; paidCents: number; offsetCents: number; openCents: number; customerCreditCents: number }, asOf: Date): InvoicePaymentBlock | null {
+  const moneyPaid = Math.max(0, f.paidCents - f.offsetCents);
+  if (moneyPaid <= 0 && f.offsetCents <= 0 && f.creditedCents <= 0 && f.cancelledCents <= 0) return null;
+  const lines: InvoicePaymentBlock["lines"] = [{ label: "Rechnungsbetrag", value: fmtCents(f.invoiceCents) }];
+  if (f.creditedCents > 0) lines.push({ label: "abzüglich Gutschriften", value: `− ${fmtCents(f.creditedCents)}` });
+  if (f.cancelledCents > 0) lines.push({ label: "abzüglich Storno", value: `− ${fmtCents(f.cancelledCents)}` });
+  if (moneyPaid > 0) lines.push({ label: "Bereits bezahlt", value: `− ${fmtCents(moneyPaid)}` });
+  if (f.offsetCents > 0) lines.push({ label: "Mit Kaution verrechnet", value: `− ${fmtCents(f.offsetCents)}` });
+  const open = Math.max(0, f.openCents);
+  lines.push({ label: "Noch offen", value: fmtCents(open), bold: true });
+  const asOfText = asOf.toLocaleDateString("de-DE", { timeZone: APP_TIME_ZONE, day: "2-digit", month: "2-digit", year: "numeric" });
+  return { asOf: asOfText, lines, open: fmtCents(open), openCents: open, settled: open === 0, creditCents: Math.max(0, f.customerCreditCents), credit: fmtCents(Math.max(0, f.customerCreditCents)) };
+}
 
 export function buildInvoiceDocument(inv: VersionFull, refs: DocumentRefs): InvoiceDocumentData {
   const company = inv.companySnapshot as CompanySnapshot;

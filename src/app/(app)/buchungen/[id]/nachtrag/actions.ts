@@ -80,6 +80,7 @@ const changesSchema = z.object({
   changeKm: z.preprocess(on, z.boolean()),
   newKmIncludedPerDay: optInt("Freikilometer je Tag: bitte eine ganze Zahl ab 0 eingeben."),
   newExtraKmRate: optMoney("Mehrkilometerpreis: bitte einen Betrag ab 0 eingeben."),
+  newKmPolicy: z.preprocess((v) => (v === "" || v == null ? undefined : v), z.enum(["UNLIMITED", "FREE_KILOMETERS"], { message: "Unbekannte Kilometerregel." }).optional()),
   changeDeposit: z.preprocess(on, z.boolean()),
   newDeposit: optMoney("Kaution: bitte einen Betrag ab 0 eingeben."),
   changeReturnLocation: z.preprocess(on, z.boolean()),
@@ -102,10 +103,12 @@ export async function saveAmendmentChangesAction(bookingId: string, amendmentId:
     input.priceReason = d.priceReason ?? null;
   } else { input.priceDeltaCents = null; input.priceReason = null; }
   if (d.changeKm) {
-    if (d.newKmIncludedPerDay == null && d.newExtraKmRate == null) return { error: "Bitte Freikilometer je Tag und/oder Mehrkilometerpreis angeben." };
-    input.newKmIncludedPerDay = d.newKmIncludedPerDay ?? null;
-    input.newExtraKmRate = d.newExtraKmRate ?? null;
-  } else { input.newKmIncludedPerDay = null; input.newExtraKmRate = null; }
+    if (d.newKmIncludedPerDay == null && d.newExtraKmRate == null && !d.newKmPolicy) return { error: "Bitte Kilometerregel, Freikilometer je Tag und/oder Mehrkilometerpreis angeben." };
+    // Befehl 27: bei „Unbegrenzt“ sind Freikilometer und Mehrkilometerpreis ohne Bedeutung und werden nicht vereinbart
+    input.newKmPolicy = d.newKmPolicy ?? null;
+    input.newKmIncludedPerDay = d.newKmPolicy === "UNLIMITED" ? null : d.newKmIncludedPerDay ?? null;
+    input.newExtraKmRate = d.newKmPolicy === "UNLIMITED" ? null : d.newExtraKmRate ?? null;
+  } else { input.newKmIncludedPerDay = null; input.newExtraKmRate = null; input.newKmPolicy = null; }
   if (d.changeDeposit) { if (d.newDeposit == null) return { error: "Bitte die neue vereinbarte Kaution angeben." }; input.newDepositCents = Math.round(d.newDeposit * 100); } else input.newDepositCents = null;
   input.newReturnLocation = d.changeReturnLocation ? (d.newReturnLocation ?? "") : null;
   if (d.changeReturnLocation && !(d.newReturnLocation ?? "").trim()) return { error: "Bitte den neuen Rückgabeort angeben." };

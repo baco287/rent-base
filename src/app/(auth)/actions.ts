@@ -1,5 +1,6 @@
 "use server";
 
+import { safeInternalPath } from "@/lib/safe-redirect";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -42,7 +43,9 @@ export async function loginAction(_prev: AuthState, formData: FormData): Promise
 
   reset(accountKey);
   await createSession(user.id);
-  if (weiter && weiter.startsWith("/")) redirect(weiter);
+  // Befehl 27: nur sichere interne Pfade (keine //domain, keine Schemata, keine Backslashes)
+  const target = safeInternalPath(weiter);
+  if (target) redirect(target);
   // Befehl 20, item 75: gesperrter Mandant landet klar auf der Sperrseite statt auf einem leeren Dashboard;
   // ein SUPER_ADMIN ohne eigenen Tenant-Kontext (kein weiter-Link) landet auf dem Plattformdashboard.
   if (user.tenant.status === "SUSPENDED") redirect("/gesperrt");

@@ -23,11 +23,12 @@ export type ChangesValues = {
   priceReason: string;
   newKmIncludedPerDay: number | null;
   newExtraKmRate: string; // "0,35" oder ""
+  newKmPolicy: string | null; // Befehl 27: UNLIMITED | FREE_KILOMETERS
   newDepositCents: number | null;
   newReturnLocation: string | null;
   agreementText: string | null;
 };
-export type CurrentValues = { endAt: string; totalEur: string; kmIncludedPerDay: number; extraKmRateEur: string; depositEur: string; returnLocation: string };
+export type CurrentValues = { endAt: string; totalEur: string; kmIncludedPerDay: number; extraKmRateEur: string; kmPolicy: string; kmPolicyLabel: string; depositEur: string; returnLocation: string };
 
 const eur = (cents: number) => (cents / 100).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -48,7 +49,8 @@ export function ChangesForm({ action, values: v, current: c, locked }: { action:
   const [state, formAction, pending] = useActionState(action, undefined);
   const [period, setPeriod] = useState(!!v.newEndAt);
   const [price, setPrice] = useState(v.priceDeltaCents != null);
-  const [km, setKm] = useState(v.newKmIncludedPerDay != null || !!v.newExtraKmRate);
+  const [km, setKm] = useState(v.newKmIncludedPerDay != null || !!v.newExtraKmRate || !!v.newKmPolicy);
+  const [kmPolicy, setKmPolicy] = useState(v.newKmPolicy ?? "");
   const [deposit, setDeposit] = useState(v.newDepositCents != null);
   const [location, setLocation] = useState(v.newReturnLocation != null);
   const [agreement, setAgreement] = useState(v.agreementText != null);
@@ -86,12 +88,21 @@ export function ChangesForm({ action, values: v, current: c, locked }: { action:
 
         <Toggle id="changeKm" label="Kilometervereinbarung ändern" checked={km} onChange={setKm}>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Field label="Bisher"><div className="input bg-panel-2 font-mono tnum">{c.kmIncludedPerDay.toLocaleString("de-DE")} km/Tag · {c.extraKmRateEur} €/km</div></Field>
-            <div className="grid grid-cols-2 gap-3">
+            <Field label="Bisher"><div className="input bg-panel-2 font-mono tnum">{c.kmPolicy === "UNLIMITED" ? c.kmPolicyLabel : `${c.kmIncludedPerDay.toLocaleString("de-DE")} km/Tag · ${c.extraKmRateEur} €/km`}</div></Field>
+            <Field label="Kilometerregel" htmlFor="newKmPolicy">
+              <select id="newKmPolicy" name="newKmPolicy" value={kmPolicy} onChange={(e) => setKmPolicy(e.target.value)} className="input">
+                <option value="">wie bisher ({c.kmPolicyLabel})</option>
+                {c.kmPolicy !== "FREE_KILOMETERS" && <option value="FREE_KILOMETERS">Freikilometer je Tag, Mehrkilometer nach Preis</option>}
+                {c.kmPolicy !== "UNLIMITED" && <option value="UNLIMITED">Unbegrenzte Kilometer</option>}
+              </select>
+            </Field>
+          </div>
+          {kmPolicy !== "UNLIMITED" && (c.kmPolicy !== "UNLIMITED" || kmPolicy === "FREE_KILOMETERS") && (
+            <div className="grid grid-cols-2 gap-3 sm:max-w-md">
               <Field label="Freikilometer je Tag" htmlFor="newKmIncludedPerDay"><input id="newKmIncludedPerDay" name="newKmIncludedPerDay" inputMode="numeric" defaultValue={v.newKmIncludedPerDay ?? ""} className="input tnum" /></Field>
               <Field label="€ je Mehrkilometer" htmlFor="newExtraKmRate"><input id="newExtraKmRate" name="newExtraKmRate" inputMode="decimal" defaultValue={v.newExtraKmRate} className="input tnum" /></Field>
             </div>
-          </div>
+          )}
           <p className="text-xs text-ink-3">{AMENDMENT_HELP.KM}</p>
         </Toggle>
 

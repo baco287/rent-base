@@ -17,7 +17,10 @@ import { APP_TIME_ZONE } from "@/lib/time";
 import { driverCheckSummaries } from "@/lib/driver-verification";
 import { DomainError } from "@/lib/integrity";
 import { loadSealedComparison } from "@/lib/returns";
-import { buildInvoiceDocument, type InvoiceDocumentData } from "@/lib/invoice-view";
+import { buildInvoiceDocument, invoicePaymentBlock, type InvoiceDocumentData, type InvoicePaymentBlock } from "@/lib/invoice-view";
+import { invoiceFinancials } from "@/lib/counter-documents";
+
+const withPayment = (payment: InvoicePaymentBlock | null, doc: InvoiceDocumentData): InvoiceDocumentData => ({ ...doc, paymentStatus: payment });
 import { buildPayoutDocument, type PayoutDocumentData } from "@/lib/payout-view";
 
 const TENANT_FIELDS = { name: true, street: true, zip: true, city: true, phone: true, email: true } as const;
@@ -220,8 +223,10 @@ export async function loadInvoiceDocumentData(tenantId: string, versionId: strin
   ]);
   const c = v.customerSnapshot as { email?: string | null };
   const snap = inv.originalSnapshot as { number: string; issueDate: string | null; versionNo: number; grossTotal: string; customerName: string } | null;
+  // Befehl 27: Zahlungsstand nur für die aktuelle, abgeschlossene Rechnungsfassung – aus der zentralen Summierung
+  const payment = inv.documentType === "INVOICE" && v.status === "FINALIZED" && inv.currentVersionId === v.id ? invoicePaymentBlock(await invoiceFinancials(tenantId, inv.id), new Date()) : null;
   return {
-    doc: buildInvoiceDocument(v, { number: inv.number, kind: inv.kind, contractNumber: contract?.number ?? null, bookingNumber: booking?.number ?? null, returnNumber: ret?.number ?? null, caseNumber: damageCase?.caseNumber ?? null, isCurrent: inv.currentVersionId === v.id, supersedes: prev, documentType: inv.documentType, original: inv.documentType !== "INVOICE" && snap ? { number: snap.number, issueDate: snap.issueDate, versionNo: snap.versionNo, grossTotal: snap.grossTotal, customerName: snap.customerName } : null }),
+    doc: withPayment(payment, buildInvoiceDocument(v, { number: inv.number, kind: inv.kind, contractNumber: contract?.number ?? null, bookingNumber: booking?.number ?? null, returnNumber: ret?.number ?? null, caseNumber: damageCase?.caseNumber ?? null, isCurrent: inv.currentVersionId === v.id, supersedes: prev, documentType: inv.documentType, original: inv.documentType !== "INVOICE" && snap ? { number: snap.number, issueDate: snap.issueDate, versionNo: snap.versionNo, grossTotal: snap.grossTotal, customerName: snap.customerName } : null })),
     bookingId: inv.bookingId,
     invoiceId: inv.id,
     versionId: v.id,

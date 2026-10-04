@@ -26,7 +26,7 @@ type Tab = (typeof TABS)[number]["key"];
 
 /** Kundenakte 360°: Kopf, Reiter (?tab=…), alles aus vorhandenen Modulen; keine neuen Geschäftsprozesse. */
 export default async function CustomerPage({ params, searchParams }: PageProps<"/kunden/[id]">) {
-  const { tenant, user } = await requireSession();
+  const { tenant, user, supportSession } = await requireSession();
   const { id } = await params;
   const sp = await searchParams;
   const tab: Tab = (TABS.find((t) => t.key === sp.tab)?.key ?? "uebersicht") as Tab;
@@ -52,6 +52,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps<"
         <Link href={href("stammdaten")} className="btn">Bearbeiten</Link>
         {c.email && <a href={`mailto:${encodeURIComponent(c.email)}`} className="btn">E-Mail</a>}
         {c.phone && <a href={`tel:${c.phone.replace(/[^\d+]/g, "")}`} className="btn md:hidden">Anrufen</a>}
+        {canManage && !supportSession && <Link href={`/rechnungen/neu?kunde=${c.id}`} className="btn">+ Neue Rechnung</Link>}
         {!c.blocked && canManage && <Link href={`/buchungen/neu?kunde=${c.id}`} className="btn btn-primary">+ Neue Buchung</Link>}
       </PageHeader>
       <Content>

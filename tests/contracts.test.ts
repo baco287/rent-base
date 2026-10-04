@@ -319,13 +319,13 @@ test("alter direkter Weg auf 'Unterwegs' ist gesperrt; Übergabe braucht den abg
   // Storno: Entwurf wird verworfen, unterschriebener Vertrag storniert und bleibt erhalten
   const w2 = await world("cancel");
   const draft = await ensureContractDraft(w2.tenantId, w2.bookingId, w2.actor);
-  await changeBookingStatus(w2.tenantId, w2.bookingId, "CANCELLED");
+  await changeBookingStatus(w2.tenantId, w2.bookingId, "CANCELLED", { actor: w2.actor, reason: "Test-Storno" });
   assert.equal(await db.rentalContract.count({ where: { id: draft.id } }), 0);
   const w3 = await world("cancel-signed");
   const c3 = await ensureContractDraft(w3.tenantId, w3.bookingId, w3.actor);
   await sign(w3, c3.id);
   await finalizeContract(w3.tenantId, c3.id);
-  await changeBookingStatus(w3.tenantId, w3.bookingId, "CANCELLED");
+  await changeBookingStatus(w3.tenantId, w3.bookingId, "CANCELLED", { actor: w3.actor, reason: "Test-Storno" });
   const cancelled = await db.rentalContract.findFirstOrThrow({ where: { id: c3.id } });
   assert.equal(cancelled.status, "CANCELLED");
   assert.equal(Number(cancelled.totalAmount), 458.1, "Inhalt bleibt unverändert");

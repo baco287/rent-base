@@ -33,7 +33,7 @@ type Tab = (typeof TABS)[number]["key"];
 
 /** Digitale Fahrzeugakte: Bereiche als Reiter (?tab=…), keine gigantische Einzelseite. */
 export default async function VehiclePage({ params, searchParams }: PageProps<"/fahrzeuge/[id]">) {
-  const { tenant, user } = await requireSession();
+  const { tenant, user, supportSession } = await requireSession();
   const { id } = await params;
   const sp = await searchParams;
   const tab: Tab = (TABS.find((t) => t.key === sp.tab)?.key ?? "uebersicht") as Tab;
@@ -50,7 +50,7 @@ export default async function VehiclePage({ params, searchParams }: PageProps<"/
 
   const values = {
     plate: vehicle.plate, make: vehicle.make, model: vehicle.model, groupId: vehicle.groupId ?? "", fuel: vehicle.fuel, status: vehicle.status,
-    year: vehicle.year?.toString() ?? "", vin: vehicle.vin ?? "", color: vehicle.color ?? "", mileage: vehicle.mileage.toString(), huDate: toDateInput(vehicle.huDate),
+    year: vehicle.year?.toString() ?? "", vin: vehicle.vin ?? "", color: vehicle.color ?? "", mileage: vehicle.mileage.toString(), tankCapacityLiters: vehicle.tankCapacityLiters?.toString() ?? "", huDate: toDateInput(vehicle.huDate),
     dailyRate: vehicle.dailyRate.toString().replace(".", ","), workWeekRate: vehicle.workWeekRate?.toString().replace(".", ",") ?? "", weeklyRate: vehicle.weeklyRate?.toString().replace(".", ",") ?? "", monthlyRate: vehicle.monthlyRate?.toString().replace(".", ",") ?? "",
     kmIncludedPerDay: vehicle.kmIncludedPerDay.toString(), extraKmRate: vehicle.extraKmRate.toString().replace(".", ","), deposit: vehicle.deposit.toString().replace(".", ","), notes: vehicle.notes ?? "",
     requiredLicenseClass: vehicle.requiredLicenseClass ?? "",
@@ -119,7 +119,7 @@ export default async function VehiclePage({ params, searchParams }: PageProps<"/
           </Card>
         )}
 
-        {tab === "schaeden" && <VehicleFile tenantId={tenant.id} vehicleId={vehicle.id} damagesOnly />}
+        {tab === "schaeden" && <VehicleFile tenantId={tenant.id} vehicleId={vehicle.id} damagesOnly canReport={!supportSession} />}
         {tab === "wartung" && <MaintenanceSection o={overview} vehicleId={vehicle.id} canManage={canManage} />}
         {tab === "faelligkeiten" && <DueSection o={overview} vehicleId={vehicle.id} canManage={canManage} />}
         {tab === "dokumente" && <DocumentsSection o={overview} vehicleId={vehicle.id} canManage={canManage} isOwner={user.role === "OWNER"} />}

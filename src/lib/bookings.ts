@@ -6,25 +6,44 @@ import { DomainError } from "@/lib/integrity";
 type Tx = Prisma.TransactionClient;
 
 /**
+ * Befehl 27: Eine laufende Miete (ACTIVE) belegt das Fahrzeug bis zur tatsächlichen Rückgabe. Ist das geplante Ende
+ * überschritten (Rückgabe überfällig), gilt sie bis „jetzt“ als belegt. Eine Definition für Konfliktprüfung und Dispo.
+ */
+export function isOverdue(b: { status: string; endAt: Date }, now = new Date()): boolean {
+  return b.status === "ACTIVE" && b.endAt < now;
+}
+export function occupiedUntil(b: { status: string; endAt: Date }, now = new Date()): Date {
+  return isOverdue(b, now) ? now : b.endAt;
+}
+
+/** Filter: Buchungen, die das Fahrzeug im halboffenen Zeitraum [startAt, endAt) belegen – inkl. überfälliger laufender Mieten. */
+export function occupyingWhere(startAt: Date, endAt: Date, now = new Date()): Prisma.BookingWhereInput {
+  const ends: Prisma.BookingWhereInput[] = [{ endAt: { gt: startAt } }];
+  // überfällig: belegt bis jetzt, also überschneidend, sobald der Zeitraum vor „jetzt“ beginnt
+  if (now > startAt) ends.push({ status: "ACTIVE" });
+  return { status: { in: BLOCKING_BOOKING_STATUS }, startAt: { lt: endAt }, OR: ends };
+}
+
+/**
  * Zeiträume sind halboffen: [startAt, endAt). Zwei Buchungen überschneiden sich, wenn
  * A.start < B.end und A.end > B.start. Rückgabe 10:00 und Abholung 10:00 am selben Tag sind damit KEIN Konflikt.
- * Diese Regel gilt überall: hier, im Dispo-Kalender und im Übergabeabschluss.
+ * Diese Regel gilt überall: hier, im Dispo-Kalender und im Übergabeabschluss. Befehl 27: B.end einer überfälligen laufenden
+ * Miete ist „jetzt“ (occupiedUntil).
  */
 export async function findConflicts(
-  tx: Tx,
+  tx: Tx | typeof db,
   tenantId: string,
   vehicleId: string,
   startAt: Date,
   endAt: Date,
   excludeBookingId?: string,
+  now = new Date(),
 ) {
   return tx.booking.findMany({
     where: {
       tenantId,
       vehicleId,
-      status: { in: BLOCKING_BOOKING_STATUS },
-      startAt: { lt: endAt },
-      endAt: { gt: startAt },
+      ...occupyingWhere(startAt, endAt, now),
       ...(excludeBookingId ? { id: { not: excludeBookingId } } : {}),
     },
     include: { customer: true },

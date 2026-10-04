@@ -407,14 +407,16 @@ test("Kaution: vereinbart ≠ erhalten; Erhöhung ohne Bewegung, Reduzierung ohn
   assert.equal((await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } })).deposit.toString(), "700");
   const fin = await securityDepositFinancials(w.tenantId, w.bookingId);
   assert.equal(fin.expectedCents, 70000);
-  // Reduzierung: vereinbart 300, erhalten bleibt 500, nichts wird ausgezahlt
+  // Reduzierung: nie unter die erhaltene Kaution (Befehl 27, P0 – vorher wurde hier 300 bei 500 erhalten akzeptiert);
+  // bis auf die erhaltene 500 möglich, nichts wird ausgezahlt
   const b = await draft(w, "d2");
-  await updateAmendmentDraft(w.tenantId, w.actor, b.id, { newDepositCents: 30000 });
+  await assert.rejects(() => updateAmendmentDraft(w.tenantId, w.actor, b.id, { newDepositCents: 30000 }), /kann nicht auf 300,00\s€ reduziert werden, da bereits 500,00\s€ Kaution als erhalten dokumentiert/);
+  await updateAmendmentDraft(w.tenantId, w.actor, b.id, { newDepositCents: 50000 });
   const sb = await getAmendmentState(w.tenantId, b.id);
   assert.match(sb.changes.find((x) => x.kind === "DEPOSIT")!.note ?? "", /keine automatische Auszahlung/);
   await signed(w, b.id);
   const v2 = await depositView(w.tenantId, w.bookingId);
-  assert.equal(v2.expectedCents, 30000); assert.equal(v2.receivedCents, 50000);
+  assert.equal(v2.expectedCents, 50000); assert.equal(v2.receivedCents, 50000);
   assert.equal(await db.payout.count({ where: { tenantId: w.tenantId } }), 0);
   assert.equal(await db.auditLog.count({ where: { tenantId: w.tenantId, action: "AMENDMENT_DEPOSIT_CHANGED" } }), 2);
   // ohne Kautionszeile: Anzeige und Anlage nehmen den wirksamen Stand

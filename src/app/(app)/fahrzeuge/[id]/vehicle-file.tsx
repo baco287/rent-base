@@ -9,8 +9,12 @@ import { listVehicleEvents } from "@/lib/vehicle-events";
 import { CaseStatusChip, LiabilityChip } from "../../schaeden/chips";
 import { openDamageCaseAction } from "../../schaeden/[id]/actions";
 import { ActionButton } from "../../schaeden/[id]/case-forms";
+import { parseSketch } from "@/lib/handover-view";
+import { resolveSketch } from "@/lib/sketches";
+import { reportDamageAction } from "./damage-actions";
+import { ReportDamageButton } from "./report-damage";
 
-export async function VehicleFile({ tenantId, vehicleId, damagesOnly = false }: { tenantId: string; vehicleId: string; damagesOnly?: boolean }) {
+export async function VehicleFile({ tenantId, vehicleId, damagesOnly = false, canReport = false }: { tenantId: string; vehicleId: string; damagesOnly?: boolean; /** Befehl 27: „+ Schaden erfassen“ (alle Rollen außer Supportmodus) */ canReport?: boolean }) {
   const [damages, events] = await Promise.all([
     db.damage.findMany({
       where: { tenantId, vehicleId },
@@ -20,15 +24,17 @@ export async function VehicleFile({ tenantId, vehicleId, damagesOnly = false }: 
     listVehicleEvents(db, tenantId, vehicleId, 60),
   ]);
   const open = damages.filter((d) => d.status !== "REPAIRED");
+  const sketch = canReport ? parseSketch(await resolveSketch(db, tenantId, (await db.vehicle.findFirst({ where: { id: vehicleId, tenantId }, select: { group: { select: { sketchId: true, bodyType: true } } } }))?.group ?? null)) : null;
   const repaired = damages.filter((d) => d.status === "REPAIRED");
   const origin = (d: (typeof damages)[number]) => {
-    if (!d.discoveredIn) return "Auf dem Hof erfasst";
+    if (!d.discoveredIn) return "Manuell erfasst (ohne Protokoll)";
     return d.discoveredIn.type === "RETURN" ? `Bei Rückgabe festgestellt (${d.discoveredIn.number})` : `Vorschaden bei Übergabe (${d.discoveredIn.number})`;
   };
   const href = (d: (typeof damages)[number]) => (d.discoveredIn ? `/buchungen/${d.discoveredIn.bookingId}/${d.discoveredIn.type === "RETURN" ? "rueckgabe" : "uebergabe"}` : null);
 
   return (
     <>
+      {canReport && <div className="flex"><ReportDamageButton action={reportDamageAction.bind(null, vehicleId)} sketch={sketch} existing={open.map((d) => ({ view: d.view, posX: d.posX, posY: d.posY }))} /></div>}
       <Card title="Schadenakte" right={<><Chip tone={open.length > 0 ? "amber" : "good"}>{open.length} offen</Chip>{repaired.length > 0 && <Chip>{repaired.length} repariert</Chip>}</>}>
         {damages.length === 0 ? (
           <p className="p-4 text-ink-3 text-sm">Keine Schäden dokumentiert.</p>
@@ -43,6 +49,7 @@ export async function VehicleFile({ tenantId, vehicleId, damagesOnly = false }: 
                   {d.damageCase && <><Link href={`/schaeden/${d.damageCase.id}`} className="font-mono tnum underline">{d.damageCase.caseNumber}</Link><CaseStatusChip status={d.damageCase.status} /><LiabilityChip status={d.damageCase.liabilityStatus} /></>}
                 </div>
                 <div className="text-ink-2">{d.description}{d.size ? ` (${d.size})` : ""} · {DAMAGE_SEVERITY[d.severity as DamageSeverity] ?? d.severity}</div>
+                {d.note && <div className="text-xs text-ink-3">Notiz: {d.note}</div>}
                 <div className="text-xs text-ink-3 flex flex-wrap gap-x-3 gap-y-0.5">
                   <span>{origin(d)}</span>
                   <span className="font-mono tnum">{fmtDateTime(d.discoveredAt)}</span>

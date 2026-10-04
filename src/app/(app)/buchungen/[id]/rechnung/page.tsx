@@ -8,6 +8,7 @@ import { loadInvoiceDocumentData } from "@/lib/document-data";
 import { customerName, fmtDateTime, fmtEur } from "@/lib/format";
 import { getInvoiceState, invoiceSettingsMissing, listVersions, type CompanySnapshot, type InvoiceCustomerSnapshot, type VersionDiff } from "@/lib/invoices";
 import { fmtCents, toCents } from "@/lib/money";
+import { effectiveStateForBooking } from "@/lib/amendments";
 import { invoicePaymentSummary } from "@/lib/payments";
 import { depositView } from "@/lib/deposits";
 import { depositOffsetStart } from "@/lib/invoice-settlement";
@@ -42,6 +43,8 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
   });
   if (!b) notFound();
   const canEdit = user.role !== "YARD";
+  // Befehl 27: Mietpreis laut wirksamem Vertragsstand (Vertrag + unterschriebene Nachträge), zentral abgeleitet
+  const effective = b.contract?.status === "SIGNED" ? await effectiveStateForBooking(tenant.id, b.id) : null;
   // Ohne nr: die Mietrechnung. Mit nr: eine bestimmte Rechnung dieser Buchung, z. B. eine Schadenabrechnung.
   const requestedId = typeof sp.nr === "string" ? sp.nr : null;
   const invoice = requestedId
@@ -167,7 +170,7 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
           {draft.versionNo === 1 && inv.kind === "RENTAL" && (
             <Card title="Quellen des Entwurfs" right={<Chip>nur bestätigte Beträge</Chip>}>
               <div className="p-4 text-sm flex flex-col gap-1.5">
-                <div className="flex justify-between gap-3"><span>Mietpreis laut Mietvertrag {doc.reference.contractNumber}</span><span className="font-mono tnum">{fmtEur(Number(b.contract?.totalAmount ?? 0))}</span></div>
+                <div className="flex justify-between gap-3"><span>Mietpreis laut Mietvertrag {doc.reference.contractNumber}{effective?.amendments.length ? ` und Nachtrag ${effective.amendments.map((a) => a.number).join(", ")}` : ""}</span><span className="font-mono tnum">{fmtCents(effective?.totalCents ?? toCents(b.contract?.totalAmount ?? 0))}</span></div>
                 {charges.length === 0 && <span className="text-ink-3">Bei der Rückgabe wurden keine Zusatzkosten bestätigt.</span>}
                 {charges.map((ch) => (
                   <div key={ch.id} className="flex justify-between gap-3">

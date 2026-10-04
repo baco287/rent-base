@@ -209,8 +209,8 @@ export async function updateBookingAction(id: string, _prev: FormState, formData
  * Statuswechsel per Knopf. Die Regeln stehen in lib/booking-status.ts:
  * "Unterwegs" ist hier nicht mehr möglich, das entsteht nur durch Mietvertrag und Übergabeprotokoll.
  */
-export async function setBookingStatusAction(id: string, status: "ACTIVE" | "RETURNED" | "CANCELLED") {
-  // Storno und Altfall-Rücknahme sind Dispositionsentscheidungen
+export async function setBookingStatusAction(id: string, status: "ACTIVE" | "RETURNED") {
+  // Altfall-Rücknahme ist eine Dispositionsentscheidung; Storno nur über cancelBookingAction (Befehl 27: mit Grund)
   const { tenant } = await requireRole("DISPO");
   try {
     const { orphanedStorageKeys } = await changeBookingStatus(tenant.id, id, status);
@@ -222,4 +222,22 @@ export async function setBookingStatusAction(id: string, status: "ACTIVE" | "RET
   }
   revalidate(id);
   redirect(`/buchungen/${id}`);
+}
+
+export type CancelState = { error?: string } | undefined;
+
+/** Befehl 27: Storno nur mit Pflichtgrund, Benutzer und Audit; die Regeln (inkl. „Geld hängt an der Buchung“) im Server. */
+export async function cancelBookingAction(id: string, _prev: CancelState, formData: FormData): Promise<CancelState> {
+  const { tenant, user } = await requireRole("DISPO");
+  const reason = String(formData.get("reason") ?? "");
+  let orphaned: string[] = [];
+  try {
+    orphaned = (await changeBookingStatus(tenant.id, id, "CANCELLED", { actor: { id: user.id, name: user.name }, reason })).orphanedStorageKeys;
+  } catch (e) {
+    if (e instanceof DomainError) return { error: e.message };
+    throw e;
+  }
+  await Promise.all(orphaned.map((k) => Promise.resolve().then(() => getStorage().remove(k)).catch(() => {})));
+  revalidate(id);
+  redirect(`/buchungen/${id}?storniert=1`);
 }

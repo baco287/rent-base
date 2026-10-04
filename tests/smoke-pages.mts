@@ -44,6 +44,7 @@ import { pickedUpWorld } from "./rental-flow";
 import { createAmendmentDraft, getAmendmentContentHash, saveAmendmentSignature, signAmendment, updateAmendmentDraft } from "../src/lib/amendments";
 import { ensureAmendmentDocument } from "../src/lib/documents";
 import { discardEmptyReturnDraft } from "../src/lib/handovers";
+import { changeBookingStatus } from "../src/lib/booking-status";
 
 const args = process.argv.slice(2);
 const keep = args.includes("--keep");
@@ -1067,6 +1068,56 @@ const amForeignPdf = await fetch(`${base}/api/documents/${amDoc.id}`, { headers:
 report(amForeignPdf.status === 404 || amForeignPdf.status === 403, `${amForeignPdf.status} fremder Mandant: Nachtrags-PDF gesperrt`);
 const amRangesHtml = await plain(await fetch(`${base}/einstellungen/nummernkreise`, { headers: { cookie: dnCookie } }));
 report(amRangesHtml.includes("Präfix Nachträge") && amRangesHtml.includes("NT-") && amRangesHtml.includes("Unterschriebene Nachträge zum Mietvertrag"), "Nummernkreise: Kreis Nachträge mit Zähler");
+
+// ---------------------------------------------------------------------------
+// Befehl 27: Korrekturrunde. Storno-Dialog (Inhaber ja, Hof/Support nein, Stornoinfo), Fahrzeugformular mit Tankgröße,
+// „+ Schaden erfassen“ in der Fahrzeugakte (Herkunft „Manuell erfasst“), Kundenakte „+ Neue Rechnung“, Dispo „Rückgabe
+// überfällig“, Startseite ohne /buchungen/null. Alles im Mahn-Testmandanten mit eigenen Testdaten.
+// ---------------------------------------------------------------------------
+{
+  const krVeh = await db.vehicle.create({ data: { tenantId: dnWorld.tenantId, plate: `HB-KR ${Date.now().toString(36).slice(-4)}`, make: "VW", model: "Polo", groupId: dnWorld.groupId, fuel: "BENZIN", mileage: 12_000, dailyRate: 49, deposit: 300, tankCapacityLiters: 40 } });
+  const krStart = new Date(Date.now() + 20 * 86400_000);
+  const krBooking = await db.booking.create({ data: { tenantId: dnWorld.tenantId, number: `KR-${Date.now().toString(36)}`, vehicleId: krVeh.id, customerId: dnWorld.customerId, startAt: krStart, endAt: new Date(krStart.getTime() + 2 * 86400_000), dailyRate: 49, deposit: 300 } });
+  const krOwner = await plain(await fetch(`${base}/buchungen/${krBooking.id}`, { headers: { cookie: dnCookie } }));
+  report(krOwner.includes("Stornieren…"), "Storno: Inhaber sieht „Stornieren…“ (Dialog mit Pflichtgrund)");
+  const krYard = await plain(await fetch(`${base}/buchungen/${krBooking.id}`, { headers: { cookie: `rb_session=${dnYardSession}` } }));
+  report(!krYard.includes("Stornieren…"), "Storno: Hofmitarbeiter ohne Storno-Knopf");
+  const krSupport = await plain(await fetch(`${base}/buchungen/${krBooking.id}`, { headers: { cookie: dnSupportCookie } }));
+  report(krSupport.includes("SUPPORTMODUS") && !krSupport.includes("Stornieren…"), "Storno: Supportmodus ohne Storno-Knopf");
+  await changeBookingStatus(dnWorld.tenantId, krBooking.id, "CANCELLED", { actor: dnWorld.actor, reason: "Smoke: Kunde hat abgesagt" });
+  const krCancelled = await plain(await fetch(`${base}/buchungen/${krBooking.id}`, { headers: { cookie: dnCookie } }));
+  report(krCancelled.includes("Storniert") && krCancelled.includes("Grund: Smoke: Kunde hat abgesagt") && !krCancelled.includes("Stornieren…"), "Storno: Grund, Benutzer und Zeitpunkt sichtbar, kein zweites Storno");
+
+  const krForm = await plain(await fetch(`${base}/fahrzeuge/${krVeh.id}?tab=stammdaten`, { headers: { cookie: dnCookie } }));
+  report(krForm.includes("Tankgröße (Liter)") && krForm.includes('value="40"'), "Fahrzeugformular: Tankgröße (Liter) gepflegt");
+  const krFile = await plain(await fetch(`${base}/fahrzeuge/${krVeh.id}?tab=schaeden`, { headers: { cookie: dnCookie } }));
+  report(krFile.includes("+ Schaden erfassen"), "Fahrzeugakte: „+ Schaden erfassen“");
+  const krFileYard = await plain(await fetch(`${base}/fahrzeuge/${krVeh.id}?tab=schaeden`, { headers: { cookie: `rb_session=${dnYardSession}` } }));
+  report(krFileYard.includes("+ Schaden erfassen"), "Fahrzeugakte: Hofmitarbeiter kann Schaden erfassen");
+  await reportDamage(dnWorld.tenantId, dnWorld.actor, { vehicleId: krVeh.id, view: "FRONT", posX: 0.5, posY: 0.4, kind: "CHIP", severity: "MINOR", description: "Smoke: Steinschlag Frontscheibe", note: "Smoke-Notiz" });
+  const krFile2 = await plain(await fetch(`${base}/fahrzeuge/${krVeh.id}?tab=schaeden`, { headers: { cookie: dnCookie } }));
+  report(krFile2.includes("Smoke: Steinschlag Frontscheibe") && krFile2.includes("Manuell erfasst (ohne Protokoll)"), "Fahrzeugakte: manueller Schaden mit Herkunft „Manuell erfasst“");
+  const krFileSupport = await plain(await fetch(`${base}/fahrzeuge/${krVeh.id}?tab=schaeden`, { headers: { cookie: dnSupportCookie } }));
+  report(krFileSupport.includes("Smoke: Steinschlag Frontscheibe") && !krFileSupport.includes("+ Schaden erfassen"), "Fahrzeugakte: Supportmodus nur Ansicht");
+  const krPhotoSupport = await fetch(`${base}/api/damages/${(await db.damage.findFirstOrThrow({ where: { tenantId: dnWorld.tenantId, vehicleId: krVeh.id } })).id}/photos`, { method: "POST", headers: { cookie: dnSupportCookie }, body: new FormData() });
+  report(krPhotoSupport.status === 403, `${krPhotoSupport.status} Schadenfoto: Supportmodus darf nicht hochladen`);
+
+  const krCustomer = await plain(await fetch(`${base}/kunden/${dnWorld.customerId}`, { headers: { cookie: dnCookie } }));
+  report(krCustomer.includes("+ Neue Rechnung") && krCustomer.includes(`/rechnungen/neu?kunde=${dnWorld.customerId}`), "Kundenakte: „+ Neue Rechnung“ mit vorbelegtem Kunden");
+  const krCustomerFin = await plain(await fetch(`${base}/kunden/${dnWorld.customerId}?tab=finanzen`, { headers: { cookie: dnCookie } }));
+  report(!krCustomerFin.includes("/finanzen\""), "Kundenakte: keine Links auf /buchungen/…/finanzen");
+  const krCustomerSupport = await plain(await fetch(`${base}/kunden/${dnWorld.customerId}`, { headers: { cookie: dnSupportCookie } }));
+  report(!krCustomerSupport.includes("+ Neue Rechnung"), "Kundenakte: Supportmodus ohne „+ Neue Rechnung“");
+
+  const krOver = await pickedUpWorld("smoke-overdue", { within: dnWorld });
+  await db.booking.update({ where: { id: krOver.bookingId }, data: { startAt: new Date(Date.now() - 3 * 86400_000), endAt: new Date(Date.now() - 2 * 3600_000) } });
+  const krDispo = await plain(await fetch(`${base}/dispo`, { headers: { cookie: dnCookie } }));
+  report(krDispo.includes("Rückgabe überfällig"), "Dispo: überfällige Miete sichtbar mit „Rückgabe überfällig“");
+  const krToday = await plain(await fetch(`${base}/heute`, { headers: { cookie: dnCookie } }));
+  report(!krToday.includes("/buchungen/null"), "Startseite: kein Link auf /buchungen/null");
+  const krLogin = await fetch(`${base}/login?weiter=${encodeURIComponent("//evil.example")}`);
+  report(krLogin.status === 200, `${krLogin.status} Login mit fremdem Weiterleitungsziel lädt (Ziel wird serverseitig verworfen)`);
+}
 
 // ---------------------------------------------------------------------------
 // Control Center: Navigation je interner Rolle, alle Bereiche erreichbar, Berechtigungen serverseitig, Feature-Gating,

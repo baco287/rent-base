@@ -267,7 +267,11 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
                     <span className="text-ink-3">Übergabe</span><span className="font-mono tnum text-right">{cmp?.mileage.pickup != null ? `${fmtInt(cmp.mileage.pickup)} km` : "–"}</span>
                     <span className="text-ink-3">Rückgabe</span><span className="font-mono tnum text-right font-semibold">{cmp?.mileage.return != null ? `${fmtInt(cmp.mileage.return)} km` : "noch nicht erfasst"}</span>
                     <span className="text-ink-3">Gefahren</span><span className={`font-mono tnum text-right font-semibold ${cmp?.mileage.driven != null && cmp.mileage.driven < 0 ? "text-bad" : ""}`}>{cmp?.mileage.driven != null ? `${fmtInt(cmp.mileage.driven)} km` : "–"}</span>
-                    {cmp && <>
+                    {cmp && cmp.contract.includedKm == null && <>
+                      <span className="text-ink-3 border-t border-line-soft pt-1.5">Kilometerregel</span><span className="text-right border-t border-line-soft pt-1.5 font-semibold text-good">Unbegrenzte Kilometer vereinbart</span>
+                      <span className="text-ink-3">Mehrkilometer</span><span className="font-mono tnum text-right">keine</span>
+                    </>}
+                    {cmp && cmp.contract.includedKm != null && <>
                       <span className="text-ink-3 border-t border-line-soft pt-1.5">Freikilometer</span><span className="font-mono tnum text-right border-t border-line-soft pt-1.5">{fmtInt(cmp.contract.includedKm)} km</span>
                       <span className="text-ink-3">Mehrkilometer</span><span className="font-mono tnum text-right">{cmp.mileage.driven != null ? `${fmtInt(Math.max(0, cmp.mileage.driven - cmp.contract.includedKm))} km` : "–"}</span>
                       <span className="text-ink-3">Preis je Mehrkilometer</span><span className="font-mono tnum text-right">{fmtEur(cmp.contract.extraKmRate)}</span>

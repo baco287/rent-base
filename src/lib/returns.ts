@@ -17,7 +17,8 @@ import { readContractRules, resolveRules, type BusinessRules } from "@/lib/busin
 import { CHARGE_UNITS, EXTRA_CHARGE_TYPES, FUEL_POLICIES, energyRequirements, type ExtraChargeType } from "@/lib/constants";
 import { extraMileageCharge, flatCharge, fuelCharge, saveExtraCharge, type ChargeDraft } from "@/lib/extra-charges";
 import { touchHandover } from "@/lib/handovers";
-import { loadEffectiveContract } from "@/lib/amendments";
+import { contractKmPolicy, loadEffectiveContract } from "@/lib/amendments";
+import type { KmPolicy } from "@/lib/constants";
 import { DomainError, assertHandoverDraft } from "@/lib/integrity";
 import { rentalDays } from "@/lib/pricing";
 import type { VehicleSnapshot } from "@/lib/contracts";
@@ -41,7 +42,8 @@ export type ReturnComparison = {
   fuel: { pickup: number | null; return: number | null; diff: number | null } | null;
   battery: { pickup: number | null; return: number | null; diff: number | null } | null;
   time: { start: Date; plannedEnd: Date; actualEnd: Date; lateMinutes: number; rentalDays: number };
-  contract: { number: string; amendmentNumbers: string[]; kmIncludedPerDay: number; includedKm: number; extraKmRate: number; fuelPolicy: string; fuelPolicyLabel: string; fuelPolicyNote: string | null; fuelPricePerLiter: number | null; deposit: number; deductible: number; tankCapacityLiters: number | null };
+  /** Befehl 27: kmPolicy laut wirksamem Vertragsstand; bei UNLIMITED gibt es keine Mehrkilometer (includedKm = null) */
+  contract: { number: string; amendmentNumbers: string[]; kmPolicy: KmPolicy; kmIncludedPerDay: number; includedKm: number | null; extraKmRate: number; fuelPolicy: string; fuelPolicyLabel: string; fuelPolicyNote: string | null; fuelPricePerLiter: number | null; deposit: number; deductible: number; tankCapacityLiters: number | null };
   /** Literpreis, der für die Rechnung gilt: aus dem Vertrag, sonst der bei der Rückgabe angegebene */
   effectiveFuelPrice: { value: number; origin: "Vertrag" | "Rückgabe" } | null;
   proposals: Proposal[];
@@ -117,7 +119,8 @@ async function loadReturn(tx: Tx, tenantId: string, handoverId: string) {
   if (!pickup) throw new DomainError("Zu dieser Miete gibt es kein abgeschlossenes Übergabeprotokoll.");
   const accessories = await accessoryContext(tx, tenantId, h, contract, pickup);
   // Befehl 25: die Rückgabe rechnet mit dem wirksamen Vertragsstand (Vertrag + unterschriebene Nachträge), nie mit dem Original allein
-  return { h, booking, contract: await loadEffectiveContract(tx, tenantId, contract), pickup, accessories };
+  const vehicleTank = await tx.vehicle.findFirst({ where: { id: h.vehicleId, tenantId }, select: { tankCapacityLiters: true } });
+  return { h, booking, contract: await loadEffectiveContract(tx, tenantId, contract), pickup, accessories, vehicleTankLiters: vehicleTank?.tankCapacityLiters ?? null };
 }
 
 /** Der komplette Vergleich Übergabe/Rückgabe samt Vorschlägen. Rechnet nur mit Snapshots. */
@@ -125,8 +128,10 @@ export function buildComparison(input: {
   handover: Prisma.HandoverGetPayload<{ include: { extraCharges: true } }>;
   booking: { startAt: Date; endAt: Date; actualPickupAt: Date | null };
   /** wirksamer Vertragsstand (lib/amendments overlayAmendments); der Original-Vertrag allein wäre nach einem Nachtrag falsch */
-  contract: Prisma.RentalContractGetPayload<object> & { amended?: { numbers: string[] } };
+  contract: Prisma.RentalContractGetPayload<object> & { amended?: { numbers: string[]; kmPolicy?: KmPolicy } };
   pickup: Prisma.HandoverGetPayload<object>;
+  /** Befehl 27: Tankgröße des Fahrzeugs, falls der Vertrags-Schnappschuss (ältere Verträge) keine enthält */
+  vehicleTankLiters?: number | null;
   /** Befehl 20.9: ohne Kontext werden keine Zubehörvorschläge gebildet */
   accessories?: AccessoryContext | null;
   now?: Date;
@@ -145,14 +150,20 @@ export function buildComparison(input: {
   const contractFuelPrice = num(contract.fuelPricePerLiter);
   const returnFuelPrice = num(h.fuelPricePerLiter);
   const effectiveFuelPrice = contractFuelPrice != null && contractFuelPrice > 0 ? { value: contractFuelPrice, origin: "Vertrag" as const } : returnFuelPrice != null && returnFuelPrice > 0 ? { value: returnFuelPrice, origin: "Rückgabe" as const } : null;
-  const tank = v.tankCapacityLiters ?? null;
+  // Tankgröße: aus dem Vertrags-Schnappschuss; ältere Verträge ohne Angabe nutzen die am Fahrzeug gepflegte Größe (physische
+  // Eigenschaft, keine Vertragskondition – ein Vorschlag wird ohnehin erst durch bewusste Bestätigung zur Position)
+  const tank = v.tankCapacityLiters ?? input.vehicleTankLiters ?? null;
+  const tankOrigin = v.tankCapacityLiters != null ? "Vertrag" : tank != null ? "Fahrzeug" : null;
+  // Befehl 27: Kilometerregel aus dem wirksamen Vertragsstand (Vertrag + unterschriebene Nachträge)
+  const kmPolicy: KmPolicy = contract.amended?.kmPolicy ?? contractKmPolicy(contract.conditions);
 
   const proposals: Proposal[] = [];
   const hints: ReturnHint[] = [];
   const confirmedOf = (type: string) => h.extraCharges.find((c) => c.type === type && c.source === "PROPOSAL");
 
-  // Mehrkilometer: Freikilometer je Vertrag × Vertragstage, Preis aus dem Vertrag
-  if (driven != null && driven >= 0) {
+  // Mehrkilometer: Freikilometer je Vertrag × Vertragstage, Preis aus dem Vertrag. Bei „Unbegrenzte Kilometer“ nie.
+  if (kmPolicy === "UNLIMITED") hints.push({ code: "KM_UNLIMITED", text: "Unbegrenzte Kilometer vereinbart – es werden keine Mehrkilometer berechnet. Der Kilometerstand wird trotzdem dokumentiert." });
+  else if (driven != null && driven >= 0) {
     const draft = extraMileageCharge({ pickupMileage: pickup.mileage!, returnMileage: h.mileage!, start: contract.startAt, end: contract.endAt, kmIncludedPerDay: contract.kmIncludedPerDay, extraKmRate: Number(contract.extraKmRate) });
     if (draft) { const c = confirmedOf("EXTRA_MILEAGE"); proposals.push({ key: "EXTRA_MILEAGE", draft, confirmed: !!c, chargeId: c?.id ?? null, dismissed: dismissed.has("EXTRA_MILEAGE") }); }
   }
@@ -168,7 +179,7 @@ export function buildComparison(input: {
     else {
       const draft = fuelCharge({ pickupEighths: pickup.fuelLevelEighths!, returnEighths: h.fuelLevelEighths!, tankCapacityLiters: tank, pricePerLiter: effectiveFuelPrice.value });
       if (draft) {
-        draft.calculation = { ...draft.calculation, priceOrigin: effectiveFuelPrice.origin, fuelPolicy: contract.fuelPolicy };
+        draft.calculation = { ...draft.calculation, priceOrigin: effectiveFuelPrice.origin, fuelPolicy: contract.fuelPolicy, tankOrigin };
         const c = confirmedOf("FUEL");
         proposals.push({ key: "FUEL", draft, confirmed: !!c, chargeId: c?.id ?? null, dismissed: dismissed.has("FUEL") });
       }
@@ -203,8 +214,9 @@ export function buildComparison(input: {
     contract: {
       number: contract.number,
       amendmentNumbers: contract.amended?.numbers ?? [],
+      kmPolicy,
       kmIncludedPerDay: contract.kmIncludedPerDay,
-      includedKm: contract.kmIncludedPerDay * days,
+      includedKm: kmPolicy === "UNLIMITED" ? null : contract.kmIncludedPerDay * days,
       extraKmRate: Number(contract.extraKmRate),
       fuelPolicy: contract.fuelPolicy,
       fuelPolicyLabel: FUEL_POLICIES[contract.fuelPolicy as keyof typeof FUEL_POLICIES] ?? contract.fuelPolicy,
@@ -332,5 +344,6 @@ export async function loadSealedComparison(tx: Tx, tenantId: string, handoverId:
     tx.handover.findFirst({ where: { tenantId, bookingId: h.bookingId, type: "PICKUP", status: "FINALIZED" }, orderBy: { finalizedAt: "desc" }, include: { checklistItems: answerSelect } }),
   ]);
   if (!booking || !contract || !pickup) return null;
-  return buildComparison({ handover: h, booking, contract: await loadEffectiveContract(tx, tenantId, contract), pickup, accessories: await accessoryContext(tx, tenantId, h, contract, pickup) });
+  const vehicleTank = await tx.vehicle.findFirst({ where: { id: h.vehicleId, tenantId }, select: { tankCapacityLiters: true } });
+  return buildComparison({ handover: h, booking, contract: await loadEffectiveContract(tx, tenantId, contract), pickup, accessories: await accessoryContext(tx, tenantId, h, contract, pickup), vehicleTankLiters: vehicleTank?.tankCapacityLiters ?? null });
 }

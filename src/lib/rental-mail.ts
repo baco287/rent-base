@@ -150,7 +150,7 @@ export async function planHandoverMail(tenantId: string, handoverId: string): Pr
 export const planPickupMail = planHandoverMail;
 
 /** Rechnung: neutraler Text, nur das Rechnungs-PDF. Keine Aussage zu Schäden oder Verantwortung. */
-export type InvoiceMailFacts = PickupMailFacts & { invoiceNumber: string; invoiceKind?: "RENTAL" | "DAMAGE" | "GENERAL"; grossTotal: string; dueDate: string | null; correction?: { versionNo: number; supersededVersionNo: number | null } | null; documentType?: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION"; original?: { number: string; date: string | null } | null };
+export type InvoiceMailFacts = PickupMailFacts & { invoiceNumber: string; invoiceKind?: "RENTAL" | "DAMAGE" | "GENERAL"; grossTotal: string; dueDate: string | null; /** Befehl 27: Zahlungsstand (bereits bezahlt / noch offen) */ payment?: { lines: { label: string; value: string }[]; settled: boolean; open: string } | null; correction?: { versionNo: number; supersededVersionNo: number | null } | null; documentType?: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION"; original?: { number: string; date: string | null } | null };
 
 /**
  * Gutschrift / Stornobeleg: eigene, neutrale Vorlage. Keine Aussage, dass Geld erstattet wurde – aus dem Beleg kann sich ein
@@ -214,7 +214,8 @@ export function composeInvoiceMail(f: InvoiceMailFacts): { subject: string; text
     "",
     ...vehicleLines(f),
     `Rechnungsbetrag: ${f.grossTotal}`,
-    ...(f.dueDate ? [`Zahlbar bis: ${f.dueDate}`] : []),
+    ...(f.payment ? f.payment.lines.filter((l) => l.label !== "Rechnungsbetrag").map((l) => `${l.label}: ${l.value}`) : []),
+    ...(f.payment?.settled ? ["Der Rechnungsbetrag ist vollständig ausgeglichen; es ist keine Zahlung mehr erforderlich."] : f.dueDate ? [`Zahlbar bis: ${f.dueDate}`] : []),
     "",
     "Im Anhang:",
     corr ? `- Berichtigte ${word}` : `- ${word}`,
@@ -230,7 +231,8 @@ export function composeInvoiceMail(f: InvoiceMailFacts): { subject: string; text
 <p>${esc(intro)}</p>
 <table style="border-collapse:collapse;font-size:15px" cellpadding="0" cellspacing="0">
 ${vehicleRows(f)}<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Rechnungsbetrag</td><td><b>${esc(f.grossTotal)}</b></td></tr>
-${f.dueDate ? `<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Zahlbar bis</td><td>${esc(f.dueDate)}</td></tr>` : ""}
+${(f.payment?.lines ?? []).filter((l) => l.label !== "Rechnungsbetrag").map((l) => `<tr><td style="padding:2px 16px 2px 0;color:#4a5568">${esc(l.label)}</td><td>${esc(l.value)}</td></tr>`).join("")}
+${f.payment?.settled ? `<tr><td colspan="2" style="padding:6px 0 2px 0">Der Rechnungsbetrag ist vollständig ausgeglichen; es ist keine Zahlung mehr erforderlich.</td></tr>` : f.dueDate ? `<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Zahlbar bis</td><td>${esc(f.dueDate)}</td></tr>` : ""}
 </table>
 <p>Im Anhang:</p>
 <ul><li>${corr ? "Berichtigte Rechnung" : "Rechnung"}</li></ul>
@@ -240,7 +242,7 @@ ${f.dueDate ? `<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Zahlbar bis<
   return { subject, text: lines.join("\n"), html };
 }
 
-export type InvoiceMailPlan = PickupMailPlan & { invoice: { number: string; kind: "RENTAL" | "DAMAGE" | "GENERAL"; grossTotal: string; dueDate: string | null; correction: { versionNo: number; supersededVersionNo: number | null } | null; documentType: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION"; original: { number: string; date: string | null } | null } };
+export type InvoiceMailPlan = PickupMailPlan & { invoice: { number: string; kind: "RENTAL" | "DAMAGE" | "GENERAL"; grossTotal: string; dueDate: string | null; payment: InvoiceMailFacts["payment"]; correction: { versionNo: number; supersededVersionNo: number | null } | null; documentType: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION"; original: { number: string; date: string | null } | null } };
 
 /** Stellt zusammen, was für eine Rechnungsfassung verschickt würde: ausschließlich das archivierte PDF dieser Fassung an die Adresse aus der Rechnungskopie. */
 export async function planInvoiceMail(tenantId: string, versionId: string): Promise<InvoiceMailPlan> {
@@ -267,7 +269,7 @@ export async function planInvoiceMail(tenantId: string, versionId: string): Prom
     replyTo: d ? d.landlord.email : company.email ?? null,
     documents: doc ? [doc] : [],
     missing: doc ? [] : [invoiceData.doc.title],
-    invoice: { number: inv.number, kind: inv.kind === "DAMAGE" ? "DAMAGE" : inv.kind === "GENERAL" ? "GENERAL" : "RENTAL", grossTotal: invoiceData.doc.totals.gross, dueDate: invoiceData.doc.paymentDueDate, correction: v.kind === "CORRECTION" ? { versionNo: v.versionNo, supersededVersionNo: invoiceData.doc.version.supersedes?.versionNo ?? null } : null, documentType: invoiceData.documentType, original: invoiceData.doc.original ? { number: invoiceData.doc.original.number, date: invoiceData.doc.original.date } : null },
+    invoice: { number: inv.number, kind: inv.kind === "DAMAGE" ? "DAMAGE" : inv.kind === "GENERAL" ? "GENERAL" : "RENTAL", grossTotal: invoiceData.doc.totals.gross, dueDate: invoiceData.doc.paymentDueDate, payment: invoiceData.doc.paymentStatus ? { lines: invoiceData.doc.paymentStatus.lines, settled: invoiceData.doc.paymentStatus.settled, open: invoiceData.doc.paymentStatus.open } : null, correction: v.kind === "CORRECTION" ? { versionNo: v.versionNo, supersededVersionNo: invoiceData.doc.version.supersedes?.versionNo ?? null } : null, documentType: invoiceData.documentType, original: invoiceData.doc.original ? { number: invoiceData.doc.original.number, date: invoiceData.doc.original.date } : null },
   };
 }
 
@@ -307,7 +309,7 @@ async function sendPlannedDocuments(tenantId: string, plan: PickupMailPlan & { i
   const mail = plan.kind === "INVOICE" && plan.invoice
     ? counterType
       ? composeCounterDocumentMail({ ...plan.facts, invoiceNumber: plan.invoice.number, invoiceKind: plan.invoice.kind, grossTotal: plan.invoice.grossTotal, dueDate: null, documentType: counterType, original: plan.invoice.original })
-      : composeInvoiceMail({ ...plan.facts, invoiceNumber: plan.invoice.number, invoiceKind: plan.invoice.kind, grossTotal: plan.invoice.grossTotal, dueDate: plan.invoice.dueDate, correction: plan.invoice.correction })
+      : composeInvoiceMail({ ...plan.facts, invoiceNumber: plan.invoice.number, invoiceKind: plan.invoice.kind, grossTotal: plan.invoice.grossTotal, dueDate: plan.invoice.dueDate, correction: plan.invoice.correction, payment: plan.invoice.payment })
     : plan.kind === "RETURN" ? composeReturnMail(plan.facts) : composePickupMail(plan.facts);
   const { log, created } = await claimEmail({
     tenantId,

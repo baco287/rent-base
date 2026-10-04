@@ -3,7 +3,9 @@ import type { Prisma } from "@prisma/client";
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { customerName, fmtDateTime, fmtEur } from "@/lib/format";
-import { calculateRentalPrice, rateCardFrom } from "@/lib/pricing";
+import { rentalDays } from "@/lib/pricing";
+import { SIGNED_AMENDMENTS_SELECT } from "@/lib/amendments";
+import { expectedRentalCents } from "@/lib/rental-payments";
 import { BookingStageChip, Card, Chip, Content, Empty, PageHeader, Plate } from "@/components/ui";
 import { bookingStage, pickupAction, returnAction } from "@/lib/booking-status";
 import { bookingSearchWhere, SEARCH_MAX } from "@/lib/search";
@@ -35,7 +37,7 @@ export default async function BookingsPage({ searchParams }: PageProps<"/buchung
     db.booking.count({ where }),
     db.booking.findMany({
       where,
-      include: { vehicle: true, customer: true, contract: { select: { status: true } }, handovers: { where: { correctsId: null }, select: { type: true, status: true } } },
+      include: { vehicle: true, customer: true, contract: { select: { status: true, totalAmount: true, amendments: SIGNED_AMENDMENTS_SELECT } }, handovers: { where: { correctsId: null }, select: { type: true, status: true } } },
       orderBy: { startAt: filter.key === "abgeschlossen" || filter.key === "alle" ? "desc" : "asc" },
       skip: (page - 1) * PAGE,
       take: PAGE,
@@ -84,9 +86,9 @@ export default async function BookingsPage({ searchParams }: PageProps<"/buchung
                 </thead>
                 <tbody>
                   {bookings.map((b) => {
-                    const price = calculateRentalPrice({ start: b.startAt, end: b.endAt, rates: rateCardFrom(b), discountPercent: b.customer.discountPercent });
-                    const d = price.days;
-                    const total = price.total;
+                    // Befehl 27: mit unterschriebenem Vertrag der wirksame Vertragspreis (inkl. Nachträgen), sonst Schätzung aus der Buchung
+                    const d = rentalDays(b.startAt, b.endAt);
+                    const total = expectedRentalCents(b).cents / 100;
                     const overdue = b.status === "ACTIVE" && b.endAt < new Date();
                     // Befehl 21: die nächste Prozessaktion direkt in der Zeile – Rückgabe (laufende Miete) bzw. Übergabe (bereit)
                     const ret = returnAction(b, b.contract, b.handovers);

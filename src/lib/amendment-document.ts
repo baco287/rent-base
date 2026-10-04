@@ -56,7 +56,7 @@ export function buildAmendmentDocument(s: AmendmentSnapshot, hash: string, signa
     after: {
       endAt: d(s.after.endAt),
       total: fmtCents(s.after.totalCents),
-      km: `${s.after.kmIncludedPerDay.toLocaleString("de-DE")} km je Tag · Mehrkilometer ${s.after.extraKmRate.toLocaleString("de-DE", { minimumFractionDigits: 2 })} € je km`,
+      km: s.after.kmPolicy === "UNLIMITED" ? "Unbegrenzte Kilometer" : `${s.after.kmIncludedPerDay.toLocaleString("de-DE")} km je Tag · Mehrkilometer ${s.after.extraKmRate.toLocaleString("de-DE", { minimumFractionDigits: 2 })} € je km`,
       deposit: fmtCents(s.after.depositCents),
       returnLocation: s.after.returnLocation ?? "wie Abholort",
       drivers: s.after.drivers.map((x) => `${x.name}${x.role === "PRIMARY_DRIVER" ? " (Hauptfahrer)" : ""}`),

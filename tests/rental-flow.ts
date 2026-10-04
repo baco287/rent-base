@@ -33,11 +33,12 @@ export type ReturnedWorld = World & { contractId: string; pickupId: string; retu
 export type PickedUpWorld = World & { contractId: string; pickupId: string };
 
 /** Befehl 20.6: Miete bis zur abgeschlossenen Übergabe (läuft, Rückgabe offen) – z. B. für die kontaktlose Rückgabe. */
-export async function pickedUpWorld(label: string, opts: { tenant?: Record<string, unknown>; customer?: Record<string, unknown>; within?: World } = {}): Promise<PickedUpWorld> {
+export async function pickedUpWorld(label: string, opts: { tenant?: Record<string, unknown>; customer?: Record<string, unknown>; within?: World; conditions?: Record<string, unknown> } = {}): Promise<PickedUpWorld> {
   return (await returnedWorld(label, { ...opts, stopAfterPickup: true })) as unknown as PickedUpWorld;
 }
 
-export async function returnedWorld(label: string, opts: { damageCharge?: boolean; tenant?: Record<string, unknown>; customer?: Record<string, unknown>; within?: World; stopAfterPickup?: boolean } = {}): Promise<ReturnedWorld> {
+/** opts.conditions (Befehl 27): zusätzliche Vertragskonditionen, z. B. { rules: { kmPolicy: "UNLIMITED" } } */
+export async function returnedWorld(label: string, opts: { damageCharge?: boolean; tenant?: Record<string, unknown>; customer?: Record<string, unknown>; within?: World; stopAfterPickup?: boolean; conditions?: Record<string, unknown> } = {}): Promise<ReturnedWorld> {
   let w: World;
   if (opts.within) {
     // zweite Miete im bestehenden Mandanten: eigenes Fahrzeug, gleicher Kunde
@@ -53,7 +54,7 @@ export async function returnedWorld(label: string, opts: { damageCharge?: boolea
   }
   const c = await ensureContractDraft(w.tenantId, w.bookingId, w.actor);
   const bk = await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } });
-  await saveConditions(w.tenantId, c.id, { startAt: bk.startAt, endAt: bk.endAt, deposit: 500, kmIncludedPerDay: 200, extraKmRate: 0.25, deductible: 1000, fuelPolicy: "FULL_TO_FULL", fuelPolicyNote: null, fuelPricePerLiter: 1.8, agreedTotal: null, agreedTotalNote: null, pickupLocation: "Hof", returnLocation: "Hof" });
+  await saveConditions(w.tenantId, c.id, { startAt: bk.startAt, endAt: bk.endAt, deposit: 500, kmIncludedPerDay: 200, extraKmRate: 0.25, deductible: 1000, fuelPolicy: "FULL_TO_FULL", fuelPolicyNote: null, fuelPricePerLiter: 1.8, agreedTotal: null, agreedTotalNote: null, pickupLocation: "Hof", returnLocation: "Hof", ...(opts.conditions ?? {}) });
   await saveContractSignature(w.tenantId, w.actor, c.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getContractContentHash(w.tenantId, c.id) });
   await finalizeContract(w.tenantId, c.id);
 

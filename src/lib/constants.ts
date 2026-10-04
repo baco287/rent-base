@@ -446,6 +446,11 @@ export type DepositEventType = keyof typeof DEPOSIT_EVENT_TYPES;
 export const DEPOSIT_OFFSET_METHOD = "DEPOSIT_OFFSET" as const;
 export const DEPOSIT_OFFSET_LABEL = "Kautionsverrechnung";
 export const AUDIT_ACTIONS = {
+  // Befehl 27: Buchungsstorno nur mit Grund; Fahrzeugstatus/Kilometer nicht still; Schaden ohne Protokoll
+  BOOKING_CANCELLED: "Buchung storniert",
+  VEHICLE_STATUS_CHANGED: "Fahrzeugstatus manuell geändert",
+  VEHICLE_MILEAGE_CORRECTED: "Kilometerstand korrigiert",
+  DAMAGE_REPORTED: "Schaden ohne Protokoll erfasst",
   PAYMENT_RECORDED: "Zahlung erfasst",
   PAYMENT_CANCELLED: "Zahlung storniert",
   RENTAL_PAYMENTS_LINKED: "Mietzahlungen der Mietrechnung zugeordnet",
@@ -786,6 +791,9 @@ export const VEHICLE_EVENT_TYPES = {
   DAMAGE_DISCOVERED: "Schaden festgestellt",
   DAMAGE_REPAIRED: "Schaden repariert",
   MAINTENANCE_COMPLETED: "Wartung / Werkstatt erledigt",
+  // Befehl 27: Stammdaten ändern nichts still
+  MILEAGE_CORRECTED: "Kilometerstand korrigiert",
+  STATUS_CHANGED: "Status manuell geändert",
 } as const;
 
 // Phase 13: Flotten- und Wartungsmanagement. Warnung ≠ Sperre; Kosten ≠ Kundenforderung.
