@@ -25,6 +25,7 @@ export async function renderPayoutPdf(data: PayoutDocumentData, logo: Uint8Array
     ["Auszahlungsdatum", data.executedAt],
     ["Quelle", data.sourceLabel],
     [data.sourceType === "INVOICE_REFUND" ? "Rechnung" : "Mietvertrag", data.sourceType === "INVOICE_REFUND" ? data.snapshot.invoiceNumber : data.snapshot.contractNumber],
+    ...(data.sourceType === "RENTAL_PREPAYMENT_REFUND" ? [["Anlass", "Storno der Buchung"] as [string, string]] : []),
     ["Buchung", data.snapshot.bookingNumber],
   ];
   let ry = y0;
@@ -55,7 +56,7 @@ export async function renderPayoutPdf(data: PayoutDocumentData, logo: Uint8Array
   ];
   pdf.keyValues(rows, 1);
 
-  pdf.sectionTitle(data.sourceType === "INVOICE_REFUND" ? "Stand der Rechnung vor dieser Auszahlung" : "Stand der Kaution vor dieser Auszahlung");
+  pdf.sectionTitle(data.sourceType === "INVOICE_REFUND" ? "Stand der Rechnung vor dieser Auszahlung" : data.sourceType === "RENTAL_PREPAYMENT_REFUND" ? "Stand der Mietvorauszahlung vor dieser Auszahlung" : "Stand der Kaution vor dieser Auszahlung");
   const s = data.snapshot;
   const eur = (c: number | undefined) => (c == null ? "–" : (c / 100).toLocaleString("de-DE", { style: "currency", currency: "EUR" }));
   if (data.sourceType === "INVOICE_REFUND") {
@@ -66,6 +67,12 @@ export async function renderPayoutPdf(data: PayoutDocumentData, logo: Uint8Array
       ...(s.offsetCents ? [{ label: "Davon aus der Kaution verrechnet", value: eur(s.offsetCents) }] : []),
       { label: "Kundenguthaben", value: eur(s.customerCreditCents) },
       { label: "Bereits ausgezahlt", value: eur(s.paidOutBeforeCents) },
+    ], 2);
+  } else if (data.sourceType === "RENTAL_PREPAYMENT_REFUND") {
+    // Befehl 28: Erstattung einer Mietvorauszahlung nach Storno (die Zahlungen selbst bleiben unverändert dokumentiert)
+    pdf.keyValues([
+      { label: "Mietvorauszahlung des Kunden", value: eur(s.paidCents) },
+      { label: "Bereits erstattet", value: eur(s.paidOutBeforeCents) },
     ], 2);
   } else {
     pdf.keyValues([

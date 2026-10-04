@@ -219,6 +219,7 @@ export const MAIL_TEMPLATE_CATEGORY: Record<string, MailCategory> = {
   KEY_DROP_CONFIRMATION: "TENANT_BUSINESS", // Eingangsbestätigung der Kundenmeldung (keine Zustandsbestätigung)
   DUNNING_NOTICE: "TENANT_BUSINESS", // Befehl 23: Zahlungserinnerung / Mahnung – nur nach bewusster Bestätigung, nie automatisch
   CONTRACT_AMENDMENT: "TENANT_BUSINESS", // Befehl 25: Nachtrag zum Mietvertrag – nur nach bewusster Bestätigung
+  BOOKING_CANCELLATION: "TENANT_BUSINESS", // Befehl 28: Stornobestätigung – nur nach bewusster Bestätigung
 };
 export const mailCategoryOf = (template: string): MailCategory => MAIL_TEMPLATE_CATEGORY[template] ?? "TENANT_BUSINESS";
 export const MAIL_CHANNELS = { PLATFORM_SMTP: "RentBase-Versanddienst", TENANT_SMTP: "Eigener SMTP des Vermieters" } as const;
@@ -370,6 +371,7 @@ export const DOCUMENT_TYPES = {
   KEY_DROP_CONFIRMATION: "Bestätigung kontaktlose Rückgabe",
   DUNNING_NOTICE: "Mahnschreiben",
   CONTRACT_AMENDMENT: "Nachtrag zum Mietvertrag",
+  BOOKING_CANCELLATION: "Stornobestätigung",
 } as const;
 export type DocumentType = keyof typeof DOCUMENT_TYPES;
 
@@ -402,7 +404,7 @@ export const RENTAL_PAYMENT_STATUS = { OPEN: "Offen", PARTIAL: "Teilweise bezahl
 export const RENTAL_PAYMENT_INTENTS = { NONE: "Offen", PARTIAL: "Teilweise bezahlt", FULL: "Vollständig bezahlt" } as const;
 export type RentalPaymentIntent = keyof typeof RENTAL_PAYMENT_INTENTS;
 // Phase 18: Auszahlungen (Geld raus). Rent-Base führt keine Überweisung, Karten- oder Providertransaktion aus; es dokumentiert.
-export const PAYOUT_SOURCE_TYPES = { INVOICE_REFUND: "Rechnungserstattung", SECURITY_DEPOSIT_REFUND: "Kautionsrückzahlung" } as const;
+export const PAYOUT_SOURCE_TYPES = { INVOICE_REFUND: "Rechnungserstattung", SECURITY_DEPOSIT_REFUND: "Kautionsrückzahlung", RENTAL_PREPAYMENT_REFUND: "Erstattung Mietvorauszahlung (Storno)" } as const;
 export type PayoutSourceType = keyof typeof PAYOUT_SOURCE_TYPES;
 export const PAYOUT_STATUS = { DRAFT: "Entwurf", COMPLETED: "Ausgezahlt", CANCELLED: "Storniert" } as const;
 export type PayoutStatus = keyof typeof PAYOUT_STATUS;
@@ -448,6 +450,14 @@ export const DEPOSIT_OFFSET_LABEL = "Kautionsverrechnung";
 export const AUDIT_ACTIONS = {
   // Befehl 27: Buchungsstorno nur mit Grund; Fahrzeugstatus/Kilometer nicht still; Schaden ohne Protokoll
   BOOKING_CANCELLED: "Buchung storniert",
+  // Befehl 28: Storno mit Geldbezug und Mietänderungen
+  BOOKING_PERIOD_CHANGED: "Buchungszeitraum geändert (vor Vertrag)",
+  CANCELLATION_FEE_CREATED: "Stornogebühr berechnet",
+  RENTAL_PAYMENT_REFUND_CREATED: "Mietvorauszahlung erstattet (Storno)",
+  RENTAL_PAYMENT_TO_CREDIT: "Mietvorauszahlung als Kundenguthaben belassen (Storno)",
+  DEPOSIT_RELEASED_ON_CANCELLATION: "Kaution beim Storno freigegeben",
+  AMENDMENT_AGREED: "Vertragsänderung vereinbart (Unterschrift ausstehend)",
+  BOOKING_CANCELLATION_SENT: "Stornobestätigung versendet",
   VEHICLE_STATUS_CHANGED: "Fahrzeugstatus manuell geändert",
   VEHICLE_MILEAGE_CORRECTED: "Kilometerstand korrigiert",
   DAMAGE_REPORTED: "Schaden ohne Protokoll erfasst",
@@ -692,16 +702,30 @@ export const DAMAGE_CASE_EVENT_TYPES = {
   PHOTO_ADDED: "Foto hinzugefügt", DOCUMENT_ADDED: "Dokument hinzugefügt", NOTE_ADDED: "Notiz ergänzt", VEHICLE_BLOCKED: "Fahrzeug gesperrt", VEHICLE_RELEASED: "Fahrzeug freigegeben",
   CUSTOMER_CHARGE_CREATED: "Kundenbelastung festgelegt", INVOICE_CREATED: "Schadenabrechnung erstellt", CLOSED: "Akte geschlossen", REOPENED: "Akte wieder geöffnet",
 } as const;
-export const INVOICE_KINDS = { RENTAL: "Mietrechnung", DAMAGE: "Schadenabrechnung", AUTHORITY_FEE: "Bearbeitungsentgelt Behörde", DUNNING_FEE: "Mahngebühr", GENERAL: "Freie Rechnung" } as const;
+export const INVOICE_KINDS = { RENTAL: "Mietrechnung", DAMAGE: "Schadenabrechnung", AUTHORITY_FEE: "Bearbeitungsentgelt Behörde", DUNNING_FEE: "Mahngebühr", GENERAL: "Freie Rechnung", CANCELLATION_FEE: "Stornogebühr" } as const;
 export type InvoiceKind = keyof typeof INVOICE_KINDS;
 /** Kurzes Wort für Listen und Knöpfe („Rechnung RE-…“, „Schadenabrechnung RE-…“). */
-export const invoiceKindWord = (kind: string | null | undefined) => (kind === "DAMAGE" ? "Schadenabrechnung" : kind === "AUTHORITY_FEE" ? "Bearbeitungsentgelt" : kind === "DUNNING_FEE" ? "Mahngebühr" : "Rechnung");
+export const invoiceKindWord = (kind: string | null | undefined) => (kind === "DAMAGE" ? "Schadenabrechnung" : kind === "AUTHORITY_FEE" ? "Bearbeitungsentgelt" : kind === "DUNNING_FEE" ? "Mahngebühr" : kind === "CANCELLATION_FEE" ? "Stornogebühr" : "Rechnung");
 /** Nebenrechnungen (nicht die Mietrechnung der Buchung) werden über ?nr=<id> adressiert. */
-export const isSideInvoice = (kind: string | null | undefined) => kind === "DAMAGE" || kind === "AUTHORITY_FEE" || kind === "DUNNING_FEE" || kind === "GENERAL";
+export const isSideInvoice = (kind: string | null | undefined) => kind === "DAMAGE" || kind === "AUTHORITY_FEE" || kind === "DUNNING_FEE" || kind === "GENERAL" || kind === "CANCELLATION_FEE";
+
+/**
+ * Befehl 28: steuerliche Behandlung der Stornogebühr – je Storno bewusst gewählt (Entscheidung des Vermieters, ggf. mit
+ * Steuerberatung). Nichts ist vorausgewählt; Rent-Base prüft die Einordnung nicht.
+ */
+export const CANCELLATION_FEE_TAX_TREATMENTS = {
+  TAXABLE_SUPPLY: "Steuerpflichtiges Entgelt – mit Umsatzsteuer (Standardsatz)",
+  NON_TAXABLE_FEE: "Nicht steuerbar – ohne Umsatzsteuer",
+} as const;
+export type CancellationFeeTaxTreatment = keyof typeof CANCELLATION_FEE_TAX_TREATMENTS;
+export const CANCELLATION_FEE_TAX_NOTE = "Steuerliche Behandlung: Die Stornogebühr wird ohne Umsatzsteuer berechnet (nicht steuerbar).";
 
 // Befehl 23: Mahnwesen. Stufen sind fortlaufend (keine Stufe wird übersprungen); nichts wird automatisch erstellt oder versendet.
 // Befehl 25: Nachträge zum Mietvertrag
-export const AMENDMENT_STATUS = { DRAFT: "Entwurf", SIGNED: "Unterschrieben", DISCARDED: "Verworfen" } as const;
+export const AMENDMENT_STATUS = { DRAFT: "Entwurf", AGREED: "Vereinbart – Unterschrift ausstehend", SIGNED: "Unterschrieben", DISCARDED: "Verworfen" } as const;
+/** Befehl 28: wie eine Vertragsänderung vorab vereinbart wurde (vor der Unterschrift) */
+export const AMENDMENT_AGREED_CHANNELS = { PHONE: "Telefonisch", EMAIL: "Per E-Mail", IN_PERSON: "Persönlich", OTHER: "Anderer Weg" } as const;
+export type AmendmentAgreedChannel = keyof typeof AMENDMENT_AGREED_CHANNELS;
 export type AmendmentStatus = keyof typeof AMENDMENT_STATUS;
 export const AMENDMENT_CHANGE_KINDS = {
   PERIOD: "Mietdauer / geplante Rückgabe",

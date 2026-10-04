@@ -2,7 +2,7 @@
 // Diese Schritte laufen bewusst NACH der abgeschlossenen Transaktion von Vertrag bzw. Übergabe und werfen nie.
 // Ein Ausfall von PDF-Erzeugung, Object Storage oder SMTP lässt die Übergabe unberührt; alles ist wiederholbar.
 
-import { ensureContractDocument, ensureInvoiceDocument, ensurePickupDocument, ensureReturnDocument } from "@/lib/documents";
+import { ensureCancellationDocument, ensureContractDocument, ensureInvoiceDocument, ensurePayoutDocument, ensurePickupDocument, ensureReturnDocument } from "@/lib/documents";
 import { DomainError } from "@/lib/integrity";
 import { sendHandoverDocuments, sendInvoiceDocument, type SendOptions } from "@/lib/rental-mail";
 import type { StorageDriver } from "@/lib/storage";
@@ -74,4 +74,17 @@ export async function runInvoiceFollowUp(tenantId: string, versionId: string, ac
   } catch (e) {
     return { invoiceDocument, email: { status: "FAILED", error: describe("E-Mail-Versand", versionId, e) } };
   }
+}
+
+/**
+ * Befehl 28: nach dem Storno-Abschluss – Stornobestätigung, Stornogebühr-Rechnung und Auszahlungsbelege archivieren. Wirft nie;
+ * ein Ausfall rollt den fachlich abgeschlossenen Storno nicht zurück (Dokumente sind wiederholbar, fehlende erscheinen als Aufgabe).
+ * Kein automatischer Mailversand: die Stornobestätigung wird bewusst über „Per E-Mail senden“ verschickt.
+ */
+export async function runCancellationFollowUp(tenantId: string, result: { bookingId: string; feeVersionId: string | null; payoutIds: string[] }, actorId: string | null, deps: Deps = {}): Promise<{ confirmation: StepResult; feeInvoice: StepResult | null; payouts: StepResult[] }> {
+  const confirmation = await step("Stornobestätigung-PDF", result.bookingId, () => ensureCancellationDocument(tenantId, result.bookingId, actorId, { storage: deps.storage }));
+  const feeInvoice = result.feeVersionId ? await step("Stornogebühr-PDF", result.feeVersionId, () => ensureInvoiceDocument(tenantId, result.feeVersionId!, actorId, { storage: deps.storage })) : null;
+  const payouts: StepResult[] = [];
+  for (const id of result.payoutIds) payouts.push(await step("Auszahlungsbeleg-PDF", id, () => ensurePayoutDocument(tenantId, id, actorId, { storage: deps.storage })));
+  return { confirmation, feeInvoice, payouts };
 }

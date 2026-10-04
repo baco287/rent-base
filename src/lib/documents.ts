@@ -339,6 +339,25 @@ export async function ensureAmendmentDocument(tenantId: string, amendmentId: str
   );
 }
 
+/**
+ * Befehl 28: Stornobestätigung einer Buchung – einmalig aus der eingefrorenen Storno-Abrechnung erzeugt, privat archiviert,
+ * mit Prüfsumme; nie aus Live-Daten neu erzeugt (archive liefert bei gleicher Quelle das vorhandene Dokument).
+ */
+export async function ensureCancellationDocument(tenantId: string, bookingId: string, actorId: string | null, opts: EnsureOptions = {}): Promise<EnsureResult> {
+  const { loadCancellationDocumentData } = await import("@/lib/cancellation-document");
+  const { renderCancellationPdf } = await import("@/lib/pdf/cancellation-pdf");
+  const data = await loadCancellationDocumentData(tenantId, bookingId);
+  return archive(
+    tenantId,
+    actorId,
+    { type: "BOOKING_CANCELLATION", bookingId: data.bookingId, contractId: null, handoverId: null },
+    opts,
+    data.contentHash,
+    (v) => `Stornobestaetigung_${safeFilePart(data.doc.bookingNumber) || "Buchung"}${v > 1 ? `_v${v}` : ""}.pdf`,
+    async () => (await renderCancellationPdf(data.doc, await loadLogo(tenantId, data.logoRef, opts.storage))).bytes,
+  );
+}
+
 /** Rechnung_RE-2026-000123_Fassung2.pdf, Gutschrift_GS-2026-000001.pdf, Stornobeleg_ST-2026-000001.pdf (bei mehreren Archivfassungen zusätzlich _v2). */
 export function invoiceFileName(number: string, versionNo: number, archiveVersion = 1, documentType: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION" = "INVOICE"): string {
   const word = documentType === "CREDIT_NOTE" ? "Gutschrift" : documentType === "CANCELLATION" ? "Stornobeleg" : "Rechnung";

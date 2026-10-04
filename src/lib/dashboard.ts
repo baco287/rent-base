@@ -230,6 +230,11 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
     counts.depositsHeld++;
     add({ area: "DEPOSIT", href: `/buchungen/${d.booking.id}#kaution`, key: `deposit-held-${d.id}`, group: "NOTE", title: `Kaution nach Rückgabe noch nicht entschieden · ${customerName(d.booking.customer)}`, detail: `Buchung ${d.booking.number} · ${fmtCents(d.balance.remainingCents)} weder freigegeben noch einbehalten`, at: d.booking.actualReturnAt ?? d.booking.endAt, status: "Entscheidung offen" });
   }
+  // Befehl 28: Mietvorauszahlung einer stornierten Buchung, die als Kundenguthaben steht (Auszahlung oder bewusst stehen lassen)
+  for (const c of claims.prepayments) {
+    counts.refundsOpen++; counts.refundsOpenCents += c.remainingCents;
+    add({ area: "INVOICE", href: c.href, key: `prepayment-${c.bookingId}`, group: "NOTE", title: `Guthaben aus Storno · ${c.customerName}`, detail: `Buchung ${c.bookingNumber} storniert · Mietvorauszahlung noch nicht erstattet ${fmtCents(c.remainingCents)} (Kundenguthaben)`, at: null, status: "Erstattung offen" });
+  }
   for (const c of claims.deposits) {
     counts.depositPayoutsOpen++; counts.depositPayoutsOpenCents += c.remainingCents;
     add({ area: "DEPOSIT", href: c.href, key: `deposit-payout-${c.bookingId}`, group: "NOTE", title: `Kautionsauszahlung offen · ${c.customerName}`, detail: `Buchung ${c.bookingNumber} · freigegeben, noch nicht ausgezahlt ${fmtCents(c.remainingCents)}${c.draftCents > 0 ? ` · Entwurf ${fmtCents(c.draftCents)}` : ""}`, at: null, status: "Auszahlung offen" });

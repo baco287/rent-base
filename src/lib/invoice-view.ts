@@ -2,7 +2,7 @@
 // Positionen) und die Nummer der logischen Rechnung; nichts wird nachgerechnet oder aus Stammdaten nachgeladen. Frei von Server-Importen.
 
 import type { Prisma } from "@prisma/client";
-import { DAMAGE_TAX_NOTES, DAMAGE_TAX_TREATMENTS, type DamageTaxTreatment } from "@/lib/constants";
+import { DAMAGE_TAX_NOTES, CANCELLATION_FEE_TAX_NOTE, CANCELLATION_FEE_TAX_TREATMENTS, type CancellationFeeTaxTreatment, DAMAGE_TAX_TREATMENTS, type DamageTaxTreatment } from "@/lib/constants";
 import { fmtCents, fmtRate, summarize, toBasisPoints, toCents } from "@/lib/money";
 import { APP_TIME_ZONE } from "@/lib/time";
 import type { CompanySnapshot, InvoiceCustomerSnapshot } from "@/lib/invoices";
@@ -53,10 +53,12 @@ export type InvoiceDocumentData = {
   taxNote: string | null;
   hasZeroRate: boolean;
   /** Steuerliche Behandlung der Fassung (nur Schadenabrechnung); nonTaxable = echter Schadensersatz: kein Steuersatz, kein USt-Ausweis */
-  taxTreatment: DamageTaxTreatment | null;
+  taxTreatment: DamageTaxTreatment | CancellationFeeTaxTreatment | null;
   taxTreatmentLabel: string | null;
   taxTreatmentNote: string | null;
   nonTaxable: boolean;
+  /** Befehl 28: Bezeichnung der Summenzeile ohne Steuer (Schadensersatz bzw. nicht steuerbare Stornogebühr) */
+  nonTaxableLabel?: string;
   contentHash: string | null;
   /**
    * Befehl 27: Zahlungsstand zum Erzeugungszeitpunkt (nur Rechnungen, nur die aktuelle Fassung). Kein Teil der versiegelten
@@ -103,8 +105,9 @@ export function buildInvoiceDocument(inv: VersionFull, refs: DocumentRefs): Invo
   const personName = `${c.firstName ?? ""} ${c.lastName ?? ""}`.trim();
   const kind = inv.kind as VersionInfo["kind"];
   const invoiceKind = refs.kind === "DAMAGE" ? "DAMAGE" : "RENTAL";
-  const taxTreatment = inv.taxTreatment && inv.taxTreatment in DAMAGE_TAX_TREATMENTS ? (inv.taxTreatment as DamageTaxTreatment) : null;
-  const nonTaxable = taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION";
+  const taxTreatment = inv.taxTreatment && (inv.taxTreatment in DAMAGE_TAX_TREATMENTS || inv.taxTreatment in CANCELLATION_FEE_TAX_TREATMENTS) ? (inv.taxTreatment as DamageTaxTreatment | CancellationFeeTaxTreatment) : null;
+  // Befehl 28: nicht steuerbar = Schadensersatz (Schadenabrechnung) oder nicht steuerbare Stornogebühr – kein Steuersatz, kein USt-Ausweis
+  const nonTaxable = taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION" || taxTreatment === "NON_TAXABLE_FEE";
   const documentType = refs.documentType === "CREDIT_NOTE" || refs.documentType === "CANCELLATION" ? refs.documentType : "INVOICE";
   const baseTitle = documentType !== "INVOICE" ? DOCUMENT_TITLES[documentType] : invoiceKind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung";
   const o = refs.original ?? null;
@@ -152,9 +155,10 @@ export function buildInvoiceDocument(inv: VersionFull, refs: DocumentRefs): Invo
     taxNote: nonTaxable ? null : inv.taxNote,
     hasZeroRate: !nonTaxable && items.some((i) => toBasisPoints(i.taxRate) === 0),
     taxTreatment,
-    taxTreatmentLabel: taxTreatment ? DAMAGE_TAX_TREATMENTS[taxTreatment] : null,
-    taxTreatmentNote: taxTreatment ? DAMAGE_TAX_NOTES[taxTreatment] || null : null,
+    taxTreatmentLabel: taxTreatment ? (taxTreatment in CANCELLATION_FEE_TAX_TREATMENTS && refs.kind === "CANCELLATION_FEE" ? CANCELLATION_FEE_TAX_TREATMENTS[taxTreatment as CancellationFeeTaxTreatment] : DAMAGE_TAX_TREATMENTS[taxTreatment as DamageTaxTreatment] ?? null) : null,
+    taxTreatmentNote: taxTreatment === "NON_TAXABLE_FEE" ? CANCELLATION_FEE_TAX_NOTE : taxTreatment && taxTreatment in DAMAGE_TAX_NOTES ? DAMAGE_TAX_NOTES[taxTreatment as DamageTaxTreatment] || null : null,
     nonTaxable,
+    nonTaxableLabel: taxTreatment === "NON_TAXABLE_FEE" ? "Nicht steuerbarer Betrag (ohne Umsatzsteuer)" : "Nicht steuerbarer Schadensersatz",
     contentHash: inv.contentHash,
   };
 }

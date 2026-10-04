@@ -10,7 +10,7 @@ import { fmtDate, fmtDateTime } from "@/lib/format";
 import { fmtCents } from "@/lib/money";
 import { createAmendmentAction, createAmendmentSettlementAction } from "./actions";
 
-const tone: Record<AmendmentStatus, "amber" | "good" | "grey"> = { DRAFT: "amber", SIGNED: "good", DISCARDED: "grey" };
+const tone: Record<AmendmentStatus, "amber" | "good" | "grey"> = { DRAFT: "amber", AGREED: "amber", SIGNED: "good", DISCARDED: "grey" };
 
 export async function AmendmentsCard({ tenantId, bookingId, role, supportMode }: { tenantId: string; bookingId: string; role: string; supportMode: boolean }) {
   const booking = await db.booking.findFirst({ where: { id: bookingId, tenantId }, select: { status: true, contract: { select: { id: true, number: true, status: true, signedAt: true } } } });
@@ -20,6 +20,7 @@ export async function AmendmentsCard({ tenantId, bookingId, role, supportMode }:
   const canManage = role !== "YARD" && !supportMode;
   const allowed = amendmentAllowed(booking, booking.contract);
   const openDraft = amendments.find((a) => a.status === "DRAFT");
+  const agreed = amendments.find((a) => a.status === "AGREED");
   const changed = (n: string | null) => (n ? <span className="block text-[11px] text-ink-3 font-sans">geändert durch {n}</span> : null);
   const rate = state.extraKmRate.toLocaleString("de-DE", { minimumFractionDigits: 2 });
   const rentalInvoiceFinal = pending.length > 0;
@@ -40,7 +41,7 @@ export async function AmendmentsCard({ tenantId, bookingId, role, supportMode }:
                 <Link href={`/buchungen/${bookingId}/nachtrag/${a.id}`} className="font-mono tnum font-medium hover:underline">{a.number ?? "Entwurf"}</Link>
                 <span>{a.status === "SIGNED" && a.sequenceNo ? `${a.sequenceNo}. Nachtrag` : "Nachtrag"} · {amendmentKindsLabel(a)}</span>
                 <Chip tone={tone[a.status as AmendmentStatus] ?? "grey"}>{AMENDMENT_STATUS[a.status as AmendmentStatus] ?? a.status}</Chip>
-                <span className="text-ink-3 text-xs">{a.status === "SIGNED" && a.signedAt ? `wirksam seit ${fmtDateTime(a.signedAt)}` : a.status === "DISCARDED" && a.discardedAt ? `verworfen ${fmtDate(a.discardedAt)}` : `angelegt ${fmtDate(a.createdAt)}`}</span>
+                <span className="text-ink-3 text-xs">{a.status === "AGREED" && a.agreedAt ? `vereinbart ${fmtDateTime(a.agreedAt)}${a.newEndAt ? ` · reserviert bis ${fmtDateTime(a.newEndAt)}` : ""}` : a.status === "SIGNED" && a.signedAt ? `wirksam seit ${fmtDateTime(a.signedAt)}` : a.status === "DISCARDED" && a.discardedAt ? `verworfen ${fmtDate(a.discardedAt)}` : `angelegt ${fmtDate(a.createdAt)}`}</span>
                 {a.status === "SIGNED" && (a.documents[0] ? <a href={`/api/documents/${a.documents[0].id}`} target="_blank" rel="noopener noreferrer" className="text-xs underline">PDF</a> : <span className="text-xs text-ink-3">PDF noch nicht erzeugt</span>)}
                 {a.status === "SIGNED" && (a.emailLogs[0] ? <Chip tone="good">versendet {fmtDate(a.emailLogs[0].sentAt ?? new Date())}</Chip> : <Chip>nicht versendet</Chip>)}
               </li>
@@ -77,7 +78,8 @@ export async function AmendmentsCard({ tenantId, bookingId, role, supportMode }:
           )}
 
           <div className="flex flex-col sm:flex-row sm:items-center gap-3 pt-1">
-            {canManage && allowed.ok && !openDraft && (
+            {canManage && agreed && <Link href={`/buchungen/${bookingId}/nachtrag/${agreed.id}#unterschrift`} className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">Unterschrift nachholen</Link>}
+            {canManage && allowed.ok && !openDraft && !agreed && (
               <form action={createAmendmentAction.bind(null, bookingId)}><input type="hidden" name="nonce" value={randomUUID()} /><button className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">+ Vertrag ändern / Nachtrag erstellen</button></form>
             )}
             {canManage && openDraft && <Link href={`/buchungen/${bookingId}/nachtrag/${openDraft.id}`} className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">Nachtrag-Entwurf fortsetzen</Link>}

@@ -156,11 +156,11 @@ test("Mietrechnung: vorab erfasste Mietzahlungen werden beim Abschluss zugeordne
   assert.equal((await depositView(w.tenantId, w.bookingId)).receivedCents, 50_000);
 });
 
-test("Storno der Buchung: mit bestätigter Mietzahlung gesperrt (Befehl 27), danach keine neue Mietzahlung, vorhandene bleiben sichtbar", async () => {
+test("Storno der Buchung: mit bestätigter Mietzahlung nur mit Entscheidung (Befehl 28), danach keine neue Mietzahlung, vorhandene bleiben sichtbar", async () => {
   const w = await world450("rp-storno");
   const p = await recordRentalPayment(w.tenantId, w.actor, w.bookingId, { amount: "100", method: "CASH", paidAt: at });
-  // Befehl 27: das Geld hätte nach dem Storno weder Rechnung noch Erstattungsweg – der Server lehnt ab, nichts ändert sich
-  await assert.rejects(() => changeBookingStatus(w.tenantId, w.bookingId, "CANCELLED", { actor: w.actor, reason: "Kunde sagt ab" }), /bestätigte Mietzahlungen über 100,00/);
+  // Befehl 28 (statt der Sperre aus Befehl 27): ohne Entscheidung zur Vorauszahlung (Erstattung oder Guthaben) lehnt der Server ab
+  await assert.rejects(() => changeBookingStatus(w.tenantId, w.bookingId, "CANCELLED", { actor: w.actor, reason: "Kunde sagt ab" }), /Mietvorauszahlung geschieht: 100,00/);
   assert.equal((await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } })).status, "RESERVED");
   // irrtümlich erfasste Zahlung: Korrektur über den bestehenden Weg, danach ist das Storno möglich
   await cancelPayment(w.tenantId, w.actor, p.payment.id, "Irrtümlich erfasst");

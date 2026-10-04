@@ -25,17 +25,17 @@ export async function PayoutPanel({ tenantId, role, sourceRef, bookingId, title 
   } catch {
     return null;
   }
-  const rows = await listSourcePayouts(tenantId, sourceRef.sourceType === "INVOICE_REFUND" ? { invoiceId: sourceRef.invoiceId } : { securityDepositId: source.sourceType === "SECURITY_DEPOSIT_REFUND" ? source.securityDepositId : null });
+  const rows = await listSourcePayouts(tenantId, sourceRef.sourceType === "INVOICE_REFUND" ? { invoiceId: sourceRef.invoiceId } : sourceRef.sourceType === "RENTAL_PREPAYMENT_REFUND" ? { prepaymentOfBookingId: sourceRef.bookingId } : { securityDepositId: source.sourceType === "SECURITY_DEPOSIT_REFUND" ? source.securityDepositId : null });
   const completed = rows.filter((p) => p.status === "COMPLETED");
   const drafts = rows.filter((p) => p.status === "DRAFT");
-  const kind = sourceRef.sourceType === "INVOICE_REFUND" ? "INVOICE" : "DEPOSIT";
+  const kind = sourceRef.sourceType === "INVOICE_REFUND" ? "INVOICE" : sourceRef.sourceType === "RENTAL_PREPAYMENT_REFUND" ? "PREPAYMENT" : "DEPOSIT";
   const nothing = source.remainingCents <= 0 && rows.length === 0;
   if (nothing && !(source.sourceType === "INVOICE_REFUND" && source.invoice.completedRefundCents > 0)) return null;
-  const heading = title ?? (kind === "INVOICE" ? "Erstattungen an den Kunden" : "Kautionsauszahlung");
-  const sourceLabel = kind === "INVOICE" ? `Rechnung ${source.snapshot.invoiceNumber ?? ""}` : `Kaution zu Buchung ${source.snapshot.bookingNumber ?? ""}`;
-  const paidOut = source.sourceType === "INVOICE_REFUND" ? source.invoice.completedRefundCents : source.deposit.completedPayoutCents;
-  const claim = source.sourceType === "INVOICE_REFUND" ? source.invoice.customerCreditCents : Math.max(0, Math.min(source.deposit.releasedCents, source.deposit.receivedCents - source.deposit.retainedCents - source.deposit.offsetCents));
-  const excess = source.sourceType === "INVOICE_REFUND" ? source.invoice.refundExcessCents : source.deposit.payoutExcessCents;
+  const heading = title ?? (kind === "INVOICE" ? "Erstattungen an den Kunden" : kind === "PREPAYMENT" ? "Erstattung der Mietvorauszahlung" : "Kautionsauszahlung");
+  const sourceLabel = kind === "INVOICE" ? `Rechnung ${source.snapshot.invoiceNumber ?? ""}` : kind === "PREPAYMENT" ? `Mietvorauszahlung zu Buchung ${source.snapshot.bookingNumber ?? ""}` : `Kaution zu Buchung ${source.snapshot.bookingNumber ?? ""}`;
+  const paidOut = source.sourceType === "INVOICE_REFUND" ? source.invoice.completedRefundCents : source.sourceType === "RENTAL_PREPAYMENT_REFUND" ? source.prepayment.refundedCents : source.deposit.completedPayoutCents;
+  const claim = source.sourceType === "INVOICE_REFUND" ? source.invoice.customerCreditCents : source.sourceType === "RENTAL_PREPAYMENT_REFUND" ? source.prepayment.paidCents : Math.max(0, Math.min(source.deposit.releasedCents, source.deposit.receivedCents - source.deposit.retainedCents - source.deposit.offsetCents));
+  const excess = source.sourceType === "INVOICE_REFUND" ? source.invoice.refundExcessCents : source.sourceType === "RENTAL_PREPAYMENT_REFUND" ? 0 : source.deposit.payoutExcessCents;
   // Befehl 22: Guthaben einer aus der Kaution ausgeglichenen Rechnung kann statt ausgezahlt auch zur Kaution zurückgeführt werden
   const returned = source.sourceType === "INVOICE_REFUND" ? source.invoice.returnedToDepositCents : 0;
   const creditFromOffset = source.sourceType === "INVOICE_REFUND" && source.remainingCents > 0 ? Math.min(Math.max(0, source.invoice.offsetCents - returned), source.remainingCents) : 0;
@@ -44,14 +44,14 @@ export async function PayoutPanel({ tenantId, role, sourceRef, bookingId, title 
     <Card title={heading} right={source.remainingCents > 0 ? <Chip tone="bad">noch auszuzahlen {fmtCents(source.remainingCents)}</Chip> : paidOut > 0 ? <Chip tone="good">ausgezahlt {fmtCents(paidOut)}</Chip> : <Chip>nichts auszuzahlen</Chip>}>
       <div className="p-4 flex flex-col gap-4">
         <div id={kind === "INVOICE" ? "erstattung" : undefined} className={`grid ${returned > 0 ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3"} gap-2 text-sm scroll-mt-20`}>
-          <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">{kind === "INVOICE" ? "Kundenguthaben" : "Zur Auszahlung freigegeben"}</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(claim)}</div></div>
+          <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">{kind === "INVOICE" ? "Kundenguthaben" : kind === "PREPAYMENT" ? "Mietvorauszahlung (Guthaben)" : "Zur Auszahlung freigegeben"}</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(claim)}</div></div>
           {returned > 0 && <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Zur Kaution zurückgeführt</div><div className="font-mono tnum text-lg font-semibold text-info">{fmtCents(returned)}</div></div>}
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Ausgezahlt</div><div className="font-mono tnum text-lg font-semibold text-good">{fmtCents(paidOut)}</div></div>
           <div className={`rounded-md p-3 ${source.remainingCents > 0 ? "bg-bad-soft" : "bg-panel-2"}`}><div className="label-xs">Noch auszuzahlen</div><div className={`font-mono tnum text-lg font-semibold ${source.remainingCents > 0 ? "text-bad" : ""}`}>{fmtCents(source.remainingCents)}</div></div>
         </div>
         {excess > 0 && <p role="alert" className="rounded-md bg-amber-soft text-amber px-3 py-2 text-sm">Es wurden {fmtCents(excess)} mehr ausgezahlt, als nach heutigem Stand {kind === "INVOICE" ? "Guthaben" : "auszahlbar"} ist. Der Geldfluss bleibt historisch wahr; bitte den Fall prüfen.</p>}
         {creditFromOffset > 0 && <p role="note" className="rounded-md bg-amber-soft text-amber px-3 py-2 text-sm">Zu dieser Rechnung wurden {fmtCents(source.sourceType === "INVOICE_REFUND" ? source.invoice.offsetCents : 0)} aus der Kaution verrechnet. Bis zu {fmtCents(creditFromOffset)} des Guthabens stammen also aus der Kaution, nicht aus einer Zahlung des Kunden. Rent-Base entscheidet nicht automatisch: Dieser Teil kann ausgezahlt oder unter „Kundenguthaben“ zur Kaution zurückgeführt werden – bitte bewusst wählen.</p>}
-        <p className="text-xs text-ink-3">{kind === "INVOICE" ? PAYOUT_HELP.REFUND + " " + PAYOUT_HELP.REVERSAL : PAYOUT_HELP.DEPOSIT}</p>
+        <p className="text-xs text-ink-3">{kind === "INVOICE" ? PAYOUT_HELP.REFUND + " " + PAYOUT_HELP.REVERSAL : kind === "PREPAYMENT" ? "Die Buchung ist storniert; die Mietvorauszahlung steht als Kundenguthaben. Ausgezahlt wird nur, was tatsächlich erstattet wurde – die Zahlungen selbst bleiben unverändert dokumentiert. " + PAYOUT_HELP.REVERSAL : PAYOUT_HELP.DEPOSIT}</p>
         {canManage && source.remainingCents > 0 && drafts.length === 0 && (
           <PayoutForm action={createPayoutAction.bind(null, sourceRef, bookingId)} preview={previewPayoutAction.bind(null, sourceRef)} sourceLabel={sourceLabel} remaining={fmtCents(source.remainingCents)} remainingCents={source.remainingCents} customerName={source.customerName} nonce={randomUUID()} defaultWhen={toDateTimeInputValue(new Date())} kind={kind} />
         )}

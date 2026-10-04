@@ -149,6 +149,8 @@ export function BookingForm({
   cancelHref,
   allowNewCustomer = false,
   initialPayment,
+  periodLocked = false,
+  periodChangeable = true,
 }: {
   action: (prev: FormState, fd: FormData) => Promise<FormState>;
   values: BookingFormValues;
@@ -161,6 +163,10 @@ export function BookingForm({
   initialPayment?: InitialPaymentConfig;
   /** Nur bei neuer Buchung: Kunde kann direkt mit angelegt werden. */
   allowNewCustomer?: boolean;
+  /** Befehl 28: bestehende Buchung – Zeitraum nur über „Zeitraum ändern“ (mit Grund und Audit), hier nur angezeigt */
+  periodLocked?: boolean;
+  /** Befehl 28: false, wenn der Dialog „Zeitraum ändern“ für diese Rolle bzw. diesen Stand nicht angeboten wird */
+  periodChangeable?: boolean;
 }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   const [vehicleId, setVehicleId] = useState(values.vehicleId);
@@ -227,11 +233,12 @@ export function BookingForm({
         )}
       </Field>
       <Field label="Abholung" htmlFor="startAt">
-        <input id="startAt" name="startAt" type="datetime-local" value={startAt} onChange={(e) => setStartAt(e.target.value)} required className="input tnum" />
+        <input id="startAt" name="startAt" type="datetime-local" value={startAt} onChange={(e) => setStartAt(e.target.value)} required readOnly={periodLocked} aria-describedby={periodLocked ? "period-locked-hint" : undefined} className={`input tnum ${periodLocked ? "bg-panel-2 text-ink-2" : ""}`} />
       </Field>
       <Field label="Rückgabe" htmlFor="endAt">
-        <input id="endAt" name="endAt" type="datetime-local" value={endAt} onChange={(e) => setEndAt(e.target.value)} required className="input tnum" min={startAt || undefined} />
+        <input id="endAt" name="endAt" type="datetime-local" value={endAt} onChange={(e) => setEndAt(e.target.value)} required readOnly={periodLocked} aria-describedby={periodLocked ? "period-locked-hint" : undefined} className={`input tnum ${periodLocked ? "bg-panel-2 text-ink-2" : ""}`} min={startAt || undefined} />
       </Field>
+      {periodLocked && <p id="period-locked-hint" className="text-xs text-ink-3 sm:col-span-2 -mt-1">{periodChangeable ? "Der Zeitraum wird über „Zeitraum ändern“ geändert – mit Grund, Preisvorschlag und Verfügbarkeitsprüfung." : "Der Zeitraum kann hier nicht geändert werden."}</p>}
       <Field label="Tagespreis € (brutto)" htmlFor="dailyRate">
         <input id="dailyRate" name="dailyRate" inputMode="decimal" value={dailyRate} onChange={(e) => setDailyRate(e.target.value)} required className="input tnum" />
       </Field>

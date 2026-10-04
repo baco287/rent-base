@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireSession } from "@/lib/auth";
@@ -6,11 +7,20 @@ import { db } from "@/lib/db";
 import { customerName, fmtDateTime, fmtEur, toDateTimeInput } from "@/lib/format";
 import { calculateRentalPrice, rateCardFrom } from "@/lib/pricing";
 import { BookingStageChip, Card, Chip, Content, PageHeader, Plate } from "@/components/ui";
-import { EXTRA_CHARGE_TYPES, type ExtraChargeType } from "@/lib/constants";
-import { bookingStage, canCancel, cancellationCheck, pickupAction, returnAction } from "@/lib/booking-status";
+import { AMENDMENT_AGREED_CHANNELS, CANCELLATION_FEE_TAX_TREATMENTS, EXTRA_CHARGE_TYPES, LATE_RETURN_RULES, PAYOUT_METHODS, type ExtraChargeType, type LateReturnRule } from "@/lib/constants";
+import { bookingStage, canCancel, pickupAction, returnAction } from "@/lib/booking-status";
+import { cancellationOverview } from "@/lib/cancellation";
+import { isOverdue } from "@/lib/bookings";
+import { readContractRules } from "@/lib/business-rules";
+import { bookingTimeline } from "@/lib/customer-file";
+import { fmtCents, fmtRate } from "@/lib/money";
+import { toDateTimeInputValue } from "@/lib/time";
 import { startContractAction } from "./vertrag/actions";
-import { cancelBookingAction, setBookingStatusAction, updateBookingAction } from "../actions";
-import { CancelBookingDialog } from "../cancel-dialog";
+import { cancelBookingAction, changePeriodAction, previewCancellationAction, previewPeriodChangeAction, setBookingStatusAction, updateBookingAction } from "../actions";
+import { CancelBookingDialog, type CancellationAssistantView } from "../cancel-dialog";
+import { PeriodChangeDialog } from "../period-dialog";
+import { CancellationPanel } from "./storno-panel";
+import { createAmendmentAction } from "./nachtrag/actions";
 import { BookingForm } from "../booking-form";
 import { customerOptionOf } from "../customer-option";
 import { loadBookingOptions } from "../options";
@@ -20,7 +30,7 @@ import { DepositPanel, RentalPaymentsPanel } from "./finanzen/panels";
 import { DamageCasesPanel } from "../../schaeden/damages-panel";
 import { AuthorityCasesPanel } from "../../behoerden/authority-panel";
 import { AmendmentsCard } from "./nachtrag/amendments-card";
-import { effectiveStateForBooking } from "@/lib/amendments";
+import { agreedAmendmentOf, effectiveStateForBooking } from "@/lib/amendments";
 
 export default async function BookingPage({ params, searchParams }: PageProps<"/buchungen/[id]">) {
   const { tenant, user, supportSession } = await requireSession();
@@ -35,7 +45,9 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const { vehicles } = editable ? await loadBookingOptions(tenant.id) : { vehicles: [] };
   const initialCustomer = editable ? customerOptionOf(b.customer) : null;
   const price = calculateRentalPrice({ start: b.startAt, end: b.endAt, rates: rateCardFrom(b), discountPercent: b.customer.discountPercent });
-  const overdue = b.status === "ACTIVE" && b.endAt < new Date();
+  // Befehl 28: vereinbarte, noch nicht unterschriebene Vertragsänderung (reserviert operativ, wirkt vertraglich erst mit Unterschrift)
+  const agreed = await agreedAmendmentOf(tenant.id, b.id);
+  const overdue = isOverdue({ status: b.status, endAt: b.endAt, agreedEndAt: agreed?.newEndAt ?? null });
 
   const stage = bookingStage(b, b.contract);
   const contractSigned = b.contract?.status === "SIGNED";
@@ -57,7 +69,32 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const startContract = startContractAction.bind(null, b.id);
   const finish = setBookingStatusAction.bind(null, b.id, "RETURNED");
   // Befehl 27: Storno nur über den Dialog mit Grund; was an der Buchung hängt, prüft der Server (cancellationCheck)
-  const cancelCheck = canCancel(b) && user.role !== "YARD" && !supportSession ? await cancellationCheck(tenant.id, b.id) : null;
+  // Befehl 28: Storno-Assistent (Übersicht und Abrechnung aus lib/cancellation; Entscheidungen bewusst im Dialog)
+  const cancelOv = canCancel(b) && user.role !== "YARD" && !supportSession ? await cancellationOverview(tenant.id, b.id) : null;
+  const cancelView: CancellationAssistantView | null = cancelOv ? {
+    booking: { number: cancelOv.booking.number, statusLabel: cancelOv.booking.statusLabel, customerName: cancelOv.booking.customerName, vehicle: cancelOv.booking.vehicle, plate: cancelOv.booking.plate, start: fmtDateTime(cancelOv.booking.startAt), end: fmtDateTime(cancelOv.booking.endAt) },
+    contract: cancelOv.contract,
+    finances: {
+      agreed: fmtCents(cancelOv.finances.agreedCents), agreedSource: cancelOv.finances.agreedSource, prepaidCents: cancelOv.finances.prepaidCents, prepaid: fmtCents(cancelOv.finances.prepaidCents),
+      invoices: cancelOv.finances.invoices.map((i) => ({ label: `${i.number ?? "Entwurf"} (${i.kind === "RENTAL" ? "Miete" : i.kind === "DAMAGE" ? "Schaden" : i.kind === "AUTHORITY_FEE" ? "Behörde" : "Rechnung"})`, gross: fmtCents(i.grossCents), open: fmtCents(i.openCents), credit: fmtCents(i.creditCents) })),
+      openReceivable: fmtCents(cancelOv.finances.openReceivableCents), customerCredit: fmtCents(cancelOv.finances.customerCreditCents),
+      deposit: cancelOv.finances.deposit ? { expected: fmtCents(cancelOv.finances.deposit.expectedCents), received: fmtCents(cancelOv.finances.deposit.receivedCents), released: fmtCents(cancelOv.finances.deposit.releasedCents), retained: fmtCents(cancelOv.finances.deposit.retainedCents), offset: fmtCents(cancelOv.finances.deposit.offsetCents), remaining: fmtCents(cancelOv.finances.deposit.remainingCents), remainingCents: cancelOv.finances.deposit.remainingCents } : null,
+    },
+    amendments: { drafts: cancelOv.amendments.filter((a) => a.status === "DRAFT").length, agreed: cancelOv.amendments.filter((a) => a.status === "AGREED").length, signed: cancelOv.amendments.filter((a) => a.status === "SIGNED").length },
+    blockers: cancelOv.blockers, warnings: cancelOv.warnings,
+    needs: { refund: cancelOv.needs.refundDecision, deposit: cancelOv.needs.depositDecision },
+    fee: { available: cancelOv.fee.available, blockedReason: cancelOv.fee.blockedReason, pricesIncludeTax: cancelOv.fee.pricesIncludeTax, standardRate: `Standardsatz ${fmtRate(cancelOv.fee.standardRateBp)}` },
+    taxTreatments: Object.entries(CANCELLATION_FEE_TAX_TREATMENTS).map(([key, label]) => ({ key, label })),
+    payoutMethods: Object.entries(PAYOUT_METHODS).map(([key, label]) => ({ key, label })),
+    idempotencyKey: randomUUID(),
+    defaultWhen: toDateTimeInputValue(new Date()),
+  } : null;
+  // Befehl 28: Zeitraum vor der Vertragsunterschrift nur über „Zeitraum ändern“ (Grund, Preisvorschlag, Verfügbarkeit, Audit)
+  const canChangePeriod = b.status === "RESERVED" && b.contract?.status !== "SIGNED" && user.role !== "YARD" && !supportSession;
+  // Befehl 28: vertragliche Verspätungsregel (eingefroren im Vertrag) – nur Anzeige; ein Betrag entsteht erst bei der Rückgabe als Vorschlag
+  const lateRule = overdue && contractSigned ? (readContractRules((await db.rentalContract.findFirst({ where: { tenantId: tenant.id, bookingId: b.id }, select: { conditions: true } }))?.conditions)?.values as { lateReturnRule?: LateReturnRule; lateReturnFeeCents?: number | null } | undefined) : undefined;
+  const lateRuleText = lateRule?.lateReturnRule && lateRule.lateReturnRule in LATE_RETURN_RULES ? `${LATE_RETURN_RULES[lateRule.lateReturnRule]}${lateRule.lateReturnRule === "CONFIGURED_FEE" && lateRule.lateReturnFeeCents ? ` (Richtwert ${fmtCents(lateRule.lateReturnFeeCents)})` : ""}` : null;
+  const history = await bookingTimeline(tenant.id, b.id, 60);
   // Befehl 21: „Was ist als Nächstes zu tun?“ – eine deutliche Aktion je Stand, abgeleitet aus denselben Regeln wie die Kopfzeile
   const pickupNext = pickupAction(b, b.contract, b.handovers);
   const returnNext = returnAction(b, b.contract, b.handovers);
@@ -88,10 +125,12 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
         {b.status === "ACTIVE" && !pickupDone && (
           <form action={finish}><button className="btn btn-primary">Fahrzeug zurücknehmen</button></form>
         )}
-        {cancelCheck && (
+        {canChangePeriod && <PeriodChangeDialog action={changePeriodAction.bind(null, b.id)} preview={previewPeriodChangeAction.bind(null, b.id)} startAt={toDateTimeInput(b.startAt)} endAt={toDateTimeInput(b.endAt)} />}
+        {cancelView && (
           <CancelBookingDialog
             action={cancelBookingAction.bind(null, b.id)}
-            check={{ ...cancelCheck, booking: { number: cancelCheck.booking.number, customerName: cancelCheck.booking.customerName, vehicle: cancelCheck.booking.vehicle, plate: cancelCheck.booking.plate, period: `${fmtDateTime(cancelCheck.booking.startAt)} – ${fmtDateTime(cancelCheck.booking.endAt)}` } }}
+            preview={previewCancellationAction.bind(null, b.id)}
+            view={cancelView}
           />
         )}
       </PageHeader>
@@ -99,11 +138,10 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
         {sp.gespeichert === "1" && <Chip tone="good">Gespeichert</Chip>}
         {sp.fehler === "status" && <Chip tone="bad">Dieser Statuswechsel ist nicht möglich.</Chip>}
         {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
-        {b.status === "CANCELLED" && (
-          <p className="rounded-md bg-panel-2 px-3.5 py-2.5 text-sm text-ink-2">
-            <b>Storniert</b>{b.cancelledAt ? ` am ${fmtDateTime(b.cancelledAt)}` : ""}{b.cancelledByName ? ` von ${b.cancelledByName}` : ""}{b.cancellationReason ? <> · Grund: {b.cancellationReason}</> : " · ohne erfassten Grund (Storno vor der Grundpflicht)"}
-          </p>
-        )}
+        {sp.zurueckgenommen === "1" && <p role="status" className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm">Die vereinbarte Vertragsänderung wurde zurückgenommen. Der Mietvertrag gilt unverändert; die Reservierung ist aufgehoben.</p>}
+        {sp.storniert === "1" && <p role="status" className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Die Buchung ist storniert. Abrechnung, Belege und Kaution sind unten zusammengefasst.</p>}
+        {sp.zeitraum === "1" && <Chip tone="good">Zeitraum geändert</Chip>}
+        <CancellationPanel tenantId={tenant.id} bookingId={b.id} role={user.role} supportMode={Boolean(supportSession)} />
         {nextStep && (
           <section aria-label="Nächster Schritt" className="rounded-xl border-2 border-brand bg-panel p-4 md:p-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5">
             <div className="flex-1 min-w-0">
@@ -112,6 +150,24 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
               <p className="text-sm text-ink-2 mt-0.5">{nextStep.text}</p>
             </div>
             {nextStep.action}
+          </section>
+        )}
+        {agreed && (
+          <section aria-label="Vertragsänderung vereinbart – Unterschrift fehlt" className="rounded-xl border-2 border-amber bg-amber-soft/60 p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+            <div className="flex-1 min-w-0 text-sm">
+              <div className="font-semibold text-amber">Vertragsänderung vereinbart – Unterschrift fehlt</div>
+              <p>{agreed.agreedChannel ? AMENDMENT_AGREED_CHANNELS[agreed.agreedChannel as keyof typeof AMENDMENT_AGREED_CHANNELS] : "Vorab"} vereinbart{agreed.agreedAt ? ` am ${fmtDateTime(agreed.agreedAt)}` : ""}{agreed.agreedByName ? ` von ${agreed.agreedByName}` : ""}.{agreed.newEndAt ? <> Fahrzeug reserviert bis <b className="font-mono tnum">{fmtDateTime(agreed.newEndAt)}</b>.</> : null} Vertrag, Preis und Rechnung gelten erst nach der Unterschrift.</p>
+            </div>
+            {user.role !== "YARD" && !supportSession && <Link href={`/buchungen/${b.id}/nachtrag/${agreed.id}#unterschrift`} className="btn btn-primary !py-3 justify-center">Unterschrift nachholen</Link>}
+          </section>
+        )}
+        {overdue && contractSigned && (
+          <section aria-label="Rückgabe überfällig" className="rounded-xl border-2 border-bad bg-bad-soft/60 p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+            <div className="flex-1 min-w-0 text-sm">
+              <div className="font-semibold text-bad">Rückgabe überfällig – geplant {fmtDateTime(agreed?.newEndAt && agreed.newEndAt > b.endAt ? agreed.newEndAt : b.endAt)}</div>
+              <p>Ruft der Kunde an und verlängert, die Verlängerung hier erfassen – Folgebuchungen werden dabei sofort geprüft.{lateRuleText ? ` Vertragliche Verspätungsregel: ${lateRuleText}. Ein Betrag wird erst bei der Rückgabe als Vorschlag gezeigt und nur nach Bestätigung berechnet.` : ""}</p>
+            </div>
+            {user.role !== "YARD" && !supportSession && !agreed && <form action={createAmendmentAction.bind(null, b.id)}><input type="hidden" name="nonce" value={randomUUID()} /><button className="btn btn-primary !py-3 justify-center w-full">Miete verlängern</button></form>}
           </section>
         )}
         {b.status === "ACTIVE" && pickupDone && (
@@ -191,6 +247,8 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                 initialCustomer={initialCustomer}
                 submitLabel="Änderungen speichern"
                 cancelHref="/buchungen"
+                periodLocked
+                periodChangeable={canChangePeriod}
               />
             ) : (
               <dl className="grid grid-cols-[140px_1fr] gap-y-2 text-sm">
@@ -228,7 +286,9 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
               </Card>
             )}
             <Card title="Kosten">
-              {effective ? (
+              {b.status === "CANCELLED" ? (
+                <p className="p-4 text-sm text-ink-2">Die Buchung ist storniert; es besteht keine Mietforderung mehr. Vorauszahlung, Stornogebühr, Erstattung und Kaution stehen in der eingefrorenen Storno-Abrechnung oben.</p>
+              ) : effective ? (
                 <div className="p-4 text-sm flex flex-col">
                   <div className="text-xs text-ink-3 pb-1">laut Mietvertrag {b.contract!.number}{effective.amendments.length ? ` und Nachtrag ${effective.amendments.map((a) => a.number).join(", ")}` : ""}</div>
                   <div className="flex justify-between py-1.5 border-b border-line-soft"><span>Mietpreis laut Vertrag</span><span className="font-mono tnum">{fmtEur(effective.original.totalCents / 100)}</span></div>
@@ -252,6 +312,19 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                 <div className="flex justify-between py-1.5 text-ink-3"><span>zzgl. Kaution</span><span className="font-mono tnum">{fmtEur(b.deposit)}</span></div>
                 <p className="text-xs text-ink-3 mt-2">Mehrkilometer, Tank und weitere Positionen werden bei der Rückgabe geprüft und erscheinen dann als Zusatzkosten.</p>
               </div>
+              )}
+            </Card>
+            {/* Befehl 28: Änderungshistorie aus gespeicherten Zeitstempeln und Audit (dieselbe Ableitung wie die Kundenakte) */}
+            <Card title="Verlauf" right={<span className="text-xs text-ink-3">{history.length} Einträge</span>}>
+              {history.length === 0 ? <p className="p-4 text-sm text-ink-3">Noch keine Einträge.</p> : (
+                <ol className="divide-y divide-line-soft text-sm max-h-[420px] overflow-y-auto">
+                  {history.map((h) => (
+                    <li key={h.key} className="px-4 py-2 flex flex-col gap-0.5">
+                      <div className="flex flex-wrap items-baseline justify-between gap-x-2"><span className="font-medium">{h.href ? <Link href={h.href} className="hover:underline">{h.title}</Link> : h.title}</span><span className="font-mono tnum text-xs text-ink-3">{fmtDateTime(h.at)}</span></div>
+                      <div className="text-xs text-ink-3"><span className="chip !py-0 mr-1.5">{h.kind}</span>{h.detail}</div>
+                    </li>
+                  ))}
+                </ol>
               )}
             </Card>
             <Card title="Kunde">

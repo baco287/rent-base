@@ -14,10 +14,11 @@ import { db } from "@/lib/db";
 import { recordAudit, type Actor } from "@/lib/audit";
 import { accessoryPrice, accessoryProposalKey, missingAccessories, type ChecklistAnswer } from "@/lib/accessories";
 import { readContractRules, resolveRules, type BusinessRules } from "@/lib/business-rules";
-import { CHARGE_UNITS, EXTRA_CHARGE_TYPES, FUEL_POLICIES, energyRequirements, type ExtraChargeType } from "@/lib/constants";
+import { CHARGE_UNITS, EXTRA_CHARGE_TYPES, FUEL_POLICIES, LATE_RETURN_RULES, energyRequirements, type ExtraChargeType, type LateReturnRule } from "@/lib/constants";
+import { fmtDateTime } from "@/lib/format";
 import { extraMileageCharge, flatCharge, fuelCharge, saveExtraCharge, type ChargeDraft } from "@/lib/extra-charges";
 import { touchHandover } from "@/lib/handovers";
-import { contractKmPolicy, loadEffectiveContract } from "@/lib/amendments";
+import { contractKmPolicy, extensionPriceProposal, loadEffectiveContract } from "@/lib/amendments";
 import type { KmPolicy } from "@/lib/constants";
 import { DomainError, assertHandoverDraft } from "@/lib/integrity";
 import { rentalDays } from "@/lib/pricing";
@@ -28,7 +29,7 @@ type Tx = Prisma.TransactionClient;
 const TX = { timeout: 20_000, maxWait: 10_000 };
 
 /** EXTRA_MILEAGE, FUEL oder ACCESSORY_<Checklistenschlüssel> (Befehl 20.9: fehlendes Zubehör mit Standard-Ersatzpreis) */
-export type ProposalKey = "EXTRA_MILEAGE" | "FUEL" | `ACCESSORY_${string}`;
+export type ProposalKey = "EXTRA_MILEAGE" | "FUEL" | "LATE_RETURN" | `ACCESSORY_${string}`;
 /** dismissed (Befehl 20.9): Mitarbeiter hat „Nicht berechnen“ gewählt – dokumentiert, keine Position; facts: Sachverhalt in Kurzform */
 export type Proposal = { key: ProposalKey; draft: ChargeDraft; confirmed: boolean; chargeId: string | null; dismissed: boolean; facts?: string[] };
 export type ReturnHint = { code: string; text: string };
@@ -202,7 +203,27 @@ export function buildComparison(input: {
     }
   }
   if (batteryDiff != null && batteryDiff < 0) hints.push({ code: "CHARGING_NO_BASIS", text: `Die Batterie ist um ${-batteryDiff} Prozentpunkte niedriger als bei der Übergabe. Ein Ladepreis ist nicht vereinbart; bei Bedarf eine Position „Ladung“ manuell erfassen.` });
-  if (lateMinutes > 15) hints.push({ code: "LATE_RETURN", text: `Die Rückgabe erfolgt ${fmtMinutes(lateMinutes)} nach der vereinbarten Zeit. Eine Verspätungsgebühr ist im Vertrag nicht geregelt und wird nicht automatisch berechnet; bei Bedarf eine Position „Verspätete Rückgabe“ manuell erfassen.` });
+  // Befehl 28: Verspätung nach der im Mietvertrag eingefrorenen Regel – nur ein Vorschlag (bewusst bestätigen), nie automatisch.
+  // Ohne maschinenlesbare Regel (manuell/individuell) wird nur die Regel angezeigt, kein Betrag erfunden.
+  if (lateMinutes > 15) {
+    const rules = readContractRules(contract.conditions)?.values as (Partial<BusinessRules> & { lateReturnRule?: LateReturnRule; lateReturnFeeCents?: number | null }) | undefined;
+    const lateRule = rules?.lateReturnRule;
+    const ruleText = lateRule && lateRule in LATE_RETURN_RULES ? LATE_RETURN_RULES[lateRule] : null;
+    const confirmedLate = confirmedOf("LATE_RETURN");
+    let draft: ChargeDraft | null = null;
+    if (lateRule === "CONFIGURED_FEE" && rules?.lateReturnFeeCents && rules.lateReturnFeeCents > 0) {
+      draft = flatCharge("LATE_RETURN", `Verspätete Rückgabe (${fmtMinutes(lateMinutes)} nach ${fmtDateTime(contract.endAt)}) – Richtwert laut Mietvertrag`, 1, "pauschal", rules.lateReturnFeeCents / 100);
+      draft.calculation = { ...draft.calculation, rule: lateRule, lateMinutes };
+    } else if (lateRule === "ADDITIONAL_RENTAL_TIME") {
+      const cents = extensionPriceProposal(contract, contract.endAt, actualEnd);
+      if (cents != null && cents > 0) {
+        draft = flatCharge("LATE_RETURN", `Zusätzliche Mietzeit bis ${fmtDateTime(actualEnd)} nach Vertragspreis (geplant ${fmtDateTime(contract.endAt)})`, 1, "pauschal", cents / 100);
+        draft.calculation = { ...draft.calculation, rule: lateRule, lateMinutes, plannedEnd: contract.endAt.toISOString(), actualEnd: actualEnd.toISOString() };
+      }
+    }
+    if (draft) proposals.push({ key: "LATE_RETURN", draft, confirmed: !!confirmedLate, chargeId: confirmedLate?.id ?? null, dismissed: dismissed.has("LATE_RETURN"), facts: [`Vertragliche Verspätungsregel: ${ruleText}`, `Verspätung: ${fmtMinutes(lateMinutes)}`] });
+    else hints.push({ code: "LATE_RETURN", text: `Die Rückgabe erfolgt ${fmtMinutes(lateMinutes)} nach der vereinbarten Zeit. ${ruleText ? `Vertragliche Verspätungsregel: ${ruleText}. ` : "Eine Verspätungsregel ist im Vertrag nicht hinterlegt. "}Es wird kein Betrag vorgeschlagen; bei Bedarf eine Position „Verspätete Rückgabe“ manuell erfassen.` });
+  }
 
   const charges = h.extraCharges.map(chargeRow);
   return {
@@ -238,8 +259,8 @@ export { fmtMinutes };
 
 export async function getReturnComparison(tenantId: string, handoverId: string): Promise<ReturnComparison> {
   return db.$transaction(async (tx) => {
-    const { h, booking, contract, pickup, accessories } = await loadReturn(tx, tenantId, handoverId);
-    return buildComparison({ handover: h, booking, contract, pickup, accessories });
+    const { h, booking, contract, pickup, accessories, vehicleTankLiters } = await loadReturn(tx, tenantId, handoverId);
+    return buildComparison({ handover: h, booking, contract, pickup, accessories, vehicleTankLiters });
   }, TX);
 }
 
@@ -253,9 +274,10 @@ const touchAfterCharge = (tx: Tx, tenantId: string, handoverId: string) => touch
 export async function confirmProposal(tenantId: string, handoverId: string, actorId: string | null, key: Proposal["key"]) {
   return db.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT "id" FROM "Handover" WHERE "id" = ${handoverId} AND "tenantId" = ${tenantId} FOR UPDATE`;
-    const { h, booking, contract, pickup, accessories } = await loadReturn(tx, tenantId, handoverId);
+    const { h, booking, contract, pickup, accessories, vehicleTankLiters } = await loadReturn(tx, tenantId, handoverId);
     assertHandoverDraft(h);
-    const cmp = buildComparison({ handover: h, booking, contract, pickup, accessories });
+    // Befehl 28: dieselben Eingaben wie die Anzeige (inkl. Tankgröße am Fahrzeug als Ersatz) – sonst fehlte der Vorschlag beim Bestätigen
+    const cmp = buildComparison({ handover: h, booking, contract, pickup, accessories, vehicleTankLiters });
     const p = cmp.proposals.find((x) => x.key === key);
     if (!p) throw new DomainError("Für diese Position gibt es derzeit keinen Vorschlag.");
     if (p.confirmed) throw new DomainError("Diese Position wurde bereits bestätigt.");
@@ -274,9 +296,10 @@ export async function confirmProposal(tenantId: string, handoverId: string, acto
 export async function dismissProposal(tenantId: string, handoverId: string, actor: Actor | null, key: Proposal["key"], undo = false) {
   return db.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT "id" FROM "Handover" WHERE "id" = ${handoverId} AND "tenantId" = ${tenantId} FOR UPDATE`;
-    const { h, booking, contract, pickup, accessories } = await loadReturn(tx, tenantId, handoverId);
+    const { h, booking, contract, pickup, accessories, vehicleTankLiters } = await loadReturn(tx, tenantId, handoverId);
     assertHandoverDraft(h);
-    const cmp = buildComparison({ handover: h, booking, contract, pickup, accessories });
+    // Befehl 28: dieselben Eingaben wie die Anzeige (inkl. Tankgröße am Fahrzeug als Ersatz) – sonst fehlte der Vorschlag beim Bestätigen
+    const cmp = buildComparison({ handover: h, booking, contract, pickup, accessories, vehicleTankLiters });
     const p = cmp.proposals.find((x) => x.key === key);
     if (!p) throw new DomainError("Für diese Position gibt es derzeit keinen Vorschlag.");
     if (p.confirmed) throw new DomainError("Diese Position wurde bereits als Position übernommen. Bei Bedarf die Position unten entfernen.");

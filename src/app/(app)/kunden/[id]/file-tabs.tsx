@@ -114,6 +114,19 @@ export async function FinanceTab({ tenantId, customerId }: { tenantId: string; c
         <KPI label="Offen" value={<span className="text-xl">{fmtCents(s.openCents)}</span>} detail="Forderung nach Gegenbelegen" hot={s.openCents > 0} />
         <KPI label="Erstattung offen" value={<span className="text-xl">{fmtCents(s.refundOpenCents)}</span>} detail={`Guthaben ${fmtCents(s.creditCents)} · erstattet ${fmtCents(s.refundedCents)}`} hot={s.refundOpenCents > 0} />
       </div>
+      {f.prepayments.some((p) => p.paidCents > 0) && (
+        <Card title="Guthaben aus stornierten Buchungen" right={<Chip tone={f.prepayments.some((p) => p.remainingCents > 0) ? "amber" : "grey"}>{fmtCents(f.prepayments.reduce((a, p) => a + p.remainingCents, 0))} offen</Chip>}>
+          <ul className="divide-y divide-line-soft text-sm">
+            {f.prepayments.map((p) => (
+              <li key={p.bookingId} className="px-4 py-2.5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                <Link href={`/buchungen/${p.bookingId}#storno`} className="font-mono tnum hover:underline">Buchung {p.bookingNumber}</Link>
+                <span className="text-ink-3">Vorauszahlung {fmtCents(p.paidCents)} · erstattet {fmtCents(p.refundedCents)}</span>
+                <span className={`font-mono tnum font-semibold ${p.remainingCents > 0 ? "text-amber" : ""}`}>Guthaben {fmtCents(p.remainingCents)}</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
       {s.effectiveDamageCents > 0 && <p className="text-xs text-ink-3">Darin enthalten: Schadenabrechnungen {fmtCents(s.effectiveDamageCents)} (Schadenersatz, kein gewöhnlicher Mietumsatz). Kautionen erscheinen nicht hier, sondern unter „Kautionen“; Auszahlungen sind Geldabflüsse ({fmtCents(s.payoutsCompletedCents)} erfasst).</p>}
       {s.effectiveDamageCents === 0 && <p className="text-xs text-ink-3">Kautionen erscheinen nicht hier, sondern unter „Kautionen“. Auszahlungen sind Geldabflüsse ({fmtCents(s.payoutsCompletedCents)} erfasst) und mindern keinen Umsatz.</p>}
       <Card title="Belege" right={<Chip>{f.documents.length}</Chip>}>

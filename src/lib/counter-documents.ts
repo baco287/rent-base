@@ -16,7 +16,7 @@
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { recordAudit, type Actor } from "@/lib/audit";
-import { DAMAGE_TAX_TREATMENTS, INVOICE_UNITS, type InvoiceChainStatus } from "@/lib/constants";
+import { CANCELLATION_FEE_TAX_TREATMENTS, DAMAGE_TAX_TREATMENTS, INVOICE_UNITS, type InvoiceChainStatus } from "@/lib/constants";
 import { DomainError, contentHash } from "@/lib/integrity";
 import { companySnapshotOf, invoiceSettingsMissing, type CompanySnapshot, type InvoiceCustomerSnapshot, type InvoiceRow, type VersionWithItems } from "@/lib/invoices";
 import { centsToDecimalString, fmtCents, fmtRate, lineAmounts, summarize, toBasisPoints, toCents, toHundredths, type Cents } from "@/lib/money";
@@ -249,7 +249,7 @@ async function createCounterDraft(tenantId: string, invoiceId: string, actor: Ac
       const missing = invoiceSettingsMissing(tenant);
       if (missing.length > 0) throw new DomainError(`Bevor Belege erstellt werden können, muss der Inhaber in den Einstellungen ergänzen: ${missing.join("; ")}.`);
       const mode = current.pricesIncludeTax ? "GROSS" : "NET";
-      const nonTaxable = current.taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION";
+      const nonTaxable = (current.taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION" || current.taxTreatment === "NON_TAXABLE_FEE");
       const allowedRates = new Set(residuals.items.map((i) => i.taxRateBp));
       const lines = type === "CANCELLATION" ? cancellationLines(mode, residuals, original.number!) : creditLines(mode, residuals, inputs ?? residuals.items.filter((i) => i.remaining.gross > 0).map((i): CreditItemInput => ({ sourceItemId: i.itemId, mode: "REMAINING" })), { nonTaxable, allowedRates });
       const totals = totalsOfLines(lines);
@@ -323,7 +323,7 @@ export async function updateCounterDocumentDraft(tenantId: string, counterId: st
       if (type === "CANCELLATION") throw new DomainError("Ein Stornobeleg neutralisiert immer den vollständigen Rest; Positionen werden nicht bearbeitet. Für Teilbeträge eine Gutschrift verwenden.");
       const residuals = await residualsOf(tx, tenantId, original, counter.id);
       const mode = current.pricesIncludeTax ? "GROSS" : "NET";
-      const lines = creditLines(mode, residuals, input.items, { nonTaxable: current.taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION", allowedRates: new Set(residuals.items.map((i) => i.taxRateBp)) });
+      const lines = creditLines(mode, residuals, input.items, { nonTaxable: (current.taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION" || current.taxTreatment === "NON_TAXABLE_FEE"), allowedRates: new Set(residuals.items.map((i) => i.taxRateBp)) });
       totals = totalsOfLines(lines);
       if (totals.gross > residuals.remaining.gross) throw new DomainError(`Die Gutschrift (${money(totals.gross)}) übersteigt den noch nicht gutgeschriebenen Betrag der Rechnung ${original.number} (${money(residuals.remaining.gross)}).`);
       await tx.invoiceVersionItem.deleteMany({ where: { tenantId, versionId: draft.id } });
@@ -387,7 +387,7 @@ function checkLines(draft: VersionWithItems, residuals: Residuals, type: Counter
     const e = residuals.byRate.get(bp);
     if (e && (t.gross > e.remaining.gross || t.net > e.remaining.net || t.tax > e.remaining.tax)) err("OVER_RATE", `Zum Steuersatz ${fmtRate(bp)} sind noch ${money(e.remaining.gross)} gutschreibbar, im Beleg stehen ${money(t.gross)}.`);
   }
-  if (draft.taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION" && draft.items.some((i) => toBasisPoints(i.taxRate) !== 0)) err("TAX_TREATMENT", "Echter Schadensersatz ist nicht steuerbar; die Positionen dürfen keinen Steuersatz tragen.");
+  if ((draft.taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION" || draft.taxTreatment === "NON_TAXABLE_FEE") && draft.items.some((i) => toBasisPoints(i.taxRate) !== 0)) err("TAX_TREATMENT", "Echter Schadensersatz ist nicht steuerbar; die Positionen dürfen keinen Steuersatz tragen.");
   if (draft.taxTreatment !== "NON_TAXABLE_DAMAGE_COMPENSATION" && draft.items.some((i) => toBasisPoints(i.taxRate) === 0) && !draft.taxNote?.trim()) err("TAX_NOTE", "Es gibt Positionen mit 0 % Steuer. Bitte den Steuerhinweis angeben.");
   const c = draft.customerSnapshot as InvoiceCustomerSnapshot;
   if (!customerNameOf(c)) err("CUSTOMER_NAME", "Der Belegempfänger hat keinen Namen.");
@@ -619,7 +619,7 @@ export async function getCounterDocumentState(tenantId: string, counterId: strin
   const tt = original.currentVersion?.taxTreatment ?? null;
   return {
     invoice, type,
-    original: { id: original.id, number: original.number!, bookingId: original.bookingId, snapshot, href: hrefOf(original.bookingId, original.id, original.kind), currentVersionNo: original.currentVersion?.versionNo ?? 1, stale, kind: original.kind, taxTreatmentLabel: tt && tt in DAMAGE_TAX_TREATMENTS ? DAMAGE_TAX_TREATMENTS[tt as keyof typeof DAMAGE_TAX_TREATMENTS] : null, pricesIncludeTax: original.currentVersion?.pricesIncludeTax ?? true },
+    original: { id: original.id, number: original.number!, bookingId: original.bookingId, snapshot, href: hrefOf(original.bookingId, original.id, original.kind), currentVersionNo: original.currentVersion?.versionNo ?? 1, stale, kind: original.kind, taxTreatmentLabel: tt && original.kind === "CANCELLATION_FEE" && tt in CANCELLATION_FEE_TAX_TREATMENTS ? CANCELLATION_FEE_TAX_TREATMENTS[tt as keyof typeof CANCELLATION_FEE_TAX_TREATMENTS] : tt && tt in DAMAGE_TAX_TREATMENTS ? DAMAGE_TAX_TREATMENTS[tt as keyof typeof DAMAGE_TAX_TREATMENTS] : null, pricesIncludeTax: original.currentVersion?.pricesIncludeTax ?? true },
     draft, current, residuals, issues, financials, paidCents: financials.paidCents, customerCreditAfter: Math.max(0, financials.paidCents - effectiveAfter), effectiveAfter,
   };
 }

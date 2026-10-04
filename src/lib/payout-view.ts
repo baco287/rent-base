@@ -89,12 +89,14 @@ export type PayoutLike = {
 export type CompanyLike = { name: string; legalForm?: string | null; street: string | null; zip: string | null; city: string | null; phone: string | null; email: string | null; website?: string | null };
 
 export function buildPayoutDocument(p: PayoutLike, company: CompanyLike): PayoutDocumentData {
-  const sourceType = (p.sourceType === "SECURITY_DEPOSIT_REFUND" ? "SECURITY_DEPOSIT_REFUND" : "INVOICE_REFUND") as PayoutSourceType;
+  const sourceType = (p.sourceType === "SECURITY_DEPOSIT_REFUND" || p.sourceType === "RENTAL_PREPAYMENT_REFUND" ? p.sourceType : "INVOICE_REFUND") as PayoutSourceType;
   const method = (p.method in PAYOUT_METHODS ? p.method : "OTHER") as PayoutMethod;
   const snapshot = (p.sourceSnapshot ?? { sourceType, bookingNumber: null, contractNumber: null, invoiceNumber: null, invoiceDate: null, chain: [], customerName: p.recipientName, customerEmail: null }) as PayoutSourceSnapshot;
   const referenceLine = sourceType === "INVOICE_REFUND"
     ? `Erstattung zu Rechnung ${snapshot.invoiceNumber ?? "–"}${snapshot.invoiceDate ? ` vom ${snapshot.invoiceDate}` : ""}${snapshot.chain.length ? ` (Belegkette: ${snapshot.chain.join(", ")})` : ""}`
-    : `Kautionsrückzahlung zu Mietvertrag ${snapshot.contractNumber ?? "–"}${snapshot.bookingNumber ? ` / Buchung ${snapshot.bookingNumber}` : ""}`;
+    : sourceType === "RENTAL_PREPAYMENT_REFUND"
+      ? `Erstattung der Mietvorauszahlung zur stornierten Buchung ${snapshot.bookingNumber ?? "–"}${snapshot.contractNumber ? ` (Mietvertrag ${snapshot.contractNumber})` : ""}`
+      : `Kautionsrückzahlung zu Mietvertrag ${snapshot.contractNumber ?? "–"}${snapshot.bookingNumber ? ` / Buchung ${snapshot.bookingNumber}` : ""}`;
   return {
     number: p.number ?? "Entwurf",
     status: p.status,

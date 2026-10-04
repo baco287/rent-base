@@ -33,12 +33,12 @@ export type ReturnedWorld = World & { contractId: string; pickupId: string; retu
 export type PickedUpWorld = World & { contractId: string; pickupId: string };
 
 /** Befehl 20.6: Miete bis zur abgeschlossenen Übergabe (läuft, Rückgabe offen) – z. B. für die kontaktlose Rückgabe. */
-export async function pickedUpWorld(label: string, opts: { tenant?: Record<string, unknown>; customer?: Record<string, unknown>; within?: World; conditions?: Record<string, unknown> } = {}): Promise<PickedUpWorld> {
+export async function pickedUpWorld(label: string, opts: { tenant?: Record<string, unknown>; customer?: Record<string, unknown>; within?: World; conditions?: Record<string, unknown>; vehicle?: Record<string, unknown> } = {}): Promise<PickedUpWorld> {
   return (await returnedWorld(label, { ...opts, stopAfterPickup: true })) as unknown as PickedUpWorld;
 }
 
 /** opts.conditions (Befehl 27): zusätzliche Vertragskonditionen, z. B. { rules: { kmPolicy: "UNLIMITED" } } */
-export async function returnedWorld(label: string, opts: { damageCharge?: boolean; tenant?: Record<string, unknown>; customer?: Record<string, unknown>; within?: World; stopAfterPickup?: boolean; conditions?: Record<string, unknown> } = {}): Promise<ReturnedWorld> {
+export async function returnedWorld(label: string, opts: { damageCharge?: boolean; tenant?: Record<string, unknown>; customer?: Record<string, unknown>; within?: World; stopAfterPickup?: boolean; conditions?: Record<string, unknown>; vehicle?: Record<string, unknown> } = {}): Promise<ReturnedWorld> {
   let w: World;
   if (opts.within) {
     // zweite Miete im bestehenden Mandanten: eigenes Fahrzeug, gleicher Kunde
@@ -50,7 +50,7 @@ export async function returnedWorld(label: string, opts: { damageCharge?: boolea
   } else {
     w = await createWorld(label, { customer: opts.customer });
     await db.tenant.update({ where: { id: w.tenantId }, data: { defaultTaxRate: 19, pricesIncludeTax: true, taxNumber: "60/123/45678", paymentTermDays: 14, legalForm: "GmbH", ...(opts.tenant ?? {}) } });
-    await db.vehicle.update({ where: { id: w.vehicleId }, data: { mileage: 45_000 } });
+    await db.vehicle.update({ where: { id: w.vehicleId }, data: { mileage: 45_000, ...(opts.vehicle ?? {}) } });
   }
   const c = await ensureContractDraft(w.tenantId, w.bookingId, w.actor);
   const bk = await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } });

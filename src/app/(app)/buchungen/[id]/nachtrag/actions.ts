@@ -13,6 +13,7 @@ import { DomainError, isImmutableError } from "@/lib/integrity";
 import { parseLocalDateTime } from "@/lib/time";
 import {
   addAmendmentDriver,
+  agreeAmendment,
   createAmendmentDraft,
   discardAmendment,
   dropAmendmentDriver,
@@ -71,6 +72,8 @@ const optInt = (msg: string) => z.preprocess((v) => (v === "" || v === undefined
 const on = (v: unknown) => v === "1" || v === "on" || v === true;
 
 const changesSchema = z.object({
+  changeStart: z.preprocess(on, z.boolean()),
+  newStartAt: z.preprocess((v) => (v === "" || v == null ? undefined : parseLocalDateTime(String(v))), z.date({ message: "Bitte die neue Abholung mit Datum und Uhrzeit angeben." }).optional()),
   changePeriod: z.preprocess(on, z.boolean()),
   newEndAt: z.preprocess((v) => (v === "" || v == null ? undefined : parseLocalDateTime(String(v))), z.date({ message: "Bitte die neue Rückgabe mit Datum und Uhrzeit angeben." }).optional()),
   changePrice: z.preprocess(on, z.boolean()),
@@ -96,6 +99,7 @@ export async function saveAmendmentChangesAction(bookingId: string, amendmentId:
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   const d = parsed.data;
   const input: AmendmentChangesInput = {};
+  if (d.changeStart) { if (!d.newStartAt) return { error: "Bitte die neue Abholung angeben." }; input.newStartAt = d.newStartAt; } else input.newStartAt = null;
   if (d.changePeriod) { if (!d.newEndAt) return { error: "Bitte die neue geplante Rückgabe angeben." }; input.newEndAt = d.newEndAt; } else input.newEndAt = null;
   if (d.changePrice) {
     if (d.priceDelta == null || !(d.priceDelta > 0)) return { error: "Bitte den Betrag der Preisänderung (größer 0,00 €) und das Vorzeichen angeben." };
@@ -241,6 +245,36 @@ export async function signAmendmentAction(bookingId: string, amendmentId: string
   revalidatePath("/heute");
   revalidatePath("/dispo");
   redirect(`${page(bookingId, amendmentId)}?wirksam=1`);
+}
+
+/**
+ * Befehl 28: „Telefonisch/extern vereinbart“ – die Änderung des Mietzeitraums reserviert das Fahrzeug sofort; vertraglich wirksam
+ * (Preis, Rechnung, Kaution) wird sie erst mit der nachgeholten Unterschrift.
+ */
+export async function agreeAmendmentAction(bookingId: string, amendmentId: string, _prev: AmendmentState, formData: FormData): Promise<AmendmentState> {
+  const { tenant, actor } = await context();
+  try {
+    await agreeAmendment(tenant.id, actor, amendmentId, { channel: String(formData.get("channel") ?? ""), note: String(formData.get("note") ?? "") || null });
+  } catch (e) {
+    return asState(e);
+  }
+  refresh(bookingId, amendmentId);
+  revalidatePath("/dispo");
+  revalidatePath("/heute");
+  redirect(`${page(bookingId, amendmentId)}?vereinbart=1`);
+}
+
+/** Befehl 28: vereinbarte, noch nicht unterschriebene Änderung zurücknehmen (Pflichtgrund) – Reservierung entfällt, Vertrag unverändert. */
+export async function withdrawAgreedAmendmentAction(bookingId: string, amendmentId: string, _prev: AmendmentState, formData: FormData): Promise<AmendmentState> {
+  const { tenant, actor } = await context();
+  try {
+    await discardAmendment(tenant.id, actor, amendmentId, String(formData.get("reason") ?? ""));
+  } catch (e) {
+    return asState(e);
+  }
+  refresh(bookingId, amendmentId);
+  revalidatePath("/dispo");
+  redirect(`/buchungen/${bookingId}?zurueckgenommen=1#vertrag`);
 }
 
 export async function discardAmendmentAction(bookingId: string, amendmentId: string) {

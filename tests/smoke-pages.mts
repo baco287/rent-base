@@ -45,6 +45,10 @@ import { createAmendmentDraft, getAmendmentContentHash, saveAmendmentSignature, 
 import { ensureAmendmentDocument } from "../src/lib/documents";
 import { discardEmptyReturnDraft } from "../src/lib/handovers";
 import { changeBookingStatus } from "../src/lib/booking-status";
+import { cancelBooking } from "../src/lib/cancellation";
+import { runCancellationFollowUp } from "../src/lib/followup";
+import { recordRentalPayment } from "../src/lib/rental-payments";
+import { agreeAmendment } from "../src/lib/amendments";
 
 const args = process.argv.slice(2);
 const keep = args.includes("--keep");
@@ -1117,6 +1121,76 @@ report(amRangesHtml.includes("Präfix Nachträge") && amRangesHtml.includes("NT-
   report(!krToday.includes("/buchungen/null"), "Startseite: kein Link auf /buchungen/null");
   const krLogin = await fetch(`${base}/login?weiter=${encodeURIComponent("//evil.example")}`);
   report(krLogin.status === 200, `${krLogin.status} Login mit fremdem Weiterleitungsziel lädt (Ziel wird serverseitig verworfen)`);
+}
+
+// ---------------------------------------------------------------------------
+// Befehl 28: Storno mit Geld (Gebühr, Erstattung, Guthaben, Kaution), Stornobestätigung, Zeitraum ändern, telefonische
+// Verlängerung (vereinbart – Unterschrift ausstehend), Dispo, Überfällig/„Miete verlängern“, Verlauf, Rollen und Supportmodus.
+// ---------------------------------------------------------------------------
+{
+  await db.tenant.update({ where: { id: dnWorld.tenantId }, data: { defaultTaxRate: 19, pricesIncludeTax: true, taxNumber: "60/123/45678", paymentTermDays: 14 } });
+  const mkVeh = async (plate: string) => db.vehicle.create({ data: { tenantId: dnWorld.tenantId, plate, make: "VW", model: "Polo", groupId: dnWorld.groupId, fuel: "BENZIN", mileage: 10_000, dailyRate: 49, deposit: 300, tankCapacityLiters: 40 } });
+  const mkBooking = async (vehicleId: string, days: number) => { const st = new Date(Date.now() + days * 86400_000); return db.booking.create({ data: { tenantId: dnWorld.tenantId, number: `S28-${Math.random().toString(36).slice(2, 8)}`, vehicleId, customerId: dnWorld.customerId, startAt: st, endAt: new Date(st.getTime() + 2 * 86400_000), dailyRate: 250, deposit: 500 } }); };
+  // Storno-Assistent + Zeitraum ändern (Inhaber), nicht für Hof/Support
+  const v1 = await mkVeh(`HB-S1 ${Date.now().toString(36).slice(-4)}`);
+  const b1 = await mkBooking(v1.id, 25);
+  const own1 = await plain(await fetch(`${base}/buchungen/${b1.id}`, { headers: { cookie: dnCookie } }));
+  report(own1.includes("Stornieren…") && own1.includes("Zeitraum ändern") && own1.includes("Verlauf"), "Buchung: Storno-Assistent, „Zeitraum ändern“ und Verlauf (Inhaber)");
+  const yard1 = await plain(await fetch(`${base}/buchungen/${b1.id}`, { headers: { cookie: `rb_session=${dnYardSession}` } }));
+  report(!yard1.includes("Stornieren…") && !yard1.includes("Zeitraum ändern"), "Hofmitarbeiter: kein Storno, keine Zeitraumänderung");
+  const sup1 = await plain(await fetch(`${base}/buchungen/${b1.id}`, { headers: { cookie: dnSupportCookie } }));
+  report(!sup1.includes("Stornieren…") && !sup1.includes("Zeitraum ändern"), "Supportmodus: kein Storno, keine Zeitraumänderung");
+  // Storno mit Vorauszahlung 300, Gebühr 90, Erstattung 210 (Testdaten, lokaler Server)
+  await recordRentalPayment(dnWorld.tenantId, dnWorld.actor, b1.id, { amount: "300", method: "CASH", paidAt: new Date(Date.now() - 60_000) });
+  const r1 = await cancelBooking(dnWorld.tenantId, dnWorld.actor, b1.id, { reason: "Smoke: Kunde storniert", idempotencyKey: randomBytes(12).toString("hex"), fee: { amount: "90", description: "Stornogebühr laut Mietbedingungen", taxTreatment: "TAXABLE_SUPPLY" }, refund: { mode: "PAYOUT", payout: { method: "CASH", confirmed: true, receiptConfirmed: true } } });
+  await runCancellationFollowUp(dnWorld.tenantId, r1, dnWorld.actor.id);
+  const can1 = await plain(await fetch(`${base}/buchungen/${b1.id}`, { headers: { cookie: dnCookie } }));
+  report(can1.includes("Buchung storniert") && can1.includes("Storno-Abrechnung (eingefroren beim Storno)") && can1.includes("Stornobestätigung") && can1.includes("Grund: Smoke: Kunde storniert") && !can1.includes("Stornieren…"), "Storno mit Geld: Abrechnung, Bestätigung, Grund sichtbar");
+  const feeInv = await db.invoice.findUniqueOrThrow({ where: { id: r1.feeInvoiceId! } });
+  report(can1.includes(`Rechnung ${feeInv.number}`), "Storno: Link zur Stornogebühr-Rechnung");
+  report(can1.includes("Keine Mietforderung mehr") && can1.includes("Es besteht keine Mietforderung mehr") && !can1.includes("Gesamtpreis (voraussichtlich)") && !can1.includes("Vertrag folgt") && !can1.includes("Voraussichtlich"), "Stornierte Buchung: keine offene Miete, kein „voraussichtlich“, Verweis auf die Storno-Abrechnung");
+  const feePage = await fetch(`${base}/buchungen/${b1.id}/rechnung?nr=${feeInv.id}`, { headers: { cookie: dnCookie } });
+  const feeHtml = await plain(feePage);
+  report(feePage.status === 200 && feeHtml.includes("Stornogebühr"), `${feePage.status} Stornogebühr-Rechnung lädt`);
+  const confDoc = await db.document.findFirst({ where: { tenantId: dnWorld.tenantId, bookingId: b1.id, type: "BOOKING_CANCELLATION" } });
+  const confPdf = confDoc ? await fetch(`${base}/api/documents/${confDoc.id}?download=1`, { headers: { cookie: dnCookie } }) : null;
+  report(confPdf?.status === 200 && (confPdf.headers.get("content-type") ?? "").includes("pdf"), `${confPdf?.status} Stornobestätigung als PDF abrufbar`);
+  const refundPage = await plain(await fetch(`${base}/auszahlungen/${r1.payoutIds[0]}`, { headers: { cookie: dnCookie } }));
+  report(refundPage.includes("Erstattung"), "Auszahlung der Erstattung (Rechnungsguthaben) lädt");
+  // Storno ohne Gebühr, Vorauszahlung bleibt Guthaben an der Buchung
+  const v2 = await mkVeh(`HB-S2 ${Date.now().toString(36).slice(-4)}`);
+  const b2 = await mkBooking(v2.id, 26);
+  await recordRentalPayment(dnWorld.tenantId, dnWorld.actor, b2.id, { amount: "120", method: "CASH", paidAt: new Date(Date.now() - 60_000) });
+  await cancelBooking(dnWorld.tenantId, dnWorld.actor, b2.id, { reason: "Smoke: Termin entfällt", idempotencyKey: randomBytes(12).toString("hex"), refund: { mode: "CREDIT" } });
+  const can2 = await plain(await fetch(`${base}/buchungen/${b2.id}`, { headers: { cookie: dnCookie } }));
+  report(can2.includes("Guthaben aus der Mietvorauszahlung") && can2.includes("Mietvorauszahlung erstatten"), "Storno ohne Gebühr: Guthaben an der Buchung, Erstattung später möglich");
+  report(!can2.includes("es sind aber Mietzahlungen"), "Storno mit Guthaben-Entscheidung: kein Klärungshinweis wie bei Altstornos");
+  const fin2 = await plain(await fetch(`${base}/kunden/${dnWorld.customerId}?tab=finanzen`, { headers: { cookie: dnCookie } }));
+  report(fin2.includes("Guthaben aus stornierten Buchungen"), "Kundenakte: Guthaben aus stornierten Buchungen");
+  const claims2 = await plain(await fetch(`${base}/auszahlungen?filter=offen&quelle=vorauszahlung`, { headers: { cookie: dnCookie } }));
+  report(claims2.includes("Storno-Erstattung") && claims2.includes(b2.number), "Auszahlungen: offene Storno-Erstattung sichtbar");
+  const yard2 = await plain(await fetch(`${base}/buchungen/${b2.id}`, { headers: { cookie: `rb_session=${dnYardSession}` } }));
+  report(yard2.includes("Buchung storniert") && !yard2.includes("Mietvorauszahlung erstatten") && !yard2.includes("Stornobestätigung per E-Mail senden"), "Hofmitarbeiter: Storno lesbar, keine Erstattung, kein Versand");
+  // telefonische Verlängerung einer laufenden Miete
+  const ext = await pickedUpWorld("smoke-b28-ext", { within: dnWorld });
+  const extB = await db.booking.findUniqueOrThrow({ where: { id: ext.bookingId } });
+  const ea = (await createAmendmentDraft(dnWorld.tenantId, dnWorld.actor, { bookingId: ext.bookingId, nonce: `smoke-ext-${Date.now()}` })).amendment;
+  await updateAmendmentDraft(dnWorld.tenantId, dnWorld.actor, ea.id, { newEndAt: new Date(extB.endAt.getTime() + 86400_000) });
+  const eaDraft = await plain(await fetch(`${base}/buchungen/${ext.bookingId}/nachtrag/${ea.id}`, { headers: { cookie: dnCookie } }));
+  report(eaDraft.includes("Telefonisch / extern vereinbart?") && eaDraft.includes("Als vereinbart speichern – Fahrzeug reservieren"), "Nachtrag: „Als vereinbart speichern“ für Zeitraumänderung");
+  await agreeAmendment(dnWorld.tenantId, dnWorld.actor, ea.id, { channel: "PHONE", note: "Smoke-Anruf" });
+  const extPage = await plain(await fetch(`${base}/buchungen/${ext.bookingId}`, { headers: { cookie: dnCookie } }));
+  report(extPage.includes("Vertragsänderung vereinbart – Unterschrift fehlt") && extPage.includes("Unterschrift nachholen"), "Buchung: „Vertragsänderung vereinbart – Unterschrift fehlt“ + „Unterschrift nachholen“");
+  const eaAgreed = await plain(await fetch(`${base}/buchungen/${ext.bookingId}/nachtrag/${ea.id}`, { headers: { cookie: dnCookie } }));
+  report(eaAgreed.includes("Vereinbart – Unterschrift ausstehend") && eaAgreed.includes("Vereinbarte Änderung zurücknehmen") && eaAgreed.includes("Nachtrag unterschreiben und wirksam machen"), "Nachtrag vereinbart: Status, Zurücknahme, Unterschrift nachholen");
+  const extDispo = await plain(await fetch(`${base}/dispo`, { headers: { cookie: dnCookie } }));
+  report(extDispo.includes("Verlängerung vereinbart – Unterschrift fehlt"), "Dispo: vorläufig vereinbarte Verlängerung gekennzeichnet");
+  const extSupport = await fetch(`${base}/buchungen/${ext.bookingId}/nachtrag/${ea.id}`, { headers: { cookie: dnSupportCookie }, redirect: "manual" });
+  report(extSupport.status === 307, `${extSupport.status} Supportmodus: vereinbarte Änderung nicht bearbeitbar`);
+  // überfällige Miete (Befehl-27-Testbuchung): „Miete verlängern“
+  const overdueB = await db.booking.findFirst({ where: { tenantId: dnWorld.tenantId, status: "ACTIVE", endAt: { lt: new Date() } }, select: { id: true } });
+  const overPage = overdueB ? await plain(await fetch(`${base}/buchungen/${overdueB.id}`, { headers: { cookie: dnCookie } })) : "";
+  report(overPage.includes("Rückgabe überfällig") && overPage.includes("Miete verlängern"), "Überfällige Miete: „Miete verlängern“ mit Folgekonfliktprüfung");
 }
 
 // ---------------------------------------------------------------------------

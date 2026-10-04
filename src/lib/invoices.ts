@@ -16,7 +16,7 @@
 import { logoRefOf, type LogoRef } from "@/lib/branding-ref";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { DAMAGE_TAX_NOTES, DAMAGE_TAX_TREATMENTS, type DamageTaxTreatment } from "@/lib/constants";
+import { DAMAGE_TAX_NOTES, CANCELLATION_FEE_TAX_NOTE, CANCELLATION_FEE_TAX_TREATMENTS, DAMAGE_TAX_TREATMENTS, type DamageTaxTreatment } from "@/lib/constants";
 import { recordAudit } from "@/lib/audit";
 import { EXTRA_CHARGE_TYPES, INVOICE_ITEM_SOURCES, INVOICE_STATUS, INVOICE_UNITS, type ExtraChargeType } from "@/lib/constants";
 import type { CustomerSnapshot, VehicleSnapshot } from "@/lib/contracts";
@@ -465,6 +465,54 @@ export async function createDunningFeeInvoiceDraft(tx: Tx, tenantId: string, act
 }
 
 /**
+ * Befehl 28: Stornogebühr als eigene Rechnung (kind CANCELLATION_FEE) – nur innerhalb des Storno-Abschlusses, nur zu einer
+ * stornierten Buchung. Eine Position über den bewusst erfassten Betrag; die steuerliche Behandlung wählt der Vermieter je Storno
+ * (TAXABLE_SUPPLY = Standardsatz aus den Einstellungen, NON_TAXABLE_FEE = nicht steuerbar, ohne Steuersatz). Rechnungsempfänger:
+ * Vertragskopie, ohne Vertrag der Kundenstamm. Der ursprüngliche Mietpreis wird nicht verändert; die Gebühr ist eine eigene Forderung.
+ */
+export async function createCancellationFeeInvoiceDraft(tx: Tx, tenantId: string, actor: Actor, input: { bookingId: string; amountCents: Cents; description: string; taxTreatment: string }): Promise<InvoiceRow> {
+  const booking = await tx.booking.findFirst({ where: { id: input.bookingId, tenantId }, include: { contract: true, tenant: true, customer: true } });
+  if (!booking) throw new DomainError("Buchung nicht gefunden.");
+  if (booking.status !== "CANCELLED") throw new DomainError("Eine Stornogebühr gibt es nur zu einer stornierten Buchung.");
+  const tenant = booking.tenant;
+  const missing = invoiceSettingsMissing(tenant);
+  if (missing.length > 0) throw new DomainError(`Bevor eine Stornogebühr berechnet werden kann, muss der Inhaber in den Einstellungen ergänzen: ${missing.join("; ")}.`);
+  if (!Number.isInteger(input.amountCents) || input.amountCents <= 0) throw new DomainError("Die Stornogebühr muss größer als 0,00 € sein.");
+  if (!(input.taxTreatment in CANCELLATION_FEE_TAX_TREATMENTS)) throw new DomainError("Bitte die steuerliche Behandlung der Stornogebühr auswählen.");
+  const description = input.description.replace(/\s+/g, " ").trim();
+  if (description.length < 3) throw new DomainError("Bitte die Stornogebühr kurz beschreiben (z. B. „Stornogebühr laut Mietbedingungen“).");
+  if (description.length > 300) throw new DomainError("Die Beschreibung der Stornogebühr ist zu lang (höchstens 300 Zeichen).");
+  const nonTaxable = input.taxTreatment === "NON_TAXABLE_FEE";
+  const rate = nonTaxable ? 0 : Number(tenant.defaultTaxRate);
+  const mode = tenant.pricesIncludeTax ? "GROSS" : "NET";
+  const contractSnapshot = booking.contract && booking.contract.status !== "DRAFT" ? (booking.contract.customerSnapshot as Partial<CustomerSnapshot>) : null;
+  const item = computeItem(mode, { description: `${description} – Buchung ${booking.number}${booking.contract && booking.contract.status !== "DRAFT" ? `, Mietvertrag ${booking.contract.number}` : ""}`, quantity: 1, unit: "pauschal", unitPrice: centsToDecimalString(input.amountCents), taxRate: rate, source: "MANUAL", reference: `Storno Buchung ${booking.number}` });
+  const totals = summarize([{ taxRateBp: item.taxRateBp, amounts: item.amounts }]);
+  const now = new Date();
+  const invoice = await tx.invoice.create({
+    data: {
+      tenantId, bookingId: booking.id, customerId: booking.customerId, contractId: booking.contract && booking.contract.status !== "DRAFT" ? booking.contract.id : null,
+      kind: "CANCELLATION_FEE", taxTreatment: input.taxTreatment,
+      sourceHash: sha256(`cancellation-fee:${booking.id}:${input.amountCents}`),
+      createdById: actor.id,
+      changeLog: [{ at: now.toISOString(), by: actor.name, versionNo: 1, summary: `Stornogebühr ${fmtCents(input.amountCents)} zur stornierten Buchung ${booking.number}` }],
+    },
+  });
+  const version = await tx.invoiceVersion.create({
+    data: {
+      tenantId, invoiceId: invoice.id, versionNo: 1, kind: "ORIGINAL",
+      servicePeriodStart: now, servicePeriodEnd: now, pricesIncludeTax: mode === "GROSS",
+      customerSnapshot: contractSnapshot ? customerSnapshotFromContract(contractSnapshot) : customerSnapshotFromCustomer(booking.customer), companySnapshot: companySnapshotOf(tenant),
+      netTotal: centsToDecimalString(totals.total.net), taxTotal: centsToDecimalString(totals.total.tax), grossTotal: centsToDecimalString(totals.total.gross),
+      paymentTermDays: tenant.paymentTermDays, taxNote: nonTaxable ? CANCELLATION_FEE_TAX_NOTE : tenant.taxNote, taxTreatment: input.taxTreatment,
+      createdById: actor.id, createdByName: actor.name,
+    },
+  });
+  await tx.invoiceVersionItem.create({ data: itemData(tenantId, version.id, 0, item) });
+  return invoice;
+}
+
+/**
  * Befehl 23.1: freie Rechnung (kind GENERAL) als Entwurf ohne Positionen. Rechnungsempfänger = bestehender Kunde (Kopie aus
  * dem Kundenstamm, beim Abschluss versiegelt); optionaler Buchungsbezug nur zur Zuordnung (muss zum Kunden gehören) –
  * es werden keine Mietpositionen übernommen, Kaution und Buchung bleiben unberührt. Zahlungsziel = Mandantenstandard,
@@ -738,14 +786,15 @@ export async function updateInvoiceDraft(tenantId: string, invoiceId: string, ac
     const { draft } = await lockDraft(tx, tenantId, invoiceId);
     const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
-    // Steuerliche Behandlung (nur Schadenabrechnung): bleibt wie in der Fassung, bis sie bewusst geändert wird
+    // Steuerliche Behandlung (Schadenabrechnung, Befehl 28 auch Stornogebühr): bleibt wie in der Fassung, bis sie bewusst geändert wird
     let taxTreatment = draft.taxTreatment;
     if (input.taxTreatment !== undefined && (input.taxTreatment ?? null) !== (draft.taxTreatment ?? null)) {
-      if (invoice.kind !== "DAMAGE") throw new DomainError("Die steuerliche Behandlung wird nur bei Schadenabrechnungen festgelegt.");
-      if (!input.taxTreatment || !(input.taxTreatment in DAMAGE_TAX_TREATMENTS)) throw new DomainError("Bitte die steuerliche Behandlung der Schadenabrechnung auswählen.");
+      const allowed = invoice.kind === "DAMAGE" ? DAMAGE_TAX_TREATMENTS : invoice.kind === "CANCELLATION_FEE" ? CANCELLATION_FEE_TAX_TREATMENTS : null;
+      if (!allowed) throw new DomainError("Die steuerliche Behandlung wird nur bei Schadenabrechnungen und Stornogebühren festgelegt.");
+      if (!input.taxTreatment || !(input.taxTreatment in allowed)) throw new DomainError("Bitte die steuerliche Behandlung auswählen.");
       taxTreatment = input.taxTreatment;
     }
-    const nonTaxable = taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION";
+    const nonTaxable = taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION" || taxTreatment === "NON_TAXABLE_FEE";
     // Erlaubte Sätze: konfigurierter Standardsatz, 0 % und alle Sätze, die die Fassung bereits enthält (Korrektur ändert keine Steuerlogik)
     const allowedRates = new Set([toBasisPoints(tenant.defaultTaxRate ?? 0), 0, ...draft.items.map((i) => toBasisPoints(i.taxRate))]);
     const mode = draft.pricesIncludeTax ? "GROSS" : "NET";
@@ -864,6 +913,13 @@ async function collectIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, draf
     // Befehl 23: Mahngebühr – entsteht nur im Mahnvorgang; braucht vollständige Firmendaten
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
     for (const m of invoiceSettingsMissing(tenant)) err("COMPANY", `Firmendaten unvollständig: ${m}.`);
+  } else if (draft.versionNo === 1 && invoice.kind === "CANCELLATION_FEE") {
+    // Befehl 28: Stornogebühr – nur zu einer stornierten Buchung, eine je Buchung; Steuerbehandlung wird unten geprüft
+    if (booking && booking.status !== "CANCELLED") err("BOOKING_STATUS", "Eine Stornogebühr gibt es nur zu einer stornierten Buchung.");
+    const other = await tx.invoice.count({ where: { tenantId, bookingId: invoice.bookingId, kind: "CANCELLATION_FEE", documentType: "INVOICE", status: "FINALIZED", id: { not: invoice.id } } });
+    if (other > 0) err("INVOICE_EXISTS", "Zu dieser Buchung gibt es bereits eine Stornogebühr.");
+    const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+    for (const m of invoiceSettingsMissing(tenant)) err("COMPANY", `Firmendaten unvollständig: ${m}.`);
   } else if (draft.versionNo === 1 && invoice.kind === "GENERAL") {
     // Befehl 23.1: freie Rechnung – Kunde als Empfänger; eine Buchung ist nur Bezug (keine Mietpositionen, keine Kaution)
     if (!invoice.customerId) err("CUSTOMER", "Bitte einen Rechnungsempfänger (Kunden) wählen.");
@@ -908,6 +964,11 @@ async function collectIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, draf
     // Steuersemantik der Schadenabrechnung: nicht steuerbar ≠ 0 % ≠ steuerfrei. Die Behandlung ist Teil jeder Fassung.
     if (!draft.taxTreatment || !(draft.taxTreatment in DAMAGE_TAX_TREATMENTS)) err("TAX_TREATMENT", "Die steuerliche Behandlung dieser Fassung ist nicht festgelegt.");
     else if (draft.taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION" && draft.items.some((it) => toBasisPoints(it.taxRate) !== 0)) err("TAX_TREATMENT_ITEMS", "Echter Schadensersatz ist nicht steuerbar; die Positionen dürfen keinen Steuersatz tragen.");
+  }
+  if (invoice.kind === "CANCELLATION_FEE") {
+    // Befehl 28: Stornogebühr – Behandlung je Storno bewusst gewählt; nicht steuerbar heißt: kein Steuersatz
+    if (!draft.taxTreatment || !(draft.taxTreatment in CANCELLATION_FEE_TAX_TREATMENTS)) err("TAX_TREATMENT", "Die steuerliche Behandlung der Stornogebühr ist nicht festgelegt.");
+    else if (draft.taxTreatment === "NON_TAXABLE_FEE" && draft.items.some((it) => toBasisPoints(it.taxRate) !== 0)) err("TAX_TREATMENT_ITEMS", "Eine nicht steuerbare Stornogebühr trägt keinen Steuersatz.");
   }
   if (draft.taxTreatment !== "NON_TAXABLE_DAMAGE_COMPENSATION" && draft.items.some((it) => toBasisPoints(it.taxRate) === 0) && !draft.taxNote?.trim()) err("TAX_NOTE", "Es gibt Positionen mit 0 % Steuer. Bitte den Steuerhinweis für die Rechnung angeben.");
   if (totals.total.gross === 0) warn("ZERO", "Der Rechnungsbetrag ist 0,00 €.");
@@ -1076,7 +1137,8 @@ export async function finalizeInvoiceIn(tx: Tx, tenantId: string, invoiceId: str
     throw new DomainError(`Für diese Rechnung wurden bereits ${fmtCents(mode.paidCents)} Zahlungen dokumentiert. Der neue Rechnungsbetrag beträgt ${fmtCents(newGross)}. Dadurch entsteht eine Überzahlung von ${fmtCents(mode.paidCents - newGross)}. Rent-Base führt keine automatische Erstattung durch. Bitte die Überzahlung ausdrücklich bestätigen.`);
   }
   // Erste Fassung der Mietrechnung: vorab an der Buchung erfasste Mietzahlungen werden ihr zugeordnet (Buchung gesperrt)
-  const linksRentalPayments = draft.versionNo === 1 && invoice.kind === "RENTAL";
+  // Befehl 28: ebenso die Stornogebühr-Rechnung einer stornierten Buchung (Rest der Vorauszahlung = Kundenguthaben der Rechnung)
+  const linksRentalPayments = draft.versionNo === 1 && (invoice.kind === "RENTAL" || invoice.kind === "CANCELLATION_FEE");
   const prepaidCents = linksRentalPayments ? await lockUnlinkedRentalPayments(tx, tenantId, invoice.bookingId!) : 0;
   if (prepaidCents > newGross && !opts.confirmOverpayment) {
     throw new DomainError(`Zu dieser Buchung wurden bereits ${fmtCents(prepaidCents)} Mietzahlungen dokumentiert. Der Rechnungsbetrag beträgt ${fmtCents(newGross)}. Dadurch entsteht eine Überzahlung von ${fmtCents(prepaidCents - newGross)}. Rent-Base führt keine automatische Erstattung durch. Bitte die Überzahlung ausdrücklich bestätigen.`);

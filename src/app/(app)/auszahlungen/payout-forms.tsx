@@ -43,7 +43,7 @@ export type PayoutFormProps = {
   defaultWhen: string;
   /** vorhandener Entwurf: Felder vorbelegen, Schaltfläche „Entwurf speichern“ */
   draft?: { amount: string; method: string; methodDescription: string; executedAt: string; recipientName: string; recipientReason: string; iban: string; reference: string; receiptConfirmed: boolean; historicalEntry: boolean; customerNote: string; internalNote: string } | null;
-  kind: "INVOICE" | "DEPOSIT";
+  kind: "INVOICE" | "DEPOSIT" | "PREPAYMENT";
 };
 
 export function PayoutForm({ action, preview, sourceLabel, remaining, remainingCents, customerName, nonce, defaultWhen, draft = null, kind }: PayoutFormProps) {
@@ -68,14 +68,14 @@ export function PayoutForm({ action, preview, sourceLabel, remaining, remainingC
   const full = pv && "source" in pv && !pv.error ? pv : null;
   const pvError = pv && "error" in pv && pv.error ? pv.error : null;
   if (done) return <Feedback state={state} />;
-  if (!open) return <div><button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>{kind === "INVOICE" ? "Erstattung erfassen" : "Kaution auszahlen"}</button></div>;
+  if (!open) return <div><button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>{kind === "INVOICE" ? "Erstattung erfassen" : kind === "PREPAYMENT" ? "Mietvorauszahlung erstatten" : "Kaution auszahlen"}</button></div>;
   const deviates = recipient.trim() !== customerName;
 
   return (
     <form ref={form} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
       <input type="hidden" name="nonce" value={nonce} />
       <input type="hidden" name="mode" value={mode} />
-      <div className="font-medium">{kind === "INVOICE" ? "Erstattung an den Kunden erfassen" : "Kautionsrückzahlung erfassen"}</div>
+      <div className="font-medium">{kind === "INVOICE" ? "Erstattung an den Kunden erfassen" : kind === "PREPAYMENT" ? "Erstattung der Mietvorauszahlung erfassen" : "Kautionsrückzahlung erfassen"}</div>
       <div className="text-sm text-ink-2">{sourceLabel} · noch auszuzahlen: <span className="font-mono tnum font-semibold">{remaining}</span></div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className="flex flex-col gap-1"><span className="label-xs">Betrag in €</span><input name="amount" inputMode="decimal" placeholder="0,00" required defaultValue={draft?.amount ?? (remainingCents / 100).toFixed(2).replace(".", ",")} className="input text-xl tnum" onChange={() => setPv(null)} /></label>

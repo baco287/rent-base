@@ -533,6 +533,11 @@ model Booking {
   cancellationReason String?
   cancelledById      String?
   cancelledByName    String?
+  // Befehl 28: Storno-Abschluss – einmaliger Formularschlüssel (Doppelklick, zwei Tabs) und eingefrorene Storno-Abrechnung
+  // (Grundlage der Stornobestätigung; nie aus Live-Daten neu berechnet)
+  cancellationKey      String?
+  cancellationSnapshot Json?
+  cancellationHash     String?
   notes            String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
@@ -562,6 +567,7 @@ model Booking {
   contractAmendments   ContractAmendment[]
 
   @@unique([tenantId, number])
+  @@unique([tenantId, cancellationKey])
   @@index([tenantId, vehicleId, startAt, endAt])
   @@index([tenantId, status])
   @@index([tenantId, customerId, startAt])
@@ -1336,7 +1342,7 @@ model Payout {
   id                String    @id @default(cuid())
   tenantId          String
   number            String? // AZ-JJJJ-NNNNNN, erst beim Abschluss (COMPLETED) vergeben
-  sourceType        String // INVOICE_REFUND | SECURITY_DEPOSIT_REFUND
+  sourceType        String // INVOICE_REFUND | SECURITY_DEPOSIT_REFUND | RENTAL_PREPAYMENT_REFUND (Befehl 28: Mietvorauszahlung einer stornierten Buchung)
   invoiceId         String? // genau eine Quelle: Rechnung ...
   securityDepositId String? // ... oder Kaution
   bookingId         String?
@@ -2237,10 +2243,11 @@ model ContractAmendment {
   tenantId            String
   contractId          String
   bookingId           String
-  status              String    @default("DRAFT") // DRAFT | SIGNED | DISCARDED
+  status              String    @default("DRAFT") // DRAFT | AGREED | SIGNED | DISCARDED (Befehl 28: AGREED = vereinbart, Unterschrift ausstehend)
   number              String? // NT-JJJJ-NNNNNN, erst bei Unterschrift
   sequenceNo          Int? // Reihenfolge der wirksamen Nachträge je Vertrag (1, 2, 3 …), erst bei Unterschrift
   newEndAt            DateTime? // Mietdauer: neue geplante Rückgabe
+  newStartAt          DateTime? // Befehl 28: neuer Mietbeginn (nur vor der Übergabe)
   priceDeltaCents     Int? // Preisänderung (+/−) gegenüber dem bis dahin wirksamen Gesamtpreis
   priceProposalCents  Int? // Vorschlag aus der Preislogik des Vertrags (nur Nachvollziehbarkeit)
   priceReason         String?
@@ -2262,6 +2269,13 @@ model ContractAmendment {
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
   discardedAt         DateTime?
+  discardReason       String? // Befehl 28: Pflicht bei Zurücknahme einer vereinbarten Änderung
+  // Befehl 28: telefonisch/extern vereinbart – reserviert das Fahrzeug sofort, wirkt vertraglich erst mit Unterschrift
+  agreedAt            DateTime?
+  agreedById          String?
+  agreedByName        String?
+  agreedChannel       String? // PHONE | EMAIL | IN_PERSON | OTHER
+  agreedNote          String?
 
   tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contract            RentalContract       @relation(fields: [contractId], references: [id], onDelete: Restrict)
@@ -2280,4 +2294,5 @@ model ContractAmendment {
   @@unique([tenantId, contractId, sequenceNo])
   @@index([tenantId, bookingId])
   @@index([tenantId, contractId, status])
+  @@index([tenantId, status, newEndAt])
 }

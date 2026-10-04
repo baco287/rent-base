@@ -27,6 +27,7 @@ import { deliveryMetaOf, isValidEmail, safeMailError, type MailTransport } from 
 import { sendBusinessMail } from "@/lib/tenant-mail";
 import type { StorageDriver } from "@/lib/storage";
 import { APP_TIME_ZONE } from "@/lib/time";
+import { prepaymentBalance, prepaymentBalances, type PrepaymentBalance } from "@/lib/rental-payments";
 import { invoiceHref } from "@/lib/invoice-links";
 
 type Tx = Prisma.TransactionClient;
@@ -69,7 +70,8 @@ export function maskIban(raw: string): string {
 
 export type PayoutSource =
   | { sourceType: "INVOICE_REFUND"; invoiceId: string; bookingId: string | null; customerId: string | null; customerName: string; customerEmail: string | null; remainingCents: Cents; snapshot: PayoutSourceSnapshot; invoice: InvoiceFinancials }
-  | { sourceType: "SECURITY_DEPOSIT_REFUND"; securityDepositId: string; bookingId: string; customerId: string | null; customerName: string; customerEmail: string | null; remainingCents: Cents; snapshot: PayoutSourceSnapshot; deposit: DepositFinancials };
+  | { sourceType: "SECURITY_DEPOSIT_REFUND"; securityDepositId: string; bookingId: string; customerId: string | null; customerName: string; customerEmail: string | null; remainingCents: Cents; snapshot: PayoutSourceSnapshot; deposit: DepositFinancials }
+  | { sourceType: "RENTAL_PREPAYMENT_REFUND"; bookingId: string; customerId: string | null; customerName: string; customerEmail: string | null; remainingCents: Cents; snapshot: PayoutSourceSnapshot; prepayment: PrepaymentBalance };
 
 const nameOf = (c: { type?: string; companyName?: string | null; firstName?: string | null; lastName?: string | null } | null | undefined) => {
   if (!c) return "";
@@ -107,10 +109,38 @@ export async function depositRefundSource(client: Client, tenantId: string, book
   return { sourceType: "SECURITY_DEPOSIT_REFUND", securityDepositId: booking.securityDeposit.id, bookingId: booking.id, customerId: booking.customerId, customerName: snapshot.customerName, customerEmail: snapshot.customerEmail, remainingCents: d.payoutRemainingCents, snapshot, deposit: d };
 }
 
-export type SourceRef = { sourceType: "INVOICE_REFUND"; invoiceId: string } | { sourceType: "SECURITY_DEPOSIT_REFUND"; bookingId: string };
+/**
+ * Befehl 28: Mietvorauszahlung einer stornierten Buchung als Auszahlungsquelle (keine Hilfsrechnung): bestätigte, keiner Rechnung
+ * zugeordnete Mietzahlungen minus abgeschlossene Erstattungen (prepaymentBalance). Empfänger aus der Vertragskopie, sonst Kundenstamm.
+ */
+export async function prepaymentRefundSource(client: Client, tenantId: string, bookingId: string): Promise<PayoutSource & { sourceType: "RENTAL_PREPAYMENT_REFUND" }> {
+  const booking = await client.booking.findFirst({ where: { id: bookingId, tenantId }, select: { id: true, number: true, status: true, customerId: true, customer: { select: { type: true, companyName: true, firstName: true, lastName: true, email: true } }, contract: { select: { number: true, customerSnapshot: true } } } });
+  if (!booking) throw new DomainError("Buchung nicht gefunden.");
+  if (booking.status !== "CANCELLED") throw new DomainError("Mietvorauszahlungen werden nur zu einer stornierten Buchung erstattet.");
+  const bal = await prepaymentBalance(tenantId, bookingId, client);
+  const c = (booking.contract?.customerSnapshot as { type?: string; companyName?: string | null; firstName?: string; lastName?: string; email?: string | null } | null) ?? booking.customer;
+  const snapshot: PayoutSourceSnapshot = {
+    sourceType: "RENTAL_PREPAYMENT_REFUND", bookingNumber: booking.number, contractNumber: booking.contract?.number ?? null, invoiceNumber: null, invoiceDate: null, chain: [],
+    customerName: nameOf(c), customerEmail: typeof c?.email === "string" && c.email.trim() ? c.email.trim() : null,
+    paidCents: bal.paidCents, paidOutBeforeCents: bal.refundedCents,
+  };
+  return { sourceType: "RENTAL_PREPAYMENT_REFUND", bookingId: booking.id, customerId: booking.customerId, customerName: snapshot.customerName, customerEmail: snapshot.customerEmail, remainingCents: bal.remainingCents, snapshot, prepayment: bal };
+}
+
+export type SourceRef = { sourceType: "INVOICE_REFUND"; invoiceId: string } | { sourceType: "SECURITY_DEPOSIT_REFUND"; bookingId: string } | { sourceType: "RENTAL_PREPAYMENT_REFUND"; bookingId: string };
 
 export async function payoutSource(client: Client, tenantId: string, ref: SourceRef): Promise<PayoutSource> {
-  return ref.sourceType === "INVOICE_REFUND" ? invoiceRefundSource(client, tenantId, ref.invoiceId) : depositRefundSource(client, tenantId, ref.bookingId);
+  if (ref.sourceType === "INVOICE_REFUND") return invoiceRefundSource(client, tenantId, ref.invoiceId);
+  if (ref.sourceType === "RENTAL_PREPAYMENT_REFUND") return prepaymentRefundSource(client, tenantId, ref.bookingId);
+  return depositRefundSource(client, tenantId, ref.bookingId);
+}
+
+/** Meldung „nichts (mehr) auszuzahlen“ je Quelle. */
+function nothingLeft(source: PayoutSource, more = false): string {
+  const m = more ? "nichts (mehr)" : "nichts";
+  if (source.sourceType === "INVOICE_REFUND") return `Zur Rechnung ${source.snapshot.invoiceNumber} ist ${m} auszuzahlen.`;
+  if (source.sourceType === "RENTAL_PREPAYMENT_REFUND") return `Aus der Mietvorauszahlung zu Buchung ${source.snapshot.bookingNumber} ist ${m} zu erstatten.`;
+  return `Von dieser Kaution ist ${m} auszuzahlen.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +236,7 @@ export async function previewPayout(tenantId: string, ref: SourceRef, input: Pay
   try {
     checked = checkInput(input, source, true);
     checkExecutedAt(input.executedAt, true);
-    if (source.remainingCents <= 0) throw new DomainError(source.sourceType === "INVOICE_REFUND" ? "Zu dieser Rechnung ist nichts auszuzahlen." : "Von dieser Kaution ist nichts auszuzahlen.");
+    if (source.remainingCents <= 0) throw new DomainError(nothingLeft(source));
     if (checked.amountCents > source.remainingCents) throw new DomainError(`Noch auszuzahlen sind ${fmtCents(source.remainingCents)}, eingegeben wurden ${fmtCents(checked.amountCents)}. Mehr als der Rest wird nicht ausgezahlt.`);
   } catch (e) {
     error = e instanceof DomainError ? e.message : "Ungültige Eingabe.";
@@ -223,6 +253,10 @@ async function lockSource(tx: Tx, tenantId: string, ref: SourceRef): Promise<Pay
   if (ref.sourceType === "INVOICE_REFUND") {
     const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Invoice" WHERE "id" = ${ref.invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
     if (locked.length === 0) throw new DomainError("Rechnung nicht gefunden.");
+  } else if (ref.sourceType === "RENTAL_PREPAYMENT_REFUND") {
+    // Befehl 28: die Mietvorauszahlungen hängen an der Buchung – sie ist die Quelle (Sperrfolge Buchung zuerst)
+    const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Booking" WHERE "id" = ${ref.bookingId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+    if (locked.length === 0) throw new DomainError("Buchung nicht gefunden.");
   } else {
     const locked = await tx.$queryRaw<{ id: string }[]>`SELECT d."id" FROM "SecurityDeposit" d WHERE d."bookingId" = ${ref.bookingId} AND d."tenantId" = ${tenantId} FOR UPDATE`;
     if (locked.length === 0) throw new DomainError("Zu dieser Buchung ist keine Kaution als erhalten dokumentiert; es ist nichts auszuzahlen.");
@@ -230,7 +264,8 @@ async function lockSource(tx: Tx, tenantId: string, ref: SourceRef): Promise<Pay
   return payoutSource(tx, tenantId, ref);
 }
 
-const refOf = (p: { sourceType: string; invoiceId: string | null; bookingId: string | null }): SourceRef => (p.sourceType === "INVOICE_REFUND" ? { sourceType: "INVOICE_REFUND", invoiceId: p.invoiceId! } : { sourceType: "SECURITY_DEPOSIT_REFUND", bookingId: p.bookingId! }); // Kautionsrückzahlung hat immer eine Buchung
+const refOf = (p: { sourceType: string; invoiceId: string | null; bookingId: string | null }): SourceRef =>
+  p.sourceType === "INVOICE_REFUND" ? { sourceType: "INVOICE_REFUND", invoiceId: p.invoiceId! } : p.sourceType === "RENTAL_PREPAYMENT_REFUND" ? { sourceType: "RENTAL_PREPAYMENT_REFUND", bookingId: p.bookingId! } : { sourceType: "SECURITY_DEPOSIT_REFUND", bookingId: p.bookingId! };
 
 function sealedPayoutContent(p: PayoutRow) {
   return {
@@ -250,7 +285,7 @@ async function completeInTx(tx: Tx, tenantId: string, actor: Actor, payoutId: st
   checkExecutedAt(p.executedAt, true);
   if (p.method === "BANK_TRANSFER" && !p.iban) throw new DomainError("Bei einer Überweisung ist die IBAN des Empfängerkontos anzugeben.");
   if (p.method === "OTHER" && (!p.methodDescription || p.methodDescription.trim().length < 3)) throw new DomainError("Bitte beschreiben, auf welchem Weg ausgezahlt wurde.");
-  if (source.remainingCents <= 0) throw new DomainError(source.sourceType === "INVOICE_REFUND" ? `Zur Rechnung ${source.snapshot.invoiceNumber} ist nichts (mehr) auszuzahlen.` : "Von dieser Kaution ist nichts (mehr) auszuzahlen.");
+  if (source.remainingCents <= 0) throw new DomainError(nothingLeft(source, true));
   if (p.amountCents > source.remainingCents) throw new DomainError(`Die Auszahlung (${fmtCents(p.amountCents)}) übersteigt den noch auszuzahlenden Betrag (${fmtCents(source.remainingCents)}). Bitte den Betrag anpassen.`);
   const number = await nextPayoutNumber(tx, tenantId, now);
   const withNumber = await tx.payout.update({ where: { id: p.id }, data: { number, completedAt: now, completedById: actor.id, completedByName: actor.name, sourceSnapshot: source.snapshot as unknown as Prisma.InputJsonValue } });
@@ -263,6 +298,38 @@ async function completeInTx(tx: Tx, tenantId: string, actor: Actor, payoutId: st
 export type CreateOptions = { complete: boolean; confirmed?: boolean };
 
 /**
+ * Befehl 28: Kern von createPayout in einer laufenden Transaktion (z. B. gemeinsam mit dem Storno-Abschluss). Gleiche Regeln:
+ * Quelle sperren, Rest neu rechnen, nie mehr als verfügbar, gleicher idempotencyKey → dieselbe Auszahlung.
+ */
+export async function createPayoutIn(tx: Tx, tenantId: string, actor: Actor, ref: SourceRef, input: PayoutInput, opts: CreateOptions): Promise<{ payout: PayoutRow; created: boolean }> {
+  const key = checkKey(input.idempotencyKey);
+  if (opts.complete && !opts.confirmed) throw new DomainError("Bitte bestätigen, dass die Auszahlung tatsächlich erfolgt ist.");
+  const source = await lockSource(tx, tenantId, ref);
+  if (key) {
+    // unter der Sperre erneut prüfen: ein paralleler Klick mit demselben Schlüssel war vielleicht schneller
+    const dup = await tx.payout.findUnique({ where: { tenantId_idempotencyKey: { tenantId, idempotencyKey: key } } });
+    if (dup) return { payout: dup, created: false };
+  }
+  const checked = checkInput(input, source, opts.complete);
+  const executedAt = checkExecutedAt(input.executedAt, opts.complete);
+  if (source.remainingCents <= 0) throw new DomainError(nothingLeft(source));
+  if (checked.amountCents > source.remainingCents) throw new DomainError(`Noch auszuzahlen sind ${fmtCents(source.remainingCents)}, eingegeben wurden ${fmtCents(checked.amountCents)}. Mehr als der Rest wird nicht ausgezahlt.`);
+  const now = new Date();
+  const draft = await tx.payout.create({
+    data: {
+      tenantId, sourceType: source.sourceType, invoiceId: source.sourceType === "INVOICE_REFUND" ? source.invoiceId : null, securityDepositId: source.sourceType === "SECURITY_DEPOSIT_REFUND" ? source.securityDepositId : null,
+      bookingId: source.bookingId, customerId: source.customerId, status: "DRAFT", amountCents: checked.amountCents, method: checked.method, methodDescription: checked.methodDescription,
+      executedAt, plannedAt: opts.complete ? null : executedAt, recipientName: checked.recipientName, recipientDeviates: checked.recipientDeviates, recipientReason: checked.recipientReason,
+      iban: checked.iban, ibanMasked: checked.ibanMasked, reference: checked.reference, receiptConfirmed: checked.receiptConfirmed, historicalEntry: checked.historicalEntry, customerNote: checked.customerNote, internalNote: checked.internalNote,
+      idempotencyKey: key, createdById: actor.id, createdByName: actor.name,
+    },
+  });
+  await recordAudit(tx, tenantId, actor, { action: "PAYOUT_DRAFT_CREATED", bookingId: draft.bookingId, invoiceId: draft.invoiceId, depositId: draft.securityDepositId, amountCents: draft.amountCents, details: auditDetails(draft, { remainingBefore: source.remainingCents }) });
+  if (!opts.complete) return { payout: draft, created: true };
+  return { payout: await completeInTx(tx, tenantId, actor, draft.id, now), created: true };
+}
+
+/**
  * Auszahlung anlegen: als Entwurf (kein Geldfluss) oder direkt als tatsächlich erfolgt (COMPLETED, mit Nummer, Snapshot und
  * Prüfsumme). Gleicher idempotencyKey erzeugt nie zwei Auszahlungen.
  */
@@ -273,31 +340,7 @@ export async function createPayout(tenantId: string, actor: Actor, ref: SourceRe
     const existing = await db.payout.findUnique({ where: { tenantId_idempotencyKey: { tenantId, idempotencyKey: key } } });
     if (existing) return { payout: existing, created: false };
   }
-  const run = () => db.$transaction(async (tx) => {
-    const source = await lockSource(tx, tenantId, ref);
-    if (key) {
-      // unter der Sperre erneut prüfen: ein paralleler Klick mit demselben Schlüssel war vielleicht schneller
-      const dup = await tx.payout.findUnique({ where: { tenantId_idempotencyKey: { tenantId, idempotencyKey: key } } });
-      if (dup) return { payout: dup, created: false };
-    }
-    const checked = checkInput(input, source, opts.complete);
-    const executedAt = checkExecutedAt(input.executedAt, opts.complete);
-    if (source.remainingCents <= 0) throw new DomainError(source.sourceType === "INVOICE_REFUND" ? `Zur Rechnung ${source.snapshot.invoiceNumber} ist nichts auszuzahlen.` : "Von dieser Kaution ist nichts auszuzahlen.");
-    if (checked.amountCents > source.remainingCents) throw new DomainError(`Noch auszuzahlen sind ${fmtCents(source.remainingCents)}, eingegeben wurden ${fmtCents(checked.amountCents)}. Mehr als der Rest wird nicht ausgezahlt.`);
-    const now = new Date();
-    const draft = await tx.payout.create({
-      data: {
-        tenantId, sourceType: source.sourceType, invoiceId: source.sourceType === "INVOICE_REFUND" ? source.invoiceId : null, securityDepositId: source.sourceType === "SECURITY_DEPOSIT_REFUND" ? source.securityDepositId : null,
-        bookingId: source.bookingId, customerId: source.customerId, status: "DRAFT", amountCents: checked.amountCents, method: checked.method, methodDescription: checked.methodDescription,
-        executedAt, plannedAt: opts.complete ? null : executedAt, recipientName: checked.recipientName, recipientDeviates: checked.recipientDeviates, recipientReason: checked.recipientReason,
-        iban: checked.iban, ibanMasked: checked.ibanMasked, reference: checked.reference, receiptConfirmed: checked.receiptConfirmed, historicalEntry: checked.historicalEntry, customerNote: checked.customerNote, internalNote: checked.internalNote,
-        idempotencyKey: key, createdById: actor.id, createdByName: actor.name,
-      },
-    });
-    await recordAudit(tx, tenantId, actor, { action: "PAYOUT_DRAFT_CREATED", bookingId: draft.bookingId, invoiceId: draft.invoiceId, depositId: draft.securityDepositId, amountCents: draft.amountCents, details: auditDetails(draft, { remainingBefore: source.remainingCents }) });
-    if (!opts.complete) return { payout: draft, created: true };
-    return { payout: await completeInTx(tx, tenantId, actor, draft.id, now), created: true };
-  }, TX);
+  const run = () => db.$transaction((tx) => createPayoutIn(tx, tenantId, actor, ref, input, opts), TX);
   try {
     return await withNumberRetry(run);
   } catch (e) {
@@ -412,7 +455,7 @@ export async function getPayout(tenantId: string, payoutId: string): Promise<Pay
   return { ...rest, emails: emailLogs, sourceNow };
 }
 
-export type PayoutFilter = { status?: "offen" | "abgeschlossen" | "storniert" | "alle"; source?: "rechnung" | "kaution" | "alle"; method?: string | null; from?: Date | null; to?: Date | null; q?: string | null; customerId?: string | null };
+export type PayoutFilter = { status?: "offen" | "abgeschlossen" | "storniert" | "alle"; source?: "rechnung" | "kaution" | "vorauszahlung" | "alle"; method?: string | null; from?: Date | null; to?: Date | null; q?: string | null; customerId?: string | null };
 
 export async function listPayouts(tenantId: string, f: PayoutFilter = {}) {
   const where: Prisma.PayoutWhereInput = { tenantId };
@@ -421,6 +464,7 @@ export async function listPayouts(tenantId: string, f: PayoutFilter = {}) {
   else if (f.status === "storniert") where.status = "CANCELLED";
   if (f.source === "rechnung") where.sourceType = "INVOICE_REFUND";
   else if (f.source === "kaution") where.sourceType = "SECURITY_DEPOSIT_REFUND";
+  else if (f.source === "vorauszahlung") where.sourceType = "RENTAL_PREPAYMENT_REFUND";
   if (f.method && f.method in PAYOUT_METHODS) where.method = f.method;
   if (f.customerId) where.customerId = f.customerId;
   if (f.from || f.to) where.OR = [{ executedAt: { ...(f.from ? { gte: f.from } : {}), ...(f.to ? { lt: f.to } : {}) } }, { executedAt: null, createdAt: { ...(f.from ? { gte: f.from } : {}), ...(f.to ? { lt: f.to } : {}) } }];
@@ -431,10 +475,10 @@ export async function listPayouts(tenantId: string, f: PayoutFilter = {}) {
   return db.payout.findMany({ where, orderBy: [{ createdAt: "desc" }], include: { booking: { select: { id: true, number: true } }, invoice: { select: { id: true, number: true } }, customer: { select: { id: true, firstName: true, lastName: true, companyName: true, type: true } } }, take: 500 });
 }
 
-export type OpenClaim = { kind: "INVOICE" | "DEPOSIT"; bookingId: string | null; bookingNumber: string | null; invoiceId: string | null; number: string; customerName: string; remainingCents: Cents; draftCents: Cents; href: string };
+export type OpenClaim = { kind: "INVOICE" | "DEPOSIT" | "PREPAYMENT"; bookingId: string | null; bookingNumber: string | null; invoiceId: string | null; number: string; customerName: string; remainingCents: Cents; draftCents: Cents; href: string };
 
 /** Offene Ansprüche: Rechnungen mit noch auszuzahlendem Guthaben und Kautionen mit auszahlbarem Rest – auch ohne Entwurf. */
-export async function openPayoutClaims(tenantId: string): Promise<{ invoices: OpenClaim[]; deposits: OpenClaim[] }> {
+export async function openPayoutClaims(tenantId: string): Promise<{ invoices: OpenClaim[]; deposits: OpenClaim[]; prepayments: OpenClaim[] }> {
   const [invRows, depRows, drafts] = await Promise.all([
     db.invoice.findMany({ where: { tenantId, status: "FINALIZED", documentType: "INVOICE", currentVersionId: { not: null }, payments: { some: { status: "CONFIRMED" } } }, select: { id: true, number: true, kind: true, bookingId: true, booking: { select: { number: true } }, currentVersion: { select: { grossTotal: true, customerSnapshot: true } } } }),
     db.securityDeposit.findMany({ where: { tenantId, events: { some: { type: "RELEASED", status: "CONFIRMED" } } }, select: { id: true, expectedAmountCents: true, bookingId: true, booking: { select: { number: true, contract: { select: { customerSnapshot: true } } } }, events: { select: { type: true, amountCents: true, status: true } } } }),
@@ -448,18 +492,25 @@ export async function openPayoutClaims(tenantId: string): Promise<{ invoices: Op
   const paidOut = depRows.length ? await db.payout.groupBy({ by: ["securityDepositId"], where: { tenantId, securityDepositId: { in: depRows.map((d) => d.id) }, status: "COMPLETED" }, _sum: { amountCents: true } }) : [];
   const paidMap = new Map(paidOut.map((g) => [g.securityDepositId, g._sum.amountCents ?? 0]));
   const deposits: OpenClaim[] = depRows.map((d) => ({ d, f: computeDepositFinancials(depFin.get(d.id)!, paidMap.get(d.id) ?? 0) })).filter(({ f }) => f.payoutRemainingCents > 0).map(({ d, f }) => ({ kind: "DEPOSIT", bookingId: d.bookingId, bookingNumber: d.booking.number, invoiceId: null, number: d.booking.number, customerName: nameOf(d.booking.contract?.customerSnapshot as Parameters<typeof nameOf>[0]), remainingCents: f.payoutRemainingCents, draftCents: draftDep.get(d.id) ?? 0, href: `/buchungen/${d.bookingId}#kaution` }));
-  return { invoices, deposits };
+  // Befehl 28: Mietvorauszahlungen stornierter Buchungen, die als Kundenguthaben stehen (keine Rechnung) – zentral aus prepaymentBalances
+  const cancelled = await db.booking.findMany({ where: { tenantId, status: "CANCELLED", payments: { some: { type: "RENTAL_PAYMENT", invoiceId: null, status: "CONFIRMED" } } }, select: { id: true, number: true, customer: { select: { type: true, companyName: true, firstName: true, lastName: true } } }, take: 500 });
+  const pre = await prepaymentBalances(tenantId, cancelled.map((b) => b.id));
+  const prepayments: OpenClaim[] = cancelled.filter((b) => (pre.get(b.id)?.remainingCents ?? 0) > 0).map((b) => ({ kind: "PREPAYMENT", bookingId: b.id, bookingNumber: b.number, invoiceId: null, number: b.number, customerName: nameOf(b.customer), remainingCents: pre.get(b.id)!.remainingCents, draftCents: pre.get(b.id)!.draftCents, href: `/buchungen/${b.id}#storno` }));
+  return { invoices, deposits, prepayments };
 }
 
 /** Kennzahlen für das Dashboard: offene Rechnungserstattungen und Kautionsauszahlungen (Anzahl und Summe). */
 export async function payoutCounts(tenantId: string) {
-  const { invoices, deposits } = await openPayoutClaims(tenantId);
-  return { invoiceRefunds: invoices.length, invoiceRefundCents: invoices.reduce((a, c) => a + c.remainingCents, 0), depositPayouts: deposits.length, depositPayoutCents: deposits.reduce((a, c) => a + c.remainingCents, 0) };
+  const { invoices, deposits, prepayments } = await openPayoutClaims(tenantId);
+  // Befehl 28: stornierte Mietvorauszahlungen zählen wie Rechnungserstattungen (Kundenguthaben ohne Rechnung)
+  const refunds = [...invoices, ...prepayments];
+  return { invoiceRefunds: refunds.length, invoiceRefundCents: refunds.reduce((a, c) => a + c.remainingCents, 0), depositPayouts: deposits.length, depositPayoutCents: deposits.reduce((a, c) => a + c.remainingCents, 0) };
 }
 
 /** Auszahlungen einer Quelle für die Historie auf Rechnungs- und Kautionsseite. */
-export function listSourcePayouts(tenantId: string, ref: { invoiceId?: string | null; securityDepositId?: string | null }) {
-  return db.payout.findMany({ where: { tenantId, ...(ref.invoiceId ? { invoiceId: ref.invoiceId } : { securityDepositId: ref.securityDepositId ?? "" }) }, orderBy: [{ createdAt: "desc" }] });
+export function listSourcePayouts(tenantId: string, ref: { invoiceId?: string | null; securityDepositId?: string | null; prepaymentOfBookingId?: string | null }) {
+  const where: Prisma.PayoutWhereInput = ref.invoiceId ? { invoiceId: ref.invoiceId } : ref.prepaymentOfBookingId ? { bookingId: ref.prepaymentOfBookingId, sourceType: "RENTAL_PREPAYMENT_REFUND" } : { securityDepositId: ref.securityDepositId ?? "" };
+  return db.payout.findMany({ where: { tenantId, ...where }, orderBy: [{ createdAt: "desc" }] });
 }
 
 export { invoiceFinancials };

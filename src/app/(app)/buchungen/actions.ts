@@ -5,11 +5,17 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
-import { assertVehicleBookable, nextBookingNumber, vehicleStatusProblem } from "@/lib/bookings";
+import { agreedEndOf, occupiedUntil, assertVehicleBookable, nextBookingNumber, vehicleStatusProblem } from "@/lib/bookings";
 import { customerName, fmtDateTime } from "@/lib/format";
 import { customerFieldsFromForm, customerSchema, customerToData } from "@/lib/customer-schema";
 import { nextCustomerNumber, withNumberRetry } from "@/lib/numbering";
 import { changeBookingStatus } from "@/lib/booking-status";
+import { changeBookingPeriod, previewBookingPeriodChange } from "@/lib/booking-period";
+import { cancelBooking, previewCancellation, type CancellationInput } from "@/lib/cancellation";
+import { sendCancellationConfirmation } from "@/lib/cancellation-mail";
+import { ensureCancellationDocument } from "@/lib/documents";
+import { runCancellationFollowUp } from "@/lib/followup";
+import { fmtCents } from "@/lib/money";
 import { DomainError } from "@/lib/integrity";
 import { getStorage } from "@/lib/storage";
 import { parseLocalDateTime } from "@/lib/time";
@@ -137,7 +143,7 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
     const { conflicts } = await assertVehicleBookable(tx, tenant.id, d.vehicleId, d.startAt, d.endAt);
     if (conflicts.length > 0) {
       const c = conflicts[0];
-      return { error: `Doppelbelegung: ${refs.vehicle.plate} ist von ${fmtDateTime(c.startAt)} bis ${fmtDateTime(c.endAt)} an ${customerName(c.customer)} vergeben (Nr. ${c.number}).` };
+      return { error: `Doppelbelegung: ${refs.vehicle.plate} ist von ${fmtDateTime(c.startAt)} bis ${fmtDateTime(occupiedUntil({ ...c, agreedEndAt: agreedEndOf(c) }))} an ${customerName(c.customer)} vergeben (Nr. ${c.number})${agreedEndOf(c) ? " – Verlängerung vereinbart, Unterschrift ausstehend" : ""}.` };
     }
     // Erst nach bestandener Konfliktprüfung den Kunden anlegen, damit bei Ablehnung kein Kunde übrig bleibt.
     const customerId = customerData ? (await tx.customer.create({ data: { tenantId: tenant.id, number: await nextCustomerNumber(tx, tenant.id), ...customerData } })).id : d.customerId!;
@@ -177,20 +183,23 @@ export async function updateBookingAction(id: string, _prev: FormState, formData
   if (!d.customerId) return { error: "Bitte einen Kunden wählen." };
   const contract = await db.rentalContract.findFirst({ where: { bookingId: id, tenantId: tenant.id }, select: { number: true, status: true } });
   if (contract && contract.status === "SIGNED") return { error: `Zu dieser Buchung gibt es den unterschriebenen Vertrag ${contract.number}. Zeitraum, Fahrzeug und Preis sind damit festgeschrieben.` };
+  // Befehl 28: der Zeitraum ändert sich nur über „Zeitraum ändern“ (Pflichtgrund, Preisvorschlag, Audit BOOKING_PERIOD_CHANGED)
+  const minute = (x: Date) => Math.floor(x.getTime() / 60_000);
+  if (minute(d.startAt) !== minute(existing.startAt) || minute(d.endAt) !== minute(existing.endAt)) return { error: "Der Zeitraum wird über „Zeitraum ändern“ geändert (mit Grund und Verfügbarkeitsprüfung). Bitte dort anpassen." };
 
   const refs = await validateRefs(tenant.id, d.vehicleId, d.customerId);
   if ("error" in refs) return refs;
 
   const result = await db.$transaction(async (tx) => {
-    const { conflicts } = await assertVehicleBookable(tx, tenant.id, d.vehicleId, d.startAt, d.endAt, id);
+    const { conflicts } = await assertVehicleBookable(tx, tenant.id, d.vehicleId, existing.startAt, existing.endAt, id);
     if (conflicts.length > 0) {
       const c = conflicts[0];
-      return { error: `Doppelbelegung: ${refs.vehicle.plate} ist von ${fmtDateTime(c.startAt)} bis ${fmtDateTime(c.endAt)} an ${customerName(c.customer)} vergeben (Nr. ${c.number}).` };
+      return { error: `Doppelbelegung: ${refs.vehicle.plate} ist von ${fmtDateTime(c.startAt)} bis ${fmtDateTime(occupiedUntil({ ...c, agreedEndAt: agreedEndOf(c) }))} an ${customerName(c.customer)} vergeben (Nr. ${c.number})${agreedEndOf(c) ? " – Verlängerung vereinbart, Unterschrift ausstehend" : ""}.` };
     }
     await tx.booking.update({
       where: { id },
       data: {
-        vehicleId: d.vehicleId, customerId: d.customerId!, startAt: d.startAt, endAt: d.endAt, dailyRate: d.dailyRate, deposit: d.deposit, notes: d.notes ?? null,
+        vehicleId: d.vehicleId, customerId: d.customerId!, dailyRate: d.dailyRate, deposit: d.deposit, notes: d.notes ?? null,
         // Kilometervereinbarung: immer der eingegebene Wert (auch bei Fahrzeugwechsel – das Formular schlägt die Fahrzeugwerte nur vor)
         kmIncludedPerDay: d.kmIncludedPerDay, extraKmRate: d.extraKmRate,
         // Nur bei Fahrzeugwechsel die Stufen des neuen Fahrzeugs übernehmen, sonst bleibt der Snapshot der Buchung
@@ -224,20 +233,133 @@ export async function setBookingStatusAction(id: string, status: "ACTIVE" | "RET
   redirect(`/buchungen/${id}`);
 }
 
-export type CancelState = { error?: string } | undefined;
+export type CancelState = { error?: string; ok?: string } | undefined;
+export type CancellationPreviewResult = { errors: string[]; lines: { label: string; value: string; bold?: boolean }[] };
 
-/** Befehl 27: Storno nur mit Pflichtgrund, Benutzer und Audit; die Regeln (inkl. „Geld hängt an der Buchung“) im Server. */
+const str = (fd: FormData, k: string) => String(fd.get(k) ?? "").trim();
+const checked = (fd: FormData, k: string) => fd.get(k) === "1" || fd.get(k) === "on";
+
+/** Befehl 28: Formular des Storno-Assistenten → Eingabe für lib/cancellation (keine Fachlogik hier). */
+function cancellationInputOf(fd: FormData): CancellationInput {
+  const payout = (prefix: string) => ({
+    amount: str(fd, `${prefix}Amount`) || null,
+    method: str(fd, `${prefix}Method`),
+    methodDescription: str(fd, `${prefix}MethodDescription`) || null,
+    executedAt: parseLocalDateTime(str(fd, `${prefix}When`)) ?? new Date(),
+    iban: str(fd, `${prefix}Iban`) || null,
+    reference: str(fd, `${prefix}Reference`) || null,
+    customerNote: str(fd, `${prefix}Note`) || null,
+    receiptConfirmed: str(fd, `${prefix}Method`) === "CASH" && checked(fd, `${prefix}Confirmed`),
+    confirmed: checked(fd, `${prefix}Confirmed`),
+  });
+  const refundMode = str(fd, "refundMode");
+  const depositMode = str(fd, "depositMode");
+  return {
+    reason: str(fd, "reason"),
+    idempotencyKey: str(fd, "key") || null,
+    fee: checked(fd, "feeEnabled") ? { amount: str(fd, "feeAmount"), description: str(fd, "feeDescription"), taxTreatment: str(fd, "feeTaxTreatment") } : null,
+    refund: refundMode === "PAYOUT" ? { mode: "PAYOUT", payout: payout("refund") } : refundMode === "CREDIT" ? { mode: "CREDIT" } : null,
+    deposit: depositMode === "RELEASE" ? { mode: "RELEASE", method: checked(fd, "depositPayout") ? str(fd, "depositPayoutMethod") || null : null, payout: checked(fd, "depositPayout") ? payout("depositPayout") : null } : depositMode === "KEEP" ? { mode: "KEEP" } : null,
+  };
+}
+
+/** Befehl 28: Vorschau der Storno-Abrechnung – rechnet serverseitig, bucht nichts. */
+export async function previewCancellationAction(id: string, formData: FormData): Promise<CancellationPreviewResult> {
+  const { tenant } = await requireRole("DISPO");
+  try {
+    const { plan } = await previewCancellation(tenant.id, id, cancellationInputOf(formData));
+    const e = fmtCents;
+    const lines: CancellationPreviewResult["lines"] = [];
+    lines.push({ label: "Geleistete Mietvorauszahlung", value: e(plan.prepaidCents) });
+    if (plan.fee) lines.push({ label: plan.fee.taxRateBp > 0 ? "Stornogebühr (netto + USt = brutto)" : "Stornogebühr (ohne Umsatzsteuer)", value: plan.fee.taxRateBp > 0 ? `${e(plan.fee.netCents)} + ${e(plan.fee.taxCents)} = ${e(plan.fee.grossCents)}` : e(plan.fee.grossCents), bold: true });
+    if (plan.stillOwedCents > 0) lines.push({ label: "Noch zu zahlen (offene Stornogebühr-Rechnung)", value: e(plan.stillOwedCents), bold: true });
+    if (plan.refund.mode === "PAYOUT") lines.push({ label: "Erstattung als Auszahlung", value: e(plan.refund.amountCents), bold: true });
+    if (plan.refund.remainingCreditCents > 0 && plan.refund.mode !== "NONE") lines.push({ label: "Verbleibt als Kundenguthaben", value: e(plan.refund.remainingCreditCents), bold: true });
+    if (plan.deposit.mode === "RELEASE") lines.push({ label: "Kaution freigegeben", value: e(plan.deposit.releaseCents) });
+    if (plan.deposit.payoutCents > 0) lines.push({ label: "davon als zurückgezahlt dokumentiert", value: e(plan.deposit.payoutCents) });
+    if (plan.deposit.mode === "KEEP") lines.push({ label: "Kaution vorerst behalten", value: e(plan.deposit.keptCents) });
+    if (!plan.fee && plan.prepaidCents === 0 && plan.deposit.mode === "NONE") lines.push({ label: "Finanzielle Folgen", value: "keine" });
+    return { errors: plan.errors, lines };
+  } catch (err) {
+    if (err instanceof DomainError) return { errors: [err.message], lines: [] };
+    throw err;
+  }
+}
+
+/** Befehl 28: Storno-Abschluss (eine Transaktion), danach Dokumente archivieren (wirft nie), Entwurfsfotos aufräumen. */
 export async function cancelBookingAction(id: string, _prev: CancelState, formData: FormData): Promise<CancelState> {
   const { tenant, user } = await requireRole("DISPO");
-  const reason = String(formData.get("reason") ?? "");
-  let orphaned: string[] = [];
+  const actor = { id: user.id, name: user.name };
+  let result;
   try {
-    orphaned = (await changeBookingStatus(tenant.id, id, "CANCELLED", { actor: { id: user.id, name: user.name }, reason })).orphanedStorageKeys;
+    result = await cancelBooking(tenant.id, actor, id, cancellationInputOf(formData));
   } catch (e) {
     if (e instanceof DomainError) return { error: e.message };
     throw e;
   }
-  await Promise.all(orphaned.map((k) => Promise.resolve().then(() => getStorage().remove(k)).catch(() => {})));
+  await runCancellationFollowUp(tenant.id, result, user.id);
+  await Promise.all(result.orphanedStorageKeys.map((k) => Promise.resolve().then(() => getStorage().remove(k)).catch(() => {})));
   revalidate(id);
-  redirect(`/buchungen/${id}?storniert=1`);
+  revalidatePath("/auszahlungen");
+  revalidatePath("/dispo");
+  redirect(`/buchungen/${id}?storniert=1#storno`);
+}
+
+/** Befehl 28: Stornobestätigung (erneut) archivieren, falls die Nachbearbeitung ausgefallen ist. */
+export async function ensureCancellationDocumentAction(id: string) {
+  const { tenant, user } = await requireRole("DISPO");
+  try {
+    await ensureCancellationDocument(tenant.id, id, user.id);
+  } catch (e) {
+    if (e instanceof DomainError) redirect(`/buchungen/${id}?hinweis=${encodeURIComponent(e.message)}#storno`);
+    throw e;
+  }
+  revalidate(id);
+  redirect(`/buchungen/${id}#storno`);
+}
+
+/** Befehl 28: Stornobestätigung per E-Mail – nur nach bewusstem Klick, derselbe nonce sendet nie zweimal. */
+export async function sendCancellationAction(id: string, _prev: CancelState, formData: FormData): Promise<CancelState> {
+  const { tenant, user } = await requireRole("DISPO");
+  try {
+    const r = await sendCancellationConfirmation(tenant.id, { id: user.id, name: user.name }, id, { nonce: String(formData.get("nonce") ?? "") });
+    revalidate(id);
+    if (r.status === "FAILED") return { error: `Versand fehlgeschlagen: ${r.log.error ?? "unbekannter Fehler"}. Bitte später erneut versuchen.` };
+    return { ok: r.status === "DUPLICATE" ? "Diese Stornobestätigung wurde bereits versendet." : "Die Stornobestätigung wurde versendet." };
+  } catch (e) {
+    if (e instanceof DomainError) return { error: e.message };
+    throw e;
+  }
+}
+
+export type PeriodPreviewResult = { error: string | null; before: { range: string; days: number; price: string }; after: { range: string; days: number; price: string; diff: string } | null; paid: string; overpaid: boolean };
+
+/** Befehl 28: Zeitraum vor der Vertragsunterschrift – Vorschau (alt/neu, Preis, Verfügbarkeit). */
+export async function previewPeriodChangeAction(id: string, formData: FormData): Promise<PeriodPreviewResult> {
+  const { tenant } = await requireRole("DISPO");
+  const p = await previewBookingPeriodChange(tenant.id, id, parseLocalDateTime(str(formData, "startAt")), parseLocalDateTime(str(formData, "endAt")));
+  const range = (a: Date, b: Date) => `${fmtDateTime(a)} – ${fmtDateTime(b)}`;
+  return {
+    error: p.error,
+    before: { range: range(p.before.startAt, p.before.endAt), days: p.before.days, price: fmtCents(p.before.priceCents) },
+    after: p.after ? { range: range(p.after.startAt, p.after.endAt), days: p.after.days, price: fmtCents(p.after.priceCents), diff: `${p.after.priceCents - p.before.priceCents >= 0 ? "+" : "−"}${fmtCents(Math.abs(p.after.priceCents - p.before.priceCents))}` } : null,
+    paid: fmtCents(p.paidCents),
+    overpaid: !!p.after && p.paidCents > p.after.priceCents,
+  };
+}
+
+export async function changePeriodAction(id: string, _prev: CancelState, formData: FormData): Promise<CancelState> {
+  const { tenant, user } = await requireRole("DISPO");
+  const startAt = parseLocalDateTime(str(formData, "startAt"));
+  const endAt = parseLocalDateTime(str(formData, "endAt"));
+  if (!startAt || !endAt) return { error: "Bitte Abholung und Rückgabe mit Datum und Uhrzeit angeben." };
+  try {
+    await changeBookingPeriod(tenant.id, { id: user.id, name: user.name }, id, { startAt, endAt, reason: str(formData, "reason") });
+  } catch (e) {
+    if (e instanceof DomainError) return { error: e.message };
+    throw e;
+  }
+  revalidate(id);
+  revalidatePath("/dispo");
+  redirect(`/buchungen/${id}?zeitraum=1`);
 }

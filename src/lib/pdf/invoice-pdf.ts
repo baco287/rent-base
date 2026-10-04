@@ -109,7 +109,7 @@ export async function renderInvoicePdf(data: InvoiceDocumentData, logo: Uint8Arr
     sy += (opts.size ?? 9) + 5;
   };
   if (data.nonTaxable) {
-    row(counter ? "Nicht steuerbarer Betrag (Schadensersatz)" : "Nicht steuerbarer Schadensersatz", data.totals.gross);
+    row(data.taxTreatment === "NON_TAXABLE_FEE" ? "Nicht steuerbarer Betrag (ohne Umsatzsteuer)" : counter ? "Nicht steuerbarer Betrag (Schadensersatz)" : (data.nonTaxableLabel ?? "Nicht steuerbarer Schadensersatz"), data.totals.gross);
     pdf.doc.moveTo(sx, sy - 1).lineTo(sx + sw, sy - 1).lineWidth(0.8).strokeColor(COLORS.ink).stroke();
     sy += 3;
     row(counter ? amountLabel : "Gesamtforderung", data.totals.gross, { bold: true, size: 11 });

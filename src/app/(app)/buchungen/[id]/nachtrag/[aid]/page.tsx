@@ -6,7 +6,7 @@ import { notFound, redirect } from "next/navigation";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { Card, Chip, Content, PageHeader } from "@/components/ui";
-import { AMENDMENT_HELP, AMENDMENT_STATUS, DRIVER_ROLES, KM_POLICIES, DRIVER_VERIFICATION_STATUS, type AmendmentStatus, type DriverRole, type DriverVerificationStatus } from "@/lib/constants";
+import { AMENDMENT_AGREED_CHANNELS, AMENDMENT_HELP, AMENDMENT_STATUS, DRIVER_ROLES, KM_POLICIES, DRIVER_VERIFICATION_STATUS, type AmendmentStatus, type DriverRole, type DriverVerificationStatus } from "@/lib/constants";
 import { getAmendmentState, type AmendmentSnapshot } from "@/lib/amendments";
 import { DRIVER_BLOCKER_LABELS, driverVerificationOverview } from "@/lib/driver-verification";
 import { fmtDate, fmtDateTime, toDateTimeInput } from "@/lib/format";
@@ -15,12 +15,12 @@ import { toDateInputValue } from "@/lib/time";
 import { DriverFields, emptyDriver } from "../../vertrag/contract-parts";
 import { FinalizeForm, InlineForm, SignatureForm } from "../../vertrag/wizard-ui";
 import { DriverCheckForm, RepeatVerificationForm } from "../../uebergabe/driver-forms";
-import { addAmendmentDriverAction, createAmendmentDocumentAction, discardAmendmentAction, dropAmendmentDriverAction, removeAmendmentSignatureAction, repeatAmendmentDriverAction, saveAmendmentChangesAction, saveAmendmentSignatureAction, sendAmendmentAction, setDriverRemovalAction, signAmendmentAction, verifyAmendmentDriverAction } from "../actions";
+import { addAmendmentDriverAction, agreeAmendmentAction, createAmendmentDocumentAction, discardAmendmentAction, withdrawAgreedAmendmentAction, dropAmendmentDriverAction, removeAmendmentSignatureAction, repeatAmendmentDriverAction, saveAmendmentChangesAction, saveAmendmentSignatureAction, sendAmendmentAction, setDriverRemovalAction, signAmendmentAction, verifyAmendmentDriverAction } from "../actions";
 import { ChangesForm, ConfirmForm, MessageForm } from "../amendment-forms";
 
 export const metadata = { title: "Nachtrag zum Mietvertrag" };
 
-const tone: Record<AmendmentStatus, "amber" | "good" | "grey"> = { DRAFT: "amber", SIGNED: "good", DISCARDED: "grey" };
+const tone: Record<AmendmentStatus, "amber" | "good" | "grey"> = { DRAFT: "amber", AGREED: "amber", SIGNED: "good", DISCARDED: "grey" };
 const statusTone: Record<DriverVerificationStatus, "good" | "amber" | "bad" | "info" | "grey"> = { NOT_STARTED: "grey", IN_PROGRESS: "amber", CONFIRMED: "good", BLOCKED: "bad" };
 const dec = (v: { toString(): string } | null | undefined) => (v === null || v === undefined ? "" : Number(v).toLocaleString("de-DE", { minimumFractionDigits: 2 }));
 
@@ -31,7 +31,7 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
   const row = await db.contractAmendment.findFirst({ where: { id: aid, tenantId: tenant.id, bookingId: id }, select: { id: true, status: true } });
   if (!row) notFound();
   const canEdit = user.role !== "YARD" && !supportSession;
-  if (!canEdit && row.status === "DRAFT") redirect(`/buchungen/${id}?hinweis=${encodeURIComponent("Nachträge erstellen und bearbeiten nur Inhaber und Disponenten.")}#vertrag`);
+  if (!canEdit && (row.status === "DRAFT" || row.status === "AGREED")) redirect(`/buchungen/${id}?hinweis=${encodeURIComponent("Nachträge erstellen und bearbeiten nur Inhaber und Disponenten.")}#vertrag`);
 
   const { amendment: a, effective: eff, changes, issues, hash, addedDrivers, removedDrivers } = await getAmendmentState(tenant.id, aid);
   const b = a.booking;
@@ -130,22 +130,36 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
   const canFinalize = readyToSign && !!renterSig;
   const renterName = `${(a.contract.customerSnapshot as { firstName?: string; lastName?: string }).firstName ?? ""} ${(a.contract.customerSnapshot as { firstName?: string; lastName?: string }).lastName ?? ""}`.trim();
   const fullCheckFor = typeof sp.pruefung === "string" ? sp.pruefung : null;
+  // Befehl 28: vorab vereinbart (Unterschrift ausstehend) – Inhalt fest, Fahrzeug reserviert, vertraglich erst mit Unterschrift
+  const agreed = a.status === "AGREED";
+  const periodChange = !!a.newEndAt || !!a.newStartAt;
+  const agreeErrors = errors.filter((i) => i.code !== "SIGNATURE" && i.code !== "SIGNATURE_STALE");
+  const canAgree = canEdit && a.status === "DRAFT" && periodChange && addedDrivers.length === 0 && removedDrivers.length === 0 && agreeErrors.length === 0;
 
   return (
     <>
-      <PageHeader title="Nachtrag zum Mietvertrag" sub={<>Mietvertrag {a.contract.number} · Buchung {b.number} · <Chip tone={tone.DRAFT}>{AMENDMENT_STATUS.DRAFT}</Chip></>}>{back}</PageHeader>
+      <PageHeader title="Nachtrag zum Mietvertrag" sub={<>Mietvertrag {a.contract.number} · Buchung {b.number} · <Chip tone={tone[a.status as AmendmentStatus] ?? "amber"}>{AMENDMENT_STATUS[a.status as AmendmentStatus] ?? a.status}</Chip></>}>{back}</PageHeader>
       <Content>
         {hint}
-        <p className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm">{AMENDMENT_HELP.NO_EFFECT_DRAFT} {AMENDMENT_HELP.ORIGINAL_UNCHANGED}</p>
+        {agreed ? (
+          <section aria-label="Vereinbart – Unterschrift ausstehend" className="rounded-xl border-2 border-amber bg-amber-soft/60 p-4 flex flex-col gap-1.5">
+            <div className="font-semibold text-amber">Vereinbart – Unterschrift ausstehend</div>
+            <p className="text-sm">{a.agreedChannel ? AMENDMENT_AGREED_CHANNELS[a.agreedChannel as keyof typeof AMENDMENT_AGREED_CHANNELS] ?? "Vorab" : "Vorab"} vereinbart am {a.agreedAt ? fmtDateTime(a.agreedAt) : "–"}{a.agreedByName ? ` von ${a.agreedByName}` : ""}{a.agreedNote ? ` · ${a.agreedNote}` : ""}.</p>
+            <p className="text-sm">{a.newEndAt ? <>Das Fahrzeug ist bis <b className="font-mono tnum">{fmtDateTime(a.newEndAt)}</b> für diese Miete reserviert. </> : null}Vertraglich wirksam – mit Preis, Rechnung und Kaution – wird die Änderung erst mit der Unterschrift. Bis dahin gilt der bisherige Vertragsstand.</p>
+            {sp.vereinbart === "1" && <p role="status" className="text-sm text-good font-medium">Gespeichert: der neue Zeitraum ist ab sofort in Verfügbarkeit und Disposition reserviert.</p>}
+          </section>
+        ) : (
+          <p className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm">{AMENDMENT_HELP.NO_EFFECT_DRAFT} {AMENDMENT_HELP.ORIGINAL_UNCHANGED}</p>
+        )}
         <div className="grid grid-cols-1 xl:grid-cols-[1fr_400px] gap-4 items-start">
           <div className="flex flex-col gap-4 min-w-0">
             <Card title="1. Was wird geändert?">
               <div className="p-4">
                 <ChangesForm
                   action={saveAmendmentChangesAction.bind(null, id, a.id)}
-                  locked={!canEdit}
-                  values={{ newEndAt: toDateTimeInput(a.newEndAt), priceDeltaCents: a.priceDeltaCents, priceProposalCents: a.priceProposalCents, priceReason: a.priceReason ?? "", newKmIncludedPerDay: a.newKmIncludedPerDay, newExtraKmRate: a.newExtraKmRate != null ? dec(a.newExtraKmRate) : "", newKmPolicy: a.newKmPolicy, newDepositCents: a.newDepositCents, newReturnLocation: a.newReturnLocation, agreementText: a.agreementText }}
-                  current={{ endAt: fmtDateTime(eff.endAt), totalEur: dec(eff.totalCents / 100), kmIncludedPerDay: eff.kmIncludedPerDay, extraKmRateEur: dec(eff.extraKmRate), kmPolicy: eff.kmPolicy, kmPolicyLabel: KM_POLICIES[eff.kmPolicy], depositEur: dec(eff.depositCents / 100), returnLocation: eff.returnLocation ?? eff.pickupLocation ?? "wie Abholort" }}
+                  locked={!canEdit || agreed}
+                  values={{ newStartAt: toDateTimeInput(a.newStartAt), newEndAt: toDateTimeInput(a.newEndAt), priceDeltaCents: a.priceDeltaCents, priceProposalCents: a.priceProposalCents, priceReason: a.priceReason ?? "", newKmIncludedPerDay: a.newKmIncludedPerDay, newExtraKmRate: a.newExtraKmRate != null ? dec(a.newExtraKmRate) : "", newKmPolicy: a.newKmPolicy, newDepositCents: a.newDepositCents, newReturnLocation: a.newReturnLocation, agreementText: a.agreementText }}
+                  current={{ startAt: fmtDateTime(eff.startAt), canChangeStart: b.status === "RESERVED", endAt: fmtDateTime(eff.endAt), totalEur: dec(eff.totalCents / 100), kmIncludedPerDay: eff.kmIncludedPerDay, extraKmRateEur: dec(eff.extraKmRate), kmPolicy: eff.kmPolicy, kmPolicyLabel: KM_POLICIES[eff.kmPolicy], depositEur: dec(eff.depositCents / 100), returnLocation: eff.returnLocation ?? eff.pickupLocation ?? "wie Abholort" }}
                 />
               </div>
             </Card>
@@ -218,7 +232,7 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
                     </div>
                   )}
 
-                  {canEdit && (
+                  {canEdit && !agreed && (
                     <details className="rounded-md border border-line-soft">
                       <summary className="cursor-pointer px-3 py-2.5 font-medium">+ Zusatzfahrer aufnehmen</summary>
                       <div className="p-3 pt-1">
@@ -275,7 +289,37 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
                 </div>
               </Card>
             </div>
-            {canEdit && (
+            {canEdit && a.status === "DRAFT" && periodChange && (
+              <Card title="Telefonisch / extern vereinbart?">
+                <div className="p-4 flex flex-col gap-2 text-sm">
+                  <p className="text-ink-3">Wenn der Kunde die Änderung des Mietzeitraums bereits zugesagt hat (z. B. am Telefon), aber noch nicht unterschreiben kann: als <b>vereinbart</b> speichern. Das Fahrzeug wird sofort reserviert; Preis und Rechnung ändern sich erst mit der Unterschrift.</p>
+                  {canAgree ? (
+                    <MessageForm action={agreeAmendmentAction.bind(null, id, a.id)} submitLabel="Als vereinbart speichern – Fahrzeug reservieren" pendingLabel="Wird gespeichert…" className="btn btn-primary">
+                      <label className="flex flex-col gap-1"><span className="label-xs">Vereinbart</span>
+                        <select name="channel" required defaultValue="" className="input">
+                          <option value="" disabled>bitte wählen</option>
+                          {Object.entries(AMENDMENT_AGREED_CHANNELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-1"><span className="label-xs">Notiz (optional)</span><input name="note" maxLength={500} className="input" placeholder="z. B. Anruf 15:05, Kunde bestätigt Verlängerung bis morgen 18:00" /></label>
+                    </MessageForm>
+                  ) : (
+                    <p className="text-amber">{addedDrivers.length || removedDrivers.length ? "Fahreränderungen werden nicht vorab vereinbart." : agreeErrors.length ? `Erst möglich, wenn die Prüfung bestanden ist: ${agreeErrors[0].message}` : "Bitte zuerst die Änderung speichern."}</p>
+                  )}
+                </div>
+              </Card>
+            )}
+            {canEdit && agreed && (
+              <Card title="Vereinbarte Änderung zurücknehmen">
+                <div className="p-4 flex flex-col gap-2 text-sm">
+                  <p className="text-ink-3">Der Kunde möchte doch nicht? Die Reservierung entfällt, der Mietvertrag gilt unverändert, es entsteht kein Betrag. Die Zurücknahme wird mit Grund protokolliert.</p>
+                  <MessageForm action={withdrawAgreedAmendmentAction.bind(null, id, a.id)} submitLabel="Vereinbarung zurücknehmen" pendingLabel="Wird zurückgenommen…" confirm="Die vereinbarte Änderung zurücknehmen? Die Reservierung wird aufgehoben.">
+                    <label className="flex flex-col gap-1"><span className="label-xs">Grund (Pflicht)</span><textarea name="reason" required minLength={3} maxLength={500} rows={2} className="input" placeholder="z. B. Kunde hat abgesagt, bringt das Fahrzeug doch planmäßig zurück" /></label>
+                  </MessageForm>
+                </div>
+              </Card>
+            )}
+            {canEdit && a.status === "DRAFT" && (
               <Card title="Entwurf verwerfen">
                 <div className="p-4 flex flex-col gap-2 text-sm">
                   <p className="text-ink-3">Ein verworfener Entwurf hat keine Wirkung und verbraucht keine Nummer.</p>

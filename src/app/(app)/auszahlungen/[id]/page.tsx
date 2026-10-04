@@ -31,8 +31,8 @@ export default async function PayoutPage({ params }: PageProps<"/auszahlungen/[i
   const receipt = p.documents.filter((d) => d.type === "PAYOUT_RECEIPT").sort((a, b) => b.version - a.version)[0] ?? null;
   const attachments = p.documents.filter((d) => d.type === "PAYOUT_ATTACHMENT");
   const check = p.contentHash ? await verifyPayout(tenant.id, p.id) : null;
-  const sourceRef = p.sourceType === "INVOICE_REFUND" ? { sourceType: "INVOICE_REFUND" as const, invoiceId: p.invoiceId! } : { sourceType: "SECURITY_DEPOSIT_REFUND" as const, bookingId: p.bookingId };
-  const sourceHref = p.sourceType === "INVOICE_REFUND" ? invoiceHref({ id: p.invoiceId!, bookingId: p.bookingId }) : `/buchungen/${p.bookingId}#kaution`;
+  const sourceRef = p.sourceType === "INVOICE_REFUND" ? { sourceType: "INVOICE_REFUND" as const, invoiceId: p.invoiceId! } : p.sourceType === "RENTAL_PREPAYMENT_REFUND" ? { sourceType: "RENTAL_PREPAYMENT_REFUND" as const, bookingId: p.bookingId! } : { sourceType: "SECURITY_DEPOSIT_REFUND" as const, bookingId: p.bookingId! };
+  const sourceHref = p.sourceType === "INVOICE_REFUND" ? invoiceHref({ id: p.invoiceId!, bookingId: p.bookingId }) : p.sourceType === "RENTAL_PREPAYMENT_REFUND" ? `/buchungen/${p.bookingId}#storno` : `/buchungen/${p.bookingId}#kaution`;
   const snapshot = doc.snapshot;
   const remainingNow = p.sourceNow?.remainingCents ?? 0;
 
@@ -69,9 +69,14 @@ export default async function PayoutPage({ params }: PageProps<"/auszahlungen/[i
               {p.contentHash && <><dt className="label-xs self-center">Prüfsumme</dt><dd className="font-mono text-[11px] break-all">{p.contentHash}{check && <span className={`ml-2 ${check.intact ? "text-good" : "text-bad"}`}>{check.intact ? "(intakt)" : "(abweichend)"}</span>}</dd></>}
             </dl>
           </Card>
-          <Card title={p.sourceType === "INVOICE_REFUND" ? "Stand der Rechnung" : "Stand der Kaution"}>
+          <Card title={p.sourceType === "INVOICE_REFUND" ? "Stand der Rechnung" : p.sourceType === "RENTAL_PREPAYMENT_REFUND" ? "Stand der Mietvorauszahlung" : "Stand der Kaution"}>
             <div className="p-4 text-sm flex flex-col gap-1.5">
-              {p.sourceType === "INVOICE_REFUND" ? (
+              {p.sourceType === "RENTAL_PREPAYMENT_REFUND" ? (
+                <>
+                  <div className="flex justify-between"><span className="text-ink-3">Mietvorauszahlung (stornierte Buchung)</span><span className="font-mono tnum">{snapshot.paidCents != null ? fmtCents(snapshot.paidCents) : "–"}</span></div>
+                  <div className="flex justify-between"><span className="text-ink-3">Vor dieser Auszahlung bereits erstattet</span><span className="font-mono tnum">{snapshot.paidOutBeforeCents != null ? fmtCents(snapshot.paidOutBeforeCents) : "–"}</span></div>
+                </>
+              ) : p.sourceType === "INVOICE_REFUND" ? (
                 <>
                   <div className="flex justify-between"><span className="text-ink-3">Rechnungsbetrag (beim Abschluss)</span><span className="font-mono tnum">{snapshot.invoiceCents != null ? fmtCents(snapshot.invoiceCents) : "–"}</span></div>
                   <div className="flex justify-between"><span className="text-ink-3">Wirksame Forderung</span><span className="font-mono tnum">{snapshot.effectiveCents != null ? fmtCents(snapshot.effectiveCents) : "–"}</span></div>

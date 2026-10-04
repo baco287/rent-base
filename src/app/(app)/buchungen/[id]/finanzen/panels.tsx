@@ -116,11 +116,19 @@ const totalLabel = (s: RentalPaymentSummary, contractNumber: string | null) =>
 export async function RentalPaymentsPanel({ tenantId, bookingId, role }: { tenantId: string; bookingId: string; role: string }) {
   const s = await rentalPaymentSummary(tenantId, bookingId);
   if (s.source === "INVOICE") return <PaymentsPanel tenantId={tenantId} bookingId={bookingId} role={role} compact title="Mietzahlung" />;
-  const [payments, contract] = await Promise.all([listRentalPayments(tenantId, bookingId), db.rentalContract.findFirst({ where: { tenantId, bookingId }, select: { number: true } })]);
+  const cancelled = s.bookingStatus === "CANCELLED";
+  const [payments, contract, cancelRow] = await Promise.all([
+    listRentalPayments(tenantId, bookingId),
+    db.rentalContract.findFirst({ where: { tenantId, bookingId }, select: { number: true } }),
+    cancelled ? db.booking.findFirst({ where: { id: bookingId, tenantId }, select: { cancellationKey: true } }) : null,
+  ]);
+  // Befehl 28: ein Storno über den Assistenten hat zur Vorauszahlung entschieden (Gebühr, Erstattung oder Guthaben); nur ältere Stornos brauchen den Klärungshinweis
+  const legacyCancel = cancelled && !cancelRow?.cancellationKey;
   const canManage = role !== "YARD";
   return (
-    <Card title="Mietzahlung" right={<RentalPaymentStatusChip status={s.status} />}>
+    <Card title="Mietzahlung" right={cancelled ? <Chip tone="grey">Storniert</Chip> : <RentalPaymentStatusChip status={s.status} />}>
       <div id="mietzahlung" className="p-4 flex flex-col gap-4">
+        {!cancelled && (<>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm">
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">{totalLabel(s, contract?.number ?? null)}</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(s.grossCents)}</div></div>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Bereits bezahlt</div><div className="font-mono tnum text-lg font-semibold text-good">{fmtCents(s.paidCents)}</div></div>
@@ -131,10 +139,13 @@ export async function RentalPaymentsPanel({ tenantId, bookingId, role }: { tenan
           )}
         </div>
         {s.status === "OVERPAID" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3 py-2 text-sm">Die erfassten Mietzahlungen ({fmtCents(s.paidCents)}) übersteigen den aktuellen Gesamtpreis ({fmtCents(s.grossCents)}), z. B. nach einer Änderung von Zeitraum oder Preis. Eine falsch erfasste Zahlung wird storniert; eine tatsächliche Rückzahlung wird nach Abschluss der Mietrechnung als Erstattung dokumentiert.</p>}
-        {s.bookingStatus === "CANCELLED" && s.paidCents > 0 && <p role="alert" className="rounded-md bg-amber-soft text-amber px-3 py-2 text-sm">Die Buchung ist storniert, es sind aber Mietzahlungen über {fmtCents(s.paidCents)} dokumentiert. Bitte klären, ob der Betrag zurückgezahlt wurde; eine falsch erfasste Zahlung wird storniert.</p>}
-        <p className="text-xs text-ink-3">{s.source === "ESTIMATE" ? "Der Gesamtpreis wird aus Zeitraum und Preisen der Buchung berechnet und steht erst mit dem Mietvertrag fest. " : ""}Mehrkilometer, Tank und weitere Zusatzkosten kommen mit der Rechnung dazu. Die Kaution wird getrennt unter „Kaution“ erfasst und verringert den offenen Mietbetrag nicht.</p>
+        </>)}
+        {legacyCancel && s.paidCents > 0 && <p role="alert" className="rounded-md bg-amber-soft text-amber px-3 py-2 text-sm">Die Buchung ist storniert, es sind aber Mietzahlungen über {fmtCents(s.paidCents)} dokumentiert. Bitte klären, ob der Betrag zurückgezahlt wurde; eine falsch erfasste Zahlung wird storniert.</p>}
+        {cancelled ? <p className="text-sm text-ink-2">Die Buchung ist storniert. Es besteht keine Mietforderung mehr; neue Mietzahlungen werden nicht erfasst. Die dokumentierten Zahlungen bleiben unten unverändert sichtbar – ihre Zuordnung (Stornogebühr, Erstattung, Guthaben) zeigt die <Link href="#storno" className="underline">Storno-Abrechnung</Link>.</p> : (
+          <p className="text-xs text-ink-3">{s.source === "ESTIMATE" ? "Der Gesamtpreis wird aus Zeitraum und Preisen der Buchung berechnet und steht erst mit dem Mietvertrag fest. " : ""}Mehrkilometer, Tank und weitere Zusatzkosten kommen mit der Rechnung dazu. Die Kaution wird getrennt unter „Kaution“ erfasst und verringert den offenen Mietbetrag nicht.</p>
+        )}
         {canManage && s.canRecord && <PaymentForm action={recordRentalPaymentAction.bind(null, bookingId)} preview={previewRentalPaymentAction} targetId={bookingId} targetField={null} totalLabel={totalLabel(s, contract?.number ?? null)} nonce={randomUUID()} defaultWhen={toDateTimeInputValue(new Date())} />}
-        {canManage && !s.canRecord && s.status === "PAID" && s.grossCents > 0 && <p className="text-sm text-good">Der Mietpreis ist vollständig bezahlt.</p>}
+        {canManage && !cancelled && !s.canRecord && s.status === "PAID" && s.grossCents > 0 && <p className="text-sm text-good">Der Mietpreis ist vollständig bezahlt.</p>}
         {!canManage && <p className="text-xs text-ink-3">Mietzahlungen erfasst und korrigiert die Disposition.</p>}
         <div>
           <div className="label-xs mb-1">Zahlungen</div>
@@ -190,7 +201,7 @@ export async function DepositPanel({ tenantId, bookingId, role, charges }: { ten
     <Card title="Kaution" right={<Chip tone={depositTone(v.status)}>{depositStatusLabel(v.status, v)}</Chip>}>
       <div className="p-4 flex flex-col gap-4">
         <div className={`grid grid-cols-2 ${v.offsetGrossCents > 0 ? "sm:grid-cols-5" : "sm:grid-cols-4"} gap-2 text-sm`}>
-          <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Vereinbart</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(v.expectedCents)}</div><div className="text-[11px] text-ink-3">laut {v.contractSigned && v.contractNumber ? v.contractNumber : "Buchung (Vertrag folgt)"}</div></div>
+          <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Vereinbart</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(v.expectedCents)}</div><div className="text-[11px] text-ink-3">laut {v.contractSigned && v.contractNumber ? v.contractNumber : v.bookingStatus === "CANCELLED" ? "stornierter Buchung" : "Buchung (Vertrag folgt)"}</div></div>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Erhalten</div><div className="font-mono tnum text-lg font-semibold">{fmtCents(v.receivedCents)}</div></div>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Freigegeben</div><div className="font-mono tnum text-lg font-semibold text-good">{fmtCents(v.releasedCents)}</div></div>
           <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Einbehalten</div><div className="font-mono tnum text-lg font-semibold text-bad">{fmtCents(v.retainedCents)}</div></div>

@@ -8,19 +8,32 @@ type Tx = Prisma.TransactionClient;
 /**
  * Befehl 27: Eine laufende Miete (ACTIVE) belegt das Fahrzeug bis zur tatsächlichen Rückgabe. Ist das geplante Ende
  * überschritten (Rückgabe überfällig), gilt sie bis „jetzt“ als belegt. Eine Definition für Konfliktprüfung und Dispo.
+ * Befehl 28: Eine vereinbarte, noch nicht unterschriebene Verlängerung (Nachtrag AGREED) reserviert das Fahrzeug sofort bis
+ * zum vereinbarten Ende – operativ, nicht vertraglich (der wirksame Vertragsstand liest nur unterschriebene Nachträge).
  */
-export function isOverdue(b: { status: string; endAt: Date }, now = new Date()): boolean {
-  return b.status === "ACTIVE" && b.endAt < now;
-}
-export function occupiedUntil(b: { status: string; endAt: Date }, now = new Date()): Date {
-  return isOverdue(b, now) ? now : b.endAt;
-}
+export type OccupancyLike = { status: string; endAt: Date; agreedEndAt?: Date | null };
 
-/** Filter: Buchungen, die das Fahrzeug im halboffenen Zeitraum [startAt, endAt) belegen – inkl. überfälliger laufender Mieten. */
+/** Operatives Ende ohne Überfälligkeit: geplantes Ende bzw. vereinbartes (noch nicht unterschriebenes) Ende, je nachdem was später ist. */
+export function operationalEnd(b: OccupancyLike): Date {
+  return b.agreedEndAt && b.agreedEndAt > b.endAt ? b.agreedEndAt : b.endAt;
+}
+export function isOverdue(b: OccupancyLike, now = new Date()): boolean {
+  return b.status === "ACTIVE" && operationalEnd(b) < now;
+}
+export function occupiedUntil(b: OccupancyLike, now = new Date()): Date {
+  return isOverdue(b, now) ? now : operationalEnd(b);
+}
+/** Für Abfragen, die das operative Ende brauchen: vereinbarte Verlängerung der Buchung (höchstens eine je Vertrag). */
+export const AGREED_EXTENSION_SELECT = { where: { status: "AGREED" }, select: { id: true, newEndAt: true, newStartAt: true, agreedAt: true, agreedChannel: true } } as const;
+export const agreedEndOf = (b: { contractAmendments?: { newEndAt: Date | null }[] }) => b.contractAmendments?.find((a) => a.newEndAt)?.newEndAt ?? null;
+
+/** Filter: Buchungen, die das Fahrzeug im halboffenen Zeitraum [startAt, endAt) belegen – inkl. überfälliger laufender Mieten und vereinbarter Verlängerungen. */
 export function occupyingWhere(startAt: Date, endAt: Date, now = new Date()): Prisma.BookingWhereInput {
   const ends: Prisma.BookingWhereInput[] = [{ endAt: { gt: startAt } }];
   // überfällig: belegt bis jetzt, also überschneidend, sobald der Zeitraum vor „jetzt“ beginnt
   if (now > startAt) ends.push({ status: "ACTIVE" });
+  // Befehl 28: vereinbart, Unterschrift ausstehend – belegt bis zum vereinbarten Ende
+  ends.push({ contractAmendments: { some: { status: "AGREED", newEndAt: { gt: startAt } } } });
   return { status: { in: BLOCKING_BOOKING_STATUS }, startAt: { lt: endAt }, OR: ends };
 }
 
@@ -46,7 +59,7 @@ export async function findConflicts(
       ...occupyingWhere(startAt, endAt, now),
       ...(excludeBookingId ? { id: { not: excludeBookingId } } : {}),
     },
-    include: { customer: true },
+    include: { customer: true, contractAmendments: AGREED_EXTENSION_SELECT },
     orderBy: { startAt: "asc" },
   });
 }

@@ -18,6 +18,7 @@ import {
 } from "../src/lib/amendments";
 import { driverCandidatesOf } from "../src/lib/authority";
 import { cancellationCheck, changeBookingStatus, CANCELLATION_REASON_MAX } from "../src/lib/booking-status";
+import { cancelBooking } from "../src/lib/cancellation";
 import { findConflicts, isOverdue, occupiedUntil } from "../src/lib/bookings";
 import { ensureContractDraft, finalizeContract, getContractContentHash, saveConditions, saveContractSignature } from "../src/lib/contracts";
 import { createCreditNoteDraft, finalizeCounterDocument, updateCounterDocumentDraft } from "../src/lib/counter-documents";
@@ -321,14 +322,17 @@ test("Storno: Doppelklick (parallel) storniert genau einmal; fremder Mandant fin
   assert.equal((await db.booking.findUniqueOrThrow({ where: { id: x.bookingId } })).status, "RESERVED");
 });
 
-test("Storno: Vertrag wird mit storniert (Historie bleibt), Kaution → Hinweis und danach Freigabe möglich, bestätigte Mietzahlung sperrt", async () => {
+// Befehl 28: Storno mit Geld ist jetzt über den Storno-Assistenten möglich – statt der Sperre (Befehl 27) verlangt der Server
+// eine bewusste Entscheidung zu Kaution bzw. Mietvorauszahlung; ohne Entscheidung wird nichts storniert.
+test("Storno: Vertrag wird mit storniert (Historie bleibt), Kaution/Mietzahlung verlangen eine Entscheidung (Befehl 28)", async () => {
   const w = await signedWorld("b27-cancel-contract");
   await recordDepositReceived(w.tenantId, w.actor, { bookingId: w.bookingId, amount: "500", method: "CASH", occurredAt: at });
   const chk = await cancellationCheck(w.tenantId, w.bookingId);
   assert.equal(chk.allowed, true);
   assert.ok(chk.warnings.some((x) => /bereits ein Mietvertrag erstellt \(MV-/.test(x)), JSON.stringify(chk.warnings));
-  assert.ok(chk.warnings.some((x) => /Kaution über 500,00\s€ erhalten/.test(x)));
-  await changeBookingStatus(w.tenantId, w.bookingId, "CANCELLED", { actor: w.actor, reason: "Fahrzeug defekt, Kunde informiert" });
+  await assert.rejects(() => changeBookingStatus(w.tenantId, w.bookingId, "CANCELLED", { actor: w.actor, reason: "Fahrzeug defekt" }), /erhaltenen Kaution \(500,00\s€\)/);
+  assert.equal((await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } })).status, "RESERVED");
+  await cancelBooking(w.tenantId, w.actor, w.bookingId, { reason: "Fahrzeug defekt, Kunde informiert", deposit: { mode: "KEEP" } });
   const c = await db.rentalContract.findUniqueOrThrow({ where: { id: w.contractId } });
   assert.equal(c.status, "CANCELLED"); assert.ok(c.contentHash, "Inhalt bleibt erhalten");
   const audit = await db.auditLog.findFirstOrThrow({ where: { tenantId: w.tenantId, action: "BOOKING_CANCELLED" } });
@@ -340,9 +344,8 @@ test("Storno: Vertrag wird mit storniert (Historie bleibt), Kaution → Hinweis 
   const p = track(await createWorld("b27-cancel-paid"));
   const pay = await recordRentalPayment(p.tenantId, p.actor, p.bookingId, { amount: "100", method: "CASH", paidAt: at });
   const pc = await cancellationCheck(p.tenantId, p.bookingId);
-  assert.equal(pc.allowed, false);
-  assert.match(pc.blockers[0], /bestätigte Mietzahlungen über 100,00\s€/);
-  await assert.rejects(() => changeBookingStatus(p.tenantId, p.bookingId, "CANCELLED", { actor: p.actor, reason: "Kunde sagt ab" }), /bestätigte Mietzahlungen über 100,00\s€/);
+  assert.equal(pc.allowed, true, "Befehl 28: nicht mehr gesperrt");
+  await assert.rejects(() => changeBookingStatus(p.tenantId, p.bookingId, "CANCELLED", { actor: p.actor, reason: "Kunde sagt ab" }), /Mietvorauszahlung geschieht: 100,00\s€/);
   assert.equal((await db.booking.findUniqueOrThrow({ where: { id: p.bookingId } })).status, "RESERVED");
   assert.equal(await db.payment.count({ where: { tenantId: p.tenantId, id: pay.payment.id, status: "CONFIRMED" } }), 1, "Zahlung unverändert");
 });
@@ -354,11 +357,11 @@ test("Storno: Rollen und Supportmodus – Aktion nur DISPO/OWNER (requireRole is
   const actions = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/actions.ts"), "utf8");
   const fn = /export async function cancelBookingAction[\s\S]*?\n}/.exec(actions)?.[0] ?? "";
   assert.match(fn, /requireRole\("DISPO"\)/);
-  assert.match(fn, /changeBookingStatus\(tenant\.id, id, "CANCELLED", \{ actor: \{ id: user\.id, name: user\.name \}, reason/);
+  assert.match(fn, /cancelBooking\(tenant\.id, actor, id, cancellationInputOf\(formData\)\)/);
   const auth = readFileSync(path.join(process.cwd(), "src/lib/auth.ts"), "utf8");
   assert.match(auth, /export async function requireRole[\s\S]*?if \(session\.supportSession\) redirect\("\/heute\?fehler=support"\)/, "Supportmodus: keine Schreibaktion");
   const page = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/page.tsx"), "utf8");
-  assert.match(page, /user\.role !== "YARD" && !supportSession \? await cancellationCheck/, "Dialog weder für Hofmitarbeiter noch im Supportmodus");
+  assert.match(page, /user\.role !== "YARD" && !supportSession \? await cancellationOverview/, "Dialog weder für Hofmitarbeiter noch im Supportmodus");
 });
 
 // ===========================================================================

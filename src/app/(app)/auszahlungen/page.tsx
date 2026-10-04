@@ -21,6 +21,7 @@ const SOURCES: { key: NonNullable<PayoutFilter["source"]>; label: string }[] = [
   { key: "alle", label: "Alle Quellen" },
   { key: "rechnung", label: "Rechnungserstattungen" },
   { key: "kaution", label: "Kautionsauszahlungen" },
+  { key: "vorauszahlung", label: "Storno-Erstattungen" },
 ];
 
 /**
@@ -39,8 +40,8 @@ export default async function PayoutsPage({ searchParams }: PageProps<"/auszahlu
   const qs = (over: Record<string, string>) => { const u = new URLSearchParams({ filter: status, quelle: source, ...(method ? { weg: method } : {}), ...(typeof sp.von === "string" ? { von: sp.von } : {}), ...(typeof sp.bis === "string" ? { bis: sp.bis } : {}), ...(q ? { q } : {}), ...over }); return `/auszahlungen?${u.toString()}`; };
 
   const rows = await listPayouts(tenant.id, { status, source, method, from, to: to ? new Date(to.getTime() + 60_000) : null, q });
-  const claims = status === "offen" ? await openPayoutClaims(tenant.id) : { invoices: [], deposits: [] };
-  const openClaims = [...(source !== "kaution" ? claims.invoices : []), ...(source !== "rechnung" ? claims.deposits : [])].filter((c) => !q || c.number.toLowerCase().includes(q.toLowerCase()) || c.customerName.toLowerCase().includes(q.toLowerCase()) || (c.bookingNumber ?? "").toLowerCase().includes(q.toLowerCase()));
+  const claims = status === "offen" ? await openPayoutClaims(tenant.id) : { invoices: [], deposits: [], prepayments: [] };
+  const openClaims = [...(source === "alle" || source === "rechnung" ? claims.invoices : []), ...(source === "alle" || source === "kaution" ? claims.deposits : []), ...(source === "alle" || source === "vorauszahlung" ? claims.prepayments : [])].filter((c) => !q || c.number.toLowerCase().includes(q.toLowerCase()) || c.customerName.toLowerCase().includes(q.toLowerCase()) || (c.bookingNumber ?? "").toLowerCase().includes(q.toLowerCase()));
   const totalOpen = openClaims.reduce((a, c) => a + c.remainingCents, 0);
   const totalRows = rows.filter((p) => p.status === "COMPLETED").reduce((a, p) => a + p.amountCents, 0);
   const sub = status === "offen" ? `${openClaims.length} offene Ansprüche · ${fmtCents(totalOpen)} noch auszuzahlen · ${rows.length} Entwürfe` : `${rows.length} Auszahlungen${status === "abgeschlossen" || status === "alle" ? ` · ausgezahlt ${fmtCents(totalRows)}` : ""}`;
@@ -72,7 +73,7 @@ export default async function PayoutsPage({ searchParams }: PageProps<"/auszahlu
               <ul className="divide-y divide-line-soft text-sm">
                 {openClaims.map((c) => (
                   <li key={`${c.kind}-${c.number}`} className="px-4 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-1">
-                    <Chip tone={c.kind === "INVOICE" ? "info" : "amber"}>{c.kind === "INVOICE" ? "Rechnungserstattung" : "Kautionsauszahlung"}</Chip>
+                    <Chip tone={c.kind === "DEPOSIT" ? "amber" : "info"}>{c.kind === "INVOICE" ? "Rechnungserstattung" : c.kind === "PREPAYMENT" ? "Storno-Erstattung" : "Kautionsauszahlung"}</Chip>
                     <Link href={c.href} className="font-mono tnum font-medium hover:underline">{c.kind === "INVOICE" ? c.number : `Buchung ${c.number}`}</Link>
                     <span>{c.customerName}</span>
                     {c.draftCents > 0 && <Chip tone="amber">Entwurf {fmtCents(c.draftCents)}</Chip>}

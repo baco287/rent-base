@@ -15,6 +15,7 @@ import { customerName } from "@/lib/format";
 import { toCents, type Cents } from "@/lib/money";
 import { dunningLevelLabel } from "@/lib/constants";
 import { SIGNED_AMENDMENTS_SELECT, effectiveTotalCents } from "@/lib/amendments";
+import { prepaymentBalances } from "@/lib/rental-payments";
 
 /**
  * Befehl 27: Ziel eines Zahlungslinks. Zahlung zu einer Rechnung → deren Seite (Buchungsrechnung oder freie Rechnung);
@@ -138,6 +139,12 @@ export async function customerOverview(tenantId: string, customerId: string, cus
     }
     if (f.refundOpen) { refundsOpen++; refundOpenCents += f.refundRemainingCents; tasks.push({ key: `ref-${i.id}`, title: `Erstattung zu ${word} ${i.number} offen`, detail: `Kundenguthaben ${fmt(f.refundRemainingCents)} noch nicht ausgezahlt`, href: invoiceHref(i), tone: "amber" }); }
   }
+  // Befehl 28: Mietvorauszahlung stornierter Buchungen ohne Rechnung = Kundenguthaben (zentral aus prepaymentBalances)
+  for (const p of await cancelledPrepayments(tenantId, customerId)) {
+    if (p.remainingCents <= 0) continue;
+    refundsOpen++; refundOpenCents += p.remainingCents;
+    tasks.push({ key: `pre-${p.bookingId}`, title: `Guthaben aus Storno der Buchung ${p.bookingNumber}`, detail: `Mietvorauszahlung ${fmt(p.remainingCents)} noch nicht erstattet`, href: `/buchungen/${p.bookingId}#storno`, tone: "amber" });
+  }
   let depositPayoutOpenCents = 0, depositPayoutsOpen = 0, depositsHeld = 0;
   for (const d of deposits) {
     const f = computeDepositFinancials(balanceOf(d.expectedAmountCents, d.events), paidMap.get(d.id) ?? 0);
@@ -195,6 +202,8 @@ export type CustomerFinance = {
   drafts: { id: string; documentType: string; kind: string; bookingId: string | null; bookingNumber: string | null; href: string }[];
   payments: { href: string | null; id: string; paidAt: Date; amountCents: Cents; method: string; status: string; reference: string | null; invoiceNumber: string | null; bookingId: string | null; bookingNumber: string | null; cancellationReason: string | null }[];
   payouts: { id: string; number: string | null; status: string; sourceType: string; amountCents: Cents; method: string; executedAt: Date | null; plannedAt: Date | null; invoiceNumber: string | null; bookingId: string | null; bookingNumber: string | null; ibanMasked: string | null }[];
+  /** Befehl 28: Guthaben aus stornierten Mietvorauszahlungen (je Buchung) */
+  prepayments: { bookingId: string; bookingNumber: string; paidCents: Cents; refundedCents: Cents; draftCents: Cents; remainingCents: Cents }[];
   sums: {
     /** wirksames Rechnungsvolumen = Rechnungen − Gutschriften − Storno (financialsFor); Kautionen sind kein Umsatz */
     effectiveInvoiceCents: Cents; invoiceCents: Cents; creditedCents: Cents; cancelledCents: Cents;
@@ -227,6 +236,9 @@ export async function customerFinance(tenantId: string, customerId: string): Pro
     if (i.kind === "DAMAGE") sums.effectiveDamageCents += f.effectiveCents;
     sums.paidCents += f.paidCents; sums.offsetCents += f.offsetCents; sums.openCents += f.openCents; sums.creditCents += f.customerCreditCents; sums.refundOpenCents += f.refundRemainingCents; sums.refundedCents += f.completedRefundCents;
   }
+  // Befehl 28: Guthaben aus stornierten Mietvorauszahlungen (ohne Rechnung) – dieselbe Bedeutung wie Rechnungsguthaben
+  const prepayments = await cancelledPrepayments(tenantId, customerId);
+  for (const p of prepayments) { sums.creditCents += p.paidCents; sums.refundOpenCents += p.remainingCents; sums.refundedCents += p.refundedCents; }
   sums.payoutsCompletedCents = payouts.filter((p) => p.status === "COMPLETED").reduce((a, p) => a + p.amountCents, 0);
   return {
     documents: finalized.map((i) => ({ id: i.id, number: i.number, documentType: i.documentType, kind: i.kind, issueDate: i.currentVersion!.issueDate, finalizedAt: i.finalizedAt, grossCents: toCents(i.currentVersion!.grossTotal), bookingId: i.bookingId, bookingNumber: i.booking?.number ?? null, original: i.original, financials: fin.get(i.id) ?? null, href: invoiceHref(i), dunning: dunningByInvoice.get(i.id) ?? null })),
@@ -234,7 +246,15 @@ export async function customerFinance(tenantId: string, customerId: string): Pro
     payments: payments.map((p) => ({ id: p.id, paidAt: p.paidAt, amountCents: p.amountCents, method: p.method, status: p.status, reference: p.reference, invoiceNumber: p.invoice?.number ?? null, bookingId: p.bookingId, bookingNumber: p.booking?.number ?? null, cancellationReason: p.cancellationReason, href: paymentHref(p) })),
     payouts: payouts.map((p) => ({ id: p.id, number: p.number, status: p.status, sourceType: p.sourceType, amountCents: p.amountCents, method: p.method, executedAt: p.executedAt, plannedAt: p.plannedAt, invoiceNumber: p.invoice?.number ?? null, bookingId: p.bookingId, bookingNumber: p.booking?.number ?? null, ibanMasked: p.ibanMasked })),
     sums,
+    prepayments,
   };
+}
+
+/** Befehl 28: stornierte Buchungen der Person mit Mietvorauszahlung ohne Rechnung (Kundenguthaben an der Buchung). */
+async function cancelledPrepayments(tenantId: string, customerId: string) {
+  const rows = await db.booking.findMany({ where: { tenantId, customerId, status: "CANCELLED", payments: { some: { type: "RENTAL_PAYMENT", invoiceId: null, status: "CONFIRMED" } } }, select: { id: true, number: true }, take: 200 });
+  const bal = await prepaymentBalances(tenantId, rows.map((r) => r.id));
+  return rows.map((r) => ({ ...bal.get(r.id)!, bookingId: r.id, bookingNumber: r.number }));
 }
 
 // ---------------------------------------------------------------------------
@@ -299,25 +319,61 @@ export function customerEmails(tenantId: string, customerId: string) {
 export type TimelineEntry = { key: string; at: Date; kind: string; title: string; detail: string | null; href: string | null };
 
 export async function customerTimeline(tenantId: string, customerId: string, limit = 200): Promise<TimelineEntry[]> {
-  const [customer, bookings, contracts, handovers, invoices, payments, depositEvents, payouts, damageCases, authority, mails] = await Promise.all([
-    db.customer.findFirst({ where: { id: customerId, tenantId }, select: { createdAt: true } }),
-    db.booking.findMany({ where: { tenantId, customerId }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, number: true, status: true, createdAt: true, updatedAt: true, vehicle: { select: { plate: true } } } }),
-    db.rentalContract.findMany({ where: { tenantId, customerId, status: { not: "DRAFT" } }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, number: true, status: true, signedAt: true, createdAt: true, bookingId: true } }),
-    db.handover.findMany({ where: { tenantId, status: "FINALIZED", booking: { customerId } }, orderBy: { finalizedAt: "desc" }, take: limit, select: { id: true, number: true, type: true, finalizedAt: true, bookingId: true, mileage: true } }),
-    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", OR: [{ booking: { customerId } }, { customerId, bookingId: null }] }, orderBy: { finalizedAt: "desc" }, take: limit, select: { id: true, number: true, documentType: true, kind: true, finalizedAt: true, bookingId: true, currentVersion: { select: { grossTotal: true } } } }),
-    db.payment.findMany({ where: { tenantId, OR: [{ booking: { customerId } }, { bookingId: null, invoice: { customerId } }] }, orderBy: { paidAt: "desc" }, take: limit, select: { id: true, paidAt: true, amountCents: true, status: true, cancelledAt: true, bookingId: true, invoice: { select: { id: true, bookingId: true, kind: true, number: true } } } }),
-    db.securityDepositEvent.findMany({ where: { tenantId, deposit: { booking: { customerId } } }, orderBy: { occurredAt: "desc" }, take: limit, select: { id: true, type: true, amountCents: true, status: true, occurredAt: true, cancelledAt: true, deposit: { select: { bookingId: true, booking: { select: { number: true } } } } } }),
-    db.payout.findMany({ where: { tenantId, OR: [{ customerId }, { booking: { customerId } }] }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, number: true, status: true, amountCents: true, completedAt: true, executedAt: true, cancelledAt: true, createdAt: true } }),
-    db.damageCase.findMany({ where: { tenantId, booking: { customerId } }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, caseNumber: true, createdAt: true, closedAt: true, description: true } }),
-    db.authorityCase.findMany({ where: { tenantId, driverCustomerId: customerId }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, caseNumber: true, createdAt: true, authorityName: true } }),
-    db.emailLog.findMany({ where: { tenantId, status: "SENT", OR: [{ booking: { customerId } }, { payout: { customerId } }, { bookingId: null, invoiceVersion: { invoice: { customerId } } }, { bookingId: null, dunningNotice: { customerId } }] }, orderBy: { sentAt: "desc" }, take: limit, select: { id: true, sentAt: true, createdAt: true, subject: true, bookingId: true, payoutId: true } }),
+  return timelineFor(tenantId, { customerId }, limit);
+}
+
+/** Befehl 28: chronologische Historie einer Buchung – dieselbe Ableitung wie die Kundenakte (gespeicherte Zeitstempel und Audit), keine eigene Ereignistabelle. */
+export async function bookingTimeline(tenantId: string, bookingId: string, limit = 200): Promise<TimelineEntry[]> {
+  return timelineFor(tenantId, { bookingId }, limit);
+}
+
+type TimelineScope = { customerId: string } | { bookingId: string };
+
+/** Zeitleiste aus gespeicherten Zeitstempeln (Buchung, Vertrag, Protokolle, Belege, Zahlungen, Kaution, Auszahlungen, Nachträge, Storno, Mails). */
+async function timelineFor(tenantId: string, scope: TimelineScope, limit: number): Promise<TimelineEntry[]> {
+  const byCustomer = "customerId" in scope;
+  const customerId = byCustomer ? scope.customerId : null;
+  const bookingId = byCustomer ? null : scope.bookingId;
+  const viaBooking = byCustomer ? { booking: { customerId: customerId! } } : { bookingId: bookingId! };
+  const [customer, bookings, contracts, handovers, invoices, payments, depositEvents, payouts, damageCases, authority, mails, amendments] = await Promise.all([
+    byCustomer ? db.customer.findFirst({ where: { id: customerId!, tenantId }, select: { createdAt: true } }) : null,
+    db.booking.findMany({ where: { tenantId, ...(byCustomer ? { customerId: customerId! } : { id: bookingId! }) }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, number: true, status: true, createdAt: true, updatedAt: true, cancelledAt: true, cancellationReason: true, cancelledByName: true, vehicle: { select: { plate: true } } } }),
+    db.rentalContract.findMany({ where: { tenantId, status: { not: "DRAFT" }, ...(byCustomer ? { customerId: customerId! } : { bookingId: bookingId! }) }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, number: true, status: true, signedAt: true, createdAt: true, bookingId: true } }),
+    db.handover.findMany({ where: { tenantId, status: "FINALIZED", ...viaBooking }, orderBy: { finalizedAt: "desc" }, take: limit, select: { id: true, number: true, type: true, finalizedAt: true, bookingId: true, mileage: true } }),
+    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", ...(byCustomer ? { OR: [{ booking: { customerId: customerId! } }, { customerId: customerId!, bookingId: null }] } : { bookingId: bookingId! }) }, orderBy: { finalizedAt: "desc" }, take: limit, select: { id: true, number: true, documentType: true, kind: true, finalizedAt: true, bookingId: true, currentVersion: { select: { grossTotal: true } } } }),
+    db.payment.findMany({ where: { tenantId, ...(byCustomer ? { OR: [{ booking: { customerId: customerId! } }, { bookingId: null, invoice: { customerId: customerId! } }] } : { bookingId: bookingId! }) }, orderBy: { paidAt: "desc" }, take: limit, select: { id: true, paidAt: true, amountCents: true, status: true, cancelledAt: true, bookingId: true, invoice: { select: { id: true, bookingId: true, kind: true, number: true } } } }),
+    db.securityDepositEvent.findMany({ where: { tenantId, deposit: byCustomer ? { booking: { customerId: customerId! } } : { bookingId: bookingId! } }, orderBy: { occurredAt: "desc" }, take: limit, select: { id: true, type: true, amountCents: true, status: true, occurredAt: true, cancelledAt: true, deposit: { select: { bookingId: true, booking: { select: { number: true } } } } } }),
+    db.payout.findMany({ where: { tenantId, ...(byCustomer ? { OR: [{ customerId: customerId! }, { booking: { customerId: customerId! } }] } : { bookingId: bookingId! }) }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, number: true, status: true, sourceType: true, amountCents: true, completedAt: true, executedAt: true, cancelledAt: true, createdAt: true } }),
+    db.damageCase.findMany({ where: { tenantId, ...viaBooking }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, caseNumber: true, createdAt: true, closedAt: true, description: true } }),
+    db.authorityCase.findMany({ where: { tenantId, ...(byCustomer ? { driverCustomerId: customerId! } : { bookingId: bookingId! }) }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, caseNumber: true, createdAt: true, authorityName: true } }),
+    db.emailLog.findMany({ where: { tenantId, status: "SENT", ...(byCustomer ? { OR: [{ booking: { customerId: customerId! } }, { payout: { customerId: customerId! } }, { bookingId: null, invoiceVersion: { invoice: { customerId: customerId! } } }, { bookingId: null, dunningNotice: { customerId: customerId! } }] } : { bookingId: bookingId! }) }, orderBy: { sentAt: "desc" }, take: limit, select: { id: true, sentAt: true, createdAt: true, subject: true, bookingId: true, payoutId: true } }),
+    // Befehl 28: Nachträge mit Vereinbarung, Unterschrift und Zurücknahme
+    db.contractAmendment.findMany({ where: { tenantId, status: { in: ["AGREED", "SIGNED", "DISCARDED"] }, ...viaBooking }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, bookingId: true, number: true, status: true, newEndAt: true, newStartAt: true, agreedAt: true, agreedChannel: true, signedAt: true, discardedAt: true, discardReason: true, booking: { select: { number: true } } } }),
   ]);
+  // Befehl 28: Zeitraumänderungen vor dem Vertrag und bewusst stehen gelassenes Guthaben stehen nur im Audit (keine Doppelhaltung)
+  const bookingIds = bookings.map((b) => b.id);
+  const audits = bookingIds.length ? await db.auditLog.findMany({ where: { tenantId, bookingId: { in: bookingIds }, action: { in: ["BOOKING_PERIOD_CHANGED", "RENTAL_PAYMENT_TO_CREDIT"] } }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, action: true, bookingId: true, amountCents: true, createdAt: true, details: true } }) : [];
+  const bookingNo = new Map(bookings.map((b) => [b.id, b.number]));
   const e: TimelineEntry[] = [];
   if (customer) e.push({ key: "created", at: customer.createdAt, kind: "Kunde", title: "Kunde angelegt", detail: null, href: null });
   for (const b of bookings) {
     e.push({ key: `b-${b.id}`, at: b.createdAt, kind: "Buchung", title: `Buchung ${b.number} angelegt`, detail: b.vehicle.plate, href: `/buchungen/${b.id}` });
-    // Ein Storno-Zeitpunkt ist an der Buchung nicht gespeichert (nur der Status) – deshalb kein erfundenes Ereignis, nur der Zustand im Titel
-    if (b.status === "CANCELLED") e[e.length - 1] = { ...e[e.length - 1], detail: `${b.vehicle.plate} · später storniert` };
+    // Befehl 28: Storno mit Zeitpunkt und Grund (seit Befehl 27 gespeichert); ältere Stornos ohne Zeitpunkt nur als Zustand
+    if (b.status === "CANCELLED" && b.cancelledAt) e.push({ key: `bc-${b.id}`, at: b.cancelledAt, kind: "Storno", title: `Buchung ${b.number} storniert`, detail: `${b.cancellationReason ?? "ohne erfassten Grund"}${b.cancelledByName ? ` · ${b.cancelledByName}` : ""}`, href: `/buchungen/${b.id}#storno` });
+    else if (b.status === "CANCELLED") e[e.length - 1] = { ...e[e.length - 1], detail: `${b.vehicle.plate} · später storniert` };
+  }
+  for (const a of audits) {
+    const d = (a.details ?? {}) as { startBefore?: string; endBefore?: string; startAfter?: string; endAfter?: string; reason?: string; source?: string };
+    const href = `/buchungen/${a.bookingId}`;
+    if (a.action === "BOOKING_PERIOD_CHANGED") e.push({ key: `bp-${a.id}`, at: a.createdAt, kind: "Buchung", title: `Zeitraum geändert · Buchung ${bookingNo.get(a.bookingId!) ?? ""}`, detail: `${d.startBefore ? dateTimeText(new Date(d.startBefore)) : "–"} – ${d.endBefore ? dateTimeText(new Date(d.endBefore)) : "–"} → ${d.startAfter ? dateTimeText(new Date(d.startAfter)) : "–"} – ${d.endAfter ? dateTimeText(new Date(d.endAfter)) : "–"}${d.reason ? ` · ${d.reason}` : ""}`, href });
+    if (a.action === "RENTAL_PAYMENT_TO_CREDIT") e.push({ key: `bg-${a.id}`, at: a.createdAt, kind: "Guthaben", title: `Mietvorauszahlung als Kundenguthaben belassen ${fmt(a.amountCents ?? 0)}`, detail: `Buchung ${bookingNo.get(a.bookingId!) ?? ""} storniert`, href: `${href}#storno` });
+  }
+  for (const a of amendments) {
+    const href = `/buchungen/${a.bookingId}/nachtrag/${a.id}`;
+    const period = a.newEndAt ? `Rückgabe bis ${dateTimeText(a.newEndAt)}` : a.newStartAt ? `Abholung ${dateTimeText(a.newStartAt)}` : null;
+    if (a.agreedAt) e.push({ key: `na-${a.id}`, at: a.agreedAt, kind: "Nachtrag", title: `Vertragsänderung vereinbart (${a.agreedChannel === "PHONE" ? "telefonisch" : "vorab"}) · Buchung ${a.booking.number}`, detail: [period, "Unterschrift ausstehend"].filter(Boolean).join(" · "), href });
+    if (a.status === "SIGNED" && a.signedAt) e.push({ key: `ns-${a.id}`, at: a.signedAt, kind: "Nachtrag", title: `Nachtrag ${a.number} unterschrieben · Buchung ${a.booking.number}`, detail: period, href });
+    if (a.status === "DISCARDED" && a.discardedAt && a.agreedAt) e.push({ key: `nd-${a.id}`, at: a.discardedAt, kind: "Nachtrag", title: `Vereinbarte Vertragsänderung zurückgenommen · Buchung ${a.booking.number}`, detail: a.discardReason, href });
   }
   for (const c of contracts) if (c.status === "SIGNED" && c.signedAt) e.push({ key: `c-${c.id}`, at: c.signedAt, kind: "Vertrag", title: `Mietvertrag ${c.number} abgeschlossen`, detail: null, href: `/buchungen/${c.bookingId}/vertrag` });
   for (const h of handovers) if (h.finalizedAt) e.push({ key: `h-${h.id}`, at: h.finalizedAt, kind: h.type === "PICKUP" ? "Übergabe" : "Rückgabe", title: `${h.type === "PICKUP" ? "Übergabe" : "Rückgabe"} ${h.number}`, detail: h.mileage != null ? `${h.mileage.toLocaleString("de-DE")} km` : null, href: `/buchungen/${h.bookingId}/${h.type === "PICKUP" ? "uebergabe" : "rueckgabe"}` });
@@ -332,7 +388,7 @@ export async function customerTimeline(tenantId: string, customerId: string, lim
     if (d.status === "CANCELLED" && d.cancelledAt) e.push({ key: `dc-${d.id}`, at: d.cancelledAt, kind: "Kaution", title: `Kautionsbuchung ${fmt(d.amountCents)} storniert`, detail: `Buchung ${d.deposit.booking.number}`, href: `/buchungen/${d.deposit.bookingId}#kaution` });
   }
   for (const p of payouts) {
-    if (p.status !== "DRAFT" && (p.completedAt ?? p.executedAt)) e.push({ key: `az-${p.id}`, at: p.completedAt ?? p.executedAt!, kind: "Auszahlung", title: `Auszahlung ${p.number ?? ""} ${fmt(p.amountCents)} erfasst`, detail: null, href: `/auszahlungen/${p.id}` });
+    if (p.status !== "DRAFT" && (p.completedAt ?? p.executedAt)) e.push({ key: `az-${p.id}`, at: p.completedAt ?? p.executedAt!, kind: "Auszahlung", title: `Auszahlung ${p.number ?? ""} ${fmt(p.amountCents)} erfasst`, detail: p.sourceType === "RENTAL_PREPAYMENT_REFUND" ? "Erstattung der Mietvorauszahlung (Storno)" : p.sourceType === "SECURITY_DEPOSIT_REFUND" ? "Kautionsrückzahlung" : null, href: `/auszahlungen/${p.id}` });
     if (p.status === "CANCELLED" && p.cancelledAt) e.push({ key: `azc-${p.id}`, at: p.cancelledAt, kind: "Auszahlung", title: `Auszahlung ${p.number ?? "(Entwurf)"} storniert`, detail: null, href: `/auszahlungen/${p.id}` });
   }
   for (const d of damageCases) {
@@ -348,4 +404,6 @@ export async function customerTimeline(tenantId: string, customerId: string, lim
 
 const dFmt = new Intl.DateTimeFormat("de-DE", { timeZone: "Europe/Berlin", day: "2-digit", month: "2-digit", year: "numeric" });
 const dateText = (d: Date) => dFmt.format(d);
+const dtFmt = new Intl.DateTimeFormat("de-DE", { timeZone: "Europe/Berlin", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+const dateTimeText = (d: Date) => dtFmt.format(d);
 const fmt = (c: Cents) => (c / 100).toLocaleString("de-DE", { style: "currency", currency: "EUR" });

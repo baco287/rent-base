@@ -274,6 +274,37 @@ export async function previewDepositSettlement(tenantId: string, bookingId: stri
  * Freigabe / teilweise Freigabe / Einbehalt der noch nicht zugeordneten Kaution. Immer wird der gesamte offene Rest
  * zugeordnet: Freigabebetrag + Einbehalt = Rest. Einbehalt braucht einen Grund. Nur nach Rückgabe oder Storno.
  */
+/** Befehl 28: Kern von settleDeposit in einer laufenden Transaktion (z. B. Kautionsfreigabe beim Storno-Abschluss). Gleiche Regeln. */
+export async function settleDepositIn(tx: Tx, tenantId: string, actor: Actor, input: SettleInput): Promise<{ events: DepositEventRow[]; created: boolean; kind: SettlePreview["kind"] }> {
+  const key = checkKey(input.idempotencyKey);
+  checkDate(input.occurredAt, "den Zeitpunkt");
+  const { row, balance, bookingStatus } = await lockOrCreateDeposit(tx, tenantId, input.bookingId, actor);
+  if (key) {
+    const dup = await tx.securityDepositEvent.findUnique({ where: { tenantId_idempotencyKey: { tenantId, idempotencyKey: key } } });
+    if (dup) {
+      const sibling = await tx.securityDepositEvent.findUnique({ where: { tenantId_idempotencyKey: { tenantId, idempotencyKey: `${key}-r` } } });
+      return { events: [dup, ...(sibling ? [sibling] : [])], created: false, kind: (sibling ? "PARTIAL" : dup.type === "RELEASED" ? "RELEASE" : "RETAIN") as SettlePreview["kind"] };
+    }
+  }
+  const plan = planSettlement(balance, input.releaseAmount, bookingStatus);
+  if (plan.error) throw new DomainError(plan.error);
+  const reason = input.reason?.trim() || null;
+  if (plan.retainCents > 0 && (!reason || reason.length < 3)) throw new DomainError("Bitte den Grund für den einbehaltenen Betrag angeben.");
+  const method = plan.releaseCents > 0 && input.method ? checkMethod(input.method) : null;
+  const note = input.note?.trim() || null;
+  const events: DepositEventRow[] = [];
+  if (plan.releaseCents > 0) {
+    events.push(await tx.securityDepositEvent.create({ data: { tenantId, depositId: row.id, type: "RELEASED", amountCents: plan.releaseCents, method, note, occurredAt: input.occurredAt, idempotencyKey: key, createdById: actor.id, createdByName: actor.name } }));
+  }
+  if (plan.retainCents > 0) {
+    events.push(await tx.securityDepositEvent.create({ data: { tenantId, depositId: row.id, type: "RETAINED", amountCents: plan.retainCents, reason, note, occurredAt: input.occurredAt, idempotencyKey: key ? (plan.releaseCents > 0 ? `${key}-r` : key) : null, createdById: actor.id, createdByName: actor.name } }));
+  }
+  const after = await syncStatus(tx, tenantId, row.id);
+  const action = plan.kind === "RELEASE" ? "DEPOSIT_RELEASED" : plan.kind === "PARTIAL" ? "DEPOSIT_PARTIALLY_RELEASED" : "DEPOSIT_RETAINED";
+  await recordAudit(tx, tenantId, actor, { action, bookingId: input.bookingId, depositId: row.id, amountCents: plan.releaseCents, details: { released: plan.releaseCents, retained: plan.retainCents, reason, method, statusAfter: after.status } });
+  return { events, kind: plan.kind, created: true };
+}
+
 export async function settleDeposit(tenantId: string, actor: Actor, input: SettleInput): Promise<{ events: DepositEventRow[]; created: boolean; kind: SettlePreview["kind"] }> {
   const key = checkKey(input.idempotencyKey);
   checkDate(input.occurredAt, "den Zeitpunkt");
@@ -285,33 +316,7 @@ export async function settleDeposit(tenantId: string, actor: Actor, input: Settl
     }
   }
   try {
-    const result = await db.$transaction(async (tx) => {
-      const { row, balance, bookingStatus } = await lockOrCreateDeposit(tx, tenantId, input.bookingId, actor);
-      if (key) {
-        const dup = await tx.securityDepositEvent.findUnique({ where: { tenantId_idempotencyKey: { tenantId, idempotencyKey: key } } });
-        if (dup) {
-          const sibling = await tx.securityDepositEvent.findUnique({ where: { tenantId_idempotencyKey: { tenantId, idempotencyKey: `${key}-r` } } });
-          return { events: [dup, ...(sibling ? [sibling] : [])], created: false, kind: (sibling ? "PARTIAL" : dup.type === "RELEASED" ? "RELEASE" : "RETAIN") as SettlePreview["kind"] };
-        }
-      }
-      const plan = planSettlement(balance, input.releaseAmount, bookingStatus);
-      if (plan.error) throw new DomainError(plan.error);
-      const reason = input.reason?.trim() || null;
-      if (plan.retainCents > 0 && (!reason || reason.length < 3)) throw new DomainError("Bitte den Grund für den einbehaltenen Betrag angeben.");
-      const method = plan.releaseCents > 0 && input.method ? checkMethod(input.method) : null;
-      const note = input.note?.trim() || null;
-      const events: DepositEventRow[] = [];
-      if (plan.releaseCents > 0) {
-        events.push(await tx.securityDepositEvent.create({ data: { tenantId, depositId: row.id, type: "RELEASED", amountCents: plan.releaseCents, method, note, occurredAt: input.occurredAt, idempotencyKey: key, createdById: actor.id, createdByName: actor.name } }));
-      }
-      if (plan.retainCents > 0) {
-        events.push(await tx.securityDepositEvent.create({ data: { tenantId, depositId: row.id, type: "RETAINED", amountCents: plan.retainCents, reason, note, occurredAt: input.occurredAt, idempotencyKey: key ? (plan.releaseCents > 0 ? `${key}-r` : key) : null, createdById: actor.id, createdByName: actor.name } }));
-      }
-      const after = await syncStatus(tx, tenantId, row.id);
-      const action = plan.kind === "RELEASE" ? "DEPOSIT_RELEASED" : plan.kind === "PARTIAL" ? "DEPOSIT_PARTIALLY_RELEASED" : "DEPOSIT_RETAINED";
-      await recordAudit(tx, tenantId, actor, { action, bookingId: input.bookingId, depositId: row.id, amountCents: plan.releaseCents, details: { released: plan.releaseCents, retained: plan.retainCents, reason, method, statusAfter: after.status } });
-      return { events, kind: plan.kind, created: true };
-    }, TX);
+    const result = await db.$transaction((tx) => settleDepositIn(tx, tenantId, actor, input), TX);
     return result;
   } catch (e) {
     if (key && isUniqueViolation(e, "idempotencyKey")) {

@@ -70,7 +70,7 @@ export async function CounterDocumentPage({ tenantId, role, booking, invoiceId, 
               sources={sources}
               manual={manual}
               rateOptions={rateOptions}
-              nonTaxable={st.draft.taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION"}
+              nonTaxable={st.draft.taxTreatment === "NON_TAXABLE_DAMAGE_COMPENSATION" || st.draft.taxTreatment === "NON_TAXABLE_FEE"}
               reason={st.draft.reason ?? ""}
               customerNote={st.draft.customerNote ?? ""}
               notes={st.invoice.notes ?? ""}

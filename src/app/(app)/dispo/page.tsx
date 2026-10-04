@@ -3,7 +3,7 @@ import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { customerName, fmtDateTime, fmtTime, toDateInput } from "@/lib/format";
 import { Content, Empty, PageHeader, Plate } from "@/components/ui";
-import { isOverdue, occupiedUntil, occupyingWhere } from "@/lib/bookings";
+import { AGREED_EXTENSION_SELECT, agreedEndOf, isOverdue, occupiedUntil, occupyingWhere } from "@/lib/bookings";
 
 export const metadata = { title: "Dispo-Kalender" };
 
@@ -39,7 +39,8 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
     db.booking.findMany({
       // Befehl 27: überfällige laufende Mieten bleiben sichtbar, bis die Rückgabe abgeschlossen ist (zentrale Definition)
       where: { tenantId: tenant.id, ...occupyingWhere(from, to, new Date()) },
-      include: { customer: true },
+      // Befehl 28: vereinbarte, noch nicht unterschriebene Verlängerung (reserviert das Fahrzeug bereits)
+      include: { customer: true, contractAmendments: AGREED_EXTENSION_SELECT },
     }),
   ]);
   const byVehicle = new Map<string, typeof bookings>();
@@ -67,6 +68,7 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
           <span><i className="inline-block size-3 rounded-sm align-[-2px] mr-1.5 bg-info-soft border border-info" />Reserviert</span>
           <span><i className="inline-block size-3 rounded-sm align-[-2px] mr-1.5 bg-brand" />Unterwegs</span>
           <span><i className="inline-block size-3 rounded-sm align-[-2px] mr-1.5 bg-bad-soft border border-bad" />Rückgabe überfällig</span>
+          <span><i className="inline-block size-3 rounded-sm align-[-2px] mr-1.5 border border-amber" style={{ backgroundImage: "repeating-linear-gradient(135deg, var(--amber-soft) 0 3px, transparent 3px 6px)" }} />Verlängerung vereinbart – Unterschrift fehlt</span>
           <span><i className="inline-block size-3 rounded-sm align-[-2px] mr-1.5 bg-panel-2 border border-line" style={{ backgroundImage: "repeating-linear-gradient(135deg, transparent 0 3px, var(--line) 3px 6px)" }} />Werkstatt / gesperrt</span>
         </div>
 
@@ -120,17 +122,31 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
                         </div>
                       )}
                       {list.map((b) => {
+                        const agreedEnd = agreedEndOf(b);
+                        const occ = { status: b.status, endAt: b.endAt, agreedEndAt: agreedEnd };
                         const left = pct(b.startAt);
-                        const right = pct(occupiedUntil(b, now));
-                        const overdue = isOverdue(b, now);
+                        const overdue = isOverdue(occ, now);
+                        // Befehl 28: Hauptbalken bis zum vertraglichen Ende (bzw. überfällig bis jetzt), vereinbarte Verlängerung als eigenes Segment
+                        const extension = agreedEnd && agreedEnd > b.endAt && !overdue ? { from: pct(b.endAt), to: pct(agreedEnd) } : null;
+                        const right = extension ? pct(b.endAt) : pct(occupiedUntil(occ, now));
                         const cls = overdue
                           ? "bg-bad-soft text-bad border-bad/50"
                           : b.status === "ACTIVE"
                             ? "bg-brand text-brand-ink border-transparent"
                             : "bg-info-soft text-info border-info/40";
                         return (
+                          <span key={b.id} className="contents">
+                          {extension && (
+                            <Link
+                              href={`/buchungen/${b.id}`}
+                              title={`${b.number} · Verlängerung vereinbart – Unterschrift fehlt · reserviert bis ${fmtDateTime(agreedEnd!)}`}
+                              className="absolute top-2 h-8 rounded-md border border-amber text-amber px-2 flex items-center font-medium whitespace-nowrap overflow-hidden text-[12px]"
+                              style={{ left: `calc(${extension.from}% + 1px)`, width: `calc(${Math.max(extension.to - extension.from, 1.5)}% - 3px)`, backgroundImage: "repeating-linear-gradient(135deg, var(--amber-soft) 0 6px, var(--panel) 6px 12px)" }}
+                            >
+                              Verlängerung vereinbart – Unterschrift fehlt
+                            </Link>
+                          )}
                           <Link
-                            key={b.id}
                             href={`/buchungen/${b.id}`}
                             title={`${b.number} · ${customerName(b.customer)} · ${fmtTime(b.startAt)} bis ${fmtTime(b.endAt)}${overdue ? ` · Rückgabe überfällig (geplant ${fmtDateTime(b.endAt)})` : ""}`}
                             className={`absolute top-2 h-8 rounded-md border px-2 flex items-center gap-2 font-medium whitespace-nowrap overflow-hidden text-[12px] ${cls}`}
@@ -138,8 +154,9 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
                           >
                             {overdue && <b className="font-semibold">Rückgabe überfällig</b>}
                             {customerName(b.customer)}
-                            <small className="opacity-80 font-normal">{overdue ? `geplant ${fmtDateTime(b.endAt)}` : fmtTime(b.startAt)}</small>
+                            <small className="opacity-80 font-normal">{overdue ? `geplant ${fmtDateTime(agreedEnd && agreedEnd > b.endAt ? agreedEnd : b.endAt)}` : fmtTime(b.startAt)}</small>
                           </Link>
+                          </span>
                         );
                       })}
                     </div>

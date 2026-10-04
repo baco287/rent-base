@@ -27,7 +27,14 @@ export async function MoneyOverview({ tenantId, bookingId, role }: { tenantId: s
     <Card title="Miete und Kaution" right={<span className="text-xs text-ink-3">getrennt geführt – keine automatische Verrechnung</span>}>
       <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
         <section className="flex flex-col gap-2" aria-label="Miete">
-          <div className="flex items-center gap-2"><span className="font-semibold text-sm">Miete</span><RentalPaymentStatusChip status={rent.status} /></div>
+          <div className="flex items-center gap-2"><span className="font-semibold text-sm">Miete</span>{rent.bookingStatus === "CANCELLED" ? <Chip tone="grey">Storniert</Chip> : <RentalPaymentStatusChip status={rent.status} />}</div>
+          {/* Befehl 28: nach dem Storno gibt es keine Mietforderung mehr – Vorauszahlung, Gebühr und Erstattung zeigt die eingefrorene Storno-Abrechnung */}
+          {rent.bookingStatus === "CANCELLED" ? (
+            <>
+              <p className="text-sm text-ink-2">Keine Mietforderung mehr. Vorauszahlung, Stornogebühr und Erstattung stehen in der Storno-Abrechnung.</p>
+              <div><Link href="#storno" className="btn !py-1.5 text-xs">Zur Storno-Abrechnung</Link></div>
+            </>
+          ) : (<>
           <div className="grid grid-cols-3 gap-2 text-sm">
             {tile(rent.source === "ESTIMATE" ? "Voraussichtlich" : "Gesamt", rent.grossCents)}
             {tile("Bezahlt", rent.paidCents, "good")}
@@ -35,6 +42,7 @@ export async function MoneyOverview({ tenantId, bookingId, role }: { tenantId: s
           </div>
           {rent.offsetCents > 0 && <p className="text-[11px] text-ink-3">Davon {fmtCents(rent.offsetCents)} aus der Kaution verrechnet (kein Geldeingang).</p>}
           <div>{canRecord && rent.canRecord ? <Link href="#mietzahlung" className="btn !py-1.5 text-xs">Mietzahlung erfassen</Link> : <Link href="#mietzahlung" className="btn !py-1.5 text-xs">Zur Mietzahlung</Link>}</div>
+          </>)}
         </section>
         <section className="flex flex-col gap-2 md:border-l md:border-line-soft md:pl-4" aria-label="Kaution">
           <div className="flex flex-wrap items-center gap-2">

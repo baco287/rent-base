@@ -14,6 +14,7 @@
 
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
+import { fmtDateTime } from "@/lib/format";
 import { balanceOf } from "@/lib/deposits";
 import { loadEffectiveDepositCents } from "@/lib/amendments";
 import { fmtCents } from "@/lib/money";
@@ -687,6 +688,11 @@ async function collectIssues(tx: Tx, tenantId: string, handoverId: string, opts:
     const others = await tx.handover.count({ where: { tenantId, bookingId: h.bookingId, type: "RETURN", status: "FINALIZED", id: { not: h.id } } });
     if (others > 0) err("BOOKING", "RETURN_EXISTS", "Zu dieser Miete gibt es bereits ein abgeschlossenes Rückgabeprotokoll.");
   }
+  // Befehl 28: eine vereinbarte, noch nicht unterschriebene Vertragsänderung wird vor dem Rückgabeabschluss unterschrieben oder
+  // zurückgenommen – sonst bliebe unklar, welche Mietdauer abgerechnet wird. Bei der Übergabe: deutlicher Hinweis.
+  const agreed = await tx.contractAmendment.findFirst({ where: { tenantId, bookingId: h.bookingId, status: "AGREED" }, select: { newEndAt: true } });
+  if (agreed && h.type === "RETURN") err("BOOKING", "AGREED_AMENDMENT_PENDING", `Eine Vertragsänderung ist vereinbart${agreed.newEndAt ? ` (Rückgabe bis ${fmtDateTime(agreed.newEndAt)})` : ""}, aber noch nicht unterschrieben. Bitte vor Abschluss der Rückgabe unterschreiben lassen oder zurücknehmen.`);
+  if (agreed && h.type === "PICKUP") warn("BOOKING", "AGREED_AMENDMENT_PENDING", "Eine Vertragsänderung ist vereinbart, aber noch nicht unterschrieben. Am besten jetzt bei der Übergabe unterschreiben lassen.");
   const pickup = h.type === "RETURN" ? await tx.handover.findFirst({ where: { tenantId, bookingId: h.bookingId, type: "PICKUP", status: "FINALIZED" }, orderBy: { finalizedAt: "desc" }, include: { checklistItems: true } }) : null;
   if (h.type === "RETURN" && !pickup) err("BOOKING", "PICKUP_MISSING", "Zu dieser Miete gibt es kein abgeschlossenes Übergabeprotokoll.");
 

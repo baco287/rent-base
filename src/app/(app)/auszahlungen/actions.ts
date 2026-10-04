@@ -28,7 +28,7 @@ function failure(e: unknown): PayoutState {
   return { error: "Das hat technisch nicht geklappt. Bitte die Seite neu laden und erneut versuchen." };
 }
 
-const refSchema = z.union([z.object({ sourceType: z.literal("INVOICE_REFUND"), invoiceId: z.string().min(1) }), z.object({ sourceType: z.literal("SECURITY_DEPOSIT_REFUND"), bookingId: z.string().min(1) })]);
+const refSchema = z.union([z.object({ sourceType: z.literal("RENTAL_PREPAYMENT_REFUND"), bookingId: z.string().min(1) }), z.object({ sourceType: z.literal("INVOICE_REFUND"), invoiceId: z.string().min(1) }), z.object({ sourceType: z.literal("SECURITY_DEPOSIT_REFUND"), bookingId: z.string().min(1) })]);
 const text = (max: number) => z.string().trim().max(max).optional();
 const inputSchema = z.object({
   amount: z.string().trim().min(1, "Bitte einen Betrag eingeben."),

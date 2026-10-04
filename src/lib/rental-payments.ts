@@ -69,6 +69,36 @@ export async function rentalPaymentSummary(tenantId: string, bookingId: string, 
   return { ...s, source, invoiceId: null, invoiceNumber: null, bookingStatus: b.status, canRecord: blockedReason === null, blockedReason };
 }
 
+// ---------------------------------------------------------------------------
+// Befehl 28: Mietvorauszahlung einer stornierten Buchung. Ohne Stornogebühr bleibt sie an der Buchung (keine Hilfsrechnung);
+// sie ist dann Kundenguthaben, das ausgezahlt (Auszahlungsquelle RENTAL_PREPAYMENT_REFUND) oder stehen gelassen werden kann.
+// Mit Stornogebühr wird sie der Stornogebühr-Rechnung zugeordnet und läuft über die Rechnungssalden (financialsFor).
+// Dieselbe Formel prüft die Datenbank (rb_prepayment_refund_remaining).
+// ---------------------------------------------------------------------------
+
+export type PrepaymentBalance = { bookingId: string; paidCents: Cents; refundedCents: Cents; draftCents: Cents; remainingCents: Cents };
+
+/** Vorauszahlungs-Bilanz mehrerer Buchungen: bestätigte, keiner Rechnung zugeordnete Mietzahlungen − abgeschlossene Erstattungen. */
+export async function prepaymentBalances(tenantId: string, bookingIds: string[], client: Tx | typeof db = db): Promise<Map<string, PrepaymentBalance>> {
+  if (bookingIds.length === 0) return new Map();
+  const [paid, payouts] = await Promise.all([
+    client.payment.groupBy({ by: ["bookingId"], where: { tenantId, bookingId: { in: bookingIds }, type: "RENTAL_PAYMENT", invoiceId: null, status: "CONFIRMED" }, _sum: { amountCents: true } }),
+    client.payout.groupBy({ by: ["bookingId", "status"], where: { tenantId, bookingId: { in: bookingIds }, sourceType: "RENTAL_PREPAYMENT_REFUND", status: { in: ["COMPLETED", "DRAFT"] } }, _sum: { amountCents: true } }),
+  ]);
+  const out = new Map<string, PrepaymentBalance>();
+  for (const id of bookingIds) {
+    const p = paid.find((g) => g.bookingId === id)?._sum.amountCents ?? 0;
+    const refunded = payouts.find((g) => g.bookingId === id && g.status === "COMPLETED")?._sum.amountCents ?? 0;
+    const draft = payouts.find((g) => g.bookingId === id && g.status === "DRAFT")?._sum.amountCents ?? 0;
+    out.set(id, { bookingId: id, paidCents: p, refundedCents: refunded, draftCents: draft, remainingCents: Math.max(0, p - refunded) });
+  }
+  return out;
+}
+
+export async function prepaymentBalance(tenantId: string, bookingId: string, client: Tx | typeof db = db): Promise<PrepaymentBalance> {
+  return (await prepaymentBalances(tenantId, [bookingId], client)).get(bookingId)!;
+}
+
 /** Mietzahlungen einer Buchung: vor der Rechnung erfasste und zur Mietrechnung erfasste, neueste zuerst. */
 export function listRentalPayments(tenantId: string, bookingId: string) {
   return db.payment.findMany({

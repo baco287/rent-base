@@ -17,6 +17,7 @@ function Msg({ state }: { state: AmendmentState }) {
 }
 
 export type ChangesValues = {
+  newStartAt: string; // Befehl 28: datetime-local oder ""
   newEndAt: string; // datetime-local oder ""
   priceDeltaCents: number | null;
   priceProposalCents: number | null;
@@ -28,7 +29,7 @@ export type ChangesValues = {
   newReturnLocation: string | null;
   agreementText: string | null;
 };
-export type CurrentValues = { endAt: string; totalEur: string; kmIncludedPerDay: number; extraKmRateEur: string; kmPolicy: string; kmPolicyLabel: string; depositEur: string; returnLocation: string };
+export type CurrentValues = { startAt: string; canChangeStart: boolean; endAt: string; totalEur: string; kmIncludedPerDay: number; extraKmRateEur: string; kmPolicy: string; kmPolicyLabel: string; depositEur: string; returnLocation: string };
 
 const eur = (cents: number) => (cents / 100).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -48,6 +49,7 @@ function Toggle({ id, label, checked, onChange, children }: { id: string; label:
 export function ChangesForm({ action, values: v, current: c, locked }: { action: Action; values: ChangesValues; current: CurrentValues; locked: boolean }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   const [period, setPeriod] = useState(!!v.newEndAt);
+  const [start, setStart] = useState(!!v.newStartAt);
   const [price, setPrice] = useState(v.priceDeltaCents != null);
   const [km, setKm] = useState(v.newKmIncludedPerDay != null || !!v.newExtraKmRate || !!v.newKmPolicy);
   const [kmPolicy, setKmPolicy] = useState(v.newKmPolicy ?? "");
@@ -59,6 +61,15 @@ export function ChangesForm({ action, values: v, current: c, locked }: { action:
   return (
     <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
       <fieldset disabled={pending || locked} className="flex flex-col gap-3">
+        {c.canChangeStart && (
+          <Toggle id="changeStart" label="Mietbeginn / Abholung verschieben (vor der Übergabe)" checked={start} onChange={setStart}>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field label="Bisher"><div className="input bg-panel-2 font-mono tnum">{c.startAt}</div></Field>
+              <Field label="Neue Abholung" htmlFor="newStartAt"><input id="newStartAt" name="newStartAt" type="datetime-local" defaultValue={v.newStartAt} className="input tnum" required={start} /></Field>
+            </div>
+            <p className="text-xs text-ink-3">Der Originalvertrag bleibt unverändert. Verfügbarkeit und Preisvorschlag (eingefrorene Preislogik des Vertrags) werden für den neuen Zeitraum geprüft.</p>
+          </Toggle>
+        )}
         <Toggle id="changePeriod" label="Mietdauer / geplante Rückgabe ändern" checked={period} onChange={setPeriod}>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Bisher"><div className="input bg-panel-2 font-mono tnum">{c.endAt}</div></Field>
@@ -66,11 +77,16 @@ export function ChangesForm({ action, values: v, current: c, locked }: { action:
           </div>
           <p className="text-xs text-ink-3">Die Verfügbarkeit des Fahrzeugs wird beim Speichern und erneut beim Unterschreiben geprüft. {AMENDMENT_HELP.SHORTEN}</p>
           {v.priceProposalCents != null && (
-            <p className="text-sm rounded-md bg-info-soft text-info px-3 py-2">Vorschlag der Preislogik dieses Vertrags für den neuen Zeitraum: <b className="font-mono tnum">{v.priceProposalCents >= 0 ? "+" : "−"}{eur(Math.abs(v.priceProposalCents))} €</b>. {price ? "" : "Zum Übernehmen „Mietpreis ändern“ anhaken."}</p>
+            <p className="text-sm rounded-md bg-info-soft text-info px-3 py-2">Vorschlag der Preislogik dieses Vertrags für den neuen Zeitraum: <b className="font-mono tnum">{v.priceProposalCents >= 0 ? "+" : "−"}{eur(Math.abs(v.priceProposalCents))} €</b>. {price || locked ? "" : "Zum Übernehmen „Mietpreis ändern“ anhaken."}</p>
           )}
         </Toggle>
 
-        <Toggle id="changePrice" label="Mietpreis ändern" checked={price} onChange={setPrice}>
+        <Toggle id="changePrice" label="Mietpreis ändern" checked={price} onChange={(on) => {
+          // Befehl 28: der Vorschlag entsteht oft erst nach dem Speichern des Zeitraums – das Vorzeichen folgt ihm beim Öffnen
+          // (eine Minderung darf nie als Aufschlag vorbelegt sein); ein bereits gespeicherter Preis bleibt unverändert
+          if (on && v.priceDeltaCents == null && v.priceProposalCents != null) setSign(v.priceProposalCents < 0 ? "-" : "+");
+          setPrice(on);
+        }}>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <Field label="Bisher (Gesamtpreis)"><div className="input bg-panel-2 font-mono tnum">{c.totalEur} €</div></Field>
             <Field label="Änderung" htmlFor="priceDelta">
@@ -82,7 +98,7 @@ export function ChangesForm({ action, values: v, current: c, locked }: { action:
                 <input id="priceDelta" name="priceDelta" inputMode="decimal" defaultValue={delta != null ? eur(Math.abs(delta)) : ""} placeholder="0,00" className="input tnum flex-1" required={price} />
               </div>
             </Field>
-            <Field label="Begründung" htmlFor="priceReason" hint={v.priceProposalCents != null ? "Pflicht, wenn vom Vorschlag abweichend" : "Pflicht bei manueller Preisänderung"}><input id="priceReason" name="priceReason" defaultValue={v.priceReason} maxLength={300} className="input" /></Field>
+            <Field label="Begründung" htmlFor="priceReason" hint={v.priceProposalCents != null ? "Pflicht, wenn vom Vorschlag abweichend und bei jeder Preisreduktion" : "Pflicht bei manueller Preisänderung"}><input id="priceReason" name="priceReason" defaultValue={v.priceReason} maxLength={300} className="input" /></Field>
           </div>
         </Toggle>
 
