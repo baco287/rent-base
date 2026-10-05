@@ -4,8 +4,9 @@ import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { Card, Chip } from "@/components/ui";
-import { DEPOSIT_EVENT_TYPES, DEPOSIT_OFFSET_LABEL, DEPOSIT_OFFSET_METHOD, depositStatusLabel, INVOICE_PAYMENT_STATUS, PAYMENT_METHODS, RENTAL_PAYMENT_STATUS, type DepositEventType, type PaymentMethod, invoiceKindWord, isSideInvoice } from "@/lib/constants";
+import { DEPOSIT_EVENT_TYPES, DEPOSIT_OFFSET_LABEL, DEPOSIT_OFFSET_METHOD, depositStatusLabel, INVOICE_PAYMENT_STATUS, PAYMENT_METHODS, RENTAL_PAYMENT_STATUS, type DepositEventType, type PaymentMethod, invoiceKindWord, isSideInvoice, recipientRoleOf } from "@/lib/constants";
 import { depositView } from "@/lib/deposits";
+import { ACCIDENT_BILLING_WHERE } from "@/lib/accident-replacement-events";
 import { depositOffsetOptions } from "@/lib/deposit-offset";
 import { fmtDateTime, fmtEur } from "@/lib/format";
 import { fmtCents } from "@/lib/money";
@@ -178,25 +179,34 @@ export async function RentalPaymentsPanel({ tenantId, bookingId, role }: { tenan
 
 const depositTone = (status: string) => (status === "RELEASED" ? "good" : status === "RECEIVED" ? "info" : status === "EXPECTED" ? "amber" : status === "RETAINED" ? "bad" : "amber");
 
-/** Kaution: vereinbart, erhalten, freigegeben, einbehalten, Status, Aktionen und Historie. */
-export async function DepositPanel({ tenantId, bookingId, role, charges }: { tenantId: string; bookingId: string; role: string; charges?: { count: number; total: number } | null }) {
+/**
+ * Kaution: vereinbart, erhalten, freigegeben, einbehalten, Status, Aktionen und Historie.
+ * Praxistest-Korrekturrunde: dieselbe Komponente auch in der Unfallersatz-Fallakte (accident). Die Kaution des Mieters bleibt von
+ * Rechnungen an die Versicherung bzw. andere Empfänger getrennt – sie erscheinen hier nicht (auch nicht „zur Einordnung“).
+ * accident.caseClosed: Verrechnung mit Unfallersatz-Rechnungen ist bei geschlossenem Fall serverseitig gesperrt und wird nicht angeboten.
+ */
+export async function DepositPanel({ tenantId, bookingId, role, charges, accident = null }: { tenantId: string; bookingId: string; role: string; charges?: { count: number; total: number } | null; accident?: { caseClosed: boolean } | null }) {
   const v = await depositView(tenantId, bookingId);
   const canDecide = role !== "YARD";
   // Befehl 20.9: Ohne Vertrag gibt es eine Kautionszeile nur, wenn der Eingang schon bei der Buchungsanlage dokumentiert wurde
   if (!v.contractSigned && !v.deposit) {
     return (
       <Card title="Kaution">
-        <div className="p-4 text-sm text-ink-3">Die vereinbarte Kaution ergibt sich aus dem abgeschlossenen Mietvertrag. Ein bereits erhaltener Betrag kann bei der Anlage der Buchung dokumentiert werden.</div>
+        <div className="p-4 text-sm text-ink-3">{accident ? "Die vereinbarte Kaution ergibt sich aus dem abgeschlossenen Mietvertrag. Der Eingang wird danach hier dokumentiert (spätestens bei der Übergabe)." : "Die vereinbarte Kaution ergibt sich aus dem abgeschlossenen Mietvertrag. Ein bereits erhaltener Betrag kann bei der Anlage der Buchung dokumentiert werden."}</div>
       </Card>
     );
   }
-  const invoices = await db.invoice.findMany({ where: { tenantId, bookingId, status: "FINALIZED", documentType: "INVOICE" }, orderBy: { createdAt: "asc" }, select: { id: true, number: true, kind: true, currentVersion: { select: { grossTotal: true } }, grossTotal: true } });
+  // Praxistest: nur Rechnungen an den Mieter (Standardmieten: alle) – Versicherungsrechnungen gehören nicht zur Kaution; der Hof sieht
+  // keine Unfallersatz-Abrechnung (wie in den übrigen Listen)
+  const invoices = (await db.invoice.findMany({ where: { tenantId, bookingId, status: "FINALIZED", documentType: "INVOICE", ...(role === "YARD" ? { NOT: ACCIDENT_BILLING_WHERE } : {}) }, orderBy: { createdAt: "asc" }, select: { id: true, number: true, kind: true, currentVersion: { select: { grossTotal: true, customerSnapshot: true } }, grossTotal: true } }))
+    .filter((i) => recipientRoleOf(i.currentVersion?.customerSnapshot as { recipientRole?: string } | null) === "RENTER");
   const invoice = invoices[0] ?? null;
   const afterReturn = v.bookingStatus === "RETURNED" || v.bookingStatus === "CANCELLED";
   const nonce = randomUUID();
   const now = toDateTimeInputValue(new Date());
   // Befehl 20.7: bewusste Verrechnung mit einer offenen Forderung – nur nach Rückgabe, nur mit verfügbarer Kaution
-  const offset = afterReturn && canDecide && v.remainingCents > 0 ? await depositOffsetOptions(tenantId, bookingId) : null;
+  const offset0 = afterReturn && canDecide && v.remainingCents > 0 ? await depositOffsetOptions(tenantId, bookingId) : null;
+  const offset = offset0 && accident?.caseClosed ? { ...offset0, invoices: offset0.invoices.filter((i) => i.kind !== "ACCIDENT_REPLACEMENT") } : offset0;
   return (
     <Card title="Kaution" right={<Chip tone={depositTone(v.status)}>{depositStatusLabel(v.status, v)}</Chip>}>
       <div className="p-4 flex flex-col gap-4">
@@ -218,6 +228,7 @@ export async function DepositPanel({ tenantId, bookingId, role, charges }: { ten
           <p className="rounded-md bg-info-soft text-info px-3 py-2 text-sm">Freigegeben – Auszahlung nicht in Rent-Base dokumentiert. Wurde die Kaution bereits außerhalb zurückgezahlt, kann die Auszahlung unten als „historisch nacherfasst“ dokumentiert werden.</p>
         )}
         {v.expectedCents === 0 && <p className="text-sm text-ink-3">Laut Mietvertrag wurde keine Kaution vereinbart.</p>}
+        {accident && <p className="text-xs text-ink-3">Unfallersatz: Die Kaution gehört zum Mieter. Rechnungen an die Versicherung bzw. andere Empfänger sind davon getrennt, erscheinen hier nicht und werden nie mit der Kaution verrechnet.</p>}
         {v.expectedCents > 0 && v.receivedCents < v.expectedCents && v.bookingStatus !== "CANCELLED" && (
           <p role="alert" className="rounded-md bg-amber-soft text-amber px-3 py-2 text-sm font-medium">Kaution laut Vertrag noch nicht {v.receivedCents > 0 ? "vollständig " : ""}als erhalten dokumentiert.</p>
         )}

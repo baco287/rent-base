@@ -294,8 +294,8 @@ export type ReceivableSummary = {
 };
 
 /** Kennzahlen für Dashboard und „Heute“ – dieselbe Ableitung wie die Forderungsübersicht. */
-export async function receivablesSummary(tenantId: string, now = new Date()): Promise<ReceivableSummary> {
-  const rows = await db.invoice.findMany({ where: mainWhere(tenantId), select: mainSelect });
+export async function receivablesSummary(tenantId: string, now = new Date(), opts: { /** Praxistest: Hof-Sicht ohne Unfallersatz-Abrechnung (wie listReceivables) */ hideAccidentBilling?: boolean } = {}): Promise<ReceivableSummary> {
+  const rows = await db.invoice.findMany({ where: { ...mainWhere(tenantId), ...(opts.hideAccidentBilling ? { NOT: ACCIDENT_BILLING_WHERE } : {}) }, select: mainSelect });
   const all = (await buildReceivables(db, tenantId, rows, now)).filter((r) => r.totalOpenCents > 0);
   const count = (fn: (r: Receivable) => boolean) => all.filter(fn).length;
   return {

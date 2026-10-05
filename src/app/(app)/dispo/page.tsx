@@ -2,8 +2,10 @@ import Link from "next/link";
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { customerName, fmtDateTime, fmtTime, toDateInput } from "@/lib/format";
-import { Content, Empty, PageHeader, Plate } from "@/components/ui";
+import { Chip, Content, Empty, PageHeader, Plate } from "@/components/ui";
 import { AGREED_EXTENSION_SELECT, agreedEndOf, isOverdue, occupiedUntil, occupyingWhere } from "@/lib/bookings";
+import { isFeatureEnabled } from "@/lib/features";
+import { accidentBarTime, accidentBarTitle, isAccidentRental } from "@/lib/accident-dispo";
 
 export const metadata = { title: "Dispo-Kalender" };
 
@@ -34,15 +36,19 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
   const to = addDays(from, DAYS);
   const days = Array.from({ length: DAYS }, (_, i) => addDays(from, i));
 
-  const [vehicles, bookings] = await Promise.all([
+  const [vehicles, bookings, accidentOn] = await Promise.all([
     db.vehicle.findMany({ where: { tenantId: tenant.id, status: { not: "INACTIVE" } }, include: { group: true }, orderBy: [{ group: { sortOrder: "asc" } }, { plate: "asc" }] }),
     db.booking.findMany({
       // Befehl 27: überfällige laufende Mieten bleiben sichtbar, bis die Rückgabe abgeschlossen ist (zentrale Definition)
       where: { tenantId: tenant.id, ...occupyingWhere(from, to, new Date()) },
       // Befehl 28: vereinbarte, noch nicht unterschriebene Verlängerung (reserviert das Fahrzeug bereits)
-      include: { customer: true, contractAmendments: AGREED_EXTENSION_SELECT },
+      include: { customer: true, contractAmendments: AGREED_EXTENSION_SELECT, accidentCase: { select: { id: true, caseNumber: true } } },
     }),
+    // Praxistest: Link in die Unfallersatz-Fallakte nur mit freigeschaltetem Modul (die Kennzeichnung „Unfallersatz/UE“ immer)
+    isFeatureEnabled(tenant.id, "ACCIDENT_REPLACEMENT"),
   ]);
+  const accidentRows = bookings.filter((b) => isAccidentRental(b) && b.accidentCase).sort((a, b) => a.startAt.getTime() - b.startAt.getTime());
+  const plateOf = new Map(vehicles.map((v) => [v.id, v.plate]));
   const byVehicle = new Map<string, typeof bookings>();
   for (const b of bookings) {
     const list = byVehicle.get(b.vehicleId) ?? [];
@@ -70,6 +76,7 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
           <span><i className="inline-block size-3 rounded-sm align-[-2px] mr-1.5 bg-bad-soft border border-bad" />Rückgabe überfällig</span>
           <span><i className="inline-block size-3 rounded-sm align-[-2px] mr-1.5 border border-amber" style={{ backgroundImage: "repeating-linear-gradient(135deg, var(--amber-soft) 0 3px, transparent 3px 6px)" }} />Verlängerung vereinbart – Unterschrift fehlt</span>
           <span><i className="inline-block size-3 rounded-sm align-[-2px] mr-1.5 bg-panel-2 border border-line" style={{ backgroundImage: "repeating-linear-gradient(135deg, transparent 0 3px, var(--line) 3px 6px)" }} />Werkstatt / gesperrt</span>
+          <span><b className="font-semibold text-ink">UE</b> = Unfallersatz (im Balken als Text gekennzeichnet)</span>
         </div>
 
         {vehicles.length === 0 ? (
@@ -131,6 +138,8 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
                         const extension = agreedEnd && b.endAt && agreedEnd > b.endAt && !overdue ? { from: pct(b.endAt), to: pct(agreedEnd) } : null;
                         const right = extension && b.endAt ? pct(b.endAt) : pct(occupiedUntil(occ, now) ?? to);
                         const endText = b.endAt ? fmtTime(b.endAt) : "offen";
+                        // Praxistest: Unfallersatz textlich kennzeichnen (Farbe bleibt Status); breite Balken „Unfallersatz“, schmale „UE“
+                        const ue = isAccidentRental(b);
                         const cls = overdue
                           ? "bg-bad-soft text-bad border-bad/50"
                           : b.status === "ACTIVE"
@@ -150,13 +159,14 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
                           )}
                           <Link
                             href={`/buchungen/${b.id}`}
-                            title={`${b.number} · ${customerName(b.customer)} · ${fmtTime(b.startAt)} bis ${endText}${overdue ? ` · Rückgabe überfällig (geplant ${fmtDateTime(b.endAt)})` : ""}`}
-                            className={`absolute top-2 h-8 rounded-md border px-2 flex items-center gap-2 font-medium whitespace-nowrap overflow-hidden text-[12px] ${cls}`}
+                            title={ue ? accidentBarTitle(b, b.accidentCase?.caseNumber ?? null, customerName(b.customer), overdue) : `${b.number} · ${customerName(b.customer)} · ${fmtTime(b.startAt)} bis ${endText}${overdue ? ` · Rückgabe überfällig (geplant ${fmtDateTime(b.endAt)})` : ""}`}
+                            className={`absolute top-2 h-8 rounded-md border px-2 flex items-center gap-2 font-medium whitespace-nowrap overflow-hidden text-[12px] ${cls}${ue ? " @container" : ""}`}
                             style={{ left: `calc(${left}% + 2px)`, width: `calc(${Math.max(right - left, 1.5)}% - 4px)` }}
                           >
                             {overdue && <b className="font-semibold">Rückgabe überfällig</b>}
+                            {ue && <b className="font-semibold"><span className="@[18rem]:hidden">UE<span className="sr-only"> (Unfallersatz)</span></span><span className="hidden @[18rem]:inline">Unfallersatz</span><span aria-hidden="true"> ·</span></b>}
                             {customerName(b.customer)}
-                            <small className="opacity-80 font-normal">{overdue ? `geplant ${fmtDateTime(agreedEnd && b.endAt && agreedEnd > b.endAt ? agreedEnd : b.endAt)}` : b.endAt ? fmtTime(b.startAt) : `${fmtTime(b.startAt)} · Mietende offen`}</small>
+                            <small className="opacity-80 font-normal">{overdue ? `geplant ${fmtDateTime(agreedEnd && b.endAt && agreedEnd > b.endAt ? agreedEnd : b.endAt)}` : ue ? accidentBarTime(b, from) : b.endAt ? fmtTime(b.startAt) : `${fmtTime(b.startAt)} · Mietende offen`}</small>
                           </Link>
                           </span>
                         );
@@ -168,7 +178,28 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
             </div>
           </div>
         )}
-        <p className="text-xs text-ink-3 max-w-[70ch]">Klick auf einen Balken öffnet die Buchung, Klick auf einen Tag legt eine neue Buchung an diesem Tag an. Doppelbelegungen werden beim Speichern abgelehnt.</p>
+        {/* Praxistest: Unfallersatzmieten im Zeitraum mit Weg in die Fallakte (der Balken führt weiterhin zur Buchung). Nur Fallnummer,
+            Fahrzeug, Kunde und Zeitraum – keine Versicherungs- oder Finanzdaten. */}
+        {accidentOn && accidentRows.length > 0 && (
+          <section id="unfallersatz" aria-label="Unfallersatz im Zeitraum" className="card scroll-mt-20">
+            <div className="px-4 pt-3 pb-1 flex items-center gap-2"><h2 className="text-sm font-semibold">Unfallersatz im Zeitraum</h2><Chip tone="info">{accidentRows.length}</Chip></div>
+            <ul className="divide-y divide-line-soft">
+              {accidentRows.map((b) => (
+                <li key={b.id} className="px-4 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm">
+                  <Chip tone="info">Unfallersatz {b.accidentCase!.caseNumber}</Chip>
+                  {plateOf.has(b.vehicleId) && <Plate>{plateOf.get(b.vehicleId) as string}</Plate>}
+                  <span className="font-medium min-w-0 break-words">{customerName(b.customer)}</span>
+                  <span className="text-ink-3 min-w-0">{b.status === "ACTIVE" ? "unterwegs" : "reserviert"} · ab {fmtDateTime(b.startAt)} · {b.endAt ? `geplant bis ${fmtDateTime(b.endAt)}` : "Mietende offen"}</span>
+                  <span className="flex flex-wrap gap-2 sm:ml-auto">
+                    <Link href={`/unfallersatz/${b.accidentCase!.id}`} className="btn btn-primary !py-1.5 text-xs">Unfallersatzfall öffnen</Link>
+                    <Link href={`/buchungen/${b.id}`} className="btn !py-1.5 text-xs">Buchung {b.number}</Link>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        <p className="text-xs text-ink-3 max-w-[70ch]">Klick auf einen Balken öffnet die Buchung, Klick auf einen Tag legt eine neue Buchung an diesem Tag an. Doppelbelegungen werden beim Speichern abgelehnt.{accidentOn && accidentRows.length > 0 ? " Unfallersatzfälle öffnen sich über die Liste „Unfallersatz im Zeitraum“." : ""}</p>
       </Content>
     </>
   );

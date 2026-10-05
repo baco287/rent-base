@@ -30,6 +30,7 @@ import { accidentBillingOf, type AccidentBillingType } from "@/lib/constants";
 import { MAX_DOCUMENT_BYTES, assertKeyBelongsToTenant } from "@/lib/storage";
 import { rentValue } from "@/lib/accident-pricing";
 import { toDateInputValue } from "@/lib/time";
+import { securityDepositFinancials, type DepositFinancials } from "@/lib/deposits";
 
 type Tx = Prisma.TransactionClient;
 type Client = Tx | typeof db;
@@ -827,8 +828,28 @@ export function followUpDue(dueAt: Date, now = new Date()): "OVERDUE" | "TODAY" 
   return due < today ? "OVERDUE" : due === today ? "TODAY" : "LATER";
 }
 
+/**
+ * Praxistest-Korrekturrunde: Kaution des Mieters in der Fallakte – nur aus der bestehenden Kautionsrechnung (deposits.ts:
+ * securityDepositFinancials), keine eigene Kautionslogik. Getrennt von jeder Unfallersatz-Rechnung (keine Verrechnung).
+ * - DEPOSIT_OPEN: nach der Rückgabe (bzw. Storno) erhaltene Kaution, die weder freigegeben noch einbehalten oder verrechnet ist
+ * - DEPOSIT_PAYOUT_OPEN: freigegeben, aber noch nicht (vollständig) ausgezahlt
+ * Während der Miete ist eine gehaltene Kaution normal und erzeugt keinen Hinweis.
+ */
+export type CaseDeposit = Pick<DepositFinancials, "expectedCents" | "receivedCents" | "remainingCents" | "payoutRemainingCents">;
+export function depositSignals(d: CaseDeposit | null | undefined, bookingStatus: string): { code: "DEPOSIT_OPEN" | "DEPOSIT_PAYOUT_OPEN"; step: string; close: string }[] {
+  if (!d) return [];
+  const out: { code: "DEPOSIT_OPEN" | "DEPOSIT_PAYOUT_OPEN"; step: string; close: string }[] = [];
+  if ((bookingStatus === "RETURNED" || bookingStatus === "CANCELLED") && d.remainingCents > 0) {
+    out.push({ code: "DEPOSIT_OPEN", step: `Kaution prüfen: ${fmtCents(d.remainingCents)} erhalten, noch nicht freigegeben oder einbehalten.`, close: "Kaution noch offen – Freigabe oder Einbehalt prüfen." });
+  }
+  if (d.payoutRemainingCents > 0) {
+    out.push({ code: "DEPOSIT_PAYOUT_OPEN", step: `Kautionsauszahlung offen: ${fmtCents(d.payoutRemainingCents)} freigegeben, noch nicht ausgezahlt.`, close: `Kautionsauszahlung offen: ${fmtCents(d.payoutRemainingCents)} freigegeben, noch nicht ausgezahlt.` });
+  }
+  return out;
+}
+
 /** Hinweise aus realen Daten – kein separat gepflegter Status. */
-export function nextSteps(c: Pick<CaseRow, "id" | "status" | "insurerName" | "insurerClaimNumber" | "liabilityStatus" | "bookingId">, b: { status: string; endAt: Date | null; actualReturnAt?: Date | null; contract: { status: string } | null; handovers: { type: string; status: string }[] }, fin: CaseFinancials, openFollowUps: readonly { dueAt: Date }[], now = new Date()): NextStep[] {
+export function nextSteps(c: Pick<CaseRow, "id" | "status" | "insurerName" | "insurerClaimNumber" | "liabilityStatus" | "bookingId">, b: { status: string; endAt: Date | null; actualReturnAt?: Date | null; contract: { status: string } | null; handovers: { type: string; status: string }[]; /** Praxistest: Kaution des Mieters (optional) */ depositState?: CaseDeposit | null }, fin: CaseFinancials, openFollowUps: readonly { dueAt: Date }[], now = new Date()): NextStep[] {
   const out: NextStep[] = [];
   const bookingHref = `/buchungen/${c.bookingId}`;
   const billingHref = `/unfallersatz/${c.id}?tab=abrechnung`;
@@ -853,6 +874,7 @@ export function nextSteps(c: Pick<CaseRow, "id" | "status" | "insurerName" | "in
   if (b.status === "ACTIVE" && fin.drafts > 0) out.push({ code: "INVOICE_DRAFT", text: `${fin.drafts} Rechnungsentwurf${fin.drafts === 1 ? "" : "e"} offen.`, tone: "amber", href: billingHref });
   if (fin.active > 0 && fin.economicOpenCents > 0) out.push({ code: fin.paidCents > 0 ? "PARTIALLY_PAID" : "INVOICE_OPEN", text: `${fin.paidCents > 0 ? "Rechnung teilweise bezahlt" : "Rechnung offen"}: ${fmtCents(fin.economicOpenCents)} offen${fin.reducedCents > 0 ? ` (dokumentierte Kürzungen ${fmtCents(fin.reducedCents)})` : ""}.`, tone: "amber", href: billingHref });
   for (const w of financeWarnings(fin)) out.push({ ...w, tone: w.code === "REDUCTION_OPEN" || w.code === "FEES_OPEN" ? "amber" : "bad", href: billingHref });
+  for (const d of depositSignals(b.depositState, b.status)) out.push({ code: d.code, text: d.step, tone: "amber", href: `/unfallersatz/${c.id}?tab=miete#kaution` });
   const due = openFollowUps.map((f) => followUpDue(f.dueAt, now));
   const overdueCount = due.filter((d) => d === "OVERDUE").length, todayCount = due.filter((d) => d === "TODAY").length;
   if (overdueCount > 0) out.push({ code: "FOLLOW_UP_OVERDUE", text: `${overdueCount} Wiedervorlage${overdueCount === 1 ? "" : "n"} überfällig.`, tone: "bad" });
@@ -871,6 +893,8 @@ export async function closeWarnings(tenantId: string, caseId: string, client: Cl
   if (!c) throw new DomainError("Unfallersatzfall nicht gefunden.");
   const fin = await caseFinancials(tenantId, c.bookingId, client);
   const openFollowUps = await client.caseFollowUp.count({ where: { tenantId, caseId: c.id, status: "OPEN" } });
+  // Praxistest: Kaution des Mieters – Hinweis, keine Sperre (Kautionsvorgänge bleiben nach dem Abschluss möglich)
+  const deposit = await securityDepositFinancials(tenantId, c.bookingId, client);
   const w: CloseWarning[] = [];
   if (c.booking.status === "RESERVED" || c.booking.status === "ACTIVE") w.push({ code: "RENTAL_RUNNING", text: c.booking.status === "ACTIVE" ? "Die Miete läuft noch (Fahrzeug nicht zurückgegeben)." : "Die Buchung ist noch reserviert (Fahrzeug nicht übergeben)." });
   if (c.booking.status !== "CANCELLED" && c.booking.handovers.length === 0) w.push({ code: "NO_RETURN", text: "Es gibt kein abgeschlossenes Rückgabeprotokoll." });
@@ -879,6 +903,7 @@ export async function closeWarnings(tenantId: string, caseId: string, client: Cl
   if (fin.drafts > 0) w.push({ code: "INVOICE_DRAFT", text: `${fin.drafts} Rechnungsentwurf${fin.drafts === 1 ? "" : "e"} offen.` });
   if (fin.economicOpenCents > 0) w.push({ code: "OPEN_AMOUNT", text: `Offene Forderung ${fmtCents(fin.economicOpenCents)}.` });
   w.push(...financeWarnings(fin));
+  for (const d of depositSignals(deposit, c.booking.status)) w.push({ code: d.code, text: d.close });
   if (openFollowUps > 0) w.push({ code: "FOLLOW_UPS", text: `${openFollowUps} offene Wiedervorlage${openFollowUps === 1 ? "" : "n"}.` });
   if (c.liabilityStatus === "UNKNOWN" || c.liabilityStatus === "REPORTED" || c.liabilityStatus === "UNCLEAR") w.push({ code: "LIABILITY_OPEN", text: `Haftung: ${ACCIDENT_LIABILITY_STATUS[c.liabilityStatus as AccidentLiabilityStatus]}.` });
   return w;
@@ -993,4 +1018,110 @@ export async function accidentCaseCounts(tenantId: string): Promise<CaseCounts> 
 /** Offene Wiedervorlagen (für „Heute“), fällige zuerst. */
 export async function dueFollowUps(tenantId: string, until: Date, take = 100) {
   return db.caseFollowUp.findMany({ where: { tenantId, status: "OPEN", dueAt: { lt: until } }, include: { case: { select: { id: true, caseNumber: true, bookingId: true, booking: { select: { customer: { select: { type: true, firstName: true, lastName: true, companyName: true } }, vehicle: { select: { plate: true } } } } } } }, orderBy: { dueAt: "asc" }, take });
+}
+
+// ---------------------------------------------------------------------------
+// Praxistest-Korrekturrunde: Unfallersatz auf „Heute“ – offene Fälle (Fallstatus OPEN, nicht Buchungen) und ihr Handlungsbedarf
+// aus derselben Ableitung wie die Fallakte (caseFinancials + nextSteps). Keine zweite „Nächste Schritte“-Logik, kein Statusfeld.
+// ---------------------------------------------------------------------------
+
+/**
+ * Schritte der Fallakte, die auf „Heute“ als Handlungsbedarf erscheinen. Bewusst nicht: Vertrag, Übergabe, Rückgabe, Überfälligkeit
+ * (eigene Miet-Aufgaben des Dashboards), offenes Mietende (normal laufende Miete), Erstattung (Rechnungsaufgabe), Kaution
+ * (bestehende Kautionsaufgaben und -kennzahlen) und Wiedervorlagen (je Wiedervorlage eine eigene Aufgabe).
+ */
+export const DASHBOARD_CASE_STEPS = new Set([
+  "INSURER_MISSING", "CLAIM_NUMBER_MISSING", "LIABILITY_OPEN",
+  "INVOICE_MISSING", "INVOICE_DRAFT", "FINAL_INVOICE_MISSING", "INVOICE_OPEN", "PARTIALLY_PAID",
+  "DOUBLE_CLAIM", "REMAINDER_ORPHAN", "REMAINDER_EXCESS", "REDUCTION_OPEN", "FEES_OPEN", "BILLED_BEYOND_RETURN", "BILLING_GAP",
+]);
+const TO_INVOICE_STEPS = new Set(["INVOICE_MISSING", "INVOICE_DRAFT", "FINAL_INVOICE_MISSING"]);
+/** Statuswort der Aufgabe (Reihenfolge = Vorrang, wenn ein Fall mehrere Punkte hat) */
+const DASHBOARD_STEP_STATUS: [string, string][] = [
+  ["DOUBLE_CLAIM", "Doppelforderung"], ["BILLED_BEYOND_RETURN", "Prüfen"], ["BILLING_GAP", "Prüfen"], ["REMAINDER_ORPHAN", "Prüfen"], ["REMAINDER_EXCESS", "Prüfen"],
+  ["INVOICE_MISSING", "Abzurechnen"], ["FINAL_INVOICE_MISSING", "Schlussrechnung fehlt"], ["INVOICE_DRAFT", "Entwurf offen"],
+  ["REDUCTION_OPEN", "Kürzung ungeklärt"], ["PARTIALLY_PAID", "Teilbezahlt"], ["INVOICE_OPEN", "Rechnung offen"], ["FEES_OPEN", "Mahngebühren offen"],
+  ["INSURER_MISSING", "Versicherung fehlt"], ["CLAIM_NUMBER_MISSING", "Schadennummer fehlt"], ["LIABILITY_OPEN", "Haftung ungeklärt"],
+];
+const DAMAGE_TAB_STEPS = new Set(["INSURER_MISSING", "CLAIM_NUMBER_MISSING", "LIABILITY_OPEN"]);
+
+export type AccidentDashboardCase = { caseId: string; caseNumber: string; customerName: string; plate: string; returnedAt: Date | null; steps: NextStep[]; status: string; href: string };
+export type AccidentDashboardFollowUp = { id: string; title: string; dueAt: Date; due: "OVERDUE" | "TODAY" | "LATER"; assigneeName: string | null; caseId: string; caseNumber: string; customerName: string; plate: string };
+export type AccidentDashboard = {
+  /** offene Fälle (Fallstatus OPEN) */
+  open: number;
+  /** davon Miete läuft (Fahrzeug übergeben) bzw. reserviert */
+  running: number; reserved: number;
+  /** nur Vollsicht (Inhaber, Disposition) – für den Hof null: Abrechnungs-, Rechnungs- und Wiedervorlagenzahlen */
+  toInvoice: number | null; invoicesOpen: number | null; followUpsDue: number | null;
+  /** genau ein offener Fall: direkter Link in die Fallakte */
+  singleCaseId: string | null;
+  cases: AccidentDashboardCase[];
+  followUps: AccidentDashboardFollowUp[];
+};
+
+/**
+ * Kennzahl und Aufmerksamkeit für „Heute“. full = Vollsicht (Inhaber, Disposition): Finanzstand und Wiedervorlagen je Fall wie in
+ * der Fallakte. Ohne full (Hof, Supportmodus) werden Versicherung, Beträge und Wiedervorlagen gar nicht abgefragt.
+ * until: Wiedervorlagen bis zu diesem Zeitpunkt (Ende des gewählten Zeitraums) als Aufgaben.
+ */
+export async function accidentDashboard(tenantId: string, opts: { full: boolean; until: Date; now?: Date }): Promise<AccidentDashboard> {
+  const now = opts.now ?? new Date();
+  const cases = await db.accidentReplacementCase.findMany({
+    where: { tenantId, status: "OPEN" },
+    orderBy: { createdAt: "asc" },
+    take: 500,
+    select: {
+      id: true, caseNumber: true, status: true, bookingId: true,
+      ...(opts.full ? { insurerName: true, insurerClaimNumber: true, liabilityStatus: true } : {}),
+      booking: {
+        select: {
+          status: true, endAt: true, actualReturnAt: true,
+          contract: { select: { status: true } },
+          handovers: { where: { correctsId: null }, select: { type: true, status: true } },
+          customer: { select: { type: true, firstName: true, lastName: true, companyName: true } },
+          vehicle: { select: { plate: true } },
+        },
+      },
+      ...(opts.full ? { followUps: { where: { status: "OPEN" }, orderBy: { dueAt: "asc" }, select: { id: true, title: true, dueAt: true, assigneeName: true } } } : {}),
+    },
+  });
+  const running = cases.filter((c) => c.booking.status === "ACTIVE").length;
+  const reserved = cases.filter((c) => c.booking.status === "RESERVED").length;
+  const base = { open: cases.length, running, reserved, singleCaseId: cases.length === 1 ? cases[0].id : null };
+  if (!opts.full) return { ...base, toInvoice: null, invoicesOpen: null, followUpsDue: null, cases: [], followUps: [] };
+
+  // derselbe Finanzstand wie in der Fallakte (je Fall; offene Unfallersatzfälle sind wenige) – in kleinen Paketen
+  const fins = new Map<string, CaseFinancials>();
+  for (let i = 0; i < cases.length; i += 8) {
+    const part = cases.slice(i, i + 8);
+    const res = await Promise.all(part.map((c) => caseFinancials(tenantId, c.bookingId)));
+    part.forEach((c, k) => fins.set(c.id, res[k]));
+  }
+  const out: AccidentDashboardCase[] = [];
+  const followUps: AccidentDashboardFollowUp[] = [];
+  let toInvoice = 0, invoicesOpen = 0, followUpsDue = 0;
+  for (const c of cases) {
+    const full = c as typeof c & { insurerName: string | null; insurerClaimNumber: string | null; liabilityStatus: string; followUps: { id: string; title: string; dueAt: Date; assigneeName: string | null }[] };
+    const b = c.booking;
+    const steps = nextSteps({ id: c.id, status: c.status, bookingId: c.bookingId, insurerName: full.insurerName, insurerClaimNumber: full.insurerClaimNumber, liabilityStatus: full.liabilityStatus }, { status: b.status, endAt: b.endAt, actualReturnAt: b.actualReturnAt, contract: b.contract, handovers: b.handovers }, fins.get(c.id)!, full.followUps, now)
+      .filter((s) => DASHBOARD_CASE_STEPS.has(s.code));
+    const name = customerName(b.customer);
+    if (steps.some((s) => TO_INVOICE_STEPS.has(s.code))) toInvoice++;
+    if (steps.some((s) => s.code === "INVOICE_OPEN" || s.code === "PARTIALLY_PAID")) invoicesOpen++;
+    for (const f of full.followUps) {
+      const due = followUpDue(f.dueAt, now);
+      if (due !== "LATER") followUpsDue++;
+      if (f.dueAt < opts.until || due !== "LATER") followUps.push({ id: f.id, title: f.title, dueAt: f.dueAt, due, assigneeName: f.assigneeName, caseId: c.id, caseNumber: c.caseNumber, customerName: name, plate: b.vehicle.plate });
+    }
+    if (steps.length === 0) continue;
+    const lead = DASHBOARD_STEP_STATUS.find(([code]) => steps.some((s) => s.code === code));
+    const first = steps.find((s) => s.code === lead?.[0]) ?? steps[0];
+    out.push({
+      caseId: c.id, caseNumber: c.caseNumber, customerName: name, plate: b.vehicle.plate, returnedAt: b.actualReturnAt, steps,
+      status: lead?.[1] ?? "Prüfen",
+      href: first.href ?? `/unfallersatz/${c.id}${DAMAGE_TAB_STEPS.has(first.code) ? "?tab=schadenfall" : ""}`,
+    });
+  }
+  return { ...base, toInvoice, invoicesOpen, followUpsDue, cases: out, followUps };
 }

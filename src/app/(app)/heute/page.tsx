@@ -7,6 +7,7 @@ import { keyDropsToInspect } from "@/lib/key-drop";
 import { Card, Chip, Content, KPI, PageHeader, Plate } from "@/components/ui";
 import { caseCounts } from "@/lib/damage-cases";
 import { HORIZONS, loadDashboard, TASK_AREAS, TASK_GROUPS, type DashboardTask, type Horizon, type TaskGroup } from "@/lib/dashboard";
+import type { AccidentDashboard } from "@/lib/accident-replacement";
 import { zonedDayStartPlus } from "@/lib/time";
 import { OpenSearchButton } from "./quick-search";
 
@@ -89,6 +90,15 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
           <KPI label="Aktive Mieten" value={c.activeRentals} detail={`Auslastung 7 Tage ${utilization} % · ${vehicles.length} Fahrzeuge`} />
           <KPI label="Flotte" value={vehicles.length} detail={`${c.vehiclesInWorkshop} in Werkstatt`} />
         </div>
+        {/* Praxistest: Unfallersatz (nur mit freigeschaltetem Modul) – offene Fälle (Fallstatus, nicht Buchungen) mit Unterkennzahlen aus
+            denselben Daten wie die Fallakte; der Hof sieht nur Fallzahl und laufende Mieten */}
+        {d.accident && (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="col-span-2">
+              <KPI label="Unfallersatz" value={d.accident.open} detail={<AccidentKpiDetail a={d.accident} />} hot={(d.accident.toInvoice ?? 0) + (d.accident.followUpsDue ?? 0) > 0} />
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <KPI label="Offene Rechnungen" value={c.openInvoices} detail={<Link href="/rechnungen?filter=offen" className="underline">{fmtCents(c.openInvoiceCents)} offen</Link>} hot={c.openInvoices > 0} />
           <KPI label="Überfällige Rechnungen" value={c.overdueInvoices} detail={`${fmtCents(c.overdueInvoiceCents)} · Fälligkeit überschritten`} hot={c.overdueInvoices > 0} />
@@ -176,6 +186,24 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
         </Card>
         <p className="text-xs text-ink-3">Kalendertage gelten in Europe/Berlin. Beträge stammen aus der zentralen Belegsummierung; das Dashboard löst keine Mahnung, Gutschrift, Auszahlung, Kautionsfreigabe, Haftungsentscheidung oder Behördenantwort aus.</p>
       </Content>
+    </>
+  );
+}
+
+/** Praxistest: Unterzeile der Unfallersatz-Kennzahl – nur echte Zähler; Link in den einzigen offenen Fall bzw. zur Dispo-Liste */
+function AccidentKpiDetail({ a }: { a: AccidentDashboard }) {
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const parts = [
+    plural(a.running, "laufende Miete", "laufende Mieten"),
+    ...(a.reserved > 0 ? [`${a.reserved} reserviert`] : []),
+    ...(a.toInvoice !== null ? [`${a.toInvoice} abzurechnen`] : []),
+    ...(a.invoicesOpen !== null ? [plural(a.invoicesOpen, "Rechnung offen", "Rechnungen offen")] : []),
+    ...(a.followUpsDue !== null ? [plural(a.followUpsDue, "fällige Wiedervorlage", "fällige Wiedervorlagen")] : []),
+  ];
+  return (
+    <>
+      <span>{a.open === 1 ? "offener Fall" : "offene Fälle"} · {parts.join(" · ")}</span>
+      {a.singleCaseId ? <> · <Link href={`/unfallersatz/${a.singleCaseId}`} className="underline">Fall öffnen</Link></> : a.running + a.reserved > 0 ? <> · <Link href="/dispo#unfallersatz" className="underline">im Dispo-Kalender</Link></> : null}
     </>
   );
 }

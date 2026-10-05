@@ -21,6 +21,7 @@ import {
   updateWorkshopAction,
 } from "./actions";
 import { PaymentForm, ReasonForm } from "../../buchungen/[id]/finanzen/money-forms";
+import { DepositPanel } from "../../buchungen/[id]/finanzen/panels";
 import {
   AccidentDocumentUploader, AccidentEditor, AccidentInvoiceCreateForm, AdjustmentForm, CaseReasonForm, CloseCaseForm, RemainderForm, DamagedVehicleEditor, FollowUpActions, FollowUpCreateForm, InsurerEditor, LawyerEditor, LiabilityEditor, PlannedEndForm, ReopenCaseForm, WorkshopEditor,
 } from "./case-forms";
@@ -238,7 +239,7 @@ export async function DamageTab({ tenantId, h }: { tenantId: string; h: Header }
 // Miete
 // ---------------------------------------------------------------------------
 
-export async function RentalTab({ tenantId, h, access }: { tenantId: string; h: Header; access: CaseFileAccess }) {
+export async function RentalTab({ tenantId, h, access, role }: { tenantId: string; h: Header; access: CaseFileAccess; role: string }) {
   const r = await caseFileRental(tenantId, h, access);
   const b = h.booking;
   const bookingHref = `/buchungen/${b.id}`;
@@ -310,6 +311,14 @@ export async function RentalTab({ tenantId, h, access }: { tenantId: string; h: 
             <p className="text-xs text-ink-3">{r.tariff.frozen ? "Tarif laut unterschriebenem Mietvertrag – eingefroren, hier nur angezeigt." : "Tarif des Falls – wird mit dem Mietvertrag unterschrieben und danach eingefroren. Hier nur angezeigt."}</p>
           </div>
         </Card>
+      )}
+      {/* Praxistest: Kaution des Mieters – derselbe Kautionsbereich wie auf der Buchungsseite (Eingang, Freigabe, Einbehalt, Auszahlung;
+          Rollen und Prüfungen der bestehenden Kautionsaktionen). Getrennt von der Abrechnung mit der Versicherung. */}
+      {full && r.deposit && (
+        <section id="kaution" aria-label="Kaution" className="scroll-mt-20 xl:col-span-2 flex flex-col gap-2">
+          {h.status === "CLOSED" && <p className="rounded-md bg-panel-2 text-ink-2 px-3.5 py-2.5 text-sm">Der Fall ist abgeschlossen. Die Kaution des Mieters folgt weiter der Kautionslogik der Buchung: Eingang, Freigabe, Einbehalt und Auszahlung bleiben möglich; eine Verrechnung mit Unfallersatz-Rechnungen ist gesperrt.</p>}
+          <DepositPanel tenantId={tenantId} bookingId={b.id} role={role} charges={r.deposit.charges} accident={{ caseClosed: h.status === "CLOSED" }} />
+        </section>
       )}
     </div>
   );

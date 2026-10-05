@@ -18,6 +18,8 @@ import { customerName, fmtDate, fmtDateTime, fmtTime } from "@/lib/format";
 import { maintenanceCounts } from "@/lib/maintenance";
 import { fmtCents, type Cents } from "@/lib/money";
 import { openPayoutClaims } from "@/lib/payouts";
+import { isFeatureEnabled } from "@/lib/features";
+import { accidentDashboard, type AccidentDashboard } from "@/lib/accident-replacement";
 import { zonedDayRange, zonedDayStartPlus, zonedDaysBetween } from "@/lib/time";
 
 /** Zentrale Bedeutung von „bald“: innerhalb der nächsten 7 Kalendertage (Mieten, Rechnungen, Führerscheine). Behörden- und Wartungsfristen bringen ihre eigene Vorwarnung mit (deadlineInfo, dueStatus). */
@@ -39,8 +41,8 @@ export const TASK_GROUPS: { key: TaskGroup; label: string; tone: "bad" | "amber"
   { key: "SOON", label: "Bald", tone: "info" },
   { key: "NOTE", label: "Hinweise", tone: "grey" },
 ];
-export type TaskArea = "RENTAL" | "INVOICE" | "DEPOSIT" | "DAMAGE" | "MAINTENANCE" | "AUTHORITY" | "EMAIL" | "DOCUMENT" | "LICENSE" | "DRIVER_CHECK";
-export const TASK_AREAS: Record<TaskArea, string> = { RENTAL: "Miete", INVOICE: "Rechnung", DEPOSIT: "Kaution", DAMAGE: "Schaden", MAINTENANCE: "Wartung", AUTHORITY: "Behörde", EMAIL: "E-Mail", DOCUMENT: "Dokument", LICENSE: "Führerschein", DRIVER_CHECK: "Fahrerprüfung" };
+export type TaskArea = "RENTAL" | "ACCIDENT" | "INVOICE" | "DEPOSIT" | "DAMAGE" | "MAINTENANCE" | "AUTHORITY" | "EMAIL" | "DOCUMENT" | "LICENSE" | "DRIVER_CHECK";
+export const TASK_AREAS: Record<TaskArea, string> = { RENTAL: "Miete", ACCIDENT: "Unfallersatz", INVOICE: "Rechnung", DEPOSIT: "Kaution", DAMAGE: "Schaden", MAINTENANCE: "Wartung", AUTHORITY: "Behörde", EMAIL: "E-Mail", DOCUMENT: "Dokument", LICENSE: "Führerschein", DRIVER_CHECK: "Fahrerprüfung" };
 
 export type DashboardTask = {
   key: string;
@@ -72,6 +74,8 @@ export type Dashboard = {
   now: Date;
   /** Befehl 23: Forderungen und Mahnstufen – dieselbe Ableitung wie die Forderungsübersicht (lib/dunning.ts) */
   receivables: ReceivableSummary;
+  /** Praxistest: Unfallersatz (nur bei freigeschaltetem Modul) – offene Fälle und Handlungsbedarf aus der Fallakten-Ableitung */
+  accident: AccidentDashboard | null;
   horizon: Horizon;
   range: { start: Date; end: Date; horizonEnd: Date };
   tasks: DashboardTask[];
@@ -195,7 +199,7 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
   // --- Rechnungen: offen/überfällig nur bei offen > 0 (Guthaben oder gutgeschriebene Belege sind nie überfällig); Erstattungen aus derselben Summierung ---
   const fin = await financialsFor(tenantId, finalInvoices.map((i) => ({ id: i.id, grossTotal: i.currentVersion!.grossTotal })));
   // Befehl 23: nächster Mahnschritt je Rechnung aus der zentralen Forderungsableitung (keine eigene Logik hier)
-  const receivables = await receivablesSummary(tenantId, now);
+  const receivables = await receivablesSummary(tenantId, now, { hideAccidentBilling: opts.hideAccidentBilling });
   const dunningNext = new Map(receivables.actionable.map((a) => [a.invoiceId, a.next]));
   for (const i of finalInvoices) {
     const f = fin.get(i.id)!;
@@ -302,12 +306,27 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
   for (const v of versionsNoDoc.filter((x) => x.invoice.currentVersionId === x.id)) { counts.documentsMissing++; const t = (v.invoice.documentType === "CREDIT_NOTE" ? "CREDIT_NOTE" : v.invoice.documentType === "CANCELLATION" ? "CANCELLATION" : "INVOICE") as DocumentType; add({ area: "DOCUMENT", href: invoiceHref(v.invoice), key: `doc-invoice-${v.id}`, group: "NOTE", title: `${DOCUMENT_TYPES[t]}-PDF fehlt · ${v.invoice.number ?? ""}`, detail: `Fassung ${v.versionNo} · abgeschlossen ${fmtDate(v.invoice.finalizedAt)}`, at: v.invoice.finalizedAt, status: "PDF noch nicht erzeugt" }); }
   for (const p of payoutsNoDoc) { counts.documentsMissing++; add({ area: "DOCUMENT", href: `/auszahlungen/${p.id}`, key: `doc-payout-${p.id}`, group: "NOTE", title: `Auszahlungsbeleg-PDF fehlt · ${p.number ?? ""}`, detail: `erfasst ${fmtDate(p.completedAt ?? p.executedAt)}`, at: p.completedAt ?? p.executedAt, status: "PDF noch nicht erzeugt" }); }
 
+  // --- Unfallersatz (Praxistest): nur mit freigeschaltetem Modul. Handlungsbedarf je Fall aus derselben Ableitung wie die Fallakte
+  // (nextSteps), Wiedervorlagen einzeln nach Fälligkeit. Eine normal laufende Miete erzeugt keinen Eintrag (nur die Kennzahl).
+  // Hof/Supportmodus: nur Anzahl offener und laufender Fälle – keine Versicherungs-, Finanz- oder Wiedervorlagendaten.
+  const accident = (await isFeatureEnabled(tenantId, "ACCIDENT_REPLACEMENT")) ? await accidentDashboard(tenantId, { full: !opts.hideAccidentBilling, until: horizonEnd, now }) : null;
+  if (accident) {
+    for (const f of accident.followUps) {
+      const group: TaskGroup = f.due === "OVERDUE" ? "OVERDUE" : f.due === "TODAY" ? "TODAY" : "SOON";
+      if (group === "SOON" && days === 0) continue;
+      add({ area: "ACCIDENT", href: `/unfallersatz/${f.caseId}`, plate: f.plate, key: `accident-followup-${f.id}`, group, title: `Wiedervorlage · ${f.title}`, detail: `${f.caseNumber} · ${f.customerName}${f.assigneeName ? ` · ${f.assigneeName}` : ""} · fällig ${fmtDate(f.dueAt)}`, at: f.dueAt, status: group === "OVERDUE" ? "Überfällig" : group === "TODAY" ? "Heute fällig" : "Bald fällig" });
+    }
+    for (const c of accident.cases) {
+      add({ area: "ACCIDENT", href: c.href, plate: c.plate, key: `accident-case-${c.caseId}`, group: "NOTE", title: `${c.caseNumber} · ${c.customerName}`, detail: c.steps.map((s) => s.text).join(" · "), at: c.returnedAt, status: c.status });
+    }
+  }
+
   // Sortierung: innerhalb der Gruppe nach Zeitpunkt (ältester/dringendster zuerst), ohne Zeitpunkt zuletzt, dann Bereich und Titel
-  const areaOrder: TaskArea[] = ["RENTAL", "AUTHORITY", "INVOICE", "DEPOSIT", "MAINTENANCE", "DAMAGE", "LICENSE", "EMAIL", "DOCUMENT"];
+  const areaOrder: TaskArea[] = ["RENTAL", "ACCIDENT", "AUTHORITY", "INVOICE", "DEPOSIT", "MAINTENANCE", "DAMAGE", "LICENSE", "EMAIL", "DOCUMENT"];
   tasks.sort((a, b) => (a.at && b.at ? a.at.getTime() - b.at.getTime() : a.at ? -1 : b.at ? 1 : 0) || areaOrder.indexOf(a.area) - areaOrder.indexOf(b.area) || a.title.localeCompare(b.title, "de"));
   const groups: Record<TaskGroup, DashboardTask[]> = { OVERDUE: [], TODAY: [], SOON: [], NOTE: [] };
   for (const t of tasks) groups[t.group].push(t);
-  return { now, horizon, range: { start, end, horizonEnd }, tasks, groups, counts, events, receivables };
+  return { now, horizon, range: { start, end, horizonEnd }, tasks, groups, counts, events, receivables, accident };
 }
 
 const TEMPLATE_LABELS: Record<string, string> = { PICKUP_DOCUMENTS: "Unterlagen nach Übergabe", RETURN_DOCUMENTS: "Unterlagen nach Rückgabe", INVOICE: "Rechnung", INVOICE_CORRECTION: "Rechnungsberichtigung", CREDIT_NOTE: "Gutschrift", CANCELLATION: "Stornobeleg", PAYOUT_RECEIPT: "Auszahlungsbeleg", DUNNING_NOTICE: "Mahnschreiben" };

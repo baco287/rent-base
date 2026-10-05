@@ -14,6 +14,7 @@ import { db } from "@/lib/db";
 import { accidentRentState, contractDailyRateCents, contractTariffItems, rentValue, type RentState, type RentValue } from "@/lib/accident-pricing";
 import { loadEffectiveContract } from "@/lib/amendments";
 import { caseFinancials, closeWarnings, financeWarnings, finalInvoiceMissing, followUpDue, nextSteps, type CaseFinancials, type CloseWarning, type NextStep } from "@/lib/accident-replacement";
+import { securityDepositFinancials } from "@/lib/deposits";
 import { accidentInvoiceChain, previewAccidentInvoice, type AccidentInvoicePreview } from "@/lib/invoices";
 import { DomainError } from "@/lib/integrity";
 import { toDateTimeInputValue } from "@/lib/time";
@@ -166,7 +167,7 @@ export async function caseFileOverview(tenantId: string, h: Header, access: Case
       .map((s) => (s.code === "CONTRACT" ? { ...s, href: undefined, text: "Der Mietvertrag wird von der Disposition erstellt und abgeschlossen. Danach ist die Übergabe möglich." } : s));
     return { access, duration, rentValue: null as RentValue | null, pricesIncludeTax: null as boolean | null, steps, followUps: [] as FollowUpView[], closeWarnings: [] as CloseWarning[], assignees: [] as { id: string; name: string }[] };
   }
-  const [c, tariff, followUps, tenant, assignees] = await Promise.all([
+  const [c, tariff, followUps, tenant, assignees, depositState] = await Promise.all([
     db.accidentReplacementCase.findUniqueOrThrow({ where: { id: h.id }, select: { insurerName: true, insurerClaimNumber: true, liabilityStatus: true } }),
     caseTariff(tenantId, h.id, b.id),
     // offene ohne Begrenzung (nie abgeschnitten), erledigte/verworfene nur die letzten
@@ -176,10 +177,12 @@ export async function caseFileOverview(tenantId: string, h: Header, access: Case
     ]).then(([openRows, doneRows]) => [...openRows, ...doneRows]),
     db.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { pricesIncludeTax: true } }),
     db.user.findMany({ where: { tenantId, active: true, role: { in: ["OWNER", "DISPO"] } }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    // Praxistest: Kaution des Mieters aus der bestehenden Kautionsrechnung (Hinweise „Kaution prüfen“ / „Kautionsauszahlung offen“)
+    securityDepositFinancials(tenantId, b.id),
   ]);
   const value = rentValue({ from: b.actualPickupAt, until: b.actualReturnAt ?? now, dailyRateCents: tariff.dailyRateCents, items: tariff.items });
   const open = followUps.filter((f) => f.status === "OPEN");
-  const steps: NextStep[] = nextSteps({ ...stepCase, ...c }, { status: b.status, endAt: b.endAt, actualReturnAt: b.actualReturnAt, contract: b.contract, handovers: b.handovers }, h.fin ?? EMPTY_FIN, open, now);
+  const steps: NextStep[] = nextSteps({ ...stepCase, ...c }, { status: b.status, endAt: b.endAt, actualReturnAt: b.actualReturnAt, contract: b.contract, handovers: b.handovers, depositState }, h.fin ?? EMPTY_FIN, open, now);
   return {
     access, duration, rentValue: value, pricesIncludeTax: tenant.pricesIncludeTax !== false, steps,
     followUps: followUps.map((f): FollowUpView => ({ id: f.id, title: f.title, dueAt: f.dueAt, due: followUpDue(f.dueAt, now), status: f.status, assigneeName: f.assigneeName, note: f.note, createdByName: f.createdByName, doneAt: f.doneAt, doneByName: f.doneByName, doneNote: f.doneNote })),
@@ -227,6 +230,9 @@ export function contractStep(caseStatus: string, b: { id: string; status: string
     : { kind: "OPEN", label: "Vertrag öffnen", href, text: `Entwurf (${c.number}) – Mietende offen, bis zur Rückgabe` };
 }
 
+/** Praxistest: Kautionsbereich im Tab „Miete“ (Vollsicht); Zusatzkosten der Rückgabe nur zur Einordnung wie auf der Buchungsseite */
+export type CaseFileDeposit = { charges: { count: number; total: number } | null };
+
 export async function caseFileRental(tenantId: string, h: Header, access: CaseFileAccess, now = new Date()) {
   const b = h.booking;
   const pickup: ProcessAction = pickupAction(b, b.contract, b.handovers);
@@ -234,11 +240,15 @@ export async function caseFileRental(tenantId: string, h: Header, access: CaseFi
   const duration = rentalDuration(b, now);
   const contract = contractStep(h.status, b);
   const canChangeEnd = access === "FULL" && h.status === "OPEN" && (b.status === "RESERVED" || b.status === "ACTIVE");
-  if (access === "OPERATIONAL") return { access, pickup, ret, duration, contract, canChangeEnd, tariff: null, pricesIncludeTax: null as boolean | null };
-  const [tariff, booking, tenant] = await Promise.all([
+  if (access === "OPERATIONAL") return { access, pickup, ret, duration, contract, canChangeEnd, tariff: null, pricesIncludeTax: null as boolean | null, deposit: null as CaseFileDeposit | null };
+  const returnDone = b.handovers.some((x) => x.type === "RETURN" && x.status === "FINALIZED");
+  const [tariff, booking, tenant, depositState, charges] = await Promise.all([
     caseTariff(tenantId, h.id, b.id),
     db.booking.findFirstOrThrow({ where: { id: b.id, tenantId }, select: { deposit: true, kmIncludedPerDay: true, extraKmRate: true, contract: true } }),
     db.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { pricesIncludeTax: true } }),
+    // Praxistest: Kaution des Mieters – derselbe Stand wie auf der Buchungsseite (Kautionsbereich wird von dort wiederverwendet)
+    securityDepositFinancials(tenantId, b.id),
+    returnDone ? db.extraCharge.findMany({ where: { tenantId, bookingId: b.id }, select: { amount: true } }) : Promise.resolve([] as { amount: unknown }[]),
   ]);
   const items = tariff.items, rateCents = tariff.dailyRateCents;
   // Kaution und Kilometer: nach der Unterschrift der wirksame Vertragsstand (Vertrag + unterschriebene Nachträge), vorher die Buchung
@@ -253,6 +263,10 @@ export async function caseFileRental(tenantId: string, h: Header, access: CaseFi
   const planned = b.endAt && !b.actualReturnAt && b.status !== "CANCELLED" && !overdue ? rentValue({ from: b.actualPickupAt ?? b.startAt, until: b.endAt, dailyRateCents: rateCents, items }) : null;
   return {
     access, pickup, ret, duration, contract, canChangeEnd, pricesIncludeTax: tenant.pricesIncludeTax !== false,
+    // Kautionsbereich nur, wenn eine Kaution vereinbart ist oder Bewegungen dokumentiert sind (Kaution 0: kein Prozess)
+    deposit: toCents(Number(terms.deposit).toFixed(2)) > 0 || depositState.expectedCents > 0 || depositState.receivedCents > 0
+      ? { charges: returnDone ? { count: charges.length, total: charges.reduce((s, c) => s + Number(c.amount), 0) } : null } as CaseFileDeposit
+      : null,
     tariff: {
       dailyRateCents: rateCents, items, frozen: tariff.frozen,
       perDayCents: rateCents + items.filter((i) => i.perDay).reduce((s, i) => s + i.unitPriceCents, 0),
@@ -437,6 +451,7 @@ const CLOSE_CODE_TEXT: Record<string, string> = {
   RENTAL_RUNNING: "Miete lief noch", NO_RETURN: "kein Rückgabeprotokoll", NO_INVOICE: "keine wirksame Rechnung", INVOICE_DRAFT: "Rechnungsentwurf offen",
   FINAL_INVOICE_MISSING: "Schlussrechnung fehlte", OPEN_AMOUNT: "offener Rechnungsbetrag", FOLLOW_UPS: "offene Wiedervorlagen", LIABILITY_OPEN: "Haftung ungeklärt",
   REDUCTION_OPEN: "Kürzung ohne Gutschrift oder Restforderung", DOUBLE_CLAIM: "Betrag doppelt gestellt", DOUBLE_CLAIM_PAID: "Restforderung bezahlt, Versicherungsrechnung noch offen", BILLING_GAP: "Lücke in der Abrechnung",
+  DEPOSIT_OPEN: "Kaution noch offen", DEPOSIT_PAYOUT_OPEN: "Kautionsauszahlung offen",
 };
 const closeNoteText = (note: string | null) => (note ? note.replace(/\b[A-Z][A-Z_]{3,}\b/g, (code) => CLOSE_CODE_TEXT[code] ?? code) : null);
 

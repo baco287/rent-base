@@ -4,7 +4,8 @@
 //   --keep  lässt die Testdaten stehen und gibt Sitzung und Buchung aus (für die Sichtprüfung im Browser)
 import { randomBytes } from "node:crypto";
 import { db } from "../src/lib/db";
-import { ensureContractDraft, finalizeContract, getContractContentHash, saveContractSignature } from "../src/lib/contracts";
+import { ensureContractDraft, finalizeContract, getContractContentHash, saveConditions, saveContractSignature } from "../src/lib/contracts";
+import { createAccidentCase } from "../src/lib/accident-replacement";
 import { answerChecklist, finalizeHandover, getHandoverContentHash, registerPhoto, saveHandoverSignature, startHandover, updateHandoverDraft, addNewDamage } from "../src/lib/handovers";
 import { buildStorageKey } from "../src/lib/storage";
 import { sha256 } from "../src/lib/integrity";
@@ -1815,6 +1816,85 @@ await setTenantFeature({ id: admin.id, name: admin.name }, ue.tenantId, "ACCIDEN
   const billClosed = await fPage(ueDispo, "?tab=abrechnung");
   const dlClosed = await fetch(`${base}/api/accident-documents/${docId}`, { headers: { cookie: ueDispo } });
   report(!closeCall?.error && payClosed?.error === ONLY_CLOSED_F && upClosed.status === 409 && upClosed.json.error === ONLY_CLOSED_F && billClosed.html.includes("Der Fall ist abgeschlossen. Neue Rechnungen") && !billClosed.html.includes("Zahlung erfassen") && dlClosed.status === 200 && (await db.payment.count({ where: { invoiceId: fInvId } })) === 1, "Geschlossener Fall: Zahlung und Upload abgelehnt (verständliche Meldung), Abrechnung nur lesbar, Dokument weiter abrufbar");
+}
+
+// Praxistest-Korrekturrunde: Unfallersatz im Dispo-Kalender (Kennzeichnung, Weg in die Fallakte), auf „Heute“ (Kennzahl, Hof ohne
+// Finanzdaten) und die Kaution des Mieters in der Fallakte (bestehender Kautionsbereich, Hof-Direktaufruf abgewiesen).
+{
+  const kV = await db.vehicle.create({ data: { tenantId: ue.tenantId, plate: "HB-UE 902", make: "Seat", model: "Leon", groupId: ue.groupId, dailyRate: 52, deposit: 0, mileage: 12_000, requiredLicenseClass: "B" } });
+  const kCase = await createAccidentCase(ue.tenantId, ue.actor, {
+    nonce: `smoke-k-${Date.now()}`, customerId: ue.customerId, vehicleId: kV.id, startAt: new Date(Date.now() + 3600_000), plannedEndAt: null, dailyRateCents: 6_900, depositCents: 50_000, kmIncludedPerDay: 200, extraKmRateCents: 25,
+    damaged: { plate: "HB-KK 1", make: "BMW", model: "320d", drivable: false, damageKind: "REPAIR" },
+    accident: { accidentAt: new Date(Date.now() - 86400_000), place: "Bremen" },
+    insurer: { name: "Kautionsprobe Versicherung AG", claimNumber: "KP-1", contactName: null, phone: null, email: null, street: "Weg 1", zip: "28195", city: "Bremen" },
+    liability: { status: "CONFIRMED" },
+    tariff: [],
+  });
+  const kBooking = kCase.bookingId;
+  const kNumber = kCase.case.caseNumber;
+  const page = async (c: string, p: string) => plain(await fetch(`${base}${p}`, { headers: { cookie: c } }));
+
+  // Dispo: Unfallersatz textlich gekennzeichnet, Liste mit Weg in die Fallakte; Standard-Mandant ohne fremde Fälle
+  const dispoUe = await page(ueDispo, "/dispo");
+  const dispoYard = await page(ueYard, "/dispo");
+  const dispoStd = await page(cookie, "/dispo");
+  report(dispoUe.includes("Unfallersatz im Zeitraum") && dispoUe.includes(`href="/unfallersatz/${kCase.case.id}"`) && dispoUe.includes("Unfallersatzfall öffnen") && dispoUe.includes(`Unfallersatz ${kNumber}`) && dispoUe.includes("Mietende offen") && dispoUe.includes(">UE<") && dispoUe.includes("= Unfallersatz"), "Dispo: Unfallersatz als Text gekennzeichnet, Liste „Unfallersatz im Zeitraum“ mit „Unfallersatzfall öffnen“");
+  report(dispoYard.includes(`href="/unfallersatz/${kCase.case.id}"`) && !dispoYard.includes("Kautionsprobe Versicherung"), "Dispo (Hof): Weg in die (operative) Fallakte, keine Versicherungsdaten");
+  report(!dispoStd.includes("Unfallersatz im Zeitraum") && !dispoStd.includes(kNumber) && !dispoStd.includes("Kautionsprobe"), "Dispo: anderer Mandant sieht keinen fremden Unfallersatzfall");
+
+  // Heute: Kennzahl Unfallersatz (offene Fälle); der Hof nur Fallzahl und laufende Mieten
+  const heuteUe = await page(ueDispo, "/heute");
+  const heuteYard = await page(ueYard, "/heute");
+  report(heuteUe.includes("Unfallersatz") && /offene Fälle|offener Fall/.test(heuteUe) && heuteUe.includes("abzurechnen") && heuteUe.includes("fällige Wiedervorlage"), "Heute: Kennzahl Unfallersatz mit offenen Fällen, abzurechnen und fälligen Wiedervorlagen");
+  report(heuteYard.includes("Unfallersatz") && /offene Fälle|offener Fall/.test(heuteYard) && !heuteYard.includes("abzurechnen") && !heuteYard.includes("Kautionsprobe Versicherung") && !heuteYard.includes("Schadennummer"), "Heute (Hof): nur Fallzahl und laufende Mieten, keine Abrechnungs- oder Versicherungsdaten");
+
+  // Vertrag mit Kaution 500 €, Übergabe, Kautionseingang, Rückgabe – über die Fachlogik
+  const kContract = await db.rentalContract.findFirstOrThrow({ where: { tenantId: ue.tenantId, bookingId: kBooking } });
+  const kBk = await db.booking.findUniqueOrThrow({ where: { id: kBooking } });
+  await saveConditions(ue.tenantId, kContract.id, { startAt: kBk.startAt, endAt: null, deposit: 500, kmIncludedPerDay: 200, extraKmRate: 0.25, deductible: 500, fuelPolicy: "FULL_TO_FULL", fuelPolicyNote: null, fuelPricePerLiter: 1.8, agreedTotal: null, agreedTotalNote: null, pickupLocation: "Hof", returnLocation: null }, ue.actor);
+  await saveContractSignature(ue.tenantId, ue.actor, kContract.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getContractContentHash(ue.tenantId, kContract.id) });
+  await finalizeContract(ue.tenantId, kContract.id);
+  const mieteBefore = await page(ueDispo, `/unfallersatz/${kCase.case.id}?tab=miete`);
+  report(mieteBefore.includes('id="kaution"') && mieteBefore.includes("Noch nicht erhalten") && mieteBefore.includes("500,00") && mieteBefore.includes("Die Kaution gehört zum Mieter"), "Fallakte (Miete): Kaution 500 € laut Vertrag, noch nicht erhalten – bestehender Kautionsbereich");
+  const handover = async (type: "PICKUP" | "RETURN") => {
+    const h = await startHandover(ue.tenantId, kBooking, type, ue.actor);
+    await updateHandoverDraft(ue.tenantId, h.id, { mileage: (await db.vehicle.findUniqueOrThrow({ where: { id: kV.id } })).mileage + 10, fuelLevelEighths: 8 });
+    for (const c of REQUIRED_PHOTO_CATEGORIES) { const key = buildStorageKey({ tenantId: ue.tenantId, area: "photos", bookingId: kBooking, contentType: "image/jpeg" }); await registerPhoto(ue.tenantId, ue.actor, { handoverId: h.id, category: c, storageKey: key, contentType: "image/jpeg", sizeBytes: 1000, checksum: sha256(key) }); }
+    const items = await db.handoverChecklistItem.findMany({ where: { handoverId: h.id } });
+    await answerChecklist(ue.tenantId, h.id, items.map((i) => ({ itemId: i.id, result: i.answerType === "TEXT" ? "2" : i.itemKey === "unusually_dirty" ? "NO" : i.answerType === "YES_NO" ? "YES" : "OK" })));
+    if (type === "PICKUP") {
+      for (const d of await db.contractDriver.findMany({ where: { tenantId: ue.tenantId, contractId: kContract.id } })) {
+        const v = await startOrGetVerification(ue.tenantId, ue.actor, h.id, d.id);
+        await recordIdentityCheck(ue.tenantId, ue.actor, v.id, { documentType: "PERSONALAUSWEIS", originalSeen: true, nameMatched: true, birthDateMatched: true });
+        await recordLicenseCheck(ue.tenantId, ue.actor, v.id, { originalSeen: true, documentValid: true, nameMatched: true, licenseNumber: d.licenseNumber, licenseCountry: d.licenseCountry, licenseIssuedAt: d.licenseIssuedAt, licenseValidUntil: d.licenseValidUntil, licenseClasses: ["B"], internationalPermitPresented: false, translationPresented: false });
+        await confirmVerification(ue.tenantId, ue.actor, v.id);
+      }
+    }
+    await saveHandoverSignature(ue.tenantId, ue.actor, h.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getHandoverContentHash(ue.tenantId, h.id) });
+    await finalizeHandover(ue.tenantId, h.id, ue.actor);
+  };
+  await handover("PICKUP");
+  await recordDepositReceived(ue.tenantId, ue.actor, { bookingId: kBooking, amount: "500,00", method: "CASH", occurredAt: new Date() });
+  const mieteRunning = await page(ueDispo, `/unfallersatz/${kCase.case.id}?tab=miete`);
+  report(mieteRunning.includes('id="kaution"') && mieteRunning.includes("Erhalten") && mieteRunning.includes("Freigabe oder Einbehalt wird nach der Rückgabe dokumentiert"), "Fallakte (Miete): Kautionseingang erhalten, Entscheidung erst nach der Rückgabe");
+  await handover("RETURN");
+  const overview = await page(ueDispo, `/unfallersatz/${kCase.case.id}`);
+  const mieteReturned = await page(ueDispo, `/unfallersatz/${kCase.case.id}?tab=miete`);
+  const yardMiete = await page(ueYard, `/unfallersatz/${kCase.case.id}?tab=miete`);
+  report(overview.includes("Kaution prüfen") && overview.includes("Kaution noch offen – Freigabe oder Einbehalt prüfen.") && mieteReturned.includes("Kaution teilweise freigeben") && mieteReturned.includes("Kaution einbehalten"), "Fallakte nach Rückgabe: „Kaution prüfen“, Abschlusswarnung und Freigabe/Einbehalt über die bestehende Kautionslogik");
+  report(!yardMiete.includes('id="kaution"') && !yardMiete.includes("Kaution teilweise freigeben"), "Fallakte (Hof): kein Kautionsbereich, keine Kautionsentscheidung");
+
+  // Hof per Direktaufruf: Kautionsentscheidung serverseitig abgewiesen, nichts verändert
+  const idSettle = boundIdOf(mieteReturned, "settleDepositAction");
+  const yardSettle = await callAction(`/unfallersatz/${kCase.case.id}`, idSettle, ueYard, { bound: [kBooking], form: { releaseAmount: "500,00", method: "CASH", occurredAt: toDateTimeInput(new Date()), nonce: `smoke-k-${Date.now()}` } });
+  const depAfterYard = await db.securityDeposit.findFirstOrThrow({ where: { tenantId: ue.tenantId, bookingId: kBooking } });
+  report(/^[0-9a-f]{42}$/.test(idSettle) && yardSettle.redirectTo.includes("fehler=rechte") && depAfterYard.status === "RECEIVED", `${yardSettle.status} Hofmitarbeiter: Kautionsfreigabe per Direktaufruf abgewiesen, Kaution unverändert`);
+
+  // Freigabe (bestehende Logik) → „Kautionsauszahlung offen“ in der Fallakte und in der bestehenden Heute-Kennzahl
+  await settleDeposit(ue.tenantId, ue.actor, { bookingId: kBooking, releaseAmount: "500,00", method: "CASH", occurredAt: new Date() });
+  const overviewReleased = await page(ueDispo, `/unfallersatz/${kCase.case.id}`);
+  const heuteReleased = await page(ueDispo, "/heute");
+  report(overviewReleased.includes("Kautionsauszahlung offen") && !overviewReleased.includes("Kaution prüfen") && heuteReleased.includes("Kautionsauszahlung offen · "), "Nach Freigabe: „Kautionsauszahlung offen“ in der Fallakte und in der bestehenden Heute-Liste");
 }
 
 const health = await fetch(`${base}/api/health`);
