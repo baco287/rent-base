@@ -16,6 +16,8 @@ const NAV = [
   { href: "/fahrzeuge/wartung", label: "Wartung", icon: "wrench" },
   { href: "/kunden", label: "Kunden", icon: "user" },
   { href: "/buchungen", label: "Buchungen", icon: "doc" },
+  // Befehl 29 Phase G: Unfallersatz-Zentrale – ohne freigeschaltetes Modul serverseitig ausgeblendet (hiddenPaths aus FEATURES.nav)
+  { href: "/unfallersatz", label: "Unfallersatz", icon: "shield" },
   { href: "/rechnungen", label: "Rechnungen", icon: "euro" },
   { href: "/forderungen", label: "Forderungen", icon: "euro" },
   { href: "/auszahlungen", label: "Auszahlungen", icon: "euro" },
@@ -37,6 +39,7 @@ function Icon({ name }: { name: (typeof NAV)[number]["icon"] | "search" }) {
     case "warn": return <svg {...p}><path d="M8 2.5 14 13H2z" /><path d="M8 6.5v3M8 11.2v.3" /></svg>;
     case "stamp": return <svg {...p}><path d="M5 9V5.5a3 3 0 0 1 6 0V9" /><rect x="2.5" y="9" width="11" height="3" rx="1" /><path d="M4 12v2h8v-2" /></svg>;
     case "search": return <svg {...p}><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg>;
+    case "shield": return <svg {...p}><path d="M8 1.8 13.2 3.8v3.9c0 3.1-2.2 5.5-5.2 6.6-3-1.1-5.2-3.5-5.2-6.6V3.8z" /><path d="M5.7 8.1 7.3 9.7l3-3.1" /></svg>;
     case "cog": return <svg {...p}><circle cx="8" cy="8" r="2.5" /><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" /></svg>;
   }
 }

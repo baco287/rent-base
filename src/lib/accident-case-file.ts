@@ -51,11 +51,12 @@ export type MainStatus = { label: string; tone: Tone };
  * Hauptstatus für den Kopf – abgeleitet, nie gespeichert. Ein Fall kann zugleich „Miete beendet“, „Rechnung gestellt“ und
  * „Teilbezahlt“ sein; der Kopf zeigt den für die Arbeit wichtigsten Stand, die übrigen Angaben stehen in Kennzahlen und Chips.
  */
-export function caseMainStatus(i: { caseStatus: string; bookingStatus: string; contractSigned: boolean; overdue: boolean; returnedAt?: Date | null; fin: Pick<CaseFinancials, "active" | "billedUntil" | "drafts" | "economicOpenCents" | "paidCents"> & Partial<CaseFinancials> | null }): MainStatus {
+export function caseMainStatus(i: { caseStatus: string; bookingStatus: string; contractSigned: boolean; overdue: boolean; returnedAt?: Date | null; /** Phase G: Rückgabeprotokoll begonnen bzw. Schlüsselbox-Abgabe gemeldet */ returnStarted?: boolean; fin: Pick<CaseFinancials, "active" | "billedUntil" | "drafts" | "economicOpenCents" | "paidCents"> & Partial<CaseFinancials> | null }): MainStatus {
   if (i.caseStatus === "CLOSED") return { label: "Abgeschlossen", tone: "grey" };
   if (i.bookingStatus === "CANCELLED") return { label: "Storniert", tone: "grey" };
   if (i.bookingStatus === "RESERVED") return i.contractSigned ? { label: "Bereit zur Übergabe", tone: "info" } : { label: "Übergabe ausstehend", tone: "amber" };
-  if (i.bookingStatus === "ACTIVE") return i.overdue ? { label: "Rückgabe überfällig", tone: "bad" } : { label: "Miete läuft", tone: "info" };
+  // Phase G: fachlich präzise – das geplante (nicht vertragliche) Mietende ist überschritten; Rückgabe begonnen = „Rückgabe offen“
+  if (i.bookingStatus === "ACTIVE") return i.returnStarted ? { label: "Rückgabe offen", tone: "amber" } : i.overdue ? { label: "Geplantes Mietende überschritten", tone: "bad" } : { label: "Miete läuft", tone: "info" };
   // zurückgegeben: ohne Finanzsicht nur „Miete beendet“
   if (!i.fin) return { label: "Miete beendet", tone: "good" };
   // nur wirksame Rechnungen zählen (stornierte bzw. vollständig gutgeschriebene nicht); offene Entwürfe und eine fehlende
@@ -107,7 +108,7 @@ export async function caseFileHeader(tenantId: string, caseId: string, access: C
     insurer: full ? { name: full.insurerName, claimNumber: full.insurerClaimNumber, liability: liability!, liabilityLabel: `${ACCIDENT_LIABILITY_STATUS[liability!]}${full.liabilityQuotaPercent != null ? ` ${full.liabilityQuotaPercent} %` : ""}` } : null,
     fin,
     openEnd, overdue,
-    mainStatus: caseMainStatus({ caseStatus: c.status, bookingStatus: b.status, contractSigned: b.contract?.status === "SIGNED", overdue, returnedAt: b.actualReturnAt, fin }),
+    mainStatus: caseMainStatus({ caseStatus: c.status, bookingStatus: b.status, contractSigned: b.contract?.status === "SIGNED", overdue, returnedAt: b.actualReturnAt, returnStarted: b.handovers.some((x) => x.type === "RETURN" && x.status === "DRAFT"), fin }),
   };
 }
 
@@ -150,8 +151,19 @@ export function rentalDuration(b: { actualPickupAt: Date | null; actualReturnAt:
 }
 
 /** Nächste Schritte, die auch der Hof sehen darf (ohne Versicherung, Haftung, Beträge, Wiedervorlagen). */
-const OPERATIONAL_STEPS = new Set(["CONTRACT", "PICKUP", "OPEN_END", "OVERDUE", "RETURN_DUE", "RETURN_DRAFT", "CLOSED", "CANCELLED"]);
-const EMPTY_FIN: CaseFinancials = { invoices: [], drafts: 0, active: 0, billedUntil: null, finalBilled: false, grossCents: 0, paidCents: 0, openCents: 0, reducedCents: 0, remainderCents: 0, doubleClaimCents: 0, doubleClaimHint: null, economicOpenCents: 0, orphanRemainderCents: 0, remainderExcessCents: 0, unresolvedReductionCents: 0, creditCents: 0, refundOpenCents: 0, feesOpenCents: 0, overbilledDays: 0, gaps: [], pickupAt: null, unbilledChargeCount: 0 };
+export const OPERATIONAL_STEPS = new Set(["CONTRACT", "PICKUP", "OPEN_END", "OVERDUE", "RETURN_DUE", "RETURN_DRAFT", "CLOSED", "CANCELLED"]);
+export const EMPTY_FIN: CaseFinancials = { invoices: [], drafts: 0, active: 0, billedUntil: null, finalBilled: false, grossCents: 0, paidCents: 0, openCents: 0, reducedCents: 0, remainderCents: 0, doubleClaimCents: 0, doubleClaimHint: null, economicOpenCents: 0, orphanRemainderCents: 0, remainderExcessCents: 0, unresolvedReductionCents: 0, creditCents: 0, refundOpenCents: 0, feesOpenCents: 0, overbilledDays: 0, gaps: [], pickupAt: null, unbilledChargeCount: 0 };
+
+/**
+ * Nächste Schritte der operativen Sicht (Hof, Supportmodus): dieselbe Ableitung (nextSteps) mit neutralem Platzhalter für
+ * Versicherungsangaben, ohne Finanzstand und Wiedervorlagen, danach nur die operativen Schritte. Fallakte und Zentrale (Phase G).
+ */
+export function operationalNextSteps(c: { id: string; status: string; bookingId: string }, b: { status: string; endAt: Date | null; actualReturnAt?: Date | null; contract: { status: string } | null; handovers: { type: string; status: string }[] }, now = new Date()): NextStep[] {
+  return nextSteps({ ...c, insurerName: "–", insurerClaimNumber: "–", liabilityStatus: "CONFIRMED" }, { status: b.status, endAt: b.endAt, actualReturnAt: b.actualReturnAt ?? null, contract: b.contract, handovers: b.handovers }, EMPTY_FIN, [], now)
+    .filter((s) => OPERATIONAL_STEPS.has(s.code))
+    // Phase E: den Mietvertrag erstellt und schließt die Disposition ab – für den Hof kein Link in den Vertragsassistenten
+    .map((s) => (s.code === "CONTRACT" ? { ...s, href: undefined, text: "Der Mietvertrag wird von der Disposition erstellt und abgeschlossen. Danach ist die Übergabe möglich." } : s));
+}
 
 export type FollowUpView = { id: string; title: string; dueAt: Date; due: "OVERDUE" | "TODAY" | "LATER"; status: string; assigneeName: string | null; note: string | null; createdByName: string | null; doneAt: Date | null; doneByName: string | null; doneNote: string | null };
 
@@ -160,11 +172,7 @@ export async function caseFileOverview(tenantId: string, h: Header, access: Case
   const duration = rentalDuration(b, now);
   const stepCase = { id: h.id, status: h.status, bookingId: b.id };
   if (access === "OPERATIONAL") {
-    // Schritte mit neutralem Platzhalter für Versicherungsangaben berechnen und nur die operativen behalten
-    const steps = nextSteps({ ...stepCase, insurerName: "–", insurerClaimNumber: "–", liabilityStatus: "CONFIRMED" }, { status: b.status, endAt: b.endAt, actualReturnAt: b.actualReturnAt, contract: b.contract, handovers: b.handovers }, EMPTY_FIN, [], now)
-      .filter((s) => OPERATIONAL_STEPS.has(s.code))
-      // Phase E: den Mietvertrag erstellt und schließt die Disposition ab – für den Hof kein Link in den Vertragsassistenten
-      .map((s) => (s.code === "CONTRACT" ? { ...s, href: undefined, text: "Der Mietvertrag wird von der Disposition erstellt und abgeschlossen. Danach ist die Übergabe möglich." } : s));
+    const steps = operationalNextSteps(stepCase, b, now);
     return { access, duration, rentValue: null as RentValue | null, pricesIncludeTax: null as boolean | null, steps, followUps: [] as FollowUpView[], closeWarnings: [] as CloseWarning[], assignees: [] as { id: string; name: string }[] };
   }
   const [c, tariff, followUps, tenant, assignees, depositState] = await Promise.all([

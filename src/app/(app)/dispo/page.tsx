@@ -182,7 +182,7 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
             Fahrzeug, Kunde und Zeitraum – keine Versicherungs- oder Finanzdaten. */}
         {accidentOn && accidentRows.length > 0 && (
           <section id="unfallersatz" aria-label="Unfallersatz im Zeitraum" className="card scroll-mt-20">
-            <div className="px-4 pt-3 pb-1 flex items-center gap-2"><h2 className="text-sm font-semibold">Unfallersatz im Zeitraum</h2><Chip tone="info">{accidentRows.length}</Chip></div>
+            <div className="px-4 pt-3 pb-1 flex items-center gap-2"><h2 className="text-sm font-semibold">Unfallersatz im Zeitraum</h2><Chip tone="info">{accidentRows.length}</Chip><Link href="/unfallersatz" className="ml-auto text-xs underline">Alle Fälle in der Unfallersatz-Zentrale</Link></div>
             <ul className="divide-y divide-line-soft">
               {accidentRows.map((b) => (
                 <li key={b.id} className="px-4 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm">

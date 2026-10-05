@@ -785,6 +785,38 @@ export async function caseFinancials(tenantId: string, bookingId: string, client
   return summarizeCaseFinance(rows, fin, red, { pickupAt: booking?.actualPickupAt ?? null, returnedAt: booking?.actualReturnAt ?? null, returnChargeIds: ret?.extraCharges.map((e) => e.id) ?? [], feesOpenCents: [...feeFin.values()].reduce((s, f) => s + f.openCents, 0) });
 }
 
+/**
+ * Phase G: derselbe Finanzstand wie caseFinancials für viele Fälle auf einmal – gebündelt in drei Runden mit fester Zahl an
+ * Abfragen (Rechnungen und Rückgabe-Zusatzkosten, Mahngebühren, Salden/Kürzungen), unabhängig von der Anzahl der Fälle.
+ * Gleiche Semantik wie caseFinancials (Paritätstest): Rechnungen je Buchung nach createdAt, Zusatzkosten aus der zuletzt
+ * abgeschlossenen Rückgabe ohne Korrektur, Mahngebühren nur abgeschlossener Gebührenrechnungen zu abgeschlossenen Rechnungen.
+ * Die Buchungsdaten (Übergabe/Rückgabe) liefert der Aufrufer aus seiner eigenen Abfrage.
+ */
+export async function caseFinancialsMany(tenantId: string, bookings: readonly { id: string; actualPickupAt: Date | null; actualReturnAt: Date | null }[], client: Client = db): Promise<Map<string, CaseFinancials>> {
+  const ids = [...new Set(bookings.map((b) => b.id))];
+  if (ids.length === 0) return new Map();
+  const [rows, rets] = await Promise.all([
+    client.invoice.findMany({ where: { tenantId, bookingId: { in: ids }, kind: "ACCIDENT_REPLACEMENT", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, select: { ...FINANCE_SELECT, bookingId: true }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] }),
+    client.handover.findMany({ where: { tenantId, bookingId: { in: ids }, type: "RETURN", status: "FINALIZED", correctsId: null }, orderBy: [{ finalizedAt: "desc" }, { id: "asc" }], select: { bookingId: true, extraCharges: { select: { id: true } } } }),
+  ]);
+  const finals = rows.filter((r) => r.status === "FINALIZED" && r.currentVersion);
+  const fees = finals.length ? await client.dunningNotice.findMany({ where: { tenantId, invoiceId: { in: finals.map((r) => r.id) }, feeInvoice: { status: "FINALIZED" } }, select: { invoiceId: true, feeInvoice: { select: { id: true, currentVersion: { select: { grossTotal: true } } } } } }) : [];
+  const feeRows = fees.filter((f) => f.feeInvoice?.currentVersion).map((f) => ({ invoiceId: f.invoiceId, fee: f.feeInvoice! }));
+  // Salden je Rechnung sind unabhängig voneinander: Fall- und Gebührenrechnungen in einem Aufruf
+  const [fin, red] = await Promise.all([
+    financialsFor(tenantId, [...finals.map((r) => ({ id: r.id, grossTotal: r.currentVersion!.grossTotal })), ...feeRows.map((f) => ({ id: f.fee.id, grossTotal: f.fee.currentVersion!.grossTotal }))], client),
+    reductionsFor(tenantId, finals.map((r) => r.id), client),
+  ]);
+  const rowsBy = new Map<string, typeof rows>();
+  for (const r of rows) { const list = rowsBy.get(r.bookingId!) ?? []; list.push(r); rowsBy.set(r.bookingId!, list); }
+  const charges = new Map<string, string[]>();
+  for (const h of rets) if (!charges.has(h.bookingId)) charges.set(h.bookingId, h.extraCharges.map((e) => e.id));
+  const bookingOfInvoice = new Map(rows.map((r) => [r.id, r.bookingId!]));
+  const feesOpen = new Map<string, Cents>();
+  for (const f of feeRows) { const b = bookingOfInvoice.get(f.invoiceId); if (b) feesOpen.set(b, (feesOpen.get(b) ?? 0) + (fin.get(f.fee.id)?.openCents ?? 0)); }
+  return new Map(bookings.map((b) => [b.id, summarizeCaseFinance(rowsBy.get(b.id) ?? [], fin, red, { pickupAt: b.actualPickupAt, returnedAt: b.actualReturnAt, returnChargeIds: charges.get(b.id) ?? [], feesOpenCents: feesOpen.get(b.id) ?? 0 })]));
+}
+
 /** Reine Ableitung aus Fall, Buchung und Finanzstand – nichts davon wird gespeichert. */
 export function deriveState(c: Pick<CaseRow, "liabilityStatus">, b: { status: string; startAt: Date; endAt: Date | null; actualPickupAt: Date | null; actualReturnAt: Date | null; dailyRate: unknown }, fin: CaseFinancials, now = new Date()): DerivedState {
   const rental = (["RESERVED", "ACTIVE", "RETURNED", "CANCELLED"].includes(b.status) ? b.status : "RESERVED") as RentalState;
@@ -1076,7 +1108,7 @@ export async function accidentDashboard(tenantId: string, opts: { full: boolean;
       ...(opts.full ? { insurerName: true, insurerClaimNumber: true, liabilityStatus: true } : {}),
       booking: {
         select: {
-          status: true, endAt: true, actualReturnAt: true,
+          id: true, status: true, endAt: true, actualPickupAt: true, actualReturnAt: true,
           contract: { select: { status: true } },
           handovers: { where: { correctsId: null }, select: { type: true, status: true } },
           customer: { select: { type: true, firstName: true, lastName: true, companyName: true } },
@@ -1091,13 +1123,9 @@ export async function accidentDashboard(tenantId: string, opts: { full: boolean;
   const base = { open: cases.length, running, reserved, singleCaseId: cases.length === 1 ? cases[0].id : null };
   if (!opts.full) return { ...base, toInvoice: null, invoicesOpen: null, followUpsDue: null, cases: [], followUps: [] };
 
-  // derselbe Finanzstand wie in der Fallakte (je Fall; offene Unfallersatzfälle sind wenige) – in kleinen Paketen
-  const fins = new Map<string, CaseFinancials>();
-  for (let i = 0; i < cases.length; i += 8) {
-    const part = cases.slice(i, i + 8);
-    const res = await Promise.all(part.map((c) => caseFinancials(tenantId, c.bookingId)));
-    part.forEach((c, k) => fins.set(c.id, res[k]));
-  }
+  // derselbe Finanzstand wie in der Fallakte – Phase G: gebündelt für alle Fälle (feste Zahl an Abfragen statt je Fall)
+  const byBooking = await caseFinancialsMany(tenantId, cases.map((c) => c.booking));
+  const fins = new Map<string, CaseFinancials>(cases.map((c) => [c.id, byBooking.get(c.booking.id)!]));
   const out: AccidentDashboardCase[] = [];
   const followUps: AccidentDashboardFollowUp[] = [];
   let toInvoice = 0, invoicesOpen = 0, followUpsDue = 0;

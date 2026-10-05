@@ -1912,6 +1912,34 @@ await setTenantFeature({ id: admin.id, name: admin.name }, ue.tenantId, "ACCIDEN
   report(overviewReleased.includes("Kautionsauszahlung offen") && !overviewReleased.includes("Kaution prüfen") && heuteReleased.includes("Kautionsauszahlung offen · "), "Nach Freigabe: „Kautionsauszahlung offen“ in der Fallakte und in der bestehenden Heute-Liste");
 }
 
+// Befehl 29 Phase G: Unfallersatz-Zentrale (/unfallersatz) – Menüpunkt nur mit Modul, Vollsicht und Hof-Sicht, Suche/Filter in der
+// Adresse, Heute-Karte und globale Suche führen in die Zentrale; ohne Modul gesperrt.
+{
+  const get = async (c: string, p: string) => { const r = await fetch(`${base}${p}`, { headers: { cookie: c }, redirect: "manual" }); return { status: r.status, location: r.headers.get("location") ?? "", html: r.status === 200 ? await plain(r) : "" }; };
+  const asideOf = (html: string) => /<aside[\s\S]*?<\/aside>/.exec(html)?.[0] ?? "";
+  const gCases = await db.accidentReplacementCase.findMany({ where: { tenantId: ue.tenantId }, select: { id: true, caseNumber: true, status: true } });
+  const gOpen = gCases.find((x) => x.status === "OPEN")!;
+  const centerFull = await get(ueDispo, "/unfallersatz");
+  report(centerFull.status === 200 && centerFull.html.includes("Ersatzmieten, Schadenfälle, Abrechnung und offene Aufgaben im Blick behalten.") && centerFull.html.includes("+ Unfallersatzfall") && centerFull.html.includes("Offene Forderungen") && centerFull.html.includes("Fällige Wiedervorlagen") && centerFull.html.includes(gOpen.caseNumber) && centerFull.html.includes("Fall öffnen") && centerFull.html.includes("Nächster Schritt"), `${centerFull.status} Unfallersatz-Zentrale (Disposition): Kennzahlen, Liste mit nächstem Schritt, Anlage`);
+  report(asideOf(centerFull.html).includes('href="/unfallersatz"') && asideOf(centerFull.html).includes(">Unfallersatz<"), "Menüpunkt „Unfallersatz“ mit freigeschaltetem Modul");
+  const centerYard = await get(ueYard, "/unfallersatz");
+  report(centerYard.status === 200 && centerYard.html.includes(gOpen.caseNumber) && !centerYard.html.includes("+ Unfallersatzfall") && !centerYard.html.includes("Offene Forderungen") && !centerYard.html.includes("Abzurechnen") && !centerYard.html.includes("Smoke Versicherung") && !centerYard.html.includes("Kautionsprobe Versicherung") && !centerYard.html.includes("Schadennummer") && !centerYard.html.includes("Wiedervorlage"), `${centerYard.status} Unfallersatz-Zentrale (Hof): operative Sicht ohne Versicherung, Beträge, Wiedervorlagen, ohne Anlage`);
+  const yardFinFilter = await get(ueYard, "/unfallersatz?filter=rechnung_offen");
+  report(yardFinFilter.status === 200 && yardFinFilter.html.includes('aria-current="page"') && !yardFinFilter.html.includes("Rechnung offen"), "Hof: kaufmännischer Filter per Adresse nicht erreichbar (fällt auf „Alle offenen“ zurück)");
+  const centerQ = await get(ueDispo, `/unfallersatz?filter=offen&q=${encodeURIComponent(gOpen.caseNumber)}`);
+  report(centerQ.status === 200 && centerQ.html.includes(gOpen.caseNumber) && centerQ.html.includes(`Suche „${gOpen.caseNumber}“`) && centerQ.html.includes("Suche löschen"), "Zentrale: Suche über die Fallnummer, Zustand in der Adresse");
+  const centerNone = await get(ueDispo, "/unfallersatz?q=keinTrefferXYZ");
+  report(centerNone.html.includes("Keine Fälle entsprechen den gewählten Filtern.") && centerNone.html.includes("Filter zurücksetzen"), "Zentrale: Leerzustand bei Filter ohne Treffer");
+  const stdCenter = await get(cookie, "/unfallersatz");
+  const stdHeute = await get(cookie, "/heute");
+  report(stdCenter.status === 307 && stdCenter.location.includes("fehler=funktion") && !asideOf(stdHeute.html).includes('href="/unfallersatz"'), `${stdCenter.status} Ohne Modul: /unfallersatz gesperrt, kein Menüpunkt`);
+  const heuteG = await get(ueDispo, "/heute");
+  report(heuteG.html.includes('href="/unfallersatz"') && heuteG.html.includes("Unfallersatz öffnen"), "Heute: Karte „Unfallersatz“ führt in die Zentrale");
+  const sucheG = await get(ueDispo, `/suche?q=${encodeURIComponent(gOpen.caseNumber)}`);
+  const sucheStd = await get(cookie, `/suche?q=${encodeURIComponent(gOpen.caseNumber)}`);
+  report(sucheG.html.includes(`Unfallersatz ${gOpen.caseNumber}`) && sucheG.html.includes(`href="/unfallersatz/${gOpen.id}"`) && !sucheStd.html.includes(`Unfallersatz ${gOpen.caseNumber}`) && !sucheStd.html.includes(`href="/unfallersatz/${gOpen.id}"`), "Globale Suche: Unfallersatzfall gefunden (mit Modul; ohne Modul kein Treffer – der Suchbegriff selbst steht dort nur im Kopf)");
+}
+
 const health = await fetch(`${base}/api/health`);
 const healthJson = await health.json().catch(() => ({}));
 report(health.status === 200 && healthJson.status === "ok" && healthJson.db === "ok", `${health.status} Healthcheck`);

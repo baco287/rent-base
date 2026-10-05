@@ -190,7 +190,7 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
   );
 }
 
-/** Praxistest: Unterzeile der Unfallersatz-Kennzahl – nur echte Zähler; Link in den einzigen offenen Fall bzw. zur Dispo-Liste */
+/** Praxistest: Unterzeile der Unfallersatz-Kennzahl – nur echte Zähler; Phase G: Link in die Unfallersatz-Zentrale */
 function AccidentKpiDetail({ a }: { a: AccidentDashboard }) {
   const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
   const parts = [
@@ -203,7 +203,8 @@ function AccidentKpiDetail({ a }: { a: AccidentDashboard }) {
   return (
     <>
       <span>{a.open === 1 ? "offener Fall" : "offene Fälle"} · {parts.join(" · ")}</span>
-      {a.singleCaseId ? <> · <Link href={`/unfallersatz/${a.singleCaseId}`} className="underline">Fall öffnen</Link></> : a.running + a.reserved > 0 ? <> · <Link href="/dispo#unfallersatz" className="underline">im Dispo-Kalender</Link></> : null}
+      {/* Phase G: einheitlich in die Unfallersatz-Zentrale */}
+      {" · "}<Link href="/unfallersatz" className="underline">Unfallersatz öffnen</Link>
     </>
   );
 }

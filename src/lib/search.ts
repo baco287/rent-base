@@ -12,6 +12,8 @@ import { db } from "@/lib/db";
 import { AUTHORITY_CASE_STATUS, BOOKING_STATUS, CONTRACT_STATUS, DAMAGE_CASE_STATUS, INVOICE_DOCUMENT_TYPES, MAINTENANCE_STATUS, PAYOUT_STATUS, VEHICLE_STATUS, type AuthorityCaseStatus, type BookingStatus, type DamageCaseStatus, type InvoiceDocumentTypeKey, type MaintenanceStatus, type PayoutStatus, type VehicleStatus } from "@/lib/constants";
 import { customerName } from "@/lib/format";
 import { plateKey } from "@/lib/authority-matching";
+import { isFeatureEnabled } from "@/lib/features";
+import { caseFileAccess, caseMainStatus } from "@/lib/accident-case-file";
 
 export const SEARCH_MIN = 2;
 export const SEARCH_MAX = 80;
@@ -27,9 +29,10 @@ export const SEARCH_TYPES = {
   damage: "Schadenakten",
   maintenance: "Wartung",
   authority: "Behördenvorgänge",
+  accident: "Unfallersatz",
 } as const;
 export type SearchType = keyof typeof SEARCH_TYPES;
-export const SEARCH_TYPE_ORDER: SearchType[] = ["customer", "booking", "vehicle", "contract", "invoice", "payout", "damage", "maintenance", "authority"];
+export const SEARCH_TYPE_ORDER: SearchType[] = ["customer", "booking", "accident", "vehicle", "contract", "invoice", "payout", "damage", "maintenance", "authority"];
 
 export type SearchTone = "good" | "amber" | "bad" | "info" | "grey";
 export type SearchHit = { type: SearchType; id: string; href: string; label: string; context: string; status: { text: string; tone: SearchTone } | null; date: string | null; score: number };
@@ -126,17 +129,23 @@ export async function globalSearch(tenantId: string, role: string, rawQ: string,
   const canSeeVin = role === "OWNER" || role === "DISPO";
   const enc = encodeURIComponent(q);
 
-  const [plateIds, phoneIds, driverIds] = await Promise.all([
+  // Phase G: Unfallersatzfälle nur mit freigeschaltetem Modul; Versicherung, Schadennummer und beschädigtes Kennzeichen nur in der
+  // Vollsicht (Inhaber, Disposition) – Hof und Supportmodus finden Fälle nur über Fallnummer, Kunde und Ersatzfahrzeug
+  const accidentFull = caseFileAccess(role) === "FULL";
+  const wantAccident = types.includes("accident");
+  const [plateIds, phoneIds, driverIds, accidentOn, damagedIds] = await Promise.all([
     vehicleIdsByPlateKey(tenantId, k.plate),
     customerIdsByPhoneDigits(tenantId, k.digits),
     // Kunden, die als Fahrer in Behördenvorgängen stehen könnten (nur echte Referenz driverCustomerId, nie aus Kennzeichen oder Zeitraum abgeleitet)
     types.includes("authority") ? db.customer.findMany({ where: { tenantId, ...customerNameWhere(q) }, take: 50, select: { id: true } }).then((r) => r.map((x) => x.id)) : Promise.resolve([] as string[]),
+    wantAccident ? isFeatureEnabled(tenantId, "ACCIDENT_REPLACEMENT") : Promise.resolve(false),
+    wantAccident && accidentFull ? accidentIdsByDamagedPlate(tenantId, q) : Promise.resolve([] as string[]),
   ]);
   const plateOr = plateIds.length ? [{ vehicleId: { in: plateIds } }] : [];
   const customerOr = (): Prisma.CustomerWhereInput => ({ OR: [...(customerNameWhere(q).OR as Prisma.CustomerWhereInput[]), { email: ciN(q) }, { phone: ciN(q) }, ...(phoneIds.length ? [{ id: { in: phoneIds } }] : [])] });
 
   const want = (t: SearchType) => types.includes(t);
-  const [customers, bookings, vehicles, contracts, invoices, payouts, damages, maintenance, authority] = await Promise.all([
+  const [customers, bookings, vehicles, contracts, invoices, payouts, damages, maintenance, authority, accidents] = await Promise.all([
     want("customer") ? db.customer.findMany({ where: { tenantId, ...customerOr() }, take: fetchN, orderBy: { updatedAt: "desc" }, select: { id: true, number: true, type: true, firstName: true, lastName: true, companyName: true, email: true, phone: true, city: true, blocked: true, updatedAt: true } }) : [],
     want("booking") ? db.booking.findMany({ where: { tenantId, OR: [{ number: ci(q) }, { customer: customerNameWhere(q) }, { vehicle: { OR: [{ plate: ci(q) }, { make: ci(q) }, { model: ci(q) }] } }, ...plateOr] }, take: fetchN, orderBy: { startAt: "desc" }, select: { id: true, number: true, status: true, startAt: true, endAt: true, customer: { select: { type: true, firstName: true, lastName: true, companyName: true, number: true } }, vehicle: { select: { plate: true, make: true, model: true } } } }) : [],
     want("vehicle") ? db.vehicle.findMany({ where: { tenantId, OR: [{ plate: ci(q) }, { make: ci(q) }, { model: ci(q) }, ...(canSeeVin ? [{ vin: ciN(q) }] : []), ...(plateIds.length ? [{ id: { in: plateIds } }] : [])] }, take: fetchN, orderBy: { plate: "asc" }, select: { id: true, plate: true, make: true, model: true, vin: true, status: true, updatedAt: true } }) : [],
@@ -146,6 +155,7 @@ export async function globalSearch(tenantId: string, role: string, rawQ: string,
     want("damage") ? db.damageCase.findMany({ where: { tenantId, OR: [{ caseNumber: ci(q) }, { vehicle: { plate: ci(q) } }, ...plateOr, { booking: { OR: [{ number: ci(q) }, { customer: customerNameWhere(q) }] } }] }, take: fetchN, orderBy: { createdAt: "desc" }, select: { id: true, caseNumber: true, status: true, liabilityStatus: true, description: true, createdAt: true, vehicle: { select: { plate: true } }, booking: { select: { number: true, customer: { select: { type: true, firstName: true, lastName: true, companyName: true } } } } } }) : [],
     want("maintenance") ? db.maintenanceRecord.findMany({ where: { tenantId, OR: [{ maintenanceNumber: ci(q) }, { title: ci(q) }, { workshopName: ciN(q) }, { vehicle: { plate: ci(q) } }, ...plateOr] }, take: fetchN, orderBy: { createdAt: "desc" }, select: { id: true, maintenanceNumber: true, title: true, status: true, workshopName: true, scheduledAt: true, createdAt: true, vehicle: { select: { plate: true } } } }) : [],
     want("authority") ? db.authorityCase.findMany({ where: { tenantId, OR: [{ caseNumber: ci(q) }, { authorityReference: ci(q) }, { authorityName: ci(q) }, { licensePlateSnapshot: ci(q) }, ...(k.plate.length >= 3 ? [{ licensePlateNormalized: { contains: k.plate } }] : []), ...(driverIds.length ? [{ driverCustomerId: { in: driverIds } }] : [])] }, take: fetchN, orderBy: { createdAt: "desc" }, select: { id: true, caseNumber: true, status: true, type: true, authorityName: true, authorityReference: true, licensePlateSnapshot: true, responseDeadline: true, createdAt: true, driverCustomerId: true } }) : [],
+    wantAccident && accidentOn ? db.accidentReplacementCase.findMany({ where: { tenantId, OR: [{ caseNumber: ci(q) }, { booking: { OR: [{ number: ci(q) }, { customer: customerNameWhere(q) }, { vehicle: { plate: ci(q) } }, ...plateOr] } }, ...(accidentFull ? [{ damagedPlate: ci(q) }, { insurerClaimNumber: ciN(q) }, ...(damagedIds.length ? [{ id: { in: damagedIds } }] : [])] : [])] }, take: fetchN, orderBy: { createdAt: "desc" }, select: { id: true, caseNumber: true, status: true, createdAt: true, ...(accidentFull ? { damagedPlate: true, insurerName: true, insurerClaimNumber: true } : {}), booking: { select: { status: true, endAt: true, actualReturnAt: true, contract: { select: { status: true } }, handovers: { where: { correctsId: null, type: "RETURN", status: "DRAFT" }, select: { id: true } }, customer: { select: { type: true, firstName: true, lastName: true, companyName: true } }, vehicle: { select: { plate: true } } } } } }) : [],
   ]);
   // Behördenvorgänge kennen den Fahrer nur als Referenz (driverCustomerId, keine Relation): Namen der Treffer nachladen
   const driverNames = new Map<string, string>();
@@ -169,6 +179,20 @@ export async function globalSearch(tenantId: string, role: string, rawQ: string,
   push("maintenance", maintenance.map((m) => ({ type: "maintenance", id: m.id, href: `/fahrzeuge/wartung/${m.id}`, label: `${m.maintenanceNumber} · ${m.title}`, context: [m.vehicle.plate, m.workshopName].filter(Boolean).join(" · "), status: { text: MAINTENANCE_STATUS[m.status as MaintenanceStatus] ?? m.status, tone: m.status === "COMPLETED" ? "good" : m.status === "CANCELLED" ? "grey" : "amber" }, date: iso(m.scheduledAt ?? m.createdAt), score: scoreOf(k, { exact: [m.maintenanceNumber], keys: [m.vehicle.plate], names: [m.title], texts: [m.workshopName] }) })), `/fahrzeuge/wartung?filter=alle&q=${enc}`);
   push("authority", authority.map((a) => ({ type: "authority", id: a.id, href: `/behoerden/${a.id}`, label: `${a.caseNumber} · ${a.authorityName}`, context: [`Az. ${a.authorityReference}`, a.licensePlateSnapshot, a.driverCustomerId && driverNames.get(a.driverCustomerId) ? `Fahrer ${driverNames.get(a.driverCustomerId)}` : null].filter(Boolean).join(" · "), status: { text: AUTHORITY_CASE_STATUS[a.status as AuthorityCaseStatus] ?? a.status, tone: a.status === "CLOSED" || a.status === "SUBMITTED" ? "good" : a.status === "CANCELLED" ? "grey" : "amber" }, date: iso(a.responseDeadline ?? a.createdAt), score: scoreOf(k, { exact: [a.caseNumber, a.authorityReference], keys: [a.licensePlateSnapshot], names: [a.authorityName, a.driverCustomerId ? driverNames.get(a.driverCustomerId) ?? null : null] }) })), `/behoerden?filter=alle&q=${enc}`);
 
+  push("accident", accidents.map((c) => {
+    const b = c.booking, name = customerName(b.customer);
+    const fullCase = c as typeof c & { damagedPlate?: string; insurerName?: string | null; insurerClaimNumber?: string | null };
+    const overdue = b.status === "ACTIVE" && b.endAt !== null && b.endAt < new Date();
+    // Hauptzustand ohne Finanzstand (wie die operative Sicht der Fallakte) – kein Nachladen je Treffer
+    const st = caseMainStatus({ caseStatus: c.status, bookingStatus: b.status, contractSigned: b.contract?.status === "SIGNED", overdue, returnedAt: b.actualReturnAt, returnStarted: b.handovers.length > 0, fin: null });
+    return {
+      type: "accident" as const, id: c.id, href: `/unfallersatz/${c.id}`, label: `Unfallersatz ${c.caseNumber}`,
+      context: [name, b.vehicle.plate, accidentFull && fullCase.damagedPlate ? `beschädigt ${fullCase.damagedPlate}` : null, accidentFull ? fullCase.insurerName : null, accidentFull && fullCase.insurerClaimNumber ? `Schaden-Nr. ${fullCase.insurerClaimNumber}` : null].filter(Boolean).join(" · "),
+      status: { text: st.label, tone: st.tone }, date: iso(c.createdAt),
+      score: scoreOf(k, { exact: [c.caseNumber, accidentFull ? fullCase.insurerClaimNumber : null], keys: [b.vehicle.plate, accidentFull ? fullCase.damagedPlate : null], names: [name] }),
+    };
+  }), `/unfallersatz?q=${enc}`);
+
   // Gruppen: die mit dem besten Treffer zuerst, bei Gleichstand in fester Reihenfolge
   const best = (g: SearchGroup) => g.hits[0]?.score ?? 0;
   groups.sort((a, b) => best(b) - best(a) || SEARCH_TYPE_ORDER.indexOf(a.type) - SEARCH_TYPE_ORDER.indexOf(b.type));
@@ -178,4 +202,15 @@ export async function globalSearch(tenantId: string, role: string, rawQ: string,
 const dFmt = new Intl.DateTimeFormat("de-DE", { timeZone: "Europe/Berlin", day: "2-digit", month: "2-digit", year: "numeric" });
 function dateRange(a: Date, b: Date | null) {
   return `${dFmt.format(a)} – ${b ? dFmt.format(b) : "offen"}`;
+}
+
+/**
+ * Phase G: Unfallersatzfälle, deren Kennzeichen des beschädigten Fahrzeugs normalisiert (nur Buchstaben/Ziffern) den
+ * Suchschlüssel enthält. Parametrisiert, mandantenbezogen. Nur für die Vollsicht (Inhaber, Disposition) verwenden.
+ */
+export async function accidentIdsByDamagedPlate(tenantId: string, q: string): Promise<string[]> {
+  const key = plateKey(cleanQuery(q));
+  if (key.length < 3) return [];
+  const rows = await db.$queryRaw<{ id: string }[]>`SELECT id FROM "AccidentReplacementCase" WHERE "tenantId" = ${tenantId} AND regexp_replace(upper("damagedPlate"), '[^A-Z0-9ÄÖÜ]', '', 'g') LIKE ${"%" + key + "%"} LIMIT 50`;
+  return rows.map((r) => r.id);
 }

@@ -99,7 +99,8 @@ test("Hauptstatus aus realen Zuständen; Tabs je Rolle; Fälligkeit nach Kalende
   assert.equal(st("OPEN", "RESERVED"), "Übergabe ausstehend");
   assert.equal(st("OPEN", "RESERVED", null, { contractSigned: true }), "Bereit zur Übergabe");
   assert.equal(st("OPEN", "ACTIVE"), "Miete läuft");
-  assert.equal(st("OPEN", "ACTIVE", null, { overdue: true }), "Rückgabe überfällig");
+  assert.equal(st("OPEN", "ACTIVE", null, { overdue: true }), "Geplantes Mietende überschritten");
+  assert.equal(st("OPEN", "ACTIVE", null, { overdue: true, returnStarted: true } as never), "Rückgabe offen");
   assert.equal(st("OPEN", "RETURNED"), "Miete beendet", "ohne Finanzsicht (Hof) nur „Miete beendet“");
   assert.equal(st("OPEN", "RETURNED", fin({})), "Abzurechnen");
   assert.equal(st("OPEN", "RETURNED", fin({ drafts: 1 })), "Rechnung im Entwurf");

@@ -24,7 +24,7 @@ export default async function SearchPage({ searchParams }: PageProps<"/suche">) 
         </form>
       </PageHeader>
       <Content>
-        {!raw && <Card><Empty>Suchbegriff eingeben – mindestens {SEARCH_MIN} Zeichen. Gefunden werden Kundennummern, Buchungs-, Vertrags- und Belegnummern (RE, GS, ST, AZ, SCH, WA, BH), Kennzeichen, Namen, Firmen, E-Mail-Adressen und Telefonnummern.</Empty></Card>}
+        {!raw && <Card><Empty>Suchbegriff eingeben – mindestens {SEARCH_MIN} Zeichen. Gefunden werden Kundennummern, Buchungs-, Vertrags- und Belegnummern (RE, GS, ST, AZ, SCH, WA, BH, UE), Kennzeichen, Namen, Firmen, E-Mail-Adressen und Telefonnummern.</Empty></Card>}
         {raw && !parsed.success && <Card><Empty>{parsed.error.issues[0].message}</Empty></Card>}
         {result && result.groups.length === 0 && <Card><Empty>Nichts gefunden für „{result.q}“. Tipp: Kennzeichen ohne Leerzeichen, Nummern vollständig eingeben.</Empty></Card>}
         {result?.groups.map((g) => (
