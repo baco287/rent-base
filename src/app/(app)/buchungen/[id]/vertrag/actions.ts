@@ -28,6 +28,7 @@ import { optStr, parseDriver } from "./driver-schema";
 import { runContractFollowUp } from "@/lib/followup";
 import { COUNTRIES } from "@/lib/constants";
 import { parseLocalDateTime } from "@/lib/time";
+import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed } from "@/lib/accident-replacement-events";
 
 export type StepState = { error?: string } | undefined;
 
@@ -79,6 +80,8 @@ export async function saveCustomerStepAction(bookingId: string, _prev: StepState
   }
   try {
     if (contract.status !== "DRAFT") throw new DomainError("Der Vertrag ist abgeschlossen und kann nicht mehr geändert werden.");
+    // Befehl 29 Phase E: geschlossener Unfallersatzfall – auch Schritt 1 des Vertrags ist gesperrt (Kundenpflege bleibt unter /kunden)
+    if (await accidentCaseClosed(db, tenant.id, bookingId)) throw new DomainError(ACCIDENT_CASE_CLOSED_MESSAGE);
     // Sperre und Rabatt werden hier nicht verändert: das bleibt der Kundenverwaltung vorbehalten
     const { blocked: _b, blockReason: _r, discountPercent: _d, notes: _n, ...data } = customerToData(parsed.data);
     void _b; void _r; void _d; void _n;
@@ -148,11 +151,23 @@ const conditionsSchema = z.object({
   individualAgreements: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.string().max(6000, "Individuelle Vereinbarungen: maximal 6.000 Zeichen.").optional()),
 });
 
+/**
+ * Befehl 29 Phase E: Unfallersatz – Mietbeginn steht in der Fallakte (hier nur angezeigt), das Mietende ist offen („bis zur
+ * Rückgabe“), es gibt keinen abweichend vereinbarten Gesamtpreis. Diese Felder werden deshalb weder erwartet noch übernommen.
+ */
+const accidentConditionsSchema = conditionsSchema.omit({ startAt: true, endAt: true, agreedTotal: true, agreedTotalNote: true });
+
 // Schritt 4: Konditionen
 export async function saveConditionsStepAction(bookingId: string, _prev: StepState, formData: FormData): Promise<StepState> {
   const { tenant, contract, actor } = await context(bookingId);
   const back = formData.get("nav") === "back";
-  const parsed = conditionsSchema.safeParse(Object.fromEntries(formData));
+  const booking = await db.booking.findFirst({ where: { id: bookingId, tenantId: tenant.id }, select: { rentalType: true, startAt: true } });
+  if (!booking) redirect("/buchungen");
+  const accident = booking.rentalType === "ACCIDENT_REPLACEMENT";
+  const parsedAccident = accident ? accidentConditionsSchema.safeParse(Object.fromEntries(formData)) : null;
+  const parsed = accident
+    ? parsedAccident!.success ? { success: true as const, data: { ...parsedAccident!.data, startAt: booking.startAt, endAt: null, agreedTotal: undefined, agreedTotalNote: undefined } } : { success: false as const, error: parsedAccident!.error }
+    : conditionsSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) {
     if (back) return go(bookingId, contract.id, tenant.id, 4, formData);
     return { error: parsed.error.issues[0].message };
@@ -167,7 +182,8 @@ export async function saveConditionsStepAction(bookingId: string, _prev: StepSta
         batteryMinimumPercent: d.fuelPolicy === "MINIMUM_LEVEL" ? d.batteryMinimumPercent ?? null : null,
         abroadAllowed: !!d.abroadAllowed, abroadCountries: d.abroadAllowed ? abroadCountries : [],
         smokingAllowed: !!d.smokingAllowed, petsPolicy: d.petsPolicy ?? "BY_APPROVAL",
-        additionalDriverFeeType: d.additionalDriverFeeType ?? "FREE", additionalDriverFeeCents: d.additionalDriverFeeType && d.additionalDriverFeeType !== "FREE" ? Math.round((d.additionalDriverFeeCents ?? 0) * 100) : 0,
+        // Unfallersatz: Preisregel nur übernehmen, wenn das Formular sie enthält (dort ausgeblendet; sonst entstünde stillschweigend „kostenlos“). Standard unverändert.
+        ...(!accident || formData.has("additionalDriverFeeType") ? { additionalDriverFeeType: d.additionalDriverFeeType ?? "FREE", additionalDriverFeeCents: d.additionalDriverFeeType && d.additionalDriverFeeType !== "FREE" ? Math.round((d.additionalDriverFeeCents ?? 0) * 100) : 0 } : {}),
       }
     : undefined;
   try {

@@ -148,18 +148,18 @@ export async function setPlanActive(tenantId: string, planId: string, actor: Act
 // Buchungsprüfungen (nur Hinweise, nie automatische Änderungen)
 // ---------------------------------------------------------------------------
 
-export type BookingHint = { id: string; number: string; startAt: Date; endAt: Date; status: string };
+export type BookingHint = { id: string; number: string; startAt: Date; endAt: Date | null; status: string }; // endAt null = offenes Mietende (Unfallersatz)
 
-/** Laufende und künftige Buchungen des Fahrzeugs – vor einer Sperre deutlich anzeigen. */
+/** Laufende und künftige Buchungen des Fahrzeugs – vor einer Sperre deutlich anzeigen (offenes Ende = läuft). */
 export async function activeAndFutureBookings(tx: Tx | typeof db, tenantId: string, vehicleId: string): Promise<BookingHint[]> {
-  return tx.booking.findMany({ where: { tenantId, vehicleId, status: { in: ["RESERVED", "ACTIVE"] }, endAt: { gt: new Date() } }, orderBy: { startAt: "asc" }, select: { id: true, number: true, startAt: true, endAt: true, status: true } });
+  return tx.booking.findMany({ where: { tenantId, vehicleId, status: { in: ["RESERVED", "ACTIVE"] }, OR: [{ endAt: { gt: new Date() } }, { endAt: null }] }, orderBy: { startAt: "asc" }, select: { id: true, number: true, startAt: true, endAt: true, status: true } });
 }
 
-/** Buchungen, die sich mit einem Werkstatttermin überschneiden (Termin ohne Ende = ein Tag). */
+/** Buchungen, die sich mit einem Werkstatttermin überschneiden (Termin ohne Ende = ein Tag; offenes Mietende überschneidet alles danach). */
 export async function overlappingBookings(tx: Tx | typeof db, tenantId: string, vehicleId: string, scheduledAt: Date | null, scheduledEndAt: Date | null): Promise<BookingHint[]> {
   if (!scheduledAt) return [];
   const end = scheduledEndAt ?? new Date(scheduledAt.getTime() + 86_400_000);
-  return tx.booking.findMany({ where: { tenantId, vehicleId, status: { in: ["RESERVED", "ACTIVE"] }, startAt: { lt: end }, endAt: { gt: scheduledAt } }, orderBy: { startAt: "asc" }, select: { id: true, number: true, startAt: true, endAt: true, status: true } });
+  return tx.booking.findMany({ where: { tenantId, vehicleId, status: { in: ["RESERVED", "ACTIVE"] }, startAt: { lt: end }, OR: [{ endAt: { gt: scheduledAt } }, { endAt: null }] }, orderBy: { startAt: "asc" }, select: { id: true, number: true, startAt: true, endAt: true, status: true } });
 }
 
 // ---------------------------------------------------------------------------

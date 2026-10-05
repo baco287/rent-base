@@ -10,6 +10,7 @@ import { readContractRules, type ContractRules } from "@/lib/business-rules";
 import type { ContractPriceSnapshot, CustomerSnapshot, VehicleSnapshot } from "@/lib/contracts";
 import { parseTerms, type TermsBlock } from "@/lib/terms-markdown";
 import { APP_TIME_ZONE } from "@/lib/time";
+import { accidentPricePreview, contractTariffItems } from "@/lib/accident-pricing";
 
 export type DocRow = { label: string; value: string; missing?: boolean };
 export type DocSection = { key: string; title: string; rows: DocRow[] };
@@ -52,7 +53,11 @@ export type ContractDocument = {
   contentHash: string | null;
   sections: DocSection[];
   additionalDrivers: DocSection[];
-  price: { days: number; lines: DocPriceLine[]; subtotal: string; discount: DocPriceLine | null; calculated: string; agreed: DocPriceLine | null; extras: DocPriceLine[]; total: string; deposit: string };
+  /**
+   * Befehl 29: openEnd = Unfallersatz ohne Mietende – kein Gesamtpreis; lines = Mietpreis je Miettag (Tagessatz + Tagespositionen),
+   * extras = einmalige Positionen, subtotalLabel „Summe je Miettag“, totalNote erklärt die Berechnung nach der Rückgabe.
+   */
+  price: { days: number; openEnd: boolean; durationText: string; lines: DocPriceLine[]; subtotalLabel: string; subtotal: string; discount: DocPriceLine | null; calculated: string; agreed: DocPriceLine | null; extras: DocPriceLine[]; total: string; totalNote: string | null; deposit: string };
   /** Geschäftsregeln des Vertrags (eingefroren) – konkrete Werte, keine Rechtsaussagen */
   rules: DocSection | null;
   /** Individuelle Vereinbarungen, Teil des unterschriebenen Inhalts */
@@ -77,11 +82,12 @@ const cents = (c: number | null | undefined) => (c == null ? null : (c / 100).to
 const countryList = (codes: string[]) => codes.map((c) => COUNTRIES[c as keyof typeof COUNTRIES] ?? c).join(", ");
 
 /** Geschäftsregeln als Vertragsabschnitt: nur konkrete, eingefrorene Werte. Herkunft steht nicht im Dokument. */
-export function rulesSection(rules: ContractRules | null, contract: { kmIncludedPerDay: number; extraKmRate: unknown; fuelPolicy: string; fuelPolicyNote: string | null; deductible: unknown }, fuel: string | null | undefined, additionalDrivers: number, days: number): DocSection | null {
+export function rulesSection(rules: ContractRules | null, contract: { kmIncludedPerDay: number; extraKmRate: unknown; fuelPolicy: string; fuelPolicyNote: string | null; deductible: unknown }, fuel: string | null | undefined, additionalDrivers: number, days: number | null): DocSection | null {
   if (!rules) return null;
   const v = rules.values;
   const cls = driveClassOf(fuel ?? "DIESEL");
-  const km = v.kmPolicy === "UNLIMITED" ? "Unbegrenzte Kilometer" : v.kmPolicy === "INDIVIDUAL" ? `Individuell: ${v.kmPolicyNote ?? ""}`.trim() : `${contract.kmIncludedPerDay.toLocaleString("de-DE")} km je Tag (gesamt ${(contract.kmIncludedPerDay * days).toLocaleString("de-DE")} km), Mehrkilometer ${eur(contract.extraKmRate)} je km`;
+  // days === null: offenes Mietende (Unfallersatz) – Freikilometer je tatsächlichem Miettag, keine Verspätung, Zusatzfahrer nur laut Tarif
+  const km = v.kmPolicy === "UNLIMITED" ? "Unbegrenzte Kilometer" : v.kmPolicy === "INDIVIDUAL" ? `Individuell: ${v.kmPolicyNote ?? ""}`.trim() : `${contract.kmIncludedPerDay.toLocaleString("de-DE")} km je ${days === null ? "Miettag (gesamt: Freikilometer × tatsächliche Miettage)" : `Tag (gesamt ${(contract.kmIncludedPerDay * days).toLocaleString("de-DE")} km)`}, Mehrkilometer ${eur(contract.extraKmRate)} je km`;
   const fuelRule = (() => {
     const base = label(FUEL_POLICIES, contract.fuelPolicy);
     if (contract.fuelPolicy === "OTHER") return `${base}: ${contract.fuelPolicyNote ?? ""}`;
@@ -91,7 +97,7 @@ export function rulesSection(rules: ContractRules | null, contract: { kmIncluded
     }
     return base;
   })();
-  const fee = v.additionalDriverFeeType === "FREE" ? "kostenlos" : `${cents(v.additionalDriverFeeCents)} ${v.additionalDriverFeeType === "PER_DAY" ? "je Zusatzfahrer und Miettag" : "je Zusatzfahrer"}`;
+  const fee = days === null ? "Kosten nur laut Mietpreis" : v.additionalDriverFeeType === "FREE" ? "kostenlos" : `${cents(v.additionalDriverFeeCents)} ${v.additionalDriverFeeType === "PER_DAY" ? "je Zusatzfahrer und Miettag" : "je Zusatzfahrer"}`;
   const rows: DocRow[] = [
     row("Kilometerregel", km),
     row(cls === "ELECTRIC" ? "Laderegel" : cls === "PHEV" ? "Tank- und Laderegel" : "Tankregelung", fuelRule),
@@ -101,7 +107,7 @@ export function rulesSection(rules: ContractRules | null, contract: { kmIncluded
     row("Tiere im Fahrzeug", label(PETS_POLICIES, v.petsPolicy)),
     row("Zusatzfahrer", v.additionalDriversAllowed ? `${additionalDrivers} eingetragen, ${fee}` : "Nicht vorgesehen"),
     row("Mindestalter Fahrer", `${v.minimumDriverAge} Jahre${v.minimumLicenseHoldingMonths > 0 ? `, Führerschein seit mindestens ${v.minimumLicenseHoldingMonths} Monaten` : ""}`),
-    row("Verspätete Rückgabe", v.lateReturnRule === "CONFIGURED_FEE" && v.lateReturnFeeCents != null ? `${label(LATE_RETURN_RULES, v.lateReturnRule)}: Richtwert ${cents(v.lateReturnFeeCents)}` : label(LATE_RETURN_RULES, v.lateReturnRule)),
+    row("Verspätete Rückgabe", days === null ? "entfällt – Mietende offen, abgerechnet wird bis zur tatsächlichen Rückgabe" : v.lateReturnRule === "CONFIGURED_FEE" && v.lateReturnFeeCents != null ? `${label(LATE_RETURN_RULES, v.lateReturnRule)}: Richtwert ${cents(v.lateReturnFeeCents)}` : label(LATE_RETURN_RULES, v.lateReturnRule)),
     row("Rückgabe außerhalb der Öffnungszeiten", `${label(OUT_OF_HOURS_RETURN, v.outOfHoursReturn)}${v.outOfHoursInstructions ? `: ${v.outOfHoursInstructions}` : ""}`),
   ];
   const cleaning = [["Außergewöhnliche Verschmutzung", v.cleaningHeavySoilingCents], ["Rauchen", v.cleaningSmokingCents], ["Tierhaare", v.cleaningPetHairCents], ["Sonderreinigung", v.cleaningSpecialCents]].filter(([, c]) => c != null).map(([l, c]) => `${l} ${cents(c as number)}`);
@@ -142,6 +148,13 @@ export function buildContractDocument(contract: ContractWithDrivers, tenant: Ten
   const primary = contract.drivers.find((d) => d.role === "PRIMARY_DRIVER");
   const additional = contract.drivers.filter((d) => d.role === "ADDITIONAL_DRIVER");
   const days = p?.days ?? 0;
+  // Befehl 29: Unfallersatz-Vertrag „bis zur Rückgabe“ – abgerechnet wird nach tatsächlicher Mietdauer zum Tagessatz
+  const openEnd = contract.endAt === null;
+  const dailyRate = p?.rates?.dailyRate ?? 0;
+  // Phase E: Mietpreis je Miettag und einmalige Positionen aus dem eingefrorenen Tarif – dieselbe Aufbereitung wie die Wizard-Vorschau
+  const tariff = openEnd ? accidentPricePreview({ startAt: contract.startAt, endAt: null, dailyRateCents: Math.round(dailyRate * 100), items: contractTariffItems(p) ?? [], now: contract.startAt }) : null;
+  const tariffView = tariff?.kind === "OPEN_END" ? tariff : null;
+  const noDeposit = openEnd && !(Number(contract.deposit) > 0);
   const rules = readContractRules(contract.conditions);
   const termsFormat = contract.termsText ? ((contract.termsFormat === "MARKDOWN" ? "MARKDOWN" : "PLAIN") as "MARKDOWN" | "PLAIN") : null;
 
@@ -184,8 +197,10 @@ export function buildContractDocument(contract: ContractWithDrivers, tenant: Ten
       title: "Mietzeitraum",
       rows: [
         row("Mietbeginn", dateTime(contract.startAt), true),
-        row("Geplante Rückgabe", dateTime(contract.endAt), true),
-        row("Mietdauer", `${days} ${days === 1 ? "Tag" : "Tage"}`),
+        // Befehl 29: Unfallersatz – der Vertrag läuft bis zur Rückgabe des Ersatzfahrzeugs; ein geplantes Ende (Fallakte) gehört nicht in den Vertrag
+        ...(contract.endAt
+          ? [row("Geplante Rückgabe", dateTime(contract.endAt), true), row("Mietdauer", `${days} ${days === 1 ? "Tag" : "Tage"}`)]
+          : [row("Mietende", "offen – die Miete endet mit der Rückgabe des Fahrzeugs"), row("Mietdauer", "nach tatsächlichen Miettagen ab der Fahrzeugübergabe; gezählt nach Ortszeit – jeder angefangene Zeitraum bis zur gleichen Uhrzeit des Folgetags ist ein Miettag")]),
         row("Abholort", contract.pickupLocation),
         row("Rückgabeort", contract.returnLocation ?? contract.pickupLocation),
       ],
@@ -194,8 +209,8 @@ export function buildContractDocument(contract: ContractWithDrivers, tenant: Ten
       key: "conditions",
       title: "Konditionen",
       rows: [
-        row("Kaution", eur(contract.deposit)),
-        row("Freikilometer", `${contract.kmIncludedPerDay.toLocaleString("de-DE")} km je Tag, gesamt ${(contract.kmIncludedPerDay * days).toLocaleString("de-DE")} km`),
+        row("Kaution", noDeposit ? "keine Kaution vereinbart" : eur(contract.deposit)),
+        row("Freikilometer", openEnd ? `${contract.kmIncludedPerDay.toLocaleString("de-DE")} km je Miettag (gesamt: Freikilometer × tatsächliche Miettage)` : `${contract.kmIncludedPerDay.toLocaleString("de-DE")} km je Tag, gesamt ${(contract.kmIncludedPerDay * days).toLocaleString("de-DE")} km`),
         row("Mehrkilometer", `${eur(contract.extraKmRate)} je km`),
         row("Selbstbeteiligung", eur(contract.deductible)),
         row("Tankregelung", contract.fuelPolicy === "OTHER" ? `${label(FUEL_POLICIES, contract.fuelPolicy)}: ${contract.fuelPolicyNote ?? ""}` : label(FUEL_POLICIES, contract.fuelPolicy)),
@@ -221,16 +236,26 @@ export function buildContractDocument(contract: ContractWithDrivers, tenant: Ten
     additionalDrivers: additional.map((d, i) => driverSection(`additional-${d.id}`, `Zusatzfahrer ${i + 1}`, d)),
     price: {
       days,
-      lines: (p?.lines ?? []).map((l) => ({ text: `${l.quantity} × ${l.label} zu ${eur(l.unitPrice)}`, amount: eur(l.amount) })),
-      subtotal: eur(p?.subtotal),
+      openEnd,
+      durationText: openEnd ? "Mietende offen – Abrechnung nach tatsächlichen Miettagen" : `Mietdauer ${days} ${days === 1 ? "Tag" : "Tage"}`,
+      lines: tariffView
+        ? tariffView.perDayLines.map((l, i) => ({ text: i === 0 ? "Mietpreis je Miettag (Tagessatz)" : `${l.label} je Miettag`, amount: cents(l.cents)! }))
+        : (p?.lines ?? []).map((l) => ({ text: `${l.quantity} × ${l.label} zu ${eur(l.unitPrice)}`, amount: eur(l.amount) })),
+      subtotalLabel: tariffView ? "Summe je Miettag" : "Zwischensumme",
+      subtotal: tariffView ? cents(tariffView.perDayCents)! : eur(p?.subtotal),
       discount: p && p.discountPercent > 0 ? { text: `Rabatt ${p.discountPercent} %`, amount: `−${eur(p.discountAmount)}` } : null,
-      calculated: eur(p?.total),
+      calculated: tariffView ? "nach tatsächlicher Mietdauer" : eur(p?.total),
       agreed: p?.agreedTotal != null ? { text: `Abweichend vereinbart${p.agreedTotalNote ? `: ${p.agreedTotalNote}` : ""}`, amount: eur(p.agreedTotal) } : null,
-      extras: (p?.extras ?? []).map((e) => ({ text: `${e.quantity} × ${e.label} zu ${eur(e.unitPrice)}`, amount: eur(e.amount) })),
-      total: eur(contract.totalAmount),
-      deposit: eur(contract.deposit),
+      extras: tariffView
+        ? tariffView.oneOffLines.map((l) => ({ text: `${l.label} (${l.detail})`, amount: cents(l.cents)! }))
+        : (p?.extras ?? []).map((e) => ({ text: `${e.quantity} × ${e.label} zu ${eur(e.unitPrice)}`, amount: eur(e.amount) })),
+      total: tariffView ? "nach tatsächlicher Mietdauer" : eur(contract.totalAmount),
+      totalNote: tariffView
+        ? `Gesamtmietpreis = tatsächliche Miettage × ${cents(tariffView.perDayCents)}${tariffView.oneOffCents > 0 ? ` + ${cents(tariffView.oneOffCents)} einmalig` : ""}. Miettage zählen ab der Fahrzeugübergabe bis zur Rückgabe; abgerechnet wird nach der Rückgabe.`
+        : null,
+      deposit: noDeposit ? "keine" : eur(contract.deposit),
     },
-    rules: rulesSection(rules, contract, v.fuel, additional.length, days),
+    rules: rulesSection(rules, contract, v.fuel, additional.length, openEnd ? null : days),
     individualAgreements: contract.individualAgreements?.trim() || null,
     terms: {
       version: contract.termsVersion,

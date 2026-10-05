@@ -243,7 +243,7 @@ test("Zusatzkosten speichern die Rechengrundlage mit den Preisen aus dem Vertrag
   await updateHandoverDraft(ids.tenantA, returnId, { mileage: 51_552 });
   const contract = await db.rentalContract.findFirstOrThrow({ where: { id: contractId, tenantId: ids.tenantA } });
   // 1.542 km gefahren, 6 Tage × 200 km frei = 1.200 km, 342 Mehrkilometer zum Vertragspreis 0,25 € (Fahrzeug steht inzwischen auf 0,99 €)
-  const km = extraMileageCharge({ pickupMileage: 50_010, returnMileage: 51_552, start: contract.startAt, end: contract.endAt, kmIncludedPerDay: contract.kmIncludedPerDay, extraKmRate: Number(contract.extraKmRate) });
+  const km = extraMileageCharge({ pickupMileage: 50_010, returnMileage: 51_552, start: contract.startAt, end: contract.endAt!, kmIncludedPerDay: contract.kmIncludedPerDay, extraKmRate: Number(contract.extraKmRate) });
   assert.ok(km);
   assert.equal(km.quantity, 342);
   assert.equal(km.amount, 85.5);

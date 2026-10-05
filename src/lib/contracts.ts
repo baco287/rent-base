@@ -27,6 +27,8 @@ import { isUniqueViolation, nextContractNumber, withNumberRetry } from "@/lib/nu
 import { calculateRentalPrice, rateCardFrom, toNumber, type PriceBreakdown } from "@/lib/pricing";
 import { activeTermsVersion, termsFeatureActive, type TermsRow } from "@/lib/rental-terms";
 import { buildStorageKey } from "@/lib/storage";
+import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed, assertAccidentCaseOpen } from "@/lib/accident-replacement-events";
+import { freezeTariff, type ContractAccidentTariff, type ContractTariffItem } from "@/lib/accident-pricing";
 
 type Tx = Prisma.TransactionClient;
 const TX = { timeout: 20_000, maxWait: 10_000 };
@@ -88,20 +90,33 @@ export type VehicleSnapshot = ReturnType<typeof snapshotVehicle>;
 
 /** Eigene Preisposition neben dem Mietpreis, z. B. Zusatzfahrer. Nie im Basispreis versteckt. */
 export type PriceExtra = { key: "ADDITIONAL_DRIVER"; label: string; quantity: number; unitPrice: number; amount: number };
-export type ContractPriceSnapshot = PriceBreakdown & { agreedTotal: number | null; agreedTotalNote: string | null; extras?: PriceExtra[]; extrasTotal?: number; finalTotal: number };
+/**
+ * openEnd (Befehl 29): Unfallersatz-Vertrag ohne Mietende – es gibt keinen Gesamtpreis, nur den Tagessatz (rates). Tage,
+ * Positionen und Summen sind 0; die Abrechnung entsteht erst aus der tatsächlichen Mietdauer (lib/accident-replacement).
+ * accidentTariff (Phase E): die Tarifpositionen des Falls (je Miettag / einmalig), mit dem Vertrag unterschrieben und eingefroren.
+ */
+export type ContractPriceSnapshot = PriceBreakdown & { agreedTotal: number | null; agreedTotalNote: string | null; extras?: PriceExtra[]; extrasTotal?: number; finalTotal: number; openEnd?: true; accidentTariff?: ContractAccidentTariff };
 
 /**
  * Die eine Stelle, an der der Vertragspreis entsteht: zentrale Preisfunktion plus optional abweichend
  * vereinbarter Gesamtpreis, plus eigene Zusatzpositionen (Zusatzfahrer laut Geschäftsregel). Die Kernpreislogik
  * (günstigste Kombination Tag/Woche/Monat) bleibt unverändert in lib/pricing.ts.
+ * Befehl 29: Ein Vertrag mit offenem Ende (Unfallersatz, endAt null) bekommt einen Schnappschuss ohne Gesamtpreis.
  */
 export function contractPrice(
-  booking: { startAt: Date; endAt: Date; dailyRate: unknown; workWeekRate?: unknown; weeklyRate?: unknown; monthlyRate?: unknown },
+  booking: { startAt: Date; endAt: Date | null; dailyRate: unknown; workWeekRate?: unknown; weeklyRate?: unknown; monthlyRate?: unknown },
   discountPercent: number,
   agreedTotal: number | null,
   agreedTotalNote: string | null,
   extrasInput?: { additionalDrivers: number; rules: Pick<BusinessRules, "additionalDriverFeeType" | "additionalDriverFeeCents"> | null },
+  /** Phase E: Unfallersatz-Tarif der Fallakte (nur bei offenem Ende); null = kein Tarif bekannt (Standardmiete) */
+  accidentTariff?: readonly ContractTariffItem[] | null,
 ): ContractPriceSnapshot {
+  if (booking.endAt === null) {
+    const empty = calculateRentalPrice({ start: booking.startAt, end: booking.startAt, rates: rateCardFrom(booking), discountPercent, strategy: "DAILY_ONLY" });
+    // Zusatzfahrer-Gebühr aus den Geschäftsregeln gilt beim Unfallersatz nicht – Kosten nur über den Tarif (eigene Position)
+    return { ...empty, agreedTotal: null, agreedTotalNote: null, finalTotal: 0, openEnd: true, ...(accidentTariff ? { accidentTariff: freezeTariff(accidentTariff) } : {}) };
+  }
   const price = calculateRentalPrice({ start: booking.startAt, end: booking.endAt, rates: rateCardFrom(booking), discountPercent });
   const extras: PriceExtra[] = [];
   if (extrasInput?.rules) {
@@ -144,9 +159,33 @@ function resolveFor(booking: BookingWithContext): ResolvedRules {
 function depositFor(booking: BookingWithContext): ResolvedDeposit {
   return resolveDeposit(booking.tenant.businessRules, booking.vehicle.group, booking.vehicle);
 }
-/** Vertragskaution beim Anlegen: eine in der Buchung gesetzte Kaution gilt; ohne (0) greift die Vorgabekette. */
-const initialDeposit = (booking: BookingWithContext, resolved: ResolvedDeposit) => (Math.round(Number(booking.deposit) * 100) > 0 ? Number(booking.deposit) : resolved.cents / 100);
+/**
+ * Vertragskaution beim Anlegen: eine in der Buchung gesetzte Kaution gilt; ohne (0) greift die Vorgabekette. Beim Unfallersatz
+ * legt der Wizard die Kaution ausdrücklich fest – 0 heißt dort „keine Kaution“, nicht „Vorgabe“.
+ */
+const initialDeposit = (booking: BookingWithContext, resolved: ResolvedDeposit) =>
+  booking.rentalType === "ACCIDENT_REPLACEMENT" || Math.round(Number(booking.deposit) * 100) > 0 ? Number(booking.deposit) : resolved.cents / 100;
+/** Befehl 29: Unfallersatz rechnet ohne Kundenrabatt ab – auch der Vertrag weist keinen Rabatt aus. */
+const contractDiscount = (booking: BookingWithContext) => (booking.rentalType === "ACCIDENT_REPLACEMENT" ? 0 : booking.customer.discountPercent);
+/**
+ * Befehl 29: Vertragsende aus der Buchung. Unfallersatz-Verträge laufen „bis zur Rückgabe“ (null) – unabhängig davon, ob
+ * die Disposition ein geplantes Ende kennt; Standardmieten übernehmen das Buchungsende (immer gesetzt, DB-CHECK).
+ */
+export const contractEndOf = (booking: { rentalType: string; endAt: Date | null }): Date | null => (booking.rentalType === "ACCIDENT_REPLACEMENT" ? null : booking.endAt);
 const feeRules = (rules: ContractRules | null) => (rules ? { additionalDriverFeeType: rules.values.additionalDriverFeeType, additionalDriverFeeCents: rules.values.additionalDriverFeeCents } : null);
+/** Phase E: Tarifpositionen des Unfallersatzfalls zur Buchung (in Sortierreihenfolge); bei Standardmieten null. */
+async function accidentTariffFor(tx: Tx, tenantId: string, booking: { id: string; rentalType: string }): Promise<ContractTariffItem[] | null> {
+  if (booking.rentalType !== "ACCIDENT_REPLACEMENT") return null;
+  return tx.accidentReplacementTariffItem.findMany({ where: { tenantId, case: { bookingId: booking.id } }, orderBy: { sortOrder: "asc" }, select: { kind: true, label: true, perDay: true, unitPriceCents: true, quantityHundredths: true } });
+}
+/**
+ * Phase E: ein geschlossener Unfallersatzfall sperrt jede Vertragsänderung. Läuft als Erstes in der Transaktion – vor jeder Sperre
+ * auf dem Vertrag (Reihenfolge Fall → Vertrag wie setTariff). Standardverträge: keine Fallakte, keine Wirkung.
+ */
+async function guardContract(tx: Tx, tenantId: string, contractId: string) {
+  const head = await tx.rentalContract.findFirst({ where: { id: contractId, tenantId }, select: { bookingId: true } });
+  if (head) await assertAccidentCaseOpen(tx, tenantId, head.bookingId);
+}
 
 // ---------------------------------------------------------------------------
 // Entwurf anlegen und aktuell halten
@@ -163,13 +202,16 @@ export async function ensureContractDraft(tenantId: string, bookingId: string, a
   try {
     return await withNumberRetry(() =>
       db.$transaction(async (tx) => {
+        await assertAccidentCaseOpen(tx, tenantId, bookingId);
         const booking = await tx.booking.findFirst({ where: { id: bookingId, tenantId }, include: { customer: true, vehicle: { include: { group: true } }, tenant: true } });
         if (!booking) throw new DomainError("Buchung nicht gefunden.");
         if (booking.status !== "RESERVED") throw new DomainError("Ein Mietvertrag wird nur für reservierte Buchungen angelegt.");
         const resolved = resolveFor(booking);
         const depositRule = depositFor(booking);
         const rules = standardKmPolicy(initialContractRules(resolved, new Date(), depositRule), booking);
-        const price = contractPrice(booking, booking.customer.discountPercent, null, null, { additionalDrivers: 0, rules: feeRules(rules) });
+        // Befehl 29: Unfallersatz-Vertrag immer mit offenem Ende („bis zur Rückgabe“); das geplante Ende bleibt Dispositionswert der Buchung
+        const contractEnd = contractEndOf(booking);
+        const price = contractPrice({ ...booking, endAt: contractEnd }, contractDiscount(booking), null, null, { additionalDrivers: 0, rules: feeRules(rules) }, await accidentTariffFor(tx, tenantId, booking));
         const terms = termsForNewDraft(booking.tenant, await activeTermsVersion(tx, tenantId));
         const number = await nextContractNumber(tx, tenantId, booking.startAt);
         const contract = await tx.rentalContract.create({
@@ -183,7 +225,7 @@ export async function ensureContractDraft(tenantId: string, bookingId: string, a
             vehicleSnapshot: snapshotVehicle(booking.vehicle),
             priceSnapshot: price as unknown as Prisma.InputJsonValue,
             startAt: booking.startAt,
-            endAt: booking.endAt,
+            endAt: contractEnd,
             totalAmount: price.finalTotal,
             discountPercent: price.discountPercent,
             deposit: initialDeposit(booking, depositRule),
@@ -261,7 +303,10 @@ export async function refreshContractDraft(tx: Tx, tenantId: string, contractId:
   if (!rules || vehicleChanged) rules = initialContractRules(resolveFor(booking), new Date(), depositRule);
   rules = standardKmPolicy(rules, booking);
   const additionalDrivers = await tx.contractDriver.count({ where: { tenantId, contractId, role: "ADDITIONAL_DRIVER" } });
-  const price = contractPrice(booking, booking.customer.discountPercent, toNumber(contract.agreedTotal), contract.agreedTotalNote, { additionalDrivers, rules: feeRules(rules) });
+  const contractEnd = contractEndOf(booking);
+  // Phase E: Unfallersatz – kein abweichender Gesamtpreis; Tarifpositionen der Fallakte werden im Entwurf laufend übernommen
+  const accident = booking.rentalType === "ACCIDENT_REPLACEMENT";
+  const price = contractPrice({ ...booking, endAt: contractEnd }, contractDiscount(booking), accident ? null : toNumber(contract.agreedTotal), accident ? null : contract.agreedTotalNote, { additionalDrivers, rules: feeRules(rules) }, await accidentTariffFor(tx, tenantId, booking));
   // Mietbedingungen: ein versionierter Entwurf wechselt nie von selbst. Ohne Fassung (Altbestand, noch nicht bestätigt)
   // wird die aktive Fassung übernommen; ohne veröffentlichte Fassung gilt weiter der bisherige Mandantentext.
   const featureActive = await termsFeatureActive(tx, tenantId);
@@ -284,14 +329,15 @@ export async function refreshContractDraft(tx: Tx, tenantId: string, contractId:
       vehicleSnapshot: snapshotVehicle(booking.vehicle),
       priceSnapshot: price as unknown as Prisma.InputJsonValue,
       startAt: booking.startAt,
-      endAt: booking.endAt,
+      endAt: contractEnd,
       totalAmount: price.finalTotal,
       discountPercent: price.discountPercent,
       // Kilometer-Konditionen: die Buchung ist vor Vertragsabschluss die führende Quelle (Befehl 20.7); ohne Angabe dort
       // gilt das Fahrzeug – bei Fahrzeugwechsel entsprechend neu übernehmen
       ...(booking.kmIncludedPerDay != null ? { kmIncludedPerDay: booking.kmIncludedPerDay } : vehicleChanged ? { kmIncludedPerDay: booking.vehicle.kmIncludedPerDay } : {}),
       ...(booking.extraKmRate != null ? { extraKmRate: booking.extraKmRate } : vehicleChanged ? { extraKmRate: booking.vehicle.extraKmRate } : {}),
-      ...(vehicleChanged ? { deductible: (rules.values.deductibleCents ?? 0) / 100, fuelPolicy: rules.values.fuelRule, deposit: depositRule.cents / 100 } : {}),
+      // Unfallersatz: die Kaution legt der Fall fest (0 = keine) – kein Rückfall auf die Vorgabe
+      ...(vehicleChanged ? { deductible: (rules.values.deductibleCents ?? 0) / 100, fuelPolicy: rules.values.fuelRule, ...(accident ? {} : { deposit: depositRule.cents / 100 }) } : {}),
       // Befehl 21: Entwurf ohne Abholort übernimmt die Anschrift des Vermieters (kein falscher Hinweis „Kein Abholort“)
       ...(contract.pickupLocation == null && defaultPickupLocation(booking.tenant) ? { pickupLocation: defaultPickupLocation(booking.tenant) } : {}),
       conditions: rules as unknown as Prisma.InputJsonValue,
@@ -400,6 +446,7 @@ export async function saveContractSignature(tenantId: string, actor: Actor | nul
   if (image.length < 800) throw new DomainError("Die Unterschrift ist leer. Bitte im Feld unterschreiben.");
 
   return db.$transaction(async (tx) => {
+    await guardContract(tx, tenantId, contractId);
     const contract = await refreshContractDraft(tx, tenantId, contractId);
     assertContractDraft(contract);
     const hash = await currentHash(tx, tenantId, contractId);
@@ -427,6 +474,7 @@ export async function saveContractSignature(tenantId: string, actor: Actor | nul
 
 export async function removeContractSignature(tenantId: string, contractId: string, role: "RENTER" | "EMPLOYEE") {
   return db.$transaction(async (tx) => {
+    await guardContract(tx, tenantId, contractId);
     assertContractDraft(await loadContract(tx, tenantId, contractId));
     await tx.signature.deleteMany({ where: { tenantId, contractId, role } });
   }, TX);
@@ -480,6 +528,7 @@ export async function assertLinkedCustomer(tx: Tx, tenantId: string, customerId:
 /** "Mieter fährt selbst": Fahrer wird aus dem Mieter abgeleitet. */
 export async function setRenterDrives(tenantId: string, contractId: string) {
   return db.$transaction(async (tx) => {
+    await guardContract(tx, tenantId, contractId);
     const c = await loadContract(tx, tenantId, contractId);
     assertContractDraft(c);
     await tx.rentalContract.update({ where: { id: c.id }, data: { driverMode: "RENTER" } });
@@ -491,6 +540,7 @@ export async function setRenterDrives(tenantId: string, contractId: string) {
 /** "Abweichender Fahrer": eigene Kopie der Fahrerdaten am Vertrag, auch wenn ein Kunde als Vorlage diente. */
 export async function setOtherDriver(tenantId: string, contractId: string, input: DriverInput) {
   return db.$transaction(async (tx) => {
+    await guardContract(tx, tenantId, contractId);
     const c = await loadContract(tx, tenantId, contractId);
     assertContractDraft(c);
     await assertLinkedCustomer(tx, tenantId, input.customerId);
@@ -504,6 +554,7 @@ export async function setOtherDriver(tenantId: string, contractId: string, input
 
 export async function addAdditionalDriver(tenantId: string, contractId: string, input: DriverInput) {
   return db.$transaction(async (tx) => {
+    await guardContract(tx, tenantId, contractId);
     assertContractDraft(await loadContract(tx, tenantId, contractId));
     await assertLinkedCustomer(tx, tenantId, input.customerId);
     const driver = await tx.contractDriver.create({ data: { tenantId, contractId, role: "ADDITIONAL_DRIVER", ...driverData(input) } });
@@ -514,6 +565,7 @@ export async function addAdditionalDriver(tenantId: string, contractId: string, 
 
 export async function removeAdditionalDriver(tenantId: string, contractId: string, driverId: string) {
   return db.$transaction(async (tx) => {
+    await guardContract(tx, tenantId, contractId);
     assertContractDraft(await loadContract(tx, tenantId, contractId));
     await tx.contractDriver.deleteMany({ where: { id: driverId, tenantId, contractId, role: "ADDITIONAL_DRIVER" } });
     await refreshContractDraft(tx, tenantId, contractId);
@@ -522,7 +574,8 @@ export async function removeAdditionalDriver(tenantId: string, contractId: strin
 
 export type ConditionsInput = {
   startAt: Date;
-  endAt: Date;
+  /** Befehl 29: bei Unfallersatz ohne Bedeutung (Vertragsende bleibt offen, das geplante Ende gehört zur Fallakte) */
+  endAt: Date | null;
   deposit: number;
   kmIncludedPerDay: number;
   extraKmRate: number;
@@ -545,7 +598,7 @@ export type ConditionsInput = {
  * mit derselben Konfliktprüfung wie beim Bearbeiten einer Buchung.
  */
 export async function saveConditions(tenantId: string, contractId: string, input: ConditionsInput, actor: Actor | null = null) {
-  if (!(input.endAt > input.startAt)) throw new DomainError("Die Rückgabe muss nach dem Mietbeginn liegen.");
+  if (input.endAt !== null && !(input.endAt > input.startAt)) throw new DomainError("Die Rückgabe muss nach dem Mietbeginn liegen.");
   if (input.fuelPolicy === "OTHER" && !input.fuelPolicyNote?.trim()) throw new DomainError("Bitte die individuelle Tankregelung beschreiben.");
   if (input.individualAgreements && input.individualAgreements.length > 6000) throw new DomainError("Individuelle Vereinbarungen: maximal 6.000 Zeichen.");
   for (const [label, v] of [["Kaution", input.deposit], ["Freikilometer", input.kmIncludedPerDay], ["Mehrkilometerpreis", input.extraKmRate], ["Selbstbeteiligung", input.deductible]] as const) {
@@ -555,21 +608,30 @@ export async function saveConditions(tenantId: string, contractId: string, input
   if (input.agreedTotal != null && !input.agreedTotalNote?.trim()) throw new DomainError("Bitte kurz begründen, warum der Mietpreis von der Berechnung abweicht.");
 
   return db.$transaction(async (tx) => {
+    await guardContract(tx, tenantId, contractId);
     const c = await loadContract(tx, tenantId, contractId);
     assertContractDraft(c);
     const booking = await tx.booking.findFirst({ where: { id: c.bookingId, tenantId }, include: { vehicle: true } });
     if (!booking) throw new DomainError("Buchung nicht gefunden.");
 
-    const periodChanged = booking.startAt.getTime() !== input.startAt.getTime() || booking.endAt.getTime() !== input.endAt.getTime();
+    // Befehl 29: Unfallersatz – Mietbeginn und geplantes Ende werden in der Fallakte geändert (Konfliktprüfung, Audit dort);
+    // der Vertrag kennt kein Ende. Ein Standardvertrag braucht ein Ende.
+    const accident = booking.rentalType === "ACCIDENT_REPLACEMENT";
+    if (!accident && input.endAt === null) throw new DomainError("Bitte die Rückgabe mit Datum und Uhrzeit angeben.");
+    // Phase E: kein Gesamtpreis im Voraus – auch kein „abweichend vereinbarter“; abgerechnet wird nach tatsächlicher Mietdauer zum Tarif
+    if (accident && input.agreedTotal != null) throw new DomainError("Bei einer Unfallersatzmiete gibt es keinen abweichend vereinbarten Gesamtpreis. Abgerechnet wird nach tatsächlicher Mietdauer zum Tarif der Fallakte.");
+    if (accident && booking.startAt.getTime() !== input.startAt.getTime()) throw new DomainError("Bei einer Unfallersatzmiete steht der Mietbeginn laut Fallakte fest; abgerechnet wird ab der tatsächlichen Übergabe.");
+    const nextEnd = accident ? booking.endAt : input.endAt;
+    const periodChanged = booking.startAt.getTime() !== input.startAt.getTime() || (booking.endAt?.getTime() ?? null) !== (nextEnd?.getTime() ?? null);
     if (periodChanged) {
-      const conflicts = await findConflicts(tx, tenantId, booking.vehicleId, input.startAt, input.endAt, booking.id);
+      const conflicts = await findConflicts(tx, tenantId, booking.vehicleId, input.startAt, nextEnd, booking.id);
       if (conflicts.length > 0) throw new DomainError(`Der neue Zeitraum überschneidet sich mit Buchung ${conflicts[0].number}. ${booking.vehicle.plate} ist dann bereits vergeben.`);
     }
     // Befehl 20.9: wurde die Kaution schon bei der Buchung als erhalten dokumentiert, ist der vereinbarte Betrag fest
     const depositConflict = await depositAgreedAmountConflict(tx, tenantId, booking.id, Math.round(input.deposit * 100));
     if (depositConflict) throw new DomainError(depositConflict);
     // Zeitraum, Kaution und Kilometervereinbarung gehören zur Buchung: dort mitschreiben, damit Buchung, Vertrag, Übergabe und Rückgabe dieselben Werte tragen
-    await tx.booking.update({ where: { id: booking.id }, data: { startAt: input.startAt, endAt: input.endAt, deposit: input.deposit, kmIncludedPerDay: Math.round(input.kmIncludedPerDay), extraKmRate: input.extraKmRate } });
+    await tx.booking.update({ where: { id: booking.id }, data: { ...(accident ? {} : { startAt: input.startAt, endAt: nextEnd }), deposit: input.deposit, kmIncludedPerDay: Math.round(input.kmIncludedPerDay), extraKmRate: input.extraKmRate } });
     // Geschäftsregeln des Vertrags: erlaubte Schlüssel anpassen, Herkunft „Individuell angepasst“ bei Abweichung, Audit je Änderung
     const withContext = await tx.booking.findFirstOrThrow({ where: { id: c.bookingId, tenantId }, include: { customer: true, vehicle: { include: { group: true } }, tenant: true } });
     const resolved = resolveFor(withContext);
@@ -631,7 +693,11 @@ async function collectIssues(tx: Tx, tenantId: string, contractId: string, opts:
   if (!booking || !customer || !vehicle) return issues;
 
   if (booking.status !== "RESERVED") err("PERIOD", "BOOKING_STATUS", "Die Buchung ist nicht mehr reserviert. Ein Vertrag kann nur für reservierte Buchungen abgeschlossen werden.");
-  if (!(c.endAt > c.startAt)) err("PERIOD", "PERIOD_INVALID", "Die Rückgabe muss nach dem Mietbeginn liegen.");
+  // Befehl 29: offenes Ende nur beim Unfallersatz (DB-Trigger prüft dasselbe); dort gilt der Vertrag „bis zur Rückgabe“
+  if (c.endAt === null && booking.rentalType !== "ACCIDENT_REPLACEMENT") err("PERIOD", "PERIOD_INVALID", "Die Rückgabe fehlt. Ein offenes Mietende gibt es nur bei einer Unfallersatzmiete.");
+  if (c.endAt !== null && !(c.endAt > c.startAt)) err("PERIOD", "PERIOD_INVALID", "Die Rückgabe muss nach dem Mietbeginn liegen.");
+  // Phase E: geschlossener Unfallersatzfall – kein Vertragsabschluss (Sperre zusätzlich in jeder Änderungsfunktion)
+  if (booking.rentalType === "ACCIDENT_REPLACEMENT" && (await accidentCaseClosed(tx, tenantId, booking.id))) err("PERIOD", "CASE_CLOSED", ACCIDENT_CASE_CLOSED_MESSAGE);
 
   // Mieter: geprüft wird, was tatsächlich auf dem Vertrag steht
   issues.push(...checkCustomer({ ...(c.customerSnapshot as CustomerSnapshot), blocked: customer.blocked, blockReason: customer.blockReason }, c.startAt));
@@ -653,14 +719,23 @@ async function collectIssues(tx: Tx, tenantId: string, contractId: string, opts:
 
   // Fahrzeug: Status und die bestehende Verfügbarkeitsprüfung, keine zweite Logik
   if (vehicle.status !== "AVAILABLE") err("VEHICLE", "VEHICLE_STATUS", `${vehicle.plate} ist derzeit nicht vermietbar (Status: ${vehicle.status === "WORKSHOP" ? "Werkstatt" : vehicle.status === "BLOCKED" ? "Gesperrt" : "Inaktiv"}).`);
-  const conflicts = await findConflicts(tx, tenantId, vehicle.id, c.startAt, c.endAt, booking.id);
+  // Verfügbarkeit gegen das disponierte Ende der Buchung (beim Unfallersatz das geplante bzw. offene Ende, nicht das Vertragsende)
+  const conflicts = await findConflicts(tx, tenantId, vehicle.id, c.startAt, booking.endAt, booking.id);
   if (conflicts.length > 0) err("VEHICLE", "VEHICLE_CONFLICT", `${vehicle.plate} ist im Zeitraum bereits durch Buchung ${conflicts[0].number} belegt.`);
 
   // Preis
   const price = c.priceSnapshot as unknown as ContractPriceSnapshot | null;
-  if (!price || !(price.days > 0) || !Array.isArray(price.lines) || price.lines.length === 0) err("PRICE", "PRICE_INVALID", "Die Preisberechnung ist unvollständig.");
-  else if (!(price.finalTotal >= 0) || Math.abs(price.finalTotal - Number(c.totalAmount)) > 0.005) err("PRICE", "PRICE_MISMATCH", "Der Gesamtpreis passt nicht zur Berechnung.");
-  if (price && price.finalTotal === 0) issues.push({ area: "PRICE", code: "PRICE_ZERO", severity: "warning", message: "Der Mietpreis beträgt 0 €." });
+  if (c.endAt === null) {
+    // Befehl 29: offenes Ende – kein Gesamtpreis, aber ein Tagessatz; die Abrechnung folgt der tatsächlichen Mietdauer
+    if (!price || price.openEnd !== true) err("PRICE", "PRICE_INVALID", "Die Preisberechnung passt nicht zu einem Vertrag mit offenem Mietende.");
+    else if (!((price.rates.dailyRate ?? 0) > 0)) err("PRICE", "PRICE_INVALID", "Für eine Miete mit offenem Ende muss ein Tagessatz größer 0 € hinterlegt sein.");
+    else if (Number(c.totalAmount) !== 0 || c.agreedTotal != null) err("PRICE", "PRICE_MISMATCH", "Ein Vertrag mit offenem Mietende trägt keinen Gesamtpreis.");
+    else if (!price.accidentTariff) err("PRICE", "TARIFF_MISSING", "Der Tarif des Unfallersatzfalls ist nicht im Vertrag hinterlegt. Bitte die Seite neu laden.");
+  } else {
+    if (!price || !(price.days > 0) || !Array.isArray(price.lines) || price.lines.length === 0) err("PRICE", "PRICE_INVALID", "Die Preisberechnung ist unvollständig.");
+    else if (!(price.finalTotal >= 0) || Math.abs(price.finalTotal - Number(c.totalAmount)) > 0.005) err("PRICE", "PRICE_MISMATCH", "Der Gesamtpreis passt nicht zur Berechnung.");
+    if (price && price.finalTotal === 0) issues.push({ area: "PRICE", code: "PRICE_ZERO", severity: "warning", message: "Der Mietpreis beträgt 0 €." });
+  }
 
   // Konditionen
   if (!c.number) err("CONDITIONS", "NUMBER_MISSING", "Die Vertragsnummer fehlt.");
@@ -704,7 +779,9 @@ async function collectIssues(tx: Tx, tenantId: string, contractId: string, opts:
 /** Stand des Vertrags für den Assistenten: aufgefrischter Entwurf, Fahrer, Unterschriften (ohne Bilddaten), Prüfergebnis, Hash. */
 export async function getContractState(tenantId: string, contractId: string) {
   return db.$transaction(async (tx) => {
-    await refreshContractDraft(tx, tenantId, contractId);
+    // Phase E: der Entwurf eines geschlossenen Unfallersatzfalls bleibt eingefroren (nur Anzeige, kein Auffrischen)
+    const head = await tx.rentalContract.findFirst({ where: { id: contractId, tenantId }, select: { bookingId: true } });
+    if (!head || !(await accidentCaseClosed(tx, tenantId, head.bookingId))) await refreshContractDraft(tx, tenantId, contractId);
     const contract = await loadContract(tx, tenantId, contractId);
     const signatures = await tx.signature.findMany({ where: { tenantId, contractId }, select: { id: true, role: true, signerName: true, signedAt: true, contentHash: true }, orderBy: { signedAt: "asc" } });
     const issues = contract.status === "DRAFT" ? await collectIssues(tx, tenantId, contractId, { requireSignature: false }) : [];
@@ -742,13 +819,15 @@ async function rulesStateOf(tx: Tx, tenantId: string, c: Awaited<ReturnType<type
   const deposit = depositFor(booking);
   const snapshot = readContractRules(c.conditions);
   // neuere Standardwerte: Regeln oder Kautionsvorgabe weichen vom Stand des Schnappschusses ab (Kaution nur, wenn der Schnappschuss sie kennt)
-  const depositChanged = !!snapshot && snapshot.depositResolvedCents != null && snapshot.depositResolvedCents !== deposit.cents;
+  // Unfallersatz: die Kaution legt der Fall fest – eine geänderte Kautionsvorgabe ist dort kein „neuerer Standardwert“
+  const depositChanged = booking.rentalType !== "ACCIDENT_REPLACEMENT" && !!snapshot && snapshot.depositResolvedCents != null && snapshot.depositResolvedCents !== deposit.cents;
   return { snapshot, resolved, deposit, depositSource: depositSourceOf(Math.round(Number(c.deposit) * 100), deposit), newerDefaults: c.status === "DRAFT" && !!snapshot && (snapshot.defaultsFingerprint !== rulesFingerprint(resolved.values) || depositChanged), driveClass: driveClassOf((c.vehicleSnapshot as VehicleSnapshot).fuel ?? booking.vehicle.fuel) };
 }
 
 /** Bewusster Wechsel auf eine (neuere) veröffentlichte Fassung. Setzt die Kenntnisnahme zurück; Unterschriften verfallen. */
 export async function adoptTermsVersion(tenantId: string, contractId: string, actor: Actor, versionId: string | null = null) {
   return db.$transaction(async (tx) => {
+    await guardContract(tx, tenantId, contractId);
     const c = await loadContract(tx, tenantId, contractId);
     assertContractDraft(c);
     const version = versionId ? await tx.rentalTermsVersion.findFirst({ where: { id: versionId, tenantId } }) : await activeTermsVersion(tx, tenantId);
@@ -766,6 +845,7 @@ export async function adoptTermsVersion(tenantId: string, contractId: string, ac
 export async function acknowledgeTerms(tenantId: string, contractId: string, actor: Actor, input: { confirmed: boolean }) {
   if (!input.confirmed) throw new DomainError("Bitte die Kenntnisnahme der Mietbedingungen ausdrücklich bestätigen.");
   return db.$transaction(async (tx) => {
+    await guardContract(tx, tenantId, contractId);
     const c = await loadContract(tx, tenantId, contractId);
     assertContractDraft(c);
     const h = acknowledgementHash(c);
@@ -782,6 +862,7 @@ export async function acknowledgeTerms(tenantId: string, contractId: string, act
 /** „Aktuelle Standardwerte übernehmen“: nur Werte ohne individuelle Anpassung; Unterschriften verfallen (Inhalt ändert sich). */
 export async function adoptContractDefaults(tenantId: string, contractId: string, actor: Actor) {
   return db.$transaction(async (tx) => {
+    await guardContract(tx, tenantId, contractId);
     const c = await loadContract(tx, tenantId, contractId);
     assertContractDraft(c);
     const booking = await tx.booking.findFirstOrThrow({ where: { id: c.bookingId, tenantId }, include: { customer: true, vehicle: { include: { group: true } }, tenant: true } });
@@ -793,7 +874,8 @@ export async function adoptContractDefaults(tenantId: string, contractId: string
     // Kaution: nur übernehmen, wenn sie noch der bisherigen Vorgabe entspricht (nicht individuell angepasst); Buchung folgt dem Vertragswert
     // Befehl 20.9: eine bei der Buchung dokumentierte Kaution ist fest – der Vertrag folgt dann keiner neuen Vorgabe
     const depositFixed = (await depositAgreedAmountConflict(tx, tenantId, c.bookingId, depositRule.cents)) !== null;
-    const depositFollows = !depositFixed && current.depositResolvedCents != null && Math.round(Number(c.deposit) * 100) === current.depositResolvedCents && depositRule.cents !== current.depositResolvedCents;
+    // Unfallersatz: die Kaution aus dem Fall (auch 0 = keine) folgt nie einer Kautionsvorgabe
+    const depositFollows = booking.rentalType !== "ACCIDENT_REPLACEMENT" && !depositFixed && current.depositResolvedCents != null && Math.round(Number(c.deposit) * 100) === current.depositResolvedCents && depositRule.cents !== current.depositResolvedCents;
     if (depositFollows) await tx.booking.update({ where: { id: c.bookingId }, data: { deposit: depositRule.cents / 100 } });
     await tx.rentalContract.update({ where: { id: c.id }, data: { conditions: next as unknown as Prisma.InputJsonValue, ...(depositFollows ? { deposit: depositRule.cents / 100 } : {}), ...(next.sources.deductibleCents !== "CONTRACT" ? { deductible: deductibleDefault } : {}), ...(next.sources.fuelRule !== "CONTRACT" ? { fuelPolicy: next.values.fuelRule } : {}) } });
     await recordAudit(tx, tenantId, actor, { action: "CONTRACT_DEFAULTS_ADOPTED", bookingId: c.bookingId, details: { contractNumber: c.number, fingerprint: next.defaultsFingerprint } });
@@ -814,6 +896,8 @@ function domainFromDb(e: unknown): never {
  */
 export async function finalizeContract(tenantId: string, contractId: string) {
   return db.$transaction(async (tx) => {
+    // Phase E: geschlossener Unfallersatzfall – vor der Vertragssperre (Reihenfolge Fall → Vertrag)
+    await guardContract(tx, tenantId, contractId);
     // Zeilensperre: parallele Abschlüsse laufen nacheinander
     const locked = await tx.$queryRaw<{ id: string; status: string }[]>`SELECT "id", "status" FROM "RentalContract" WHERE "id" = ${contractId} AND "tenantId" = ${tenantId} FOR UPDATE`;
     if (locked.length === 0) throw new DomainError("Vertrag nicht gefunden.");

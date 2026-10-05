@@ -162,8 +162,11 @@ export type RuleFieldValues = {
   smokingAllowed: boolean; petsPolicy: string; additionalDriversAllowed: boolean; additionalDriverFeeType: string; additionalDriverFee: string;
   driveClass: "COMBUSTION" | "ELECTRIC" | "PHEV";
 };
-/** Geschäftsregeln im Schritt Konditionen: jedes Feld zeigt seine Herkunft (Text vom Server); abhängige Felder erscheinen nur bei Bedarf. */
-export function RuleFields({ v, sources }: { v: RuleFieldValues; sources: Record<string, string> }) {
+/**
+ * Geschäftsregeln im Schritt Konditionen: jedes Feld zeigt seine Herkunft (Text vom Server); abhängige Felder erscheinen nur bei Bedarf.
+ * driverFeeNote (Befehl 29 Phase E, Unfallersatz): statt Zusatzfahrer-Preisregel nur ein Hinweis – die Gebühr aus den Regeln gilt dort nicht.
+ */
+export function RuleFields({ v, sources, driverFeeNote }: { v: RuleFieldValues; sources: Record<string, string>; driverFeeNote?: string }) {
   const source = (key: string): ReactNode => (sources[key] ? <span className="text-[11px] text-ink-3">Quelle: {sources[key]}</span> : null);
   const [kmPolicy, setKmPolicy] = useState(v.kmPolicy);
   const [fuelPolicy, setFuelPolicy] = useState(v.fuelPolicy);
@@ -204,11 +207,13 @@ export function RuleFields({ v, sources }: { v: RuleFieldValues; sources: Record
           </div>
         )}
       </div>
+      {driverFeeNote ? <div className="flex flex-col gap-1"><span className="label-xs">Zusatzfahrer-Kosten</span><span className="text-sm text-ink-2 py-1">{driverFeeNote}</span></div> : <>
       <Field label="Zusatzfahrer-Preisregel" htmlFor="additionalDriverFeeType" hint={v.additionalDriversAllowed ? "Erscheint als eigene Position im Vertrag, nie im Basispreis." : "Zusatzfahrer sind für dieses Fahrzeug nicht vorgesehen."}>
         <select id="additionalDriverFeeType" name="additionalDriverFeeType" value={feeType} onChange={(e) => setFeeType(e.target.value)} className="input" disabled={!v.additionalDriversAllowed}>{Object.entries(ADDITIONAL_DRIVER_FEE_TYPES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
         {source("additionalDriverFeeType")}
       </Field>
       {feeType !== "FREE" && v.additionalDriversAllowed && <Field label="Zusatzfahrer-Preis €" htmlFor="additionalDriverFeeCents"><input id="additionalDriverFeeCents" name="additionalDriverFeeCents" inputMode="decimal" defaultValue={v.additionalDriverFee} className="input tnum" />{source("additionalDriverFeeCents")}</Field>}
+      </>}
     </>
   );
 }

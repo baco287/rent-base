@@ -9,16 +9,16 @@ import { addManualCharge, confirmProposal } from "../src/lib/returns";
 import { buildStorageKey } from "../src/lib/storage";
 import { createWorld, fakeSignaturePng, verifyAllDriversForPickup, type World } from "./helpers";
 
-async function photo(w: World, handoverId: string, category: string, handoverDamageId?: string) {
+export async function photo(w: World, handoverId: string, category: string, handoverDamageId?: string) {
   const storageKey = buildStorageKey({ tenantId: w.tenantId, area: "photos", bookingId: w.bookingId, contentType: "image/jpeg" });
   return registerPhoto(w.tenantId, w.actor, { handoverId, handoverDamageId, storageKey, category, contentType: "image/jpeg", sizeBytes: 250_000, checksum: sha256(storageKey) });
 }
 
-async function sign(w: World, handoverId: string) {
+export async function sign(w: World, handoverId: string) {
   return saveHandoverSignature(w.tenantId, w.actor, handoverId, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getHandoverContentHash(w.tenantId, handoverId), ipAddress: null, userAgent: "test" });
 }
 
-async function answerAll(w: World, handoverId: string) {
+export async function answerAll(w: World, handoverId: string) {
   const items = await db.handoverChecklistItem.findMany({ where: { tenantId: w.tenantId, handoverId } });
   await answerChecklist(w.tenantId, handoverId, items.map((i) => ({ itemId: i.id, result: i.answerType === "TEXT" ? (i.itemKey === "keys" || i.itemKey === "keys_returned" ? "2" : "") : i.itemKey === "unusually_dirty" ? "NO" : i.answerType === "YES_NO" ? "YES" : "OK" })));
 }

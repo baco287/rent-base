@@ -12,12 +12,15 @@ import { createAmendmentAction, createAmendmentSettlementAction } from "./action
 
 const tone: Record<AmendmentStatus, "amber" | "good" | "grey"> = { DRAFT: "amber", AGREED: "amber", SIGNED: "good", DISCARDED: "grey" };
 
-export async function AmendmentsCard({ tenantId, bookingId, role, supportMode }: { tenantId: string; bookingId: string; role: string; supportMode: boolean }) {
+/** locked (Befehl 29 Phase E): geschlossener Unfallersatzfall – Nachträge sind serverseitig gesperrt, hier keine Aktionen anbieten. */
+export async function AmendmentsCard({ tenantId, bookingId, role, supportMode, locked = false }: { tenantId: string; bookingId: string; role: string; supportMode: boolean; locked?: boolean }) {
   const booking = await db.booking.findFirst({ where: { id: bookingId, tenantId }, select: { status: true, contract: { select: { id: true, number: true, status: true, signedAt: true } } } });
   if (!booking?.contract || booking.contract.status !== "SIGNED") return null;
   const [state, amendments, pending] = await Promise.all([effectiveStateForBooking(tenantId, bookingId), listAmendments(tenantId, bookingId), pendingSettlements(tenantId, bookingId)]);
   if (!state) return null;
-  const canManage = role !== "YARD" && !supportMode;
+  const canManage = role !== "YARD" && !supportMode && !locked;
+  // Befehl 29 Phase E: Unfallersatz mit offenem Mietende – kein Gesamtpreis und kein Rückgabedatum im Vertrag (nie „0,00 €“ oder „–“)
+  const openEnd = state.endAt === null;
   const allowed = amendmentAllowed(booking, booking.contract);
   const openDraft = amendments.find((a) => a.status === "DRAFT");
   const agreed = amendments.find((a) => a.status === "AGREED");
@@ -52,10 +55,19 @@ export async function AmendmentsCard({ tenantId, bookingId, role, supportMode }:
             <div className="label-xs">Aktuell vereinbart{state.amendments.length ? ` (Vertrag + ${state.amendments.map((a) => a.number).join(", ")})` : ""}</div>
             <dl className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-x-6 gap-y-2 text-sm">
               <div><dt className="text-ink-3">Mietbeginn</dt><dd className="font-mono tnum">{fmtDateTime(state.startAt)}</dd></div>
-              <div><dt className="text-ink-3">Geplante Rückgabe</dt><dd className="font-mono tnum">{fmtDateTime(state.endAt)}{changed(state.changedBy.endAt)}</dd></div>
-              <div><dt className="text-ink-3">Gesamtmietpreis</dt><dd className="font-mono tnum">{fmtCents(state.totalCents)}{changed(state.changedBy.total)}</dd></div>
+              {openEnd ? (
+                <>
+                  <div><dt className="text-ink-3">Mietende</dt><dd>offen (bis zur Rückgabe)</dd></div>
+                  <div><dt className="text-ink-3">Mietpreis</dt><dd>nach tatsächlicher Mietdauer (Tarif laut Mietvertrag)</dd></div>
+                </>
+              ) : (
+                <>
+                  <div><dt className="text-ink-3">Geplante Rückgabe</dt><dd className="font-mono tnum">{fmtDateTime(state.endAt)}{changed(state.changedBy.endAt)}</dd></div>
+                  <div><dt className="text-ink-3">Gesamtmietpreis</dt><dd className="font-mono tnum">{fmtCents(state.totalCents)}{changed(state.changedBy.total)}</dd></div>
+                </>
+              )}
               <div><dt className="text-ink-3">Kilometer</dt><dd className="font-mono tnum">{state.kmIncludedPerDay.toLocaleString("de-DE")} km/Tag · {rate} €/km{changed(state.changedBy.km)}</dd></div>
-              <div><dt className="text-ink-3">Vereinbarte Kaution</dt><dd className="font-mono tnum">{fmtCents(state.depositCents)}{changed(state.changedBy.deposit)}</dd></div>
+              <div><dt className="text-ink-3">Vereinbarte Kaution</dt><dd className="font-mono tnum">{openEnd && state.depositCents === 0 ? "keine" : fmtCents(state.depositCents)}{changed(state.changedBy.deposit)}</dd></div>
               <div><dt className="text-ink-3">Rückgabeort</dt><dd>{state.returnLocation ?? state.pickupLocation ?? "wie Abholort"}{changed(state.changedBy.returnLocation)}</dd></div>
               <div className="sm:col-span-2 xl:col-span-3"><dt className="text-ink-3">Fahrer</dt><dd>{state.drivers.map((d) => `${d.firstName} ${d.lastName}${d.role === "PRIMARY_DRIVER" ? " (Hauptfahrer)" : ""}${d.addedBy ? ` – aufgenommen durch ${state.amendments.find((a) => a.id === d.addedBy)?.number ?? "Nachtrag"}` : ""}`).join(" · ")}</dd></div>
               {state.agreements.length > 0 && <div className="sm:col-span-2 xl:col-span-3"><dt className="text-ink-3">Sonstige Vereinbarungen</dt><dd className="flex flex-col gap-1">{state.agreements.map((g) => <span key={g.number} className="whitespace-pre-wrap"><span className="font-mono tnum text-xs text-ink-3">{g.number}: </span>{g.text}</span>)}</dd></div>}
@@ -84,7 +96,7 @@ export async function AmendmentsCard({ tenantId, bookingId, role, supportMode }:
             )}
             {canManage && openDraft && <Link href={`/buchungen/${bookingId}/nachtrag/${openDraft.id}`} className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">Nachtrag-Entwurf fortsetzen</Link>}
             {canManage && !allowed.ok && !rentalInvoiceFinal && <span className="text-sm text-ink-3">{allowed.reason}</span>}
-            {!canManage && <span className="text-sm text-ink-3">{supportMode ? "Im Supportmodus nur Ansicht." : "Nachträge erstellt die Disposition."}</span>}
+            {!canManage && <span className="text-sm text-ink-3">{locked ? "Unfallersatzfall abgeschlossen – Nachträge erst nach dem Wiederöffnen in der Fallakte." : supportMode ? "Im Supportmodus nur Ansicht." : "Nachträge erstellt die Disposition."}</span>}
           </div>
           <p className="text-xs text-ink-3 max-w-[80ch]">{AMENDMENT_HELP.ORIGINAL_UNCHANGED} {AMENDMENT_HELP.NO_EFFECT_DRAFT}</p>
         </div>

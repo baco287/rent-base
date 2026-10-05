@@ -79,6 +79,7 @@ export function InvoiceDocumentView({ doc }: { doc: InvoiceDocumentData }) {
         </div>
       )}
       <InvoiceHeadCards doc={doc} />
+      {doc.accident && <p className="rounded-md bg-panel-2 text-ink-2 px-3.5 py-2.5 text-sm"><span className="font-semibold">{doc.accident.typeLabel}{doc.accident.type !== "REMAINDER" && doc.accident.days != null ? ` · ${doc.accident.days} ${doc.accident.days === 1 ? "Miettag" : "Miettage"}` : ""}.</span> {doc.accident.note}</p>}
       <Card title="Positionen" right={doc.nonTaxable ? <Chip tone="info">nicht steuerbar</Chip> : <Chip>{doc.pricesIncludeTax ? "Einzelpreise brutto" : "Einzelpreise netto"}</Chip>}>
         <div className="overflow-x-auto">
           <table className={`w-full text-sm ${doc.nonTaxable ? "min-w-[520px]" : "min-w-[720px]"}`}>

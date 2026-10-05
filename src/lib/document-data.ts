@@ -5,7 +5,7 @@
 
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { REQUIRED_PHOTO_CATEGORIES } from "@/lib/constants";
+import { REQUIRED_PHOTO_CATEGORIES, recipientRoleOf } from "@/lib/constants";
 import { buildContractDocument, landlordOf, type ContractDocumentData, type TenantLike } from "@/lib/contract-view";
 import type { CustomerSnapshot, VehicleSnapshot } from "@/lib/contracts";
 import { buildHandoverDocument, type DocKeyDrop, type HandoverContext, type HandoverDocumentData } from "@/lib/handover-view";
@@ -206,7 +206,7 @@ async function photoFilesOf(tenantId: string, h: { photos: { id: string; storage
   return [...files.values()];
 }
 
-export type InvoiceData = { doc: InvoiceDocumentData; bookingId: string | null; invoiceId: string; versionId: string; versionNo: number; sourceHash: string; renterEmail: string | null; documentType: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION" };
+export type InvoiceData = { doc: InvoiceDocumentData; bookingId: string | null; invoiceId: string; versionId: string; versionNo: number; sourceHash: string; renterEmail: string | null; recipientIsRenter: boolean; documentType: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION" };
 
 /** Rechnungsfassung für Ansicht und PDF. Nur die versiegelte Fassung selbst; Nummer, Vertrags- und Buchungsnummer sind reine Verweise. */
 export async function loadInvoiceDocumentData(tenantId: string, versionId: string, opts: { allowDraft?: boolean } = {}): Promise<InvoiceData> {
@@ -233,6 +233,8 @@ export async function loadInvoiceDocumentData(tenantId: string, versionId: strin
     versionNo: v.versionNo,
     sourceHash: v.contentHash ?? "",
     renterEmail: typeof c.email === "string" && c.email.trim() ? c.email.trim() : null,
+    /** Befehl 29: Rechnungsempfänger ist der Mieter (sonst Versicherung/anderer Empfänger – kein Rückgriff auf Vertragsdaten) */
+    recipientIsRenter: recipientRoleOf(v.customerSnapshot as { recipientRole?: string } | null) === "RENTER",
     documentType: inv.documentType === "CREDIT_NOTE" || inv.documentType === "CANCELLATION" ? inv.documentType : "INVOICE",
   };
 }

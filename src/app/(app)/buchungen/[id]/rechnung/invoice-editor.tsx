@@ -13,7 +13,7 @@ import { fmtCents, toCents } from "@/lib/money";
 import type { InvoiceState } from "./actions";
 
 export type EditableItem = { id: string; description: string; quantity: string; unit: string; unitPrice: string; taxRate: string; source: string; sourceLabel: string; net: string; tax: string; gross: string };
-export type EditableCustomer = { type: string; companyName: string; firstName: string; lastName: string; street: string; zip: string; city: string; country: string; email: string; number: string };
+export type EditableCustomer = { type: string; companyName: string; firstName: string; lastName: string; street: string; zip: string; city: string; country: string; email: string; number: string; /** Befehl 29: nur Unfallersatz */ claimNumber?: string; insuredName?: string };
 export type EditableCompany = { name: string; legalForm: string; street: string; zip: string; city: string; country: string; email: string; phone: string; vatId: string; taxNumber: string; bankName: string; iban: string; bic: string; invoiceFooter: string };
 export type EditableDraft = { customerNote: string; taxNote: string; taxTreatment: string | null; notes: string; paymentTermDays: number | null; reason: string; servicePeriodStart: string; servicePeriodEnd: string; customer: EditableCustomer; company: EditableCompany };
 
@@ -23,8 +23,8 @@ type Props = {
   versionNo: number;
   /** Fassungsart des Entwurfs; bei CORRECTION ist der Grund Pflicht */
   kind: "ORIGINAL" | "REVISION" | "CORRECTION";
-  /** Rechnungsart: bei DAMAGE ist die steuerliche Behandlung Teil des Entwurfs */
-  invoiceKind: "RENTAL" | "DAMAGE";
+  /** Rechnungsart: bei DAMAGE ist die steuerliche Behandlung Teil des Entwurfs; bei ACCIDENT (Unfallersatz) ist der Leistungszeitraum fest */
+  invoiceKind: "RENTAL" | "DAMAGE" | "ACCIDENT";
   doc: InvoiceDocumentData;
   items: EditableItem[];
   allowedRates: number[];
@@ -195,7 +195,8 @@ function EditorBody({ doc, items: initial, allowedRates, draft, kind, versionNo,
         items: items.map((i) => ({ id: i.id || undefined, description: i.description, quantity: i.quantity, unit: i.unit, unitPrice: i.unitPrice, taxRate: i.taxRate.replace(" %", "") })),
         customerNote, taxNote, notes, reason, paymentTermDays,
         ...(invoiceKind === "DAMAGE" ? { taxTreatment } : {}),
-        servicePeriodStart: period.start, servicePeriodEnd: period.end,
+        // Unfallersatz: der Leistungszeitraum ergibt sich aus Übergabe, Stichtag bzw. Rückgabe – wird nicht gesendet (Server lehnt Änderungen ab)
+        ...(invoiceKind === "ACCIDENT" ? {} : { servicePeriodStart: period.start, servicePeriodEnd: period.end }),
         customer, company,
       });
       onSaved(res);
@@ -231,16 +232,19 @@ function EditorBody({ doc, items: initial, allowedRates, draft, kind, versionNo,
             <Field label="Ort"><input value={customer.city} onChange={(e) => cust({ city: e.target.value })} className="input" /></Field>
             <Field label="Land"><input value={customer.country} onChange={(e) => cust({ country: e.target.value })} className="input" maxLength={2} /></Field>
             <Field label="E-Mail (Rechnungsversand)"><input value={customer.email} onChange={(e) => cust({ email: e.target.value })} className="input" type="email" /></Field>
+            {invoiceKind === "ACCIDENT" && <Field label="Schadennummer"><input value={customer.claimNumber ?? ""} onChange={(e) => cust({ claimNumber: e.target.value })} className="input" maxLength={100} /></Field>}
+            {invoiceKind === "ACCIDENT" && <Field label="Geschädigter / Mieter" className="sm:col-span-2"><input value={customer.insuredName ?? ""} onChange={(e) => cust({ insuredName: e.target.value })} className="input" maxLength={200} /></Field>}
           </div>
-          <p className="text-[11px] text-ink-3">Kopie {versionNo > 1 ? `aus Fassung ${versionNo - 1}` : "aus dem Mietvertrag"}. Änderungen hier wirken nur auf diese Rechnung, nicht auf den Kunden.</p>
+          <p className="text-[11px] text-ink-3">Kopie {versionNo > 1 ? `aus Fassung ${versionNo - 1}` : invoiceKind === "ACCIDENT" ? "aus der Fallakte bzw. dem Mietvertrag" : "aus dem Mietvertrag"}. Änderungen hier wirken nur auf diese Rechnung, nicht auf den Kunden{invoiceKind === "ACCIDENT" ? " und nicht auf die Fallakte" : ""}.</p>
         </div>
         <div className="flex flex-col gap-4">
           <div className="card p-4 flex flex-col gap-3">
             <div className="font-semibold text-sm">Leistungszeitraum</div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Field label="Beginn"><input type="datetime-local" value={period.start} onChange={(e) => { setPeriod((p) => ({ ...p, start: e.target.value })); setDirty(true); }} className="input" /></Field>
-              <Field label="Ende"><input type="datetime-local" value={period.end} onChange={(e) => { setPeriod((p) => ({ ...p, end: e.target.value })); setDirty(true); }} className="input" /></Field>
+              <Field label="Beginn"><input type="datetime-local" value={period.start} disabled={invoiceKind === "ACCIDENT"} onChange={(e) => { setPeriod((p) => ({ ...p, start: e.target.value })); setDirty(true); }} className="input" /></Field>
+              <Field label="Ende"><input type="datetime-local" value={period.end} disabled={invoiceKind === "ACCIDENT"} onChange={(e) => { setPeriod((p) => ({ ...p, end: e.target.value })); setDirty(true); }} className="input" /></Field>
             </div>
+            {invoiceKind === "ACCIDENT" && <p className="text-[11px] text-ink-3">Unfallersatz: Der Leistungszeitraum ergibt sich aus der tatsächlichen Übergabe, dem Stichtag bzw. der Rückgabe und ist nicht änderbar – so wird kein Miettag doppelt oder gar nicht berechnet.</p>}
           </div>
           <div className="card p-4 flex flex-col gap-2">
             <button type="button" className="text-left font-semibold text-sm flex items-center justify-between" onClick={() => setShowCompany((s) => !s)} aria-expanded={showCompany}>

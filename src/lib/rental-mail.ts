@@ -150,7 +150,9 @@ export async function planHandoverMail(tenantId: string, handoverId: string): Pr
 export const planPickupMail = planHandoverMail;
 
 /** Rechnung: neutraler Text, nur das Rechnungs-PDF. Keine Aussage zu Schäden oder Verantwortung. */
-export type InvoiceMailFacts = PickupMailFacts & { invoiceNumber: string; invoiceKind?: "RENTAL" | "DAMAGE" | "GENERAL"; grossTotal: string; dueDate: string | null; /** Befehl 27: Zahlungsstand (bereits bezahlt / noch offen) */ payment?: { lines: { label: string; value: string }[]; settled: boolean; open: string } | null; correction?: { versionNo: number; supersededVersionNo: number | null } | null; documentType?: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION"; original?: { number: string; date: string | null } | null };
+export type InvoiceMailFacts = PickupMailFacts & { invoiceNumber: string; invoiceKind?: "RENTAL" | "DAMAGE" | "GENERAL"; grossTotal: string; dueDate: string | null; /** Befehl 27: Zahlungsstand (bereits bezahlt / noch offen) */ payment?: { lines: { label: string; value: string }[]; settled: boolean; open: string } | null; correction?: { versionNo: number; supersededVersionNo: number | null } | null; documentType?: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION"; original?: { number: string; date: string | null } | null;
+  /** Befehl 29 Phase F: Unfallersatz-Rechnung – Abrechnungsart, Schadennummer, Geschädigter, Fall; recipientIsRenter = Empfänger ist der Mieter */
+  accident?: { typeLabel: string | null; claimNumber: string | null; insuredName: string | null; caseNumber: string | null; recipientIsRenter: boolean } | null };
 
 /**
  * Gutschrift / Stornobeleg: eigene, neutrale Vorlage. Keine Aussage, dass Geld erstattet wurde – aus dem Beleg kann sich ein
@@ -201,9 +203,12 @@ export function composeInvoiceMail(f: InvoiceMailFacts): { subject: string; text
   const corr = f.correction ?? null;
   // Schadenabrechnung: eigener Wortlaut, ebenfalls neutral (keine Aussage zu Hergang oder Verschulden im Mailtext)
   const dmg = f.invoiceKind === "DAMAGE";
-  const word = dmg ? "Schadenabrechnung" : "Rechnung";
-  const subject = corr ? `Korrigierte ${word} ${f.invoiceNumber}` : `Ihre ${word} ${f.invoiceNumber}`;
-  const about = f.vehicleTitle ? " zu Ihrer Fahrzeugmiete" : "";
+  const acc = f.accident ?? null;
+  const word = dmg ? "Schadenabrechnung" : acc?.typeLabel ?? "Rechnung";
+  // Unfallersatz an Versicherung bzw. anderen Empfänger: keine Anrede als Mieter, Bezug über Schadennummer und Geschädigten
+  const subject = corr ? `Korrigierte ${word} ${f.invoiceNumber}` : acc && !acc.recipientIsRenter ? `${word} ${f.invoiceNumber}${acc.claimNumber ? ` – Schadennummer ${acc.claimNumber}` : ""}` : `Ihre ${word} ${f.invoiceNumber}`;
+  const about = acc ? (acc.recipientIsRenter ? " zu Ihrer Unfallersatzmiete" : ` zur Unfallersatzmiete${acc.insuredName ? ` von ${acc.insuredName}` : ""}`) : f.vehicleTitle ? " zu Ihrer Fahrzeugmiete" : "";
+  const accLines = acc ? [...(acc.claimNumber ? [`Schadennummer: ${acc.claimNumber}`] : []), ...(acc.insuredName && !acc.recipientIsRenter ? [`Geschädigter / Mieter: ${acc.insuredName}`] : []), ...(acc.caseNumber ? [`Unfallersatzfall: ${acc.caseNumber}`] : [])] : [];
   const intro = corr
     ? `anbei erhalten Sie die berichtigte ${word} ${f.invoiceNumber} (Fassung ${corr.versionNo})${about}. Sie ersetzt die Ihnen zuvor übermittelte Fassung${corr.supersededVersionNo ? ` ${corr.supersededVersionNo}` : ""} dieser ${word}.`
     : `anbei erhalten Sie die ${word} ${f.invoiceNumber}${about}.`;
@@ -212,6 +217,7 @@ export function composeInvoiceMail(f: InvoiceMailFacts): { subject: string; text
     "",
     intro,
     "",
+    ...accLines,
     ...vehicleLines(f),
     `Rechnungsbetrag: ${f.grossTotal}`,
     ...(f.payment ? f.payment.lines.filter((l) => l.label !== "Rechnungsbetrag").map((l) => `${l.label}: ${l.value}`) : []),
@@ -230,19 +236,19 @@ export function composeInvoiceMail(f: InvoiceMailFacts): { subject: string; text
 <p>Guten Tag ${esc(f.renterName)},</p>
 <p>${esc(intro)}</p>
 <table style="border-collapse:collapse;font-size:15px" cellpadding="0" cellspacing="0">
-${vehicleRows(f)}<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Rechnungsbetrag</td><td><b>${esc(f.grossTotal)}</b></td></tr>
+${accLines.map((l) => { const [k, ...v] = l.split(": "); return `<tr><td style="padding:2px 16px 2px 0;color:#4a5568">${esc(k)}</td><td>${esc(v.join(": "))}</td></tr>`; }).join("")}${vehicleRows(f)}<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Rechnungsbetrag</td><td><b>${esc(f.grossTotal)}</b></td></tr>
 ${(f.payment?.lines ?? []).filter((l) => l.label !== "Rechnungsbetrag").map((l) => `<tr><td style="padding:2px 16px 2px 0;color:#4a5568">${esc(l.label)}</td><td>${esc(l.value)}</td></tr>`).join("")}
 ${f.payment?.settled ? `<tr><td colspan="2" style="padding:6px 0 2px 0">Der Rechnungsbetrag ist vollständig ausgeglichen; es ist keine Zahlung mehr erforderlich.</td></tr>` : f.dueDate ? `<tr><td style="padding:2px 16px 2px 0;color:#4a5568">Zahlbar bis</td><td>${esc(f.dueDate)}</td></tr>` : ""}
 </table>
 <p>Im Anhang:</p>
-<ul><li>${corr ? "Berichtigte Rechnung" : "Rechnung"}</li></ul>
+<ul><li>${corr ? `Berichtigte ${esc(word)}` : esc(word)}</li></ul>
 <p>Bei Fragen zur Rechnung melden Sie sich gern bei uns.</p>
 <p>Freundliche Grüße<br>${esc(f.landlordName)}${f.landlordContact ? `<br><span style="color:#4a5568">${esc(f.landlordContact)}</span>` : ""}</p>
 </div>`;
   return { subject, text: lines.join("\n"), html };
 }
 
-export type InvoiceMailPlan = PickupMailPlan & { invoice: { number: string; kind: "RENTAL" | "DAMAGE" | "GENERAL"; grossTotal: string; dueDate: string | null; payment: InvoiceMailFacts["payment"]; correction: { versionNo: number; supersededVersionNo: number | null } | null; documentType: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION"; original: { number: string; date: string | null } | null } };
+export type InvoiceMailPlan = PickupMailPlan & { invoice: { number: string; kind: "RENTAL" | "DAMAGE" | "GENERAL"; grossTotal: string; dueDate: string | null; payment: InvoiceMailFacts["payment"]; correction: { versionNo: number; supersededVersionNo: number | null } | null; documentType: "INVOICE" | "CREDIT_NOTE" | "CANCELLATION"; original: { number: string; date: string | null } | null; recipientIsRenter: boolean; accident: InvoiceMailFacts["accident"] } };
 
 /** Stellt zusammen, was für eine Rechnungsfassung verschickt würde: ausschließlich das archivierte PDF dieser Fassung an die Adresse aus der Rechnungskopie. */
 export async function planInvoiceMail(tenantId: string, versionId: string): Promise<InvoiceMailPlan> {
@@ -262,14 +268,15 @@ export async function planInvoiceMail(tenantId: string, versionId: string): Prom
     handoverId: null,
     invoiceId: inv.id,
     invoiceVersionId: v.id,
-    recipient: invoiceData.renterEmail ?? d?.renterEmail ?? null,
-    facts: d
+    // Befehl 29: Empfänger ≠ Mieter (Versicherung, anderer Empfänger) – nur die Adresse aus der Rechnungskopie, nie die Vertragsadresse
+    recipient: invoiceData.renterEmail ?? (invoiceData.recipientIsRenter ? d?.renterEmail ?? null : null),
+    facts: d && invoiceData.recipientIsRenter
       ? { renterName: d.renterName, contractNumber: d.number, vehicleTitle: d.vehicleTitle, plate: d.plate, startAt: d.startAt, landlordName: d.landlord.name, landlordContact: d.landlord.contact }
-      : { renterName: invoiceData.doc.customer.name, contractNumber: "", vehicleTitle: "", plate: "", startAt: "", landlordName: company.fullName, landlordContact: [company.phone, company.email].filter(Boolean).join(" · ") },
+      : { renterName: invoiceData.doc.customer.name, contractNumber: d?.number ?? "", vehicleTitle: d?.vehicleTitle ?? "", plate: d?.plate ?? "", startAt: d?.startAt ?? "", landlordName: company.fullName, landlordContact: [company.phone, company.email].filter(Boolean).join(" · ") },
     replyTo: d ? d.landlord.email : company.email ?? null,
     documents: doc ? [doc] : [],
     missing: doc ? [] : [invoiceData.doc.title],
-    invoice: { number: inv.number, kind: inv.kind === "DAMAGE" ? "DAMAGE" : inv.kind === "GENERAL" ? "GENERAL" : "RENTAL", grossTotal: invoiceData.doc.totals.gross, dueDate: invoiceData.doc.paymentDueDate, payment: invoiceData.doc.paymentStatus ? { lines: invoiceData.doc.paymentStatus.lines, settled: invoiceData.doc.paymentStatus.settled, open: invoiceData.doc.paymentStatus.open } : null, correction: v.kind === "CORRECTION" ? { versionNo: v.versionNo, supersededVersionNo: invoiceData.doc.version.supersedes?.versionNo ?? null } : null, documentType: invoiceData.documentType, original: invoiceData.doc.original ? { number: invoiceData.doc.original.number, date: invoiceData.doc.original.date } : null },
+    invoice: { number: inv.number, kind: inv.kind === "DAMAGE" ? "DAMAGE" : inv.kind === "GENERAL" ? "GENERAL" : "RENTAL", grossTotal: invoiceData.doc.totals.gross, dueDate: invoiceData.doc.paymentDueDate, payment: invoiceData.doc.paymentStatus ? { lines: invoiceData.doc.paymentStatus.lines, settled: invoiceData.doc.paymentStatus.settled, open: invoiceData.doc.paymentStatus.open } : null, correction: v.kind === "CORRECTION" ? { versionNo: v.versionNo, supersededVersionNo: invoiceData.doc.version.supersedes?.versionNo ?? null } : null, documentType: invoiceData.documentType, original: invoiceData.doc.original ? { number: invoiceData.doc.original.number, date: invoiceData.doc.original.date } : null, recipientIsRenter: invoiceData.recipientIsRenter, accident: inv.kind === "ACCIDENT_REPLACEMENT" ? { typeLabel: invoiceData.documentType === "INVOICE" && invoiceData.doc.accident && invoiceData.doc.accident.type !== "REMAINDER" ? invoiceData.doc.accident.typeLabel : null, claimNumber: invoiceData.doc.customer.claimNumber, insuredName: invoiceData.doc.customer.insuredName, caseNumber: invoiceData.doc.customer.caseNumber, recipientIsRenter: invoiceData.recipientIsRenter } : null },
   };
 }
 
@@ -309,7 +316,7 @@ async function sendPlannedDocuments(tenantId: string, plan: PickupMailPlan & { i
   const mail = plan.kind === "INVOICE" && plan.invoice
     ? counterType
       ? composeCounterDocumentMail({ ...plan.facts, invoiceNumber: plan.invoice.number, invoiceKind: plan.invoice.kind, grossTotal: plan.invoice.grossTotal, dueDate: null, documentType: counterType, original: plan.invoice.original })
-      : composeInvoiceMail({ ...plan.facts, invoiceNumber: plan.invoice.number, invoiceKind: plan.invoice.kind, grossTotal: plan.invoice.grossTotal, dueDate: plan.invoice.dueDate, correction: plan.invoice.correction, payment: plan.invoice.payment })
+      : composeInvoiceMail({ ...plan.facts, invoiceNumber: plan.invoice.number, invoiceKind: plan.invoice.kind, grossTotal: plan.invoice.grossTotal, dueDate: plan.invoice.dueDate, correction: plan.invoice.correction, payment: plan.invoice.payment, accident: plan.invoice.accident })
     : plan.kind === "RETURN" ? composeReturnMail(plan.facts) : composePickupMail(plan.facts);
   const { log, created } = await claimEmail({
     tenantId,
@@ -329,7 +336,8 @@ async function sendPlannedDocuments(tenantId: string, plan: PickupMailPlan & { i
 
   const finish = async (status: "SENT" | "FAILED") => ({ status, log: (await db.emailLog.findFirst({ where: { id: log.id, tenantId } })) ?? log });
   try {
-    if (!isValidEmail(plan.recipient)) throw new DomainError("Im Mietvertrag ist keine gültige E-Mail-Adresse des Mieters hinterlegt");
+    // Befehl 29: Versicherung/anderer Empfänger ohne eigene Adresse – nie ersatzweise an den Mieter
+    if (!isValidEmail(plan.recipient)) throw new DomainError(plan.invoice && !plan.invoice.recipientIsRenter ? "Für den Rechnungsempfänger ist keine gültige E-Mail-Adresse hinterlegt; es wird nicht ersatzweise an den Mieter gesendet" : "Im Mietvertrag ist keine gültige E-Mail-Adresse des Mieters hinterlegt");
     const attachments = [];
     for (const doc of plan.documents) {
       const file = await readDocumentFile(tenantId, doc.id, opts.storage); // prüft Mandant und Prüfsumme

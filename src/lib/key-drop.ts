@@ -25,6 +25,7 @@ import {
   type KeyDropStatus, type PhotoCategory,
 } from "@/lib/constants";
 import { APP_TIME_ZONE } from "@/lib/time";
+import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed, assertAccidentCaseOpen } from "@/lib/accident-replacement-events";
 
 type Tx = Prisma.TransactionClient;
 const TX = { timeout: 20_000, maxWait: 10_000 };
@@ -88,6 +89,8 @@ export async function authorizeKeyDrop(tenantId: string, actor: Actor, bookingId
   return db.$transaction(async (tx) => {
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { keyDropEnabled: true, keyDropSettings: true } });
     if (!tenant.keyDropEnabled) throw new DomainError("Die kontaktlose Rückgabe ist in den Einstellungen nicht freigeschaltet (Einstellungen → Geschäftsregeln).");
+    // Befehl 29 Phase E: geschlossener Unfallersatzfall – keine Rückgabe vereinbaren (vor der Buchungssperre: Fall → Buchung)
+    await assertAccidentCaseOpen(tx, tenantId, bookingId);
     const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Booking" WHERE "id" = ${bookingId} AND "tenantId" = ${tenantId} FOR UPDATE`;
     if (locked.length === 0) throw new DomainError("Buchung nicht gefunden.");
     const booking = await tx.booking.findFirstOrThrow({ where: { id: bookingId, tenantId }, include: { contract: { select: { status: true, customerSnapshot: true } } } });
@@ -128,9 +131,12 @@ async function revokeActive(tx: Tx, tenantId: string, keyDropId: string, reason:
 
 /** Aufheben (z. B. Kunde bringt das Fahrzeug doch persönlich). Nur solange der Kunde die Abgabe nicht gemeldet hat. */
 export async function cancelKeyDrop(tenantId: string, actor: Actor, keyDropId: string, reason: string) {
+  // Befehl 29 Phase E: geschlossener Unfallersatzfall – die Vereinbarung bleibt, bis der Fall wieder geöffnet ist (Fall → KeyDrop)
+  const head = await db.keyDropReturn.findFirst({ where: { id: keyDropId, tenantId }, select: { bookingId: true } });
   const why = clean(reason, 300);
   if (!why || why.length < 3) throw new DomainError("Bitte einen Grund für die Aufhebung angeben.");
   return db.$transaction(async (tx) => {
+    if (head) await assertAccidentCaseOpen(tx, tenantId, head.bookingId);
     const kd = await lockKeyDrop(tx, tenantId, keyDropId);
     if (kd.status !== "AUTHORIZED") throw new DomainError("Nach der Rückgabemeldung des Kunden kann die kontaktlose Rückgabe nicht mehr aufgehoben werden.");
     if (await tx.handover.count({ where: { tenantId, keyDropId } })) throw new DomainError("Die Kontrolle dieser Rückgabe ist bereits begonnen.");
@@ -210,6 +216,8 @@ export async function sendKeyDropLink(tenantId: string, actor: Actor, keyDropId:
   if (!kd0) throw new DomainError("Kontaktlose Rückgabe nicht gefunden.");
   if (kd0.status !== "AUTHORIZED") throw new DomainError(kd0.status === "CANCELLED" ? "Die kontaktlose Rückgabe wurde aufgehoben." : "Der Kunde hat die Rückgabe bereits gemeldet. Ein neuer Link ist nicht mehr nötig.");
   if (!isValidEmail(kd0.recipientEmail)) throw new DomainError("Im Mietvertrag ist keine gültige E-Mail-Adresse des Mieters hinterlegt. Die Rückgabe-Mail kann nicht versendet werden.");
+  // Befehl 29 Phase E: geschlossener Unfallersatzfall – vor dem Mailprotokoll prüfen (kein Versandeintrag für einen gesperrten Fall)
+  if (await accidentCaseClosed(db, tenantId, kd0.bookingId)) throw new DomainError(ACCIDENT_CASE_CLOSED_MESSAGE);
   const earlier = await db.keyDropAccess.count({ where: { tenantId, keyDropId } });
   const resent = earlier > 0;
   const subject = `Ihre kontaktlose Fahrzeugrückgabe – ${kd0.tenant.name}`;
@@ -219,6 +227,7 @@ export async function sendKeyDropLink(tenantId: string, actor: Actor, keyDropId:
   const rawToken = randomBytes(32).toString("base64url");
   try {
     await db.$transaction(async (tx) => {
+      await assertAccidentCaseOpen(tx, tenantId, kd0.bookingId);
       const kd = await lockKeyDrop(tx, tenantId, keyDropId);
       if (kd.status !== "AUTHORIZED") throw new DomainError("Der Kunde hat die Rückgabe bereits gemeldet oder die Vereinbarung wurde aufgehoben.");
       if (await tx.handover.count({ where: { tenantId, keyDropId } })) throw new DomainError("Die Kontrolle dieser Rückgabe ist bereits begonnen.");
@@ -506,7 +515,7 @@ export async function nextBookingOfVehicle(tenantId: string, vehicleId: string, 
   return db.booking.findFirst({ where: { tenantId, vehicleId, id: { not: afterBookingId }, status: "RESERVED", startAt: { lt: new Date(Date.now() + withinHours * 3600_000) } }, orderBy: { startAt: "asc" }, select: { id: true, number: true, startAt: true } });
 }
 
-export type KeyDropToInspect = { id: string; bookingId: string; bookingNumber: string; customer: string; vehicle: string; plate: string; dropOffAt: Date | null; plannedEnd: Date; confirmedAt: Date | null; nextBooking: { number: string; startAt: Date } | null; inspectionStarted: boolean };
+export type KeyDropToInspect = { id: string; bookingId: string; bookingNumber: string; customer: string; vehicle: string; plate: string; dropOffAt: Date | null; plannedEnd: Date | null; confirmedAt: Date | null; nextBooking: { number: string; startAt: Date } | null; inspectionStarted: boolean };
 
 /** Dashboard „Schlüsselbox-Rückgaben zu prüfen“: gemeldet, Kontrolle ausstehend. */
 export async function keyDropsToInspect(tenantId: string): Promise<KeyDropToInspect[]> {

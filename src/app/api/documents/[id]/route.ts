@@ -4,6 +4,8 @@
 import { apiSession } from "@/lib/auth";
 import { DocumentIntegrityError, readDocumentFile } from "@/lib/documents";
 import { DomainError } from "@/lib/integrity";
+import { db } from "@/lib/db";
+import { isAccidentBillingDocument } from "@/lib/accident-replacement-events";
 
 const STAFF_ROLES = ["OWNER", "DISPO", "YARD"];
 
@@ -15,6 +17,8 @@ export async function GET(req: Request, ctx: RouteContext<"/api/documents/[id]">
   try {
     const file = await readDocumentFile(session.tenant.id, id);
     if (!file) return new Response("Nicht gefunden", { status: 404 });
+    // Befehl 29 Phase F: Unfallersatz-Abrechnung (Rechnungen an Versicherung/Mieter, Gutschriften, Mahnungen) nur für Inhaber und Disposition
+    if ((session.user.role === "YARD" || session.supportSession) && (await isAccidentBillingDocument(db, session.tenant.id, file.document))) return new Response("Die Unfallersatz-Abrechnung sehen nur Inhaber und Disposition.", { status: 403 });
     const download = new URL(req.url).searchParams.get("download") === "1";
     // Dateinamen entstehen serverseitig aus festen Bausteinen; trotzdem hier noch einmal auf sichere Zeichen begrenzt
     const name = file.document.fileName.replace(/[^A-Za-z0-9._-]/g, "_");

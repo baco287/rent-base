@@ -62,7 +62,7 @@ export function blockSensitiveDocumentInSupportMode(kind: SupportBlockedKind): n
 }
 
 export function supportBlockedMessage(kind: SupportBlockedKind): string {
-  const label = kind === "DRIVER_DOCUMENT_COPY" ? "Ausweis- und Führerscheinkopien" : kind === "AUTHORITY_DOCUMENT" ? "Behördendokumente" : "Schadendokumente";
+  const label = kind === "DRIVER_DOCUMENT_COPY" ? "Ausweis- und Führerscheinkopien" : kind === "AUTHORITY_DOCUMENT" ? "Behördendokumente" : kind === "ACCIDENT_DOCUMENT" ? "Unfallersatz-Dokumente" : "Schadendokumente";
   return `${label} sind im Supportmodus nicht einsehbar.`;
 }
 

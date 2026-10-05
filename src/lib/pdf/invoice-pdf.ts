@@ -11,7 +11,8 @@ export async function renderInvoicePdf(data: InvoiceDocumentData, logo: Uint8Arr
   // keine Aussage über eine Erstattung – aus dem Beleg kann sich ein Kundenguthaben ergeben.
   const counter = data.documentType !== "INVOICE";
   const credit = data.documentType === "CREDIT_NOTE";
-  const baseTitle = counter ? (credit ? "Gutschrift" : "Stornobeleg") : damage ? "Schadenabrechnung" : "Rechnung";
+  // Befehl 29 Phase F: Unfallersatz – Zwischen- bzw. Schlussrechnung (wie Ansicht und Mail)
+  const baseTitle = counter ? (credit ? "Gutschrift" : "Stornobeleg") : damage ? "Schadenabrechnung" : data.accident && data.accident.type !== "REMAINDER" ? data.accident.typeLabel : "Rechnung";
   const numberLabel = counter ? (credit ? "Gutschriftnummer" : "Belegnummer") : "Rechnungsnummer";
   const amountLabel = counter ? (credit ? "Gutschriftbetrag" : "Stornobetrag") : "Rechnungsbetrag";
   const pdf = new Pdf({
@@ -36,6 +37,15 @@ export async function renderInvoicePdf(data: InvoiceDocumentData, logo: Uint8Arr
     [counter ? "Belegdatum" : "Rechnungsdatum", data.issueDate],
     ["Zu Rechnung", counter && data.original ? `${data.original.number}${data.original.date ? ` vom ${data.original.date}` : ""}` : null],
     ["Kundennummer", data.customer.number],
+    // Befehl 29: Unfallersatz – Empfängerrolle, Schadennummer und Geschädigter nur, wenn die Kopie sie trägt
+    ["Rechnungsempfänger", data.customer.roleLabel],
+    ["Schadennummer", data.customer.claimNumber],
+    ["Geschädigter / Mieter", data.customer.insuredName],
+    ["Unfalldatum", data.customer.accidentDate],
+    ["Unfallersatzfall", data.customer.caseNumber],
+    // Phase F: Abrechnungsart und Miettage dieser Rechnung (Zwischen-/Schlussrechnung)
+    ["Abrechnung", data.accident ? data.accident.typeLabel : null],
+    ["Miettage", data.accident && data.accident.type !== "REMAINDER" && data.accident.days != null ? `${data.accident.days}${data.accident.totalDays != null && data.accident.totalDays !== data.accident.days ? ` (gesamt ${data.accident.totalDays})` : ""}` : null],
     [damage ? "Mietzeitraum" : "Leistungszeitraum", data.servicePeriod],
     ["Mietvertrag", data.reference.contractNumber],
     ["Buchung", data.reference.bookingNumber],
@@ -57,11 +67,15 @@ export async function renderInvoicePdf(data: InvoiceDocumentData, logo: Uint8Arr
     ? `Rechnung${data.reference.bookingNumber ? ` zur Buchung ${data.reference.bookingNumber}` : ""}, Leistungszeitraum ${data.servicePeriod}`
     : data.dunningFee
     ? `Mahngebühr zur Vermietung${data.reference.bookingNumber ? ` ${data.reference.bookingNumber}` : ""}${data.reference.contractNumber ? `, Mietvertrag ${data.reference.contractNumber}` : ""} (siehe Position)`
+    : data.accident
+    ? `${data.accident.type === "REMAINDER" ? "Restforderung zur Unfallersatz-Fahrzeugmiete" : "Unfallersatz-Fahrzeugmiete"}${data.reference.contractNumber ? ` gemäß Mietvertrag ${data.reference.contractNumber}` : ""}, Leistungszeitraum ${data.servicePeriod}`
     : damage
     ? `Schadenabrechnung zur Vermietung${data.reference.bookingNumber ? ` ${data.reference.bookingNumber}` : ""}${data.reference.contractNumber ? `, Mietvertrag ${data.reference.contractNumber}` : ""}, Mietzeitraum ${data.servicePeriod}`
     : `Fahrzeugmiete${data.reference.contractNumber ? ` gemäß Mietvertrag ${data.reference.contractNumber}` : ""}, Leistungszeitraum ${data.servicePeriod}`;
   pdf.textAt(subtitle, pdf.left, pdf.y, pdf.width, { size: 9, color: COLORS.ink2 });
   pdf.y += 10;
+  // Phase F: sachliche Erläuterung der Unfallersatz-Abrechnung (Miettage, frühere Rechnungen bzw. Bezug der Restforderung)
+  if (data.accident) pdf.paragraph(data.accident.note, { size: 8.5, color: COLORS.ink2, gapAfter: 6 });
   if (counter) {
     pdf.paragraph(credit
       ? `Mit diesem Beleg schreiben wir Ihnen die unten aufgeführten Beträge zur Rechnung ${data.original?.number ?? ""} gut. Die Rechnung selbst bleibt unverändert bestehen; dieser Beleg mindert die Forderung aus der Rechnung.`

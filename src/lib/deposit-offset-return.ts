@@ -23,6 +23,7 @@ import { recordAudit, type Actor } from "@/lib/audit";
 import { invoiceFinancials, type InvoiceFinancials } from "@/lib/counter-documents";
 import { checkDate, checkKey, computeDepositFinancials, balanceOf, domainFromDb, lockOrCreateDeposit, parseAmount, syncStatus, type DepositEventRow } from "@/lib/deposits";
 import { DomainError } from "@/lib/integrity";
+import { assertAccidentInvoiceCaseOpen } from "@/lib/accident-replacement-events";
 import { fmtCents, type Cents } from "@/lib/money";
 import { isUniqueViolation } from "@/lib/numbering";
 
@@ -145,6 +146,8 @@ export async function returnOffsetToDeposit(tenantId: string, actor: Actor, inpu
   try {
     return await db.$transaction(async (tx) => {
       if (!head.bookingId) throw new DomainError("Diese Rechnung hat keinen Buchungsbezug und damit keine Kaution.");
+      // Befehl 29 Phase F: geschlossener Unfallersatzfall zuerst (Fall → Buchung/Kaution → Rechnung)
+      await assertAccidentInvoiceCaseOpen(tx, tenantId, input.invoiceId);
       const { row: deposit, balance } = await lockOrCreateDeposit(tx, tenantId, head.bookingId, actor);
       const inv = await tx.$queryRaw<{ id: string; status: string; documentType: string; bookingId: string; number: string | null }[]>`SELECT "id", "status", "documentType", "bookingId", "number" FROM "Invoice" WHERE "id" = ${input.invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
       if (inv.length === 0) throw new DomainError("Rechnung nicht gefunden.");
@@ -200,10 +203,11 @@ export async function returnOffsetToDeposit(tenantId: string, actor: Actor, inpu
 export async function cancelOffsetReturn(tenantId: string, actor: Actor, eventId: string, reason: string): Promise<DepositEventRow> {
   const why = reason.trim();
   if (why.length < 3) throw new DomainError("Bitte den Grund der Korrektur angeben.");
-  const head = await db.securityDepositEvent.findFirst({ where: { id: eventId, tenantId }, select: { type: true, deposit: { select: { bookingId: true } } } });
+  const head = await db.securityDepositEvent.findFirst({ where: { id: eventId, tenantId }, select: { type: true, invoiceId: true, deposit: { select: { bookingId: true } } } });
   if (!head || head.type !== "OFFSET_RETURN") throw new DomainError("Rückführung nicht gefunden.");
   try {
     return await db.$transaction(async (tx) => {
+      await assertAccidentInvoiceCaseOpen(tx, tenantId, head.invoiceId);
       const { row: deposit } = await lockOrCreateDeposit(tx, tenantId, head.deposit.bookingId, actor);
       const ev = await tx.securityDepositEvent.findFirstOrThrow({ where: { id: eventId, tenantId } });
       if (ev.depositId !== deposit.id) throw new DomainError("Rückführung nicht gefunden.");

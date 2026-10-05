@@ -18,6 +18,7 @@ import { DomainError } from "@/lib/integrity";
 import { fmtCents, toCents, type Cents } from "@/lib/money";
 import { isUniqueViolation } from "@/lib/numbering";
 import { calculateRentalPrice, rateCardFrom } from "@/lib/pricing";
+import { pricingEnd } from "@/lib/bookings";
 import { SIGNED_AMENDMENTS_SELECT, effectiveTotalCents } from "@/lib/amendments";
 import { invoicePaymentSummary, paymentStatusOf, recordInvoicePayment, summarizePayment, type PaymentPreview, type PaymentRow, type PaymentSummary } from "@/lib/payments";
 
@@ -37,14 +38,23 @@ export type RentalPaymentSummary = PaymentSummary & {
   blockedReason: string | null;
 };
 
-const bookingSelect = { id: true, tenantId: true, status: true, startAt: true, endAt: true, dailyRate: true, workWeekRate: true, weeklyRate: true, monthlyRate: true, customer: { select: { discountPercent: true } }, contract: { select: { status: true, totalAmount: true, amendments: SIGNED_AMENDMENTS_SELECT } } } as const;
+const bookingSelect = { id: true, tenantId: true, status: true, rentalType: true, startAt: true, endAt: true, actualPickupAt: true, actualReturnAt: true, dailyRate: true, workWeekRate: true, weeklyRate: true, monthlyRate: true, customer: { select: { discountPercent: true } }, contract: { select: { status: true, totalAmount: true, amendments: SIGNED_AMENDMENTS_SELECT } } } as const;
 type BookingForTotal = Prisma.BookingGetPayload<{ select: typeof bookingSelect }>;
 
-/** Erwarteter Mietpreis ohne Rechnung: Vertragspreis (unterschrieben) oder Berechnung aus der Buchung. Nie die Kaution. */
-export function expectedRentalCents(b: Pick<BookingForTotal, "startAt" | "endAt" | "dailyRate" | "workWeekRate" | "weeklyRate" | "monthlyRate" | "customer" | "contract">): { cents: Cents; source: "CONTRACT" | "ESTIMATE" } {
+/**
+ * Erwarteter Mietpreis ohne Rechnung: Vertragspreis (unterschrieben) oder Berechnung aus der Buchung. Nie die Kaution.
+ * Befehl 29: Unfallersatz hat keinen Vertragsgesamtpreis (offenes Ende) – der Wert ist immer eine Schätzung: Tagessatz × Miettage
+ * bis zum geplanten Ende, bei offenem Ende bis zur Rückgabe bzw. bis jetzt (bisheriger Mietwert).
+ */
+export function expectedRentalCents(b: Pick<BookingForTotal, "rentalType" | "status" | "startAt" | "endAt" | "actualPickupAt" | "actualReturnAt" | "dailyRate" | "workWeekRate" | "weeklyRate" | "monthlyRate" | "customer" | "contract">): { cents: Cents; source: "CONTRACT" | "ESTIMATE" } {
+  if (b.rentalType === "ACCIDENT_REPLACEMENT") {
+    // der Tagessatz ist der im Fall vereinbarte Unfallersatz-Satz; ein Kundenrabatt gilt dafür nicht (wie in der Unfallersatz-Rechnung)
+    const price = calculateRentalPrice({ start: b.actualPickupAt ?? b.startAt, end: pricingEnd(b), rates: { dailyRate: Number(b.dailyRate) }, strategy: "DAILY_ONLY" });
+    return { cents: toCents(price.total.toFixed(2)), source: "ESTIMATE" };
+  }
   // Befehl 25: Gesamtpreis laut wirksamem Vertragsstand (Vertrag + unterschriebene Nachträge)
   if (b.contract?.status === "SIGNED") return { cents: effectiveTotalCents(b.contract.totalAmount, b.contract.amendments), source: "CONTRACT" };
-  const price = calculateRentalPrice({ start: b.startAt, end: b.endAt, rates: rateCardFrom(b), discountPercent: b.customer.discountPercent });
+  const price = calculateRentalPrice({ start: b.startAt, end: pricingEnd(b), rates: rateCardFrom(b), discountPercent: b.customer.discountPercent });
   return { cents: toCents(price.total.toFixed(2)), source: "ESTIMATE" };
 }
 
@@ -65,7 +75,7 @@ export async function rentalPaymentSummary(tenantId: string, bookingId: string, 
   const { cents, source } = expectedRentalCents(b);
   const paid = await client.payment.aggregate({ where: { tenantId, bookingId, type: "RENTAL_PAYMENT", invoiceId: null, status: "CONFIRMED" }, _sum: { amountCents: true } });
   const s = summarizePayment(cents, paid._sum.amountCents ?? 0);
-  const blockedReason = cancelled ? "Die Buchung ist storniert. Neue Mietzahlungen werden nicht erfasst." : s.openCents === 0 ? "Der Mietpreis ist vollständig bezahlt." : null;
+  const blockedReason = b.rentalType === "ACCIDENT_REPLACEMENT" ? "Unfallersatz: Zahlungen werden zur Unfallersatz-Rechnung erfasst." : cancelled ? "Die Buchung ist storniert. Neue Mietzahlungen werden nicht erfasst." : s.openCents === 0 ? "Der Mietpreis ist vollständig bezahlt." : null;
   return { ...s, source, invoiceId: null, invoiceNumber: null, bookingStatus: b.status, canRecord: blockedReason === null, blockedReason };
 }
 
@@ -154,6 +164,8 @@ export async function insertRentalPayment(tx: Tx, tenantId: string, actor: Actor
     if (dup) return { payment: dup, created: false };
   }
   if (locked[0].status === "CANCELLED") throw new DomainError("Die Buchung ist storniert. Neue Mietzahlungen werden nicht erfasst.");
+  const kind = await tx.booking.findUniqueOrThrow({ where: { id: bookingId }, select: { rentalType: true } });
+  if (kind.rentalType === "ACCIDENT_REPLACEMENT") throw new DomainError("Bei einer Unfallersatzmiete werden Zahlungen zur Unfallersatz-Rechnung erfasst, nicht als Mietvorauszahlung.");
   const inv = await finalizedRentalInvoice(tx, tenantId, bookingId);
   if (inv) throw new DomainError(`Zu dieser Buchung ist die Mietrechnung ${inv.number ?? ""} abgeschlossen. Zahlungen werden jetzt zur Rechnung erfasst. Bitte die Seite neu laden.`);
   const s = await rentalPaymentSummary(tenantId, bookingId, tx);

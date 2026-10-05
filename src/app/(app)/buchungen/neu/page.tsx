@@ -7,6 +7,8 @@ import { createBookingAction } from "../actions";
 import { BookingForm } from "../booking-form";
 import { loadCustomerOption } from "../customer-option";
 import { loadBookingOptions } from "../options";
+import { RentalTypeSwitch, carryQuery } from "../rental-type-switch";
+import { isFeatureEnabled } from "@/lib/features";
 
 export const metadata = { title: "Neue Buchung" };
 
@@ -14,6 +16,8 @@ export default async function NewBookingPage({ searchParams }: PageProps<"/buchu
   const { tenant } = await requireRole("DISPO");
   const sp = await searchParams;
   const { vehicles } = await loadBookingOptions(tenant.id);
+  // Befehl 29: Mietart-Auswahl nur bei freigeschaltetem Unfallersatz; das Buchungsformular selbst bleibt unverändert
+  const accidentEnabled = await isFeatureEnabled(tenant.id, "ACCIDENT_REPLACEMENT");
 
   const vehicleId = typeof sp.fahrzeug === "string" ? sp.fahrzeug : "";
   const customerId = typeof sp.kunde === "string" ? sp.kunde : "";
@@ -36,6 +40,7 @@ export default async function NewBookingPage({ searchParams }: PageProps<"/buchu
     <>
       <PageHeader title="Neue Buchung" />
       <Content>
+        {accidentEnabled && <RentalTypeSwitch current="STANDARD" query={carryQuery(sp)} />}
         <Card className="p-5 max-w-3xl">
           <BookingForm
             action={createBookingAction}

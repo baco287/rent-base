@@ -32,6 +32,8 @@ import {
 import { ContractDocumentView, DriverFields, IssueList, emptyDriver, type DriverValues } from "./contract-parts";
 import { AcknowledgeForm, ActionButton, DriverModeSection, FinalizeForm, InlineForm, NavButton, RuleFields, SignatureForm, StepForm, WizardProgress } from "./wizard-ui";
 import { WIZARD_STEPS } from "./steps";
+import { isFeatureEnabled } from "@/lib/features";
+import { ACCIDENT_CASE_CLOSED_MESSAGE } from "@/lib/accident-replacement-events";
 
 export const metadata = { title: "Mietvertrag" };
 
@@ -46,6 +48,13 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
 
   const booking = await db.booking.findFirst({ where: { id, tenantId: tenant.id }, include: { customer: true, vehicle: { include: { group: true } }, contract: { select: { id: true, status: true } } } });
   if (!booking) notFound();
+  // Befehl 29 Phase E: Unfallersatz – Mietende offen („bis zur Rückgabe“), Tarif aus der Fallakte; geschlossener Fall sperrt den Vertrag
+  const accident = booking.rentalType === "ACCIDENT_REPLACEMENT";
+  const accidentCase = accident ? await db.accidentReplacementCase.findFirst({ where: { tenantId: tenant.id, bookingId: booking.id }, select: { id: true, caseNumber: true, status: true } }) : null;
+  const caseHref = accidentCase && (await isFeatureEnabled(tenant.id, "ACCIDENT_REPLACEMENT")) ? `/unfallersatz/${accidentCase.id}` : null;
+  const caseClosed = accidentCase?.status === "CLOSED";
+  const caseLink = caseHref ? <Link href={caseHref} className="btn">Zur Fallakte</Link> : null;
+  const closedNotice = caseClosed ? <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm font-medium">{ACCIDENT_CASE_CLOSED_MESSAGE} Vertrag, Übergabe und Rückgabe sind gesperrt, bis der Fall {accidentCase!.caseNumber} in der Fallakte wieder geöffnet wird.</p> : null;
   // Hofmitarbeiter: kein Vertragsentwurf und keine Neuanlage, nur der abgeschlossene Vertrag ist einsehbar
   if (!canEdit && booking.contract?.status !== "SIGNED" && booking.contract?.status !== "CANCELLED") redirect(`/buchungen/${booking.id}?hinweis=${encodeURIComponent("Mietverträge erstellen und bearbeiten nur Inhaber und Disponenten.")}`);
 
@@ -54,12 +63,15 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
     const start = startContractAction.bind(null, booking.id);
     return (
       <>
-        <PageHeader title="Mietvertrag" sub={`Buchung ${booking.number}`}><Link href={`/buchungen/${booking.id}`} className="btn">Zur Buchung</Link></PageHeader>
+        <PageHeader title="Mietvertrag" sub={`Buchung ${booking.number}`}>{caseLink}<Link href={`/buchungen/${booking.id}`} className="btn">Zur Buchung</Link></PageHeader>
         <Content>
+          {closedNotice}
           <Card className="p-5 max-w-2xl flex flex-col gap-3">
             <p>Für {customerName(booking.customer)} und <Plate>{booking.vehicle.plate}</Plate> gibt es noch keinen Mietvertrag.</p>
-            {booking.status === "RESERVED" ? (
+            {booking.status === "RESERVED" && !caseClosed ? (
               <form action={start}><button className="btn btn-primary !py-2.5">Mietvertrag erstellen</button></form>
+            ) : caseClosed ? (
+              <p className="text-sm text-ink-3">Der Mietvertrag kann erst nach dem Wiederöffnen des Falls angelegt werden.</p>
             ) : (
               <p className="text-sm text-ink-3">Ein Vertrag wird nur für reservierte Buchungen angelegt.</p>
             )}
@@ -95,12 +107,14 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
     return (
       <>
         <PageHeader title={`Mietvertrag ${contract.number}`} sub={`Buchung ${booking.number}`}>
-          {contract.status === "SIGNED" && booking.status === "RESERVED" && <Chip tone="good">Bereit zur Übergabe</Chip>}
+          {contract.status === "SIGNED" && booking.status === "RESERVED" && !caseClosed && <Chip tone="good">Bereit zur Übergabe</Chip>}
+          {caseLink}
           <Link href={`/buchungen/${booking.id}`} className="btn">Zur Buchung</Link>
         </PageHeader>
         <Content>
+          {closedNotice}
           {sp.abgeschlossen === "1" && <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 font-medium">Der Mietvertrag ist abgeschlossen und versiegelt. Die Buchung ist bereit zur Übergabe.</p>}
-          {(next.kind === "START" || next.kind === "CONTINUE") && (
+          {(next.kind === "START" || next.kind === "CONTINUE") && !caseClosed && (
             <section aria-label="Nächster Schritt" className="rounded-xl border-2 border-brand bg-panel p-4 md:p-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5">
               <div className="flex-1 min-w-0">
                 <div className="label-xs text-ink-3">Nächster Schritt</div>
@@ -119,6 +133,23 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
             </p>
           )}
           <ContractDocumentView doc={doc} />
+        </Content>
+      </>
+    );
+  }
+
+  // Befehl 29 Phase E: geschlossener Unfallersatzfall – der Entwurf ist eingefroren und wird nur angezeigt (Aktionen serverseitig gesperrt)
+  if (caseClosed) {
+    return (
+      <>
+        <PageHeader title={`Mietvertrag ${contract.number}`} sub={`Buchung ${booking.number} · ${customerName(booking.customer)}`}>
+          <Chip tone="amber">Entwurf</Chip>
+          {caseLink}
+          <Link href={`/buchungen/${booking.id}`} className="btn">Zur Buchung</Link>
+        </PageHeader>
+        <Content className="max-w-5xl">
+          {closedNotice}
+          <ContractDocumentView doc={doc} showSignatures={false} />
         </Content>
       </>
     );
@@ -168,10 +199,13 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
   return (
     <>
       <PageHeader title={`Mietvertrag ${contract.number}`} sub={`Buchung ${booking.number} · ${customerName(booking.customer)}`}>
+        {accident && <Chip tone="info">Unfallersatz{accidentCase ? ` ${accidentCase.caseNumber}` : ""}</Chip>}
         <Chip tone="amber">Entwurf</Chip>
+        {caseLink}
         <Link href={`/buchungen/${booking.id}`} className="btn">Zur Buchung</Link>
       </PageHeader>
       <Content className="max-w-5xl">
+        {closedNotice}
         <WizardProgress bookingId={booking.id} current={step} reached={reached} />
         <h2 className="text-lg font-semibold -mb-1">Schritt {step} von 7: {WIZARD_STEPS[step - 1]}</h2>
 
@@ -181,7 +215,8 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
               <span className="font-semibold text-base">{customerName(booking.customer)}</span>
               <Chip>{booking.customer.number ?? "ohne Kundennummer"}</Chip>
               {booking.customer.blocked ? <Chip tone="bad">Gesperrt</Chip> : <Chip tone="good">Nicht gesperrt</Chip>}
-              {booking.customer.discountPercent > 0 && <Chip tone="info">{booking.customer.discountPercent} % Rabatt</Chip>}
+              {booking.customer.discountPercent > 0 && !accident && <Chip tone="info">{booking.customer.discountPercent} % Rabatt</Chip>}
+              {accident && <Chip tone="info">Unfallersatz: ohne Kundenrabatt</Chip>}
             </Card>
             {booking.customer.blocked && (
               <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-3 font-medium">
@@ -236,6 +271,19 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
                   <dt className="text-ink-3">Kilometerstand</dt><dd className="font-medium font-mono tnum">{fmtInt(v.mileage)} km</dd>
                 </dl>
               </Card>
+              {accident ? (
+                <Card title="Mietzeitraum und Tarif">
+                  <dl className="px-4 py-3 grid grid-cols-[minmax(120px,40%)_1fr] gap-x-3 gap-y-1.5 text-sm">
+                    <dt className="text-ink-3">Mietbeginn</dt><dd className="font-medium font-mono tnum">{fmtDateTime(contract.startAt)}</dd>
+                    <dt className="text-ink-3">Mietende</dt><dd className="font-medium">offen – bis zur Rückgabe</dd>
+                    <dt className="text-ink-3">Geplantes Ende</dt><dd className="font-medium">{booking.endAt ? <><span className="font-mono tnum">{fmtDateTime(booking.endAt)}</span> <span className="text-ink-3 font-normal">(nur Disposition, nicht Vertragsinhalt)</span></> : "offen"}</dd>
+                    {doc.price.lines.map((l, i) => <div key={i} className="contents"><dt className="text-ink-3">{l.text}</dt><dd className="font-mono tnum">{l.amount}</dd></div>)}
+                    <dt className="text-ink-3">{doc.price.subtotalLabel}</dt><dd className="font-mono tnum font-medium">{doc.price.subtotal}</dd>
+                    {doc.price.extras.map((e, i) => <div key={`x${i}`} className="contents"><dt className="text-ink-3">{e.text}</dt><dd className="font-mono tnum">{e.amount}</dd></div>)}
+                    <dt className="text-ink-3">Kaution</dt><dd className="font-mono tnum">{doc.price.deposit}</dd>
+                  </dl>
+                </Card>
+              ) : (
               <Card title="Mietzeitraum und Preise">
                 <dl className="px-4 py-3 grid grid-cols-[minmax(120px,40%)_1fr] gap-x-3 gap-y-1.5 text-sm">
                   <dt className="text-ink-3">Mietbeginn</dt><dd className="font-medium font-mono tnum">{fmtDateTime(contract.startAt)}</dd>
@@ -248,8 +296,9 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
                   <dt className="text-ink-3">Kaution</dt><dd className="font-mono tnum">{fmtEur(contract.deposit)}</dd>
                 </dl>
               </Card>
+              )}
             </div>
-            <p className="text-xs text-ink-3">Zeitraum und Kaution ändern Sie im nächsten Schritt. Ein anderes Fahrzeug wählen Sie in der Buchung, der Vertrag übernimmt es automatisch.</p>
+            <p className="text-xs text-ink-3">{accident ? "Mietbeginn, geplantes Mietende und Tarif stehen in der Fallakte. Das geplante Ende ist nur ein Dispositionswert – der Vertrag läuft bis zur Rückgabe. Kaution und Kilometer legen Sie im nächsten Schritt fest." : "Zeitraum und Kaution ändern Sie im nächsten Schritt. Ein anderes Fahrzeug wählen Sie in der Buchung, der Vertrag übernimmt es automatisch."}</p>
             <Card className="p-4 md:p-5"><StepForm action={navigateStepAction.bind(null, booking.id, 3)} step={3} nextLabel="Weiter"><span className="sr-only">Keine Eingaben in diesem Schritt</span></StepForm></Card>
           </>
         )}
@@ -269,11 +318,21 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
               <Card className="p-4 md:p-5">
                 <StepForm action={saveConditionsStepAction.bind(null, booking.id)} step={4}>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5">
-                    <Field label="Mietbeginn" htmlFor="startAt"><input id="startAt" name="startAt" type="datetime-local" defaultValue={toDateTimeInput(contract.startAt)} required className="input tnum" /></Field>
-                    <Field label="Geplante Rückgabe" htmlFor="endAt"><input id="endAt" name="endAt" type="datetime-local" defaultValue={toDateTimeInput(contract.endAt)} required className="input tnum" /></Field>
+                    {accident ? (
+                      <>
+                        {/* Unfallersatz: Mietbeginn steht in der Fallakte; das Mietende ist offen – kein Datumsfeld, kein Ersatzdatum */}
+                        <div className="flex flex-col gap-1"><span className="label-xs">Mietbeginn</span><span className="input bg-panel-2 font-mono tnum">{fmtDateTime(contract.startAt)}</span><span className="text-[11px] text-ink-3">laut Fallakte</span></div>
+                        <div className="flex flex-col gap-1"><span className="label-xs">Mietende</span><span className="input bg-panel-2">offen – bis zur Rückgabe</span><span className="text-[11px] text-ink-3">{booking.endAt ? `geplant ${fmtDateTime(booking.endAt)} – nur Disposition, ändern in der Fallakte` : "geplantes Ende ändern Sie in der Fallakte"}</span></div>
+                      </>
+                    ) : (
+                      <>
+                        <Field label="Mietbeginn" htmlFor="startAt"><input id="startAt" name="startAt" type="datetime-local" defaultValue={toDateTimeInput(contract.startAt)} required className="input tnum" /></Field>
+                        <Field label="Geplante Rückgabe" htmlFor="endAt"><input id="endAt" name="endAt" type="datetime-local" defaultValue={toDateTimeInput(contract.endAt)} required className="input tnum" /></Field>
+                      </>
+                    )}
                     <Field label="Abholort" htmlFor="pickupLocation"><input id="pickupLocation" name="pickupLocation" defaultValue={contract.pickupLocation ?? [tenant.street, tenant.city].filter(Boolean).join(", ")} className="input" /></Field>
                     <Field label="Rückgabeort" htmlFor="returnLocation" hint="Leer bedeutet: wie Abholort"><input id="returnLocation" name="returnLocation" defaultValue={contract.returnLocation ?? ""} className="input" /></Field>
-                    <Field label="Kaution €" htmlFor="deposit"><input id="deposit" name="deposit" inputMode="decimal" defaultValue={dec(contract.deposit)} required className="input tnum" /><span className="text-[11px] text-ink-3">Quelle: {sourceText(depositSource, { groupName: rules.resolved.groupName, vehiclePlate: rules.resolved.vehiclePlate })}</span></Field>
+                    <Field label="Kaution €" htmlFor="deposit"><input id="deposit" name="deposit" inputMode="decimal" defaultValue={dec(contract.deposit)} required className="input tnum" /><span className="text-[11px] text-ink-3">{accident ? "laut Fallakte; 0 = keine Kaution" : <>Quelle: {sourceText(depositSource, { groupName: rules.resolved.groupName, vehiclePlate: rules.resolved.vehiclePlate })}</>}</span></Field>
                     <Field label="Selbstbeteiligung €" htmlFor="deductible"><input id="deductible" name="deductible" inputMode="decimal" defaultValue={dec(contract.deductible)} required className="input tnum" />{badge("deductibleCents")}</Field>
                     <Field label="Freikilometer pro Tag" htmlFor="kmIncludedPerDay"><input id="kmIncludedPerDay" name="kmIncludedPerDay" inputMode="numeric" defaultValue={contract.kmIncludedPerDay} required className="input tnum" /><span className="text-[11px] text-ink-3">Quelle: {Number(booking.vehicle.kmIncludedPerDay) === contract.kmIncludedPerDay ? sourceText("VEHICLE", { vehiclePlate: rules.resolved.vehiclePlate }) : booking.kmIncludedPerDay === contract.kmIncludedPerDay ? "Buchung" : RULE_SOURCES.CONTRACT}</span></Field>
                     <Field label="Mehrkilometer € je km" htmlFor="extraKmRate"><input id="extraKmRate" name="extraKmRate" inputMode="decimal" defaultValue={dec(contract.extraKmRate)} required className="input tnum" /><span className="text-[11px] text-ink-3">Quelle: {Number(booking.vehicle.extraKmRate) === Number(contract.extraKmRate) ? sourceText("VEHICLE", { vehiclePlate: rules.resolved.vehiclePlate }) : Number(booking.extraKmRate ?? NaN) === Number(contract.extraKmRate) ? "Buchung" : RULE_SOURCES.CONTRACT}</span></Field>
@@ -287,27 +346,29 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
                         additionalDriversAllowed: snap?.values.additionalDriversAllowed ?? true, additionalDriverFeeType: snap?.values.additionalDriverFeeType ?? "FREE", additionalDriverFee: snap ? (snap.values.additionalDriverFeeCents / 100).toFixed(2).replace(".", ",") : "",
                         driveClass: driveClassOf(v.fuel),
                       }}
+                      driverFeeNote={accident ? "Beim Unfallersatz gilt keine Zusatzfahrer-Gebühr aus den Geschäftsregeln. Kosten für Zusatzfahrer nur als Position im Tarif der Fallakte." : undefined}
                     />
                     <Field label="Preis je fehlendem Liter € (optional)" htmlFor="fuelPricePerLiter"><input id="fuelPricePerLiter" name="fuelPricePerLiter" inputMode="decimal" defaultValue={dec(contract.fuelPricePerLiter)} className="input tnum" /></Field>
                     <Field label="Beschreibung bei individueller Tankregelung" htmlFor="fuelPolicyNote" full><input id="fuelPolicyNote" name="fuelPolicyNote" defaultValue={contract.fuelPolicyNote ?? ""} className="input" placeholder="Nur bei „Individuelle Regelung“ nötig" /></Field>
                     <Field label="Individuelle Vereinbarungen (Teil des Vertrags)" htmlFor="individualAgreements" full hint="Wird dem Mieter vor der Unterschrift angezeigt und mit dem Vertrag eingefroren."><textarea id="individualAgreements" name="individualAgreements" defaultValue={contract.individualAgreements ?? ""} rows={3} maxLength={6000} className="input" placeholder="z. B. Kindersitz inklusive, Rückgabe am Sonntag nach Absprache" /></Field>
-                    <Field label="Abweichend vereinbarter Gesamtmietpreis € (optional)" htmlFor="agreedTotal" hint="Leer lassen, dann gilt die Berechnung rechts"><input id="agreedTotal" name="agreedTotal" inputMode="decimal" defaultValue={dec(contract.agreedTotal)} className="input tnum" /></Field>
-                    <Field label="Begründung für den abweichenden Preis" htmlFor="agreedTotalNote"><input id="agreedTotalNote" name="agreedTotalNote" defaultValue={contract.agreedTotalNote ?? ""} className="input" placeholder="z. B. Sonderpreis Stammkunde" /></Field>
+                    {!accident && <Field label="Abweichend vereinbarter Gesamtmietpreis € (optional)" htmlFor="agreedTotal" hint="Leer lassen, dann gilt die Berechnung rechts"><input id="agreedTotal" name="agreedTotal" inputMode="decimal" defaultValue={dec(contract.agreedTotal)} className="input tnum" /></Field>}
+                    {!accident && <Field label="Begründung für den abweichenden Preis" htmlFor="agreedTotalNote"><input id="agreedTotalNote" name="agreedTotalNote" defaultValue={contract.agreedTotalNote ?? ""} className="input" placeholder="z. B. Sonderpreis Stammkunde" /></Field>}
                     <Field label="Interne Notiz (erscheint nicht im Vertrag)" htmlFor="internalNote" full><textarea id="internalNote" name="internalNote" defaultValue={contract.internalNote ?? ""} rows={2} className="input" /></Field>
                   </div>
                 </StepForm>
               </Card>
               <Card title="So entsteht der Mietpreis">
                 <div className="px-4 py-3 text-sm flex flex-col">
-                  <div className="text-xs text-ink-3 pb-1">Mietdauer {doc.price.days} {doc.price.days === 1 ? "Tag" : "Tage"}</div>
+                  <div className="text-xs text-ink-3 pb-1">{doc.price.durationText}</div>
                   {doc.price.lines.map((l, i) => <div key={i} className="flex justify-between gap-3 py-1.5 border-b border-line-soft"><span>{i > 0 ? "+ " : ""}{l.text}</span><span className="font-mono tnum">{l.amount}</span></div>)}
-                  <div className="flex justify-between gap-3 py-1.5 border-b border-line-soft"><span>Zwischensumme</span><span className="font-mono tnum">{doc.price.subtotal}</span></div>
+                  <div className="flex justify-between gap-3 py-1.5 border-b border-line-soft"><span>{doc.price.subtotalLabel}</span><span className="font-mono tnum">{doc.price.subtotal}</span></div>
                   {doc.price.discount && <div className="flex justify-between gap-3 py-1.5 border-b border-line-soft"><span>{doc.price.discount.text}</span><span className="font-mono tnum">{doc.price.discount.amount}</span></div>}
                   {doc.price.agreed && <div className="flex justify-between gap-3 py-1.5 border-b border-line-soft"><span>Abweichend vereinbart</span><span className="font-mono tnum">{doc.price.agreed.amount}</span></div>}
                   {doc.price.extras.map((e, i) => <div key={`x${i}`} className="flex justify-between gap-3 py-1.5 border-b border-line-soft"><span>+ {e.text}</span><span className="font-mono tnum">{e.amount}</span></div>)}
-                  <div className="flex justify-between gap-3 py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>Gesamtmietpreis</span><span className="font-mono tnum">{doc.price.total}</span></div>
+                  <div className="flex justify-between gap-3 py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>Gesamtmietpreis</span><span className={doc.price.openEnd ? "text-right" : "font-mono tnum"}>{doc.price.total}</span></div>
+                  {doc.price.totalNote && <p className="text-xs text-ink-2 pb-1">{doc.price.totalNote}</p>}
                   <div className="flex justify-between gap-3 py-1.5 text-ink-2"><span>Kaution</span><span className="font-mono tnum">{doc.price.deposit}</span></div>
-                  <p className="text-xs text-ink-3 mt-2">Die Berechnung aktualisiert sich nach „Speichern &amp; weiter“. Es gilt die günstigste Kombination der hinterlegten Preisstufen.</p>
+                  <p className="text-xs text-ink-3 mt-2">{accident ? "Tarif aus der Fallakte (Tagessatz, Positionen je Miettag und einmalige Positionen) – hier nur zur Ansicht. Kein Kundenrabatt, keine Wochen- oder Monatsstaffel." : "Die Berechnung aktualisiert sich nach „Speichern & weiter“. Es gilt die günstigste Kombination der hinterlegten Preisstufen."}</p>
                 </div>
               </Card>
             </div>
@@ -382,8 +443,8 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
             <Card className="px-4 py-3 text-sm flex flex-wrap gap-x-6 gap-y-1">
               <span>Mieter: <b>{customerName(booking.customer)}</b></span>
               <span>Fahrzeug: <b>{v.plate}</b></span>
-              <span>Zeitraum: <b>{fmtDateTime(contract.startAt)}</b> bis <b>{fmtDateTime(contract.endAt)}</b></span>
-              <span>Gesamtmietpreis: <b>{doc.price.total}</b></span>
+              {contract.endAt ? <span>Zeitraum: <b>{fmtDateTime(contract.startAt)}</b> bis <b>{fmtDateTime(contract.endAt)}</b></span> : <span>Mietbeginn: <b>{fmtDateTime(contract.startAt)}</b> · Mietende: <b>offen – bis zur Rückgabe</b></span>}
+              {contract.endAt ? <span>Gesamtmietpreis: <b>{doc.price.total}</b></span> : <span>Mietpreis: <b>{doc.price.subtotal} je Miettag</b>{doc.price.extras.length > 0 ? " zzgl. einmaliger Positionen" : ""}</span>}
               <span>Kaution: <b>{doc.price.deposit}</b></span>
               <Link href={`/buchungen/${booking.id}/vertrag?schritt=6`} className="underline underline-offset-2">Vollständige Zusammenfassung ansehen</Link>
             </Card>

@@ -20,12 +20,13 @@ import { chargeCustomer, openDamageCase, setLiability } from "../src/lib/damage-
 import { reportDamage } from "../src/lib/damages";
 import { completeMaintenance, createMaintenance, createPlan, setMaintenanceCosts } from "../src/lib/maintenance";
 import { approveResponse, createAuthorityCase, prepareResponse, setDriver, submitResponse } from "../src/lib/authority";
-import { acknowledgeTerms } from "../src/lib/contracts";
+import { acknowledgeTerms, adoptContractDefaults } from "../src/lib/contracts";
 import { createTermsDraft, publishTermsVersion } from "../src/lib/rental-terms";
 import { createCancellationDraft, createCreditNoteDraft, finalizeCounterDocument, updateCounterDocumentDraft } from "../src/lib/counter-documents";
 import { createPayout } from "../src/lib/payouts";
 import { ensurePayoutDocument } from "../src/lib/documents";
 import { toDateInputValue, zonedParts } from "../src/lib/time";
+import { toDateTimeInput } from "../src/lib/format";
 import { confirmVerification, recordIdentityCheck, recordLicenseCheck, startOrGetVerification } from "../src/lib/driver-verification";
 import { hashPassword } from "../src/lib/password";
 import { createTenantByPlatform, suspendTenant, reactivateTenant } from "../src/lib/platform-tenants";
@@ -1033,7 +1034,7 @@ report(amHtml.includes("Ein Entwurf ändert nichts") && amHtml.includes("Noch ke
 const amBookingDraft = await plain(await fetch(`${base}/buchungen/${amw.bookingId}`, { headers: { cookie: dnCookie } }));
 report(amBookingDraft.includes("Nachtrag-Entwurf fortsetzen") && !amBookingDraft.includes("+ Vertrag ändern / Nachtrag erstellen"), "Buchung: offener Entwurf wird fortgesetzt, kein zweiter Knopf");
 const amContract = await db.rentalContract.findUniqueOrThrow({ where: { id: amw.contractId } });
-const amNewEnd = new Date(amContract.endAt.getTime() + 2 * 86400_000);
+const amNewEnd = new Date(amContract.endAt!.getTime() + 2 * 86400_000);
 const amRow = await updateAmendmentDraft(amw.tenantId, amw.actor, amDraft.id, { newEndAt: amNewEnd, newDepositCents: 60000 });
 await updateAmendmentDraft(amw.tenantId, amw.actor, amDraft.id, { priceDeltaCents: amRow.priceProposalCents });
 const amDraftHtml = await plain(await fetch(amUrl, { headers: { cookie: dnCookie } }));
@@ -1052,7 +1053,7 @@ const amPdf = await fetch(`${base}/api/documents/${amDoc.id}?download=1`, { head
 report(amPdf.status === 200 && (amPdf.headers.get("content-type") ?? "").includes("pdf"), `${amPdf.status} Nachtrags-PDF abrufbar`);
 const amBookingSigned = await plain(await fetch(`${base}/buchungen/${amw.bookingId}`, { headers: { cookie: dnCookie } }));
 report(amBookingSigned.includes(amSigned.number!) && amBookingSigned.includes(`geändert durch ${amSigned.number}`) && amBookingSigned.includes("1 Nachtrag wirksam") && amBookingSigned.includes("+ Vertrag ändern / Nachtrag erstellen"), "Buchung: wirksamer Nachtrag in Liste, „geändert durch“, weiterer Nachtrag möglich");
-report((await db.booking.findUniqueOrThrow({ where: { id: amw.bookingId } })).endAt.getTime() === amNewEnd.getTime() && amBooking.endAt.getTime() !== amNewEnd.getTime(), "Buchung: Zeitraum durch Nachtrag materialisiert (Disposition/Rückgabe)");
+report((await db.booking.findUniqueOrThrow({ where: { id: amw.bookingId } })).endAt!.getTime() === amNewEnd.getTime() && amBooking.endAt!.getTime() !== amNewEnd.getTime(), "Buchung: Zeitraum durch Nachtrag materialisiert (Disposition/Rückgabe)");
 report(amBookingSigned.includes("Nachträge zum Mietvertrag") && amBookingSigned.includes(amDoc.fileName), "Dokumente: Nachtrags-PDF im Dokumentenbereich");
 const amContractHtml = await plain(await fetch(`${base}/buchungen/${amw.bookingId}/vertrag`, { headers: { cookie: dnCookie } }));
 report(amContractHtml.includes("Nachtrag geändert") && amContractHtml.includes(amSigned.number!), "Mietvertrag: Hinweis auf Nachtrag, Original unverändert");
@@ -1175,7 +1176,7 @@ report(amRangesHtml.includes("Präfix Nachträge") && amRangesHtml.includes("NT-
   const ext = await pickedUpWorld("smoke-b28-ext", { within: dnWorld });
   const extB = await db.booking.findUniqueOrThrow({ where: { id: ext.bookingId } });
   const ea = (await createAmendmentDraft(dnWorld.tenantId, dnWorld.actor, { bookingId: ext.bookingId, nonce: `smoke-ext-${Date.now()}` })).amendment;
-  await updateAmendmentDraft(dnWorld.tenantId, dnWorld.actor, ea.id, { newEndAt: new Date(extB.endAt.getTime() + 86400_000) });
+  await updateAmendmentDraft(dnWorld.tenantId, dnWorld.actor, ea.id, { newEndAt: new Date(extB.endAt!.getTime() + 86400_000) });
   const eaDraft = await plain(await fetch(`${base}/buchungen/${ext.bookingId}/nachtrag/${ea.id}`, { headers: { cookie: dnCookie } }));
   report(eaDraft.includes("Telefonisch / extern vereinbart?") && eaDraft.includes("Als vereinbart speichern – Fahrzeug reservieren"), "Nachtrag: „Als vereinbart speichern“ für Zeitraumänderung");
   await agreeAmendment(dnWorld.tenantId, dnWorld.actor, ea.id, { channel: "PHONE", note: "Smoke-Anruf" });
@@ -1264,7 +1265,7 @@ report(amRangesHtml.includes("Präfix Nachträge") && amRangesHtml.includes("NT-
   const otherStillOpen = await fetch(`${base}/behoerden`, { headers: { cookie: `rb_session=${foreignSession}` }, redirect: "manual" });
   report(otherStillOpen.status === 200, `${otherStillOpen.status} Feature gesperrt: anderer Mandant unberührt`);
   const gatedAdminDetail = await plain(await fetch(`${base}/admin/mandanten/${w.tenantId}`, { headers: { cookie: adminCookie } }));
-  report(gatedAdminDetail.includes("6 von 7 aktiv"), "Mandantendetail zeigt Feature-Zustand");
+  report(gatedAdminDetail.includes("6 von 8 aktiv"), "Mandantendetail zeigt Feature-Zustand");
   await setTenantFeature({ id: admin.id, name: admin.name }, w.tenantId, "AUTHORITIES", true);
   const ungated = await fetch(`${base}/behoerden`, { headers: { cookie }, redirect: "manual" });
   report(ungated.status === 200, `${ungated.status} Feature freigeschaltet: Seite wieder erreichbar`);
@@ -1413,6 +1414,408 @@ const resetPage = await plain(await fetch(`${base}/passwort-vergessen/${resetTok
 report(resetPage.includes("Neues Passwort festlegen"), "Passwort-Reset: gültiger Link zeigt Formular");
 const badResetPage = await plain(await fetch(`${base}/passwort-vergessen/ungueltiger-token-${Date.now()}`));
 report(badResetPage.includes("nicht mehr gültig"), "Passwort-Reset: ungültiger Link zeigt Fehlermeldung");
+
+// Befehl 29 Phase C: Unfallersatz-Wizard – Mietart-Auswahl, Seiten je Rolle, Freischaltung und der direkte Aufruf der
+// Server-Aktionen (so, wie ein Skript ohne Oberfläche sie aufrufen würde): Rechte und Freischaltung lassen sich nicht umgehen.
+const ue = await createWorld("smoke-ue");
+platformTenants.push(ue.tenantId);
+const ueV2 = await db.vehicle.create({ data: { tenantId: ue.tenantId, plate: "HB-UE 900", make: "Opel", model: "Astra", groupId: ue.groupId, dailyRate: 55, deposit: 0 } });
+const ueV3 = await db.vehicle.create({ data: { tenantId: ue.tenantId, plate: "HB-UE 901", make: "Skoda", model: "Octavia", groupId: ue.groupId, dailyRate: 65, deposit: 0 } });
+const ueCookie = async (role: "OWNER" | "DISPO" | "YARD") => {
+  const u = await db.user.create({ data: { tenantId: ue.tenantId, email: `ue-${role.toLowerCase()}-${Date.now()}@example.test`, name: `UE ${role}`, passwordHash: "x", role } });
+  const sid = randomBytes(32).toString("base64url");
+  await db.session.create({ data: { id: sid, userId: u.id, expiresAt: new Date(Date.now() + 3600_000) } });
+  return `rb_session=${sid}`;
+};
+const ueOwner = await ueCookie("OWNER"), ueDispo = await ueCookie("DISPO"), ueYard = await ueCookie("YARD");
+/** Aktions-ID einer Seite: über den Namen (Entwicklungsserver), sonst die ans Formular gebundene bzw. die einzige übrige. */
+const actionIdOf = (html: string, name: string, fallback: "bound" | "other") => {
+  const named = [...html.matchAll(/([0-9a-f]{42})\\?",\\?"bound\\?":null,\\?"name\\?":\\?"(\w+)/g)].find((m) => m[2] === name)?.[1];
+  if (named) return named;
+  const boundField = /name="\$ACTION_\d+:0" value="([^"]*)"/.exec(html);
+  const bound = boundField ? (JSON.parse(boundField[1].replace(/&quot;/g, '"')) as { id: string }).id : "";
+  if (fallback === "bound") return bound;
+  const plainForms = [...html.matchAll(/name="\$ACTION_ID_([0-9a-f]+)"/g)].map((m) => m[1]);
+  const others = [...new Set([...html.matchAll(/(?<![0-9a-f])[0-9a-f]{42}(?![0-9a-f])/g)].map((m) => m[0]))].filter((id) => id !== bound && !plainForms.includes(id));
+  return others.length === 1 ? others[0] : "";
+};
+/** Server-Aktion direkt per HTTP aufrufen (React-Reply-Format: Formularfelder mit Präfix vor dem Wurzelteil „0“). */
+const callAction = async (path: string, actionId: string, cookieValue: string, args: { form: Record<string, string>; bound?: unknown[] } | { json: unknown[] }) => {
+  const body = new FormData();
+  if ("form" in args) {
+    for (const [k, v] of Object.entries(args.form)) body.append(`_1_${k}`, v);
+    // gebundene Argumente (z. B. die Fall-ID) schickt der Browser selbst mit – ein Angreifer könnte jede ID einsetzen
+    body.append("0", JSON.stringify([...(args.bound ?? []), "$undefined", "$K1"]));
+  } else body.append("0", JSON.stringify(args.json));
+  const res = await fetch(`${base}${path}`, { method: "POST", headers: { cookie: cookieValue, "Next-Action": actionId }, body, redirect: "manual" });
+  return { status: res.status, redirectTo: res.headers.get("x-action-redirect") ?? res.headers.get("location") ?? "", text: await res.text() };
+};
+/** Rückgabewert (Formularzustand) einer Aktion aus der RSC-Antwort. */
+const actionState = (text: string): { error?: string; step?: number } | null => {
+  const line = text.split("\n").find((l) => /^[0-9a-f]+:\{"error":/.test(l));
+  return line ? JSON.parse(line.slice(line.indexOf(":") + 1)) : null;
+};
+const TECH = /prisma|P20\d\d|constraint|stack|SQL|cm[a-z0-9]{20,}/i;
+const ueStart = new Date(Math.ceil((Date.now() + 2 * 3600_000) / 60_000) * 60_000);
+const ueForm = (over: Record<string, string> = {}) => ({
+  nonce: `smoke-ue-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, customerMode: "existing", customerId: ue.customerId,
+  damagedPlate: "HB-AB 99", damagedMake: "BMW", damagedModel: "320d", damagedDrivable: "0", damageKind: "REPAIR", accidentDate: toDateInputValue(new Date(Date.now() - 86400_000)),
+  insurerName: "Smoke Versicherung AG", liabilityStatus: "REPORTED", vehicleId: ueV2.id, startAt: toDateTimeInput(ueStart), endMode: "open", plannedEndAt: "",
+  dailyRate: "55", t_DELIVERY_on: "1", t_DELIVERY_amount: "35", t_DELIVERY_mode: "once", ...over,
+});
+const ueCases = () => db.accidentReplacementCase.count({ where: { tenantId: ue.tenantId } });
+const ueAccidentBookings = () => db.booking.count({ where: { tenantId: ue.tenantId, rentalType: "ACCIDENT_REPLACEMENT" } });
+
+// standardmäßig gesperrt: keine Mietart-Auswahl, der Wizard leitet um, das Standardformular ist unverändert
+const ueOffNew = await plain(await fetch(`${base}/buchungen/neu`, { headers: { cookie: ueOwner } }));
+report(!ueOffNew.includes('aria-label="Mietart"') && ueOffNew.includes("Preis und Kaution werden aus dem Fahrzeug"), "Unfallersatz gesperrt: Neue Buchung ohne Mietart-Auswahl, Standardformular wie bisher");
+const ueOffWizard = await fetch(`${base}/unfallersatz/neu`, { headers: { cookie: ueOwner }, redirect: "manual" });
+report(ueOffWizard.status === 307 && (ueOffWizard.headers.get("location") ?? "").includes("fehler=funktion"), `${ueOffWizard.status} Unfallersatz gesperrt: Wizard leitet mit Hinweis um`);
+
+await setTenantFeature({ id: admin.id, name: admin.name }, ue.tenantId, "ACCIDENT_REPLACEMENT", true, "Smoke Phase C");
+const ueOnNew = await plain(await fetch(`${base}/buchungen/neu?fahrzeug=${ueV3.id}`, { headers: { cookie: ueOwner } }));
+report(ueOnNew.includes('aria-label="Mietart"') && ueOnNew.includes("Standardvermietung") && ueOnNew.includes(`href="/unfallersatz/neu?fahrzeug=${ueV3.id}"`) && ueOnNew.includes("Preis und Kaution werden aus dem Fahrzeug"), "Neue Buchung: Mietart Standard/Unfallersatz, Vorbelegung bleibt, Standardformular unverändert");
+const ueWizardAs = async (c: string) => { const r = await fetch(`${base}/unfallersatz/neu`, { headers: { cookie: c }, redirect: "manual" }); return { status: r.status, location: r.headers.get("location") ?? "", html: r.status === 200 ? await plain(r) : "" }; };
+const ueOwnerWizard = await ueWizardAs(ueOwner);
+const ueFormTag = /<form[^>]*aria-label="Unfallersatz anlegen"[^>]*>/.exec(ueOwnerWizard.html)?.[0] ?? "";
+report(ueOwnerWizard.status === 200 && /method="POST"/i.test(ueFormTag) && ueOwnerWizard.html.includes("Mietende offen") && ueOwnerWizard.html.includes("Schadenfall"), `${ueOwnerWizard.status} Inhaber: Wizard erreichbar, Formular sendet per POST`);
+const ueDispoWizard = await ueWizardAs(ueDispo);
+report(ueDispoWizard.status === 200 && ueDispoWizard.html.includes('aria-label="Unfallersatz anlegen"'), `${ueDispoWizard.status} Disposition: Wizard erreichbar`);
+const ueYardWizard = await ueWizardAs(ueYard);
+report(ueYardWizard.status === 307 && ueYardWizard.location.includes("fehler=rechte"), `${ueYardWizard.status} Hofmitarbeiter: kein Wizard`);
+
+const ueCreateId = actionIdOf(ueDispoWizard.html, "createAccidentCaseAction", "bound");
+const ueAvailId = actionIdOf(ueDispoWizard.html, "accidentAvailabilityAction", "other");
+report(/^[0-9a-f]{42}$/.test(ueCreateId) && /^[0-9a-f]{42}$/.test(ueAvailId) && ueCreateId !== ueAvailId, "Aktions-IDs des Wizards ermittelt");
+const availInput = [{ startAt: toDateTimeInput(ueStart), endMode: "open", plannedEndAt: "" }];
+
+// direkter Aufruf als Hofmitarbeiter: abgewiesen, nichts angelegt, keine Fahrzeugdaten
+const yardCall = await callAction("/unfallersatz/neu", ueCreateId, ueYard, { form: ueForm() });
+report(yardCall.redirectTo.includes("fehler=rechte") && (await ueCases()) === 0 && (await ueAccidentBookings()) === 0, `${yardCall.status} Direkter Aufruf als Hofmitarbeiter: abgewiesen, nichts angelegt`);
+const yardAvail = await callAction("/unfallersatz/neu", ueAvailId, ueYard, { json: availInput });
+report(yardAvail.redirectTo.includes("fehler=rechte") && !yardAvail.text.includes(ueV2.id), `${yardAvail.status} Verfügbarkeit als Hofmitarbeiter: abgewiesen, keine Fahrzeugdaten`);
+// direkter Aufruf ohne Freischaltung: abgewiesen
+await setTenantFeature({ id: admin.id, name: admin.name }, ue.tenantId, "ACCIDENT_REPLACEMENT", false, "Smoke Phase C");
+const offCall = await callAction("/unfallersatz/neu", ueCreateId, ueDispo, { form: ueForm() });
+const offAvail = await callAction("/unfallersatz/neu", ueAvailId, ueDispo, { json: availInput });
+report(offCall.redirectTo.includes("fehler=funktion") && offAvail.redirectTo.includes("fehler=funktion") && !offAvail.text.includes(ueV2.id) && (await ueCases()) === 0, `${offCall.status} Direkter Aufruf ohne Freischaltung: abgewiesen, nichts angelegt`);
+await setTenantFeature({ id: admin.id, name: admin.name }, ue.tenantId, "ACCIDENT_REPLACEMENT", true, "Smoke Phase C");
+// Eingaben werden serverseitig geprüft, auch ohne Oberfläche
+const quotaCall = actionState((await callAction("/unfallersatz/neu", ueCreateId, ueDispo, { form: ueForm({ liabilityStatus: "QUOTA", liabilityQuotaPercent: "150" }) })).text);
+report(quotaCall?.error === "Die Haftungsquote liegt zwischen 0 und 100 %." && quotaCall.step === 3 && (await ueCases()) === 0, "Direkter Aufruf: Quote 150 % serverseitig abgelehnt (Schritt 3)");
+const staleCall = actionState((await callAction("/unfallersatz/neu", ueCreateId, ueDispo, { form: ueForm({ nonce: "" }) })).text);
+report(staleCall?.error === "Die Seite ist veraltet. Bitte neu laden.", "Direkter Aufruf ohne Formularschlüssel: abgelehnt");
+// Disposition legt an (offenes Ende); derselbe Formularschlüssel (Doppelklick) legt nichts Zweites an
+const ueKey = ueForm();
+const dispoCall = await callAction("/unfallersatz/neu", ueCreateId, ueDispo, { form: ueKey });
+const ueCase = await db.accidentReplacementCase.findFirst({ where: { tenantId: ue.tenantId } });
+const ueBooking = ueCase ? await db.booking.findUnique({ where: { id: ueCase.bookingId } }) : null;
+report(Boolean(ueCase) && ueBooking?.endAt === null && dispoCall.redirectTo.includes(`/unfallersatz/${ueCase?.id}?angelegt=1`), `${dispoCall.status} Disposition: Fall mit offenem Mietende angelegt, weiter zur Fallakte`);
+const dispoAgain = await callAction("/unfallersatz/neu", ueCreateId, ueDispo, { form: ueKey });
+report((await ueCases()) === 1 && (await ueAccidentBookings()) === 1 && dispoAgain.redirectTo.includes(`/unfallersatz/${ueCase?.id}`), `${dispoAgain.status} Doppelklick: derselbe Fall, keine zweite Buchung`);
+// Fahrzeugkonflikt: verständliche Meldung, kein Datenbankfehler
+const conflict = actionState((await callAction("/unfallersatz/neu", ueCreateId, ueOwner, { form: ueForm() })).text);
+report(Boolean(conflict?.error?.startsWith("Doppelbelegung: HB-UE 900")) && conflict?.step === 4 && !TECH.test(conflict?.error ?? "") && (await ueCases()) === 1, "Fahrzeugkonflikt: verständliche Meldung, Sprung zu Schritt 4, nichts angelegt");
+// Inhaber legt an (geplantes Mietende)
+const ownerCall = await callAction("/unfallersatz/neu", ueCreateId, ueOwner, { form: ueForm({ vehicleId: ueV3.id, endMode: "known", plannedEndAt: toDateTimeInput(new Date(ueStart.getTime() + 3 * 86400_000)) }) });
+report((await ueCases()) === 2 && ownerCall.redirectTo.includes("/unfallersatz/") && ownerCall.redirectTo.includes("angelegt=1"), `${ownerCall.status} Inhaber: Fall mit geplantem Mietende angelegt`);
+// Verfügbarkeit: nur eigene Fahrzeuge, belegt mit offenem Ende, offene Miete vor späterer Buchung nicht möglich
+const dispoAvail = await callAction("/unfallersatz/neu", ueAvailId, ueDispo, { json: availInput });
+report(dispoAvail.status === 200 && dispoAvail.text.includes(ueV2.id) && dispoAvail.text.includes("(Mietende offen)") && dispoAvail.text.includes("Mietende offen nicht möglich") && !dispoAvail.text.includes(w.vehicleId), `${dispoAvail.status} Verfügbarkeit: eigene Flotte, Belegung und offenes Ende verständlich`);
+// Buchungsseite des Falls und unveränderte Standardbuchung
+const ueBookingPage = await plain(await fetch(`${base}/buchungen/${ueCase?.bookingId}`, { headers: { cookie: ueDispo } }));
+report(ueBookingPage.includes(`Unfallersatz ${ueCase?.caseNumber}`) && ueBookingPage.includes(`href="/unfallersatz/${ueCase?.id}"`) && ueBookingPage.includes("Unfallersatzfall öffnen") && ueBookingPage.includes("Kein Mietpreis im Voraus") && ueBookingPage.includes("offen (bis zur Rückgabe)") && !ueBookingPage.includes("Vollständig bezahlt"), "Buchung zum Fall: Kennzeichnung, Link „Unfallersatzfall öffnen“, offenes Mietende, kein Mietpreis im Voraus");
+// Phase E: der Vertragsassistent ist für Unfallersatz freigegeben (kein Hinweis „folgt“ mehr)
+report(ueBookingPage.includes("Mietvertrag fortsetzen") && !ueBookingPage.includes("Vertragsabschluss für Unfallersatz folgt"), "Buchung zum Fall: Vertrag fortsetzen (Unfallersatz-Vertrag mit offenem Ende im Vertragsassistenten)");
+const ueStdPage = await plain(await fetch(`${base}/buchungen/${ue.bookingId}`, { headers: { cookie: ueDispo } }));
+report(!ueStdPage.includes("Unfallersatz UE-") && !ueStdPage.includes("Kein Mietpreis im Voraus") && !ueStdPage.includes("offen (bis zur Rückgabe)") && ueStdPage.includes("Gesamtpreis (voraussichtlich)") && ueStdPage.includes("Noch keine Mietzahlung erfasst") && ueStdPage.includes("Änderungen speichern"), "Standardbuchung: Seite unverändert (Gesamtpreis, Mietzahlung, Bearbeiten), ohne Unfallersatz-Anteile");
+// Standardbuchung über dieselbe direkte Aufrufart: Mietart bleibt Standard, Ende bleibt Pflicht
+// mit action={formAction} am Buchungsformular ist die Aktion ans Formular gebunden, ohne (älterer Stand) nur im RSC-Payload
+const stdCreateId = actionIdOf(ueOnNew, "createBookingAction", "bound") || actionIdOf(ueOnNew, "createBookingAction", "other");
+const stdStart = new Date(ueStart.getTime() + 20 * 86400_000);
+const stdForm = { customerMode: "existing", customerId: ue.customerId, vehicleId: ueV3.id, startAt: toDateTimeInput(stdStart), endAt: toDateTimeInput(new Date(stdStart.getTime() + 2 * 86400_000)), dailyRate: "65", deposit: "0", kmIncludedPerDay: "200", extraKmRate: "0,25", payIntent: "NONE" };
+const stdNoEnd = actionState((await callAction("/buchungen/neu", stdCreateId, ueDispo, { form: { ...stdForm, endAt: "" } })).text);
+report(stdNoEnd?.error === "Bitte Rückgabe mit Datum und Uhrzeit angeben.", "Standardbuchung: Rückgabe bleibt Pflicht");
+const stdCall = await callAction("/buchungen/neu", stdCreateId, ueDispo, { form: stdForm });
+const stdBooking = await db.booking.findFirst({ where: { tenantId: ue.tenantId, vehicleId: ueV3.id, startAt: stdStart } });
+report(stdBooking?.rentalType === "STANDARD" && stdBooking.endAt !== null && Number(stdBooking.dailyRate) === 65 && stdCall.redirectTo.includes(`/buchungen/${stdBooking.id}`), `${stdCall.status} Standardbuchung bei freigeschaltetem Unfallersatz: unverändert als Standardmiete angelegt`);
+
+// Befehl 29 Phase D: Fallakte /unfallersatz/[id] – Inhaber/Disposition vollständig, Hof nur operativ (serverseitig, auch im
+// RSC-Payload), Freischaltung, Mandantentrennung, direkte Aufrufe der Fallakten-Aktionen mit beliebiger Fall-ID
+const ueCaseId = ueCase!.id;
+const caseUrl = `/unfallersatz/${ueCaseId}`;
+const caseAs = async (c: string, q = "") => { const r = await fetch(`${base}${caseUrl}${q}`, { headers: { cookie: c }, redirect: "manual" }); return { status: r.status, location: r.headers.get("location") ?? "", html: r.status === 200 ? await plain(r) : "" }; };
+/** ID einer gebundenen Aktion (Entwicklungsserver nennt sie „bound <Name>“). */
+const boundIdOf = (html: string, name: string) => [...html.matchAll(/([0-9a-f]{42})\\?",\\?"bound\\?":\\?"\$@[0-9a-f]+\\?",\\?"name\\?":\\?"bound (\w+)/g)].find((m) => m[2] === name)?.[1] ?? "";
+const ownerCase = await caseAs(ueOwner, "?angelegt=1");
+report(ownerCase.status === 200 && ownerCase.html.includes(ueCase!.caseNumber) && ownerCase.html.includes("ist angelegt") && ownerCase.html.includes("Nächste Schritte") && ownerCase.html.includes("Schadennummer der Versicherung fehlt") && ownerCase.html.includes("Smoke Versicherung AG") && ownerCase.html.includes("Mietende offen"), `${ownerCase.status} Fallakte (Inhaber): Kopf, Erfolgshinweis, nächste Schritte, offenes Mietende`);
+report(ownerCase.html.includes("Wiedervorlagen") && ownerCase.html.includes("Fall abschließen") && ownerCase.html.includes("Noch nicht abgerechnet"), "Fallakte (Inhaber): Wiedervorlagen, Abschluss, Rechnungsstatus");
+for (const [tab, marker] of [["schadenfall", "Beschädigtes Fahrzeug"], ["miete", "Ersatzfahrzeug und Zeitraum"], ["dokumente", "Vertragsunterlagen"], ["abrechnung", "Noch keine Unfallersatz-Rechnung vorhanden."], ["verlauf", "Fall angelegt"]] as const) {
+  const pg = await caseAs(ueDispo, `?tab=${tab}`);
+  report(pg.status === 200 && pg.html.includes(marker), `${pg.status} Fallakte (Disposition): Bereich ${tab}`);
+}
+// Hof: operative Sicht – keine Versicherung, kein Schadenfall, kein Tarif, keine Wiedervorlagen; verbotene Bereiche fallen auf die Übersicht zurück
+const yardLeaks = (html: string) => ["Smoke Versicherung", "HB-AB 99", "Schadennummer", "Wiedervorlage", "55,00", "35,00", "Beschädigtes Fahrzeug", "Noch keine Unfallersatz-Rechnung"].filter((x) => html.includes(x));
+const yardViews = [await caseAs(ueYard), await caseAs(ueYard, "?tab=abrechnung"), await caseAs(ueYard, "?tab=schadenfall"), await caseAs(ueYard, "?tab=miete"), await caseAs(ueYard, "?tab=verlauf")];
+report(yardViews.every((v) => v.status === 200) && yardViews[0].html.includes("Operative Ansicht") && yardViews[0].html.includes("HB-UE 900") && yardViews[1].html.includes("Nächste Schritte"), `${yardViews.map((v) => v.status).join("/")} Fallakte (Hof): operative Ansicht, verbotene Bereiche zeigen die Übersicht`);
+const leaks = [...new Set(yardViews.flatMap((v) => yardLeaks(v.html)))];
+report(leaks.length === 0, `Fallakte (Hof): keine kaufmännischen Daten im HTML/RSC-Payload${leaks.length ? ` – gefunden: ${leaks.join(", ")}` : ""}`);
+// fremder Mandant (mit freigeschaltetem Modul): Fall nicht auffindbar
+await setTenantFeature({ id: admin.id, name: admin.name }, foreign.tenantId, "ACCIDENT_REPLACEMENT", true, "Smoke Phase D");
+const foreignUeCase = await caseAs(`rb_session=${foreignSession}`);
+report(foreignUeCase.status === 404, `${foreignUeCase.status} Fallakte: fremder Mandant findet den Fall nicht`);
+// direkte Aufrufe der Fallakten-Aktionen
+const dispoMiete = (await caseAs(ueDispo, "?tab=miete")).html, dispoOverview = (await caseAs(ueDispo)).html, dispoSchaden = (await caseAs(ueDispo, "?tab=schadenfall")).html;
+const idPlanned = boundIdOf(dispoMiete, "updatePlannedEndAction"), idClose = boundIdOf(dispoOverview, "closeCaseAction"), idFollow = boundIdOf(dispoOverview, "createFollowUpAction"), idInsurer = boundIdOf(dispoSchaden, "updateInsurerAction");
+report([idPlanned, idClose, idFollow, idInsurer].every((x) => /^[0-9a-f]{42}$/.test(x)), "Aktions-IDs der Fallakte ermittelt");
+const yardClose = await callAction(caseUrl, idClose, ueYard, { bound: [ueCaseId], form: { reason: "Hof schließt den Fall" } });
+report(yardClose.redirectTo.includes("fehler=rechte") && (await db.accidentReplacementCase.findUniqueOrThrow({ where: { id: ueCaseId } })).status === "OPEN", `${yardClose.status} Direkter Aufruf als Hofmitarbeiter: Abschluss abgewiesen`);
+const endBefore = (await db.booking.findUniqueOrThrow({ where: { id: ueCase!.bookingId } })).endAt;
+const foreignEnd = actionState((await callAction(caseUrl, idPlanned, `rb_session=${foreignSession}`, { bound: [ueCaseId], form: { endMode: "known", plannedEndAt: toDateTimeInput(new Date(ueStart.getTime() + 5 * 86400_000)), reason: "fremder Mandant" } })).text);
+report(foreignEnd?.error === "Unfallersatzfall nicht gefunden." && (await db.booking.findUniqueOrThrow({ where: { id: ueCase!.bookingId } })).endAt?.getTime() === endBefore?.getTime(), "Direkter Aufruf aus fremdem Mandanten: Fall nicht gefunden, Mietende unverändert");
+await setTenantFeature({ id: admin.id, name: admin.name }, foreign.tenantId, "ACCIDENT_REPLACEMENT", false, "Smoke Phase D");
+const ueBookingsBefore = await db.booking.count({ where: { tenantId: ue.tenantId } });
+const plannedOk = await callAction(caseUrl, idPlanned, ueDispo, { bound: [ueCaseId], form: { endMode: "known", plannedEndAt: toDateTimeInput(new Date(ueStart.getTime() + 5 * 86400_000)), reason: "Smoke: Reparaturende laut Werkstatt" } });
+const endAfter = (await db.booking.findUniqueOrThrow({ where: { id: ueCase!.bookingId } })).endAt;
+report(endAfter?.getTime() === new Date(ueStart.getTime() + 5 * 86400_000).getTime() && (await db.accidentReplacementCaseEvent.count({ where: { caseId: ueCaseId, type: "PLANNED_END_CHANGED" } })) === 1 && (await db.booking.count({ where: { tenantId: ue.tenantId } })) === ueBookingsBefore, `${plannedOk.status} Disposition: Mietdauer aktualisiert, Verlaufseintrag, keine neue Buchung`);
+const followOk = actionState((await callAction(caseUrl, idFollow, ueDispo, { bound: [ueCaseId], form: { title: "Smoke: Schadennummer nachfragen", dueDate: toDateInputValue(new Date()) } })).text);
+report((await db.caseFollowUp.count({ where: { caseId: ueCaseId, status: "OPEN" } })) === 1 && !followOk?.error, "Disposition: Wiedervorlage angelegt");
+const partnerBefore = await db.businessPartner.findFirstOrThrow({ where: { tenantId: ue.tenantId, kind: "INSURER" } });
+await callAction(caseUrl, idInsurer, ueDispo, { bound: [ueCaseId], form: { insurerName: "Smoke Versicherung AG", insurerClaimNumber: "SN-SMOKE-1", insurerPhone: "0421 777" } });
+const caseAfter = await db.accidentReplacementCase.findUniqueOrThrow({ where: { id: ueCaseId } });
+const partnerAfter = await db.businessPartner.findUniqueOrThrow({ where: { id: partnerBefore.id } });
+report(caseAfter.insurerClaimNumber === "SN-SMOKE-1" && partnerAfter.phone === partnerBefore.phone && partnerAfter.useCount === partnerBefore.useCount, "Disposition: Schadennummer in der Fall-Kopie, Adressbuch unverändert");
+const ownerAfter = await caseAs(ueOwner);
+report(ownerAfter.html.includes("SN-SMOKE-1") && !ownerAfter.html.includes("Schadennummer der Versicherung fehlt") && ownerAfter.html.includes("Smoke: Schadennummer nachfragen") && ownerAfter.html.includes("heute fällig"), "Fallakte: Schadennummer ergänzt, Wiedervorlage heute fällig sichtbar");
+// Hof nach dem Anlegen der Daten erneut: Schadennummer, Wiedervorlage, Mietdauer-Grund und Versicherung bleiben unsichtbar
+const yardAfter = [await caseAs(ueYard), await caseAs(ueYard, "?tab=verlauf"), await caseAs(ueYard, "?tab=miete"), await caseAs(ueYard, "?tab=dokumente")];
+const yardLeaks2 = [...new Set(yardAfter.flatMap((v) => ["SN-SMOKE-1", "Smoke: Schadennummer nachfragen", "Smoke: Reparaturende", "Smoke Versicherung", "0421 777"].filter((x) => v.html.includes(x))))];
+report(yardAfter.every((v) => v.status === 200) && yardLeaks2.length === 0 && yardAfter[1].html.includes("Geplantes Mietende geändert"), `Fallakte (Hof) nach Änderungen: Verlauf ohne Gründe, keine kaufmännischen Daten${yardLeaks2.length ? ` – gefunden: ${yardLeaks2.join(", ")}` : ""}`);
+// geschlossener Fall: nur lesend, keine Knöpfe, die serverseitig scheitern würden; direkte Aktion verständlich abgelehnt
+const closeCall = actionState((await callAction(caseUrl, idClose, ueDispo, { bound: [ueCaseId], form: { reason: "Smoke: Fall erledigt", acknowledge: "1" } })).text);
+const closedPage = await caseAs(ueDispo), closedSchaden = await caseAs(ueDispo, "?tab=schadenfall"), closedMiete = await caseAs(ueDispo, "?tab=miete");
+report(!closeCall?.error && (await db.accidentReplacementCase.findUniqueOrThrow({ where: { id: ueCaseId } })).status === "CLOSED" && closedPage.html.includes("Die Fallakte ist nur noch lesbar") && !closedPage.html.includes("Wiedervorlage anlegen") && !closedPage.html.includes(">Mietdauer aktualisieren<") && !closedSchaden.html.includes(">Bearbeiten<") && !closedSchaden.html.includes("Haftung ändern") && !closedMiete.html.includes(">Mietdauer aktualisieren<") && closedPage.html.includes("Fall wieder öffnen"), "Geschlossener Fall: nur lesbar, keine Bearbeiten-, Mietdauer- oder Wiedervorlage-Knöpfe, Wiederöffnen mit Grund möglich");
+const closedFollow = actionState((await callAction(caseUrl, idFollow, ueDispo, { bound: [ueCaseId], form: { title: "nach Abschluss", dueDate: toDateInputValue(new Date()) } })).text);
+report(Boolean(closedFollow?.error?.includes("abgeschlossen")) && (await db.caseFollowUp.count({ where: { caseId: ueCaseId } })) === 1, "Geschlossener Fall: direkte Aktion verständlich abgelehnt, nichts angelegt");
+// Freischaltung aus: Fallakte gesperrt, Buchung ohne Link
+await setTenantFeature({ id: admin.id, name: admin.name }, ue.tenantId, "ACCIDENT_REPLACEMENT", false, "Smoke Phase D");
+const offCase = await caseAs(ueOwner);
+const offBooking = await plain(await fetch(`${base}/buchungen/${ueCase!.bookingId}`, { headers: { cookie: ueOwner } }));
+report(offCase.status === 307 && offCase.location.includes("fehler=funktion") && !offBooking.includes("Unfallersatzfall öffnen"), `${offCase.status} Freischaltung aus: Fallakte gesperrt, kein Link auf der Buchung`);
+await setTenantFeature({ id: admin.id, name: admin.name }, ue.tenantId, "ACCIDENT_REPLACEMENT", true, "Smoke Phase D");
+
+// Befehl 29 Phase E: Unfallersatz-Vertrag mit offenem Mietende über den bestehenden Vertragsassistenten (direkter Aufruf wie das
+// Formular), Rollen, Unterschrift, Abschluss, Übergabe, laufende und zurückgegebene Miete (Seiten), geschlossener Fall sperrt
+// serverseitig, Standardvertrag unverändert. Eigener Block, damit die Namen nicht mit früheren Teilen kollidieren.
+{
+  const ONLY_CLOSED = "Der Unfallersatzfall ist abgeschlossen und kann nicht mehr bearbeitet werden.";
+  const ue2 = await db.accidentReplacementCase.findFirstOrThrow({ where: { tenantId: ue.tenantId, id: { not: ueCaseId } } });
+  const ue2Booking = ue2.bookingId;
+  const vUrl = `/buchungen/${ue2Booking}/vertrag`;
+  const vPage = async (c: string, url: string, q = "") => { const r = await fetch(`${base}${url}${q}`, { headers: { cookie: c }, redirect: "manual" }); return { status: r.status, location: r.headers.get("location") ?? "", html: r.status === 200 ? await plain(r) : "" }; };
+  const NO_ZERO = (html: string) => !/>0,00\s€</.test(html) && !/\b0 Tage\b/.test(html);
+
+  const step3 = await vPage(ueDispo, vUrl, "?schritt=3");
+  report(step3.status === 200 && step3.html.includes("Mietzeitraum und Tarif") && step3.html.includes("offen – bis zur Rückgabe") && step3.html.includes("nur Disposition, nicht Vertragsinhalt") && !step3.html.includes("Woche (5 Tage)"), `${step3.status} Vertrag Schritt 3 (Unfallersatz): Mietende offen, geplantes Ende nur als Disposition, keine Wochen-/Monatsstaffel`);
+  const step4 = await vPage(ueDispo, vUrl, "?schritt=4");
+  report(step4.status === 200 && step4.html.includes("offen – bis zur Rückgabe") && !step4.html.includes('id="endAt"') && !step4.html.includes('id="startAt"') && !step4.html.includes("Abweichend vereinbarter Gesamtmietpreis") && step4.html.includes("Summe je Miettag") && step4.html.includes("Mietpreis je Miettag (Tagessatz)") && !/Mietdauer 0 Tage/.test(step4.html) && step4.html.includes("Kosten für Zusatzfahrer nur als Position im Tarif"), `${step4.status} Vertrag Schritt 4 (Unfallersatz): kein Datumsfeld fürs Ende, Tarif je Miettag, kein abweichender Gesamtpreis, keine Zusatzfahrer-Gebühr aus den Regeln`);
+  const idConditions = boundIdOf(step4.html, "saveConditionsStepAction");
+  const condForm = { deposit: "0", deductible: "500", kmIncludedPerDay: "150", extraKmRate: "0,30", fuelPolicy: "FULL_TO_FULL", rulesPresent: "1", kmPolicy: "FREE_KILOMETERS", petsPolicy: "BY_APPROVAL", pickupLocation: "Hof", nav: "next" };
+  // Hofmitarbeiter: Vertragsseite und direkte Aufrufe der Vertragsaktionen abgewiesen, nichts verändert
+  const yardV = await vPage(ueYard, vUrl);
+  const yardCond = await callAction(vUrl, idConditions, ueYard, { bound: [ue2Booking], form: { ...condForm, kmIncludedPerDay: "999" } });
+  report(yardV.status === 307 && decodeURIComponent(yardV.location).includes("nur Inhaber und Disponenten") && yardCond.redirectTo.includes("fehler=rechte") && (await db.rentalContract.findFirstOrThrow({ where: { bookingId: ue2Booking } })).kmIncludedPerDay !== 999, `${yardCond.status} Hofmitarbeiter: Unfallersatz-Vertrag weder sichtbar (Entwurf) noch per Direktaufruf änderbar`);
+  // Mandantenregel „Zusatzfahrer 15 € je Tag“ in den Entwurf übernehmen: das ausgeblendete Feld darf sie beim Speichern nicht zurücksetzen
+  const ueRules = (await db.tenant.findUniqueOrThrow({ where: { id: ue.tenantId }, select: { businessRules: true } })).businessRules;
+  await db.tenant.update({ where: { id: ue.tenantId }, data: { businessRules: { ...(ueRules && typeof ueRules === "object" ? ueRules as object : {}), additionalDriverFeeType: "PER_DAY", additionalDriverFeeCents: 1500 } } });
+  await adoptContractDefaults(ue.tenantId, (await db.rentalContract.findFirstOrThrow({ where: { bookingId: ue2Booking } })).id, ue.actor);
+  const condCall = await callAction(vUrl, idConditions, ueDispo, { bound: [ue2Booking], form: { ...condForm, agreedTotal: "1", agreedTotalNote: "untergeschoben", endAt: "2030-01-01T10:00" } });
+  const c2 = await db.rentalContract.findFirstOrThrow({ where: { bookingId: ue2Booking } });
+  const c2Rules = c2.conditions as { values?: { additionalDriverFeeType?: string; additionalDriverFeeCents?: number } } | null;
+  report(/^[0-9a-f]{42}$/.test(idConditions) && condCall.redirectTo.includes("schritt=5") && c2.endAt === null && c2.agreedTotal === null && c2.kmIncludedPerDay === 150 && Number(c2.deposit) === 0 && Number(c2.totalAmount) === 0, `${condCall.status} Direkter Aufruf Schritt 4: gespeichert mit offenem Ende; untergeschobenes Enddatum und Gesamtpreis wirkungslos, Kaution 0 bleibt 0`);
+  // Zusatzfahrer-Preisregel ist beim Unfallersatz ausgeblendet: Speichern darf sie nicht stillschweigend auf „kostenlos“ setzen
+  report(c2Rules?.values?.additionalDriverFeeType === "PER_DAY" && c2Rules?.values?.additionalDriverFeeCents === 1500 && (await db.auditLog.count({ where: { tenantId: ue.tenantId, action: "CONTRACT_BUSINESS_RULE_OVERRIDDEN", details: { path: ["field"], string_starts_with: "additionalDriverFee" } } })) === 0, "Unfallersatz Schritt 4: Zusatzfahrer-Preisregel (15 € je Tag) bleibt beim Speichern unverändert, kein Audit „überschrieben“");
+  const step6 = await vPage(ueDispo, vUrl, "?schritt=6");
+  report(step6.html.includes("offen – die Miete endet mit der Rückgabe des Fahrzeugs") && step6.html.includes("nach tatsächlicher Mietdauer") && step6.html.includes("Summe je Miettag") && step6.html.includes("keine Kaution vereinbart") && !step6.html.includes("Geplante Rückgabe") && NO_ZERO(step6.html), "Vertrag Zusammenfassung (Unfallersatz): Mietende offen, Mietpreis je Miettag, keine Kaution, kein Ersatzdatum, kein 0-€-Preis");
+  // vor der Unterschrift: Tarif des Falls, noch nicht eingefroren
+  const ue2MieteDraft = await plain(await fetch(`${base}/unfallersatz/${ue2.id}?tab=miete`, { headers: { cookie: ueDispo } }));
+  report(ue2MieteDraft.includes("wird mit dem Mietvertrag unterschrieben") && !ue2MieteDraft.includes("Tarif laut unterschriebenem Mietvertrag") && (ue2MieteDraft.includes("Vertrag öffnen") || ue2MieteDraft.includes("Vertrag unterschreiben")), "Fallakte Miete (Entwurf): Vertrag öffnen/unterschreiben angeboten, Tarif noch nicht eingefroren");
+  const step7 = await vPage(ueDispo, vUrl, "?schritt=7");
+  const seen2 = /name="seenHash" value="([0-9a-f]{64})"/.exec(step7.html)?.[1] ?? "";
+  const idSig = boundIdOf(step7.html, "saveSignatureAction"), idFinal = boundIdOf(step7.html, "finalizeContractAction");
+  report(step7.html.includes("offen – bis zur Rückgabe") && step7.html.includes("je Miettag"), "Vertrag Schritt 7 (Unfallersatz): Kurzfassung mit offenem Mietende und Mietpreis je Miettag");
+  const yardSig = await callAction(vUrl, idSig, ueYard, { bound: [ue2Booking], form: { role: "RENTER", signerName: "Hof", imageDataUrl: fakeSignaturePng(), seenHash: seen2 } });
+  const yardFin = await callAction(vUrl, idFinal, ueYard, { bound: [ue2Booking], form: {} });
+  report(yardSig.redirectTo.includes("fehler=rechte") && yardFin.redirectTo.includes("fehler=rechte") && (await db.signature.count({ where: { contractId: c2.id } })) === 0 && (await db.rentalContract.findFirstOrThrow({ where: { id: c2.id } })).status === "DRAFT", "Hofmitarbeiter: Unterschrift und Abschluss per Direktaufruf abgewiesen");
+  const sigCall = await callAction(vUrl, idSig, ueDispo, { bound: [ue2Booking], form: { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: seen2 } });
+  const finCall = await callAction(vUrl, idFinal, ueDispo, { bound: [ue2Booking], form: {} });
+  const signed2 = await db.rentalContract.findFirstOrThrow({ where: { bookingId: ue2Booking } });
+  report(sigCall.redirectTo.includes("schritt=7") && finCall.redirectTo.includes("abgeschlossen=1") && signed2.status === "SIGNED" && signed2.endAt === null && Boolean(signed2.contentHash), `${finCall.status} Unfallersatz-Vertrag per Formularaufruf unterschrieben und abgeschlossen (Mietende offen)`);
+  const signedView = await vPage(ueDispo, vUrl, "?abgeschlossen=1");
+  report(signedView.html.includes("Übergabe starten") && signedView.html.includes("offen – die Miete endet mit der Rückgabe"), "Abgeschlossener Unfallersatz-Vertrag: nächster Schritt Übergabe, Mietende offen");
+  const ue2Miete = await plain(await fetch(`${base}/unfallersatz/${ue2.id}?tab=miete`, { headers: { cookie: ueDispo } }));
+  report(ue2Miete.includes("Vertrag ansehen") && ue2Miete.includes("Übergabe starten") && !ue2Miete.includes("freigeschaltet") && ue2Miete.includes("noch kein Ist-Wert") && ue2Miete.includes("Tarif laut unterschriebenem Mietvertrag"), "Fallakte Miete: Vertrag ansehen, Übergabe starten, vor der Übergabe kein Ist-Wert, Tarif eingefroren");
+  const ue2BookingSigned = await plain(await fetch(`${base}/buchungen/${ue2Booking}`, { headers: { cookie: ueDispo } }));
+  report(ue2BookingSigned.includes("nach tatsächlicher Mietdauer (Tarif laut Mietvertrag)") && ue2BookingSigned.includes("offen (bis zur Rückgabe)") && !/Gesamtmietpreis<\/dt><dd[^>]*>0,00/.test(ue2BookingSigned) && ue2BookingSigned.includes("Mietende offen (bis zur Rückgabe), Tarif laut Vertrag festgeschrieben") && ue2BookingSigned.includes("noch kein Ist-Wert"), "Buchung nach Unterschrift: „Vertrag & Nachträge“ ohne 0-€-Gesamtpreis und ohne Ersatzdatum, Kosten ohne Ist-Wert");
+  const ue2Pickup = await vPage(ueDispo, `/buchungen/${ue2Booking}/uebergabe`);
+  const idPickup = boundIdOf(ue2Pickup.html, "startPickupAction");
+  const pickCall = await callAction(`/buchungen/${ue2Booking}/uebergabe`, idPickup, ueDispo, { bound: [ue2Booking], form: {} });
+  const ue2Draft = await db.handover.findFirst({ where: { bookingId: ue2Booking, type: "PICKUP", status: "DRAFT" } });
+  report(/^[0-9a-f]{42}$/.test(idPickup) && pickCall.redirectTo.includes("schritt=1") && Boolean(ue2Draft), `${pickCall.status} Übergabe nach Unterschrift gestartet (bestehendes Protokoll)`);
+
+  // Übergabe über die Fachlogik abschließen (Pflichtfotos, Checkliste, Fahrerprüfung, Unterschrift) – dann die Seiten der laufenden Miete
+  await db.vehicle.update({ where: { id: ue2Draft!.vehicleId }, data: { requiredLicenseClass: "B" } });
+  await updateHandoverDraft(ue.tenantId, ue2Draft!.id, { mileage: (await db.vehicle.findUniqueOrThrow({ where: { id: ue2Draft!.vehicleId } })).mileage + 10, fuelLevelEighths: 8 });
+  for (const c of REQUIRED_PHOTO_CATEGORIES) { const key = buildStorageKey({ tenantId: ue.tenantId, area: "photos", bookingId: ue2Booking, contentType: "image/jpeg" }); await registerPhoto(ue.tenantId, ue.actor, { handoverId: ue2Draft!.id, storageKey: key, category: c, contentType: "image/jpeg", sizeBytes: 1000, checksum: sha256(key) }); }
+  const ue2Items = await db.handoverChecklistItem.findMany({ where: { handoverId: ue2Draft!.id } });
+  await answerChecklist(ue.tenantId, ue2Draft!.id, ue2Items.map((i) => ({ itemId: i.id, result: i.answerType === "TEXT" ? "2" : i.itemKey === "unusually_dirty" ? "NO" : i.answerType === "YES_NO" ? "YES" : "OK" })));
+  for (const d of await db.contractDriver.findMany({ where: { tenantId: ue.tenantId, contractId: signed2.id } })) {
+    const v = await startOrGetVerification(ue.tenantId, ue.actor, ue2Draft!.id, d.id);
+    await recordIdentityCheck(ue.tenantId, ue.actor, v.id, { documentType: "PERSONALAUSWEIS", originalSeen: true, nameMatched: true, birthDateMatched: true });
+    await recordLicenseCheck(ue.tenantId, ue.actor, v.id, { originalSeen: true, documentValid: true, nameMatched: true, licenseNumber: d.licenseNumber, licenseCountry: d.licenseCountry, licenseIssuedAt: d.licenseIssuedAt, licenseValidUntil: d.licenseValidUntil, licenseClasses: ["B"], internationalPermitPresented: false, translationPresented: false });
+    await confirmVerification(ue.tenantId, ue.actor, v.id);
+  }
+  await saveHandoverSignature(ue.tenantId, ue.actor, ue2Draft!.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getHandoverContentHash(ue.tenantId, ue2Draft!.id) });
+  await finalizeHandover(ue.tenantId, ue2Draft!.id, ue.actor);
+  await db.booking.update({ where: { id: ue2Booking }, data: { actualPickupAt: new Date(Date.now() - (2 * 86400_000 + 2 * 3600_000)) } });
+  const listRunning = await plain(await fetch(`${base}/buchungen?filter=alle`, { headers: { cookie: ueDispo } }));
+  const runningPage = await plain(await fetch(`${base}/buchungen/${ue2Booking}`, { headers: { cookie: ueDispo } }));
+  const caseRunning = await plain(await fetch(`${base}/unfallersatz/${ue2.id}?tab=miete`, { headers: { cookie: ueDispo } }));
+  const returnStart = await plain(await fetch(`${base}/buchungen/${ue2Booking}/rueckgabe`, { headers: { cookie: ueDispo } }));
+  report(runningPage.includes("Stand jetzt") && runningPage.includes("3 Miettage") && !runningPage.includes("Miete verlängern") && NO_ZERO(listRunning) && listRunning.includes("übergeben") && caseRunning.includes("Bisher (3 Miettage, Stand jetzt)") && returnStart.includes("Rückgabe starten") && !returnStart.includes("Geplante Rückgabe: –"), "Laufende Unfallersatzmiete: Buchung, Liste, Fallakte und Rückgabeseite mit Mietwert „bis jetzt“ (3 Miettage), ohne 0-Werte und ohne Verlängerung per Nachtrag");
+
+  // Rückgabe über die Fachlogik – danach Endwert, Fall offen, keine Standard-Mietrechnung
+  const r2 = await startHandover(ue.tenantId, ue2Booking, "RETURN", ue.actor);
+  await updateHandoverDraft(ue.tenantId, r2.id, { mileage: (await db.vehicle.findUniqueOrThrow({ where: { id: r2.vehicleId } })).mileage + 300, fuelLevelEighths: 8 });
+  for (const c of REQUIRED_PHOTO_CATEGORIES) { const key = buildStorageKey({ tenantId: ue.tenantId, area: "photos", bookingId: ue2Booking, contentType: "image/jpeg" }); await registerPhoto(ue.tenantId, ue.actor, { handoverId: r2.id, storageKey: key, category: c, contentType: "image/jpeg", sizeBytes: 1000, checksum: sha256(key) }); }
+  const r2Items = await db.handoverChecklistItem.findMany({ where: { handoverId: r2.id } });
+  await answerChecklist(ue.tenantId, r2.id, r2Items.map((i) => ({ itemId: i.id, result: i.answerType === "TEXT" ? "2" : i.itemKey === "unusually_dirty" ? "NO" : i.answerType === "YES_NO" ? "YES" : "OK" })));
+  await saveHandoverSignature(ue.tenantId, ue.actor, r2.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getHandoverContentHash(ue.tenantId, r2.id) });
+  await finalizeHandover(ue.tenantId, r2.id, ue.actor);
+  const returnedPage = await plain(await fetch(`${base}/buchungen/${ue2Booking}`, { headers: { cookie: ueDispo } }));
+  const returnedReturn = await plain(await fetch(`${base}/buchungen/${ue2Booking}/rueckgabe?abgeschlossen=1`, { headers: { cookie: ueDispo } }));
+  const returnedInvoice = await plain(await fetch(`${base}/buchungen/${ue2Booking}/rechnung`, { headers: { cookie: ueDispo } }));
+  const caseReturned = await plain(await fetch(`${base}/unfallersatz/${ue2.id}?tab=miete`, { headers: { cookie: ueDispo } }));
+  report(returnedPage.includes("Endwert (3 Miettage)") && returnedReturn.includes("Der Unfallersatzfall bleibt offen") && !returnedReturn.includes(">Zur Rechnung<") && returnedInvoice.includes("Zur Abrechnung in der Fallakte") && !returnedInvoice.includes("Rechnung erstellen") && caseReturned.includes("Endwert (3 Miettage)") && caseReturned.includes("der Fall bleibt offen") && (await db.accidentReplacementCase.findUniqueOrThrow({ where: { id: ue2.id } })).status === "OPEN", "Zurückgegebene Unfallersatzmiete: Endwert (3 Miettage), Fall bleibt offen, keine Standard-Mietrechnung (Weg zur Fallakte)");
+
+  // geschlossener Fall (aus Phase D): Vertrag, Konditionen und Übergabe serverseitig gesperrt – verständliche Meldung, nichts verändert
+  const closedBookingId = ueCase!.bookingId;
+  const closedV = await vPage(ueDispo, `/buchungen/${closedBookingId}/vertrag`, "?schritt=4");
+  report(closedV.html.includes(ONLY_CLOSED) && !closedV.html.includes("Speichern &amp; weiter") && !closedV.html.includes("Speichern & weiter"), "Geschlossener Fall: Vertragsentwurf nur lesend, Sperre genannt");
+  const closedCond = actionState((await callAction(`/buchungen/${closedBookingId}/vertrag`, idConditions, ueDispo, { bound: [closedBookingId], form: condForm })).text);
+  report(closedCond?.error === ONLY_CLOSED && !TECH.test(closedCond?.error ?? ""), "Geschlossener Fall: direkter Aufruf der Vertragskonditionen abgelehnt (verständliche Meldung)");
+  const closedPick = await callAction(`/buchungen/${closedBookingId}/uebergabe`, idPickup, ueDispo, { bound: [closedBookingId], form: {} });
+  report(decodeURIComponent(closedPick.redirectTo).includes(ONLY_CLOSED) && (await db.handover.count({ where: { bookingId: closedBookingId } })) === 0, `${closedPick.status} Geschlossener Fall: direkter Übergabe-Start abgelehnt, kein Protokoll angelegt`);
+  const closedBookingPage = await plain(await fetch(`${base}/buchungen/${closedBookingId}`, { headers: { cookie: ueDispo } }));
+  report(closedBookingPage.includes("Fall abgeschlossen – gesperrt") && !closedBookingPage.includes("Mietvertrag fortsetzen") && closedBookingPage.includes("gesperrt, bis der Fall in der Fallakte wieder geöffnet wird"), "Geschlossener Fall: Buchung ohne Vertrags-/Übergabeknöpfe, Grund sichtbar");
+  // Standardvertrag über dieselbe Aktion: Rückgabe bleibt Pflicht
+  await ensureContractDraft(ue.tenantId, ue.bookingId, null);
+  const stdStep4 = await vPage(ueDispo, `/buchungen/${ue.bookingId}/vertrag`, "?schritt=4");
+  const stdNoEndCond = actionState((await callAction(`/buchungen/${ue.bookingId}/vertrag`, idConditions, ueDispo, { bound: [ue.bookingId], form: { ...condForm, startAt: toDateTimeInput(new Date(Date.now() + 86400_000)), endAt: "" } })).text);
+  report(stdStep4.html.includes('id="endAt"') && stdStep4.html.includes("Abweichend vereinbarter Gesamtmietpreis") && stdNoEndCond?.error === "Bitte die geplante Rückgabe mit Datum und Uhrzeit angeben.", "Standardvertrag: Rückgabe-Feld und abweichender Preis wie bisher, Ende bleibt Pflicht");
+}
+
+// Befehl 29 Phase F: Abrechnung (Vorschau, Schlussrechnung, Empfänger), Zahlung, Kürzung, Restforderung, Dokumente über HTTP –
+// Seiten, direkte Aktionsaufrufe (Hof abgewiesen), Upload/Download mit Rollen- und Mandantenprüfung, Sperre bei geschlossenem Fall.
+{
+  const ONLY_CLOSED_F = "Der Unfallersatzfall ist abgeschlossen und kann nicht mehr bearbeitet werden.";
+  // Rechnungsstellung braucht die Rechnungsangaben des Mandanten (sonst zeigt die Abrechnung korrekt nur den Einstellungshinweis)
+  await db.tenant.update({ where: { id: ue.tenantId }, data: { defaultTaxRate: 19, pricesIncludeTax: true, taxNumber: "60/123/45678" } });
+  // Rechnungsabschluss verlangt eine vollständige Anschrift des Empfängers (Versicherung)
+  await db.accidentReplacementCase.updateMany({ where: { tenantId: ue.tenantId, id: { not: ueCaseId } }, data: { insurerStreet: "Versicherungsplatz 1", insurerZip: "10115", insurerCity: "Berlin" } });
+  const fCase = await db.accidentReplacementCase.findFirstOrThrow({ where: { tenantId: ue.tenantId, id: { not: ueCaseId } } });
+  const fBooking = fCase.bookingId;
+  const casePath = `/unfallersatz/${fCase.id}`;
+  const fPage = async (c: string, q = "") => { const r = await fetch(`${base}${casePath}${q}`, { headers: { cookie: c }, redirect: "manual" }); return { status: r.status, location: r.headers.get("location") ?? "", html: r.status === 200 ? await plain(r) : "" }; };
+  const invoicesOf = () => db.invoice.findMany({ where: { tenantId: ue.tenantId, bookingId: fBooking, kind: "ACCIDENT_REPLACEMENT", documentType: "INVOICE" }, orderBy: { createdAt: "asc" } });
+
+  const bill0 = await fPage(ueDispo, "?tab=abrechnung");
+  report(bill0.status === 200 && bill0.html.includes("Abrechnen") && bill0.html.includes("Schlussrechnung als Entwurf erstellen") && bill0.html.includes("Rechnungsempfänger") && bill0.html.includes("Noch nicht abgerechnet") && bill0.html.includes("Fakturiert (wirksam)") && bill0.html.includes("Rechnungsbetrag (brutto)") && !bill0.html.includes("Abrechnung folgt"), `${bill0.status} Abrechnung (zurückgegeben): Vorschau der Schlussrechnung, Empfängerwahl, Finanzübersicht`);
+  const yardBill = await fPage(ueYard, "?tab=abrechnung");
+  report(yardBill.status === 200 && !yardBill.html.includes("Fakturiert") && !yardBill.html.includes("Schlussrechnung als Entwurf") && !yardBill.html.includes("Kürzung"), "Hofmitarbeiter: kein Abrechnungs-Tab, keine Beträge");
+  const idCreateInv = boundIdOf(bill0.html, "createAccidentInvoiceAction");
+  const createForm = { recipientRole: "INSURER", nonce: `smoke-f-${Date.now()}-a` };
+  const yardCreate = await callAction(casePath, idCreateInv, ueYard, { bound: [fCase.id], form: createForm });
+  report(/^[0-9a-f]{42}$/.test(idCreateInv) && yardCreate.redirectTo.includes("fehler=rechte") && (await invoicesOf()).length === 0, `${yardCreate.status} Hofmitarbeiter: Rechnung per Direktaufruf abgewiesen, nichts angelegt`);
+  const otherBad = actionState((await callAction(casePath, idCreateInv, ueDispo, { bound: [fCase.id], form: { recipientRole: "OTHER", nonce: `smoke-f-${Date.now()}-o`, otherType: "COMPANY", otherCompanyName: "", otherStreet: "", otherZip: "", otherCity: "" } })).text);
+  report(Boolean(otherBad?.error?.startsWith("Anderer Empfänger")) && (await invoicesOf()).length === 0, "Anderer Empfänger ohne Rechnungsdaten: verständlich abgelehnt");
+  const createCall = await callAction(casePath, idCreateInv, ueDispo, { bound: [fCase.id], form: createForm });
+  const fInvs = await invoicesOf();
+  report(fInvs.length === 1 && createCall.redirectTo.includes(`/buchungen/${fBooking}/rechnung?nr=${fInvs[0]?.id}`), `${createCall.status} Disposition: Schlussrechnung an die Versicherung als Entwurf, weiter in den Rechnungsentwurf`);
+  const again = await callAction(casePath, idCreateInv, ueDispo, { bound: [fCase.id], form: createForm });
+  report((await invoicesOf()).length === 1 && again.redirectTo.includes(fInvs[0]?.id ?? "-"), "Doppelklick: derselbe Entwurf");
+  const fInvId = fInvs[0].id;
+  const invDraftPage = await plain(await fetch(`${base}/buchungen/${fBooking}/rechnung?nr=${fInvId}`, { headers: { cookie: ueDispo } }));
+  report(invDraftPage.includes("Schlussrechnung") && invDraftPage.includes("Zur Fallakte") && invDraftPage.includes("Die Kaution des Mieters wird mit dieser Rechnung nicht verrechnet") && !invDraftPage.includes("aus Kaution verrechnen") && invDraftPage.includes("Schadennummer"), "Rechnungsentwurf: Fallbezug, Abrechnungsart, keine Kautionsverrechnung bei der Versicherung, Schadennummer bearbeitbar");
+  const yardInv = await fetch(`${base}/buchungen/${fBooking}/rechnung?nr=${fInvId}`, { headers: { cookie: ueYard }, redirect: "manual" });
+  report(yardInv.status === 307 && decodeURIComponent(yardInv.headers.get("location") ?? "").includes("Unfallersatz-Abrechnung sehen nur Inhaber und Disposition"), `${yardInv.status} Hofmitarbeiter: keine Unfallersatz-Rechnung (auch nicht per Adresse)`);
+  const fFinal = await finalizeInvoice(ue.tenantId, fInvId, ue.actor);
+  const gross = Number(fFinal.grossTotal);
+  const fNumber = (await db.invoice.findUniqueOrThrow({ where: { id: fInvId }, select: { number: true } })).number ?? "-";
+  const listOf = async (c: string, p: string) => plain(await fetch(`${base}${p}`, { headers: { cookie: c } }));
+  const [listDispo, listYard, recvDispo, recvYard] = await Promise.all([listOf(ueDispo, "/rechnungen?filter=alle"), listOf(ueYard, "/rechnungen?filter=alle"), listOf(ueDispo, "/forderungen"), listOf(ueYard, "/forderungen")]);
+  report(listDispo.includes(fNumber) && recvDispo.includes(fNumber) && !listYard.includes(fNumber) && !recvYard.includes(fNumber) && !listYard.includes("art=unfallersatz"), "Hofmitarbeiter: Unfallersatz-Rechnung weder in der Rechnungs- noch in der Forderungsliste");
+
+  // Zahlung über die Fallakte (Teilzahlung); Hof per Direktaufruf abgewiesen
+  const bill1 = await fPage(ueDispo, "?tab=abrechnung");
+  const idPay = boundIdOf(bill1.html, "recordAccidentPaymentAction");
+  const payForm = { amount: "20,00", method: "BANK_TRANSFER", paidAt: toDateTimeInput(new Date()), reference: "Smoke Versicherung", nonce: `smoke-f-${Date.now()}-p` };
+  const yardPay = await callAction(casePath, idPay, ueYard, { bound: [fCase.id, fInvId], form: payForm });
+  const payCall = actionState((await callAction(casePath, idPay, ueDispo, { bound: [fCase.id, fInvId], form: payForm })).text);
+  const paid = await db.payment.findMany({ where: { invoiceId: fInvId, status: "CONFIRMED" } });
+  report(bill1.html.includes("Zahlung erfassen") && bill1.html.includes("Kürzung dokumentieren") && yardPay.redirectTo.includes("fehler=rechte") && !payCall?.error && paid.length === 1 && paid[0].amountCents === 2_000, "Zahlung über die Fallakte erfasst (Teilzahlung); Hof per Direktaufruf abgewiesen");
+
+  // Dokumente: Upload (PDF ja, HTML als PDF nein, Hof nein, geschlossener Fall nein), Download nur Inhaber/Disposition des Mandanten
+  const upload = async (c: string, caseId: string, bytes: Uint8Array, type = "INSURER_LETTER", name = "Kuerzungsschreiben.pdf") => {
+    const body = new FormData();
+    body.set("file", new Blob([bytes as BlobPart], { type: "application/pdf" }), name);
+    body.set("type", type);
+    const r = await fetch(`${base}/api/accident-cases/${caseId}/documents`, { method: "POST", headers: { cookie: c }, body });
+    return { status: r.status, json: (await r.json().catch(() => ({}))) as { id?: string; error?: string } };
+  };
+  const pdfBytes = new TextEncoder().encode("%PDF-1.4\n% Kürzungsschreiben Smoke\n%%EOF\n");
+  const upOk = await upload(ueDispo, fCase.id, pdfBytes);
+  const upHtml = await upload(ueDispo, fCase.id, new TextEncoder().encode("<html><script>alert(1)</script></html>"));
+  const upYard = await upload(ueYard, fCase.id, pdfBytes);
+  const upForeign = await upload(cookie, fCase.id, pdfBytes);
+  report(upOk.status === 201 && Boolean(upOk.json.id) && upHtml.status === 415 && upYard.status === 403 && upForeign.status !== 201 && (await db.accidentReplacementCaseDocument.count({ where: { caseId: fCase.id } })) === 1, `${upOk.status}/${upHtml.status}/${upYard.status}/${upForeign.status} Upload: PDF angenommen, HTML als PDF abgelehnt, Hof und fremder Mandant abgewiesen`);
+  const docId = upOk.json.id ?? "-";
+  const dl = await fetch(`${base}/api/accident-documents/${docId}?download=1`, { headers: { cookie: ueDispo } });
+  const dlBody = new Uint8Array(await dl.arrayBuffer());
+  const dlYard = await fetch(`${base}/api/accident-documents/${docId}`, { headers: { cookie: ueYard } });
+  const dlForeign = await fetch(`${base}/api/accident-documents/${docId}`, { headers: { cookie } });
+  const dlGuess = await fetch(`${base}/api/accident-documents/${docId}x`, { headers: { cookie: ueDispo } });
+  report(dl.status === 200 && dlBody.length === pdfBytes.length && (dl.headers.get("content-disposition") ?? "").startsWith("attachment") && (dl.headers.get("cache-control") ?? "").includes("no-store") && dl.headers.get("x-content-type-options") === "nosniff" && dlYard.status === 403 && dlForeign.status !== 200 && dlGuess.status === 404, `${dl.status}/${dlYard.status}/${dlForeign.status}/${dlGuess.status} Download: Inhaber/Disposition mit no-store und nosniff; Hof, fremder Mandant und erratene ID ohne Zugriff`);
+  const docsTab = await fPage(ueDispo, "?tab=dokumente");
+  report(docsTab.html.includes("Versicherung") && docsTab.html.includes("Kuerzungsschreiben.pdf") && docsTab.html.includes(`/api/accident-documents/${docId}`) && docsTab.html.includes("Dokument hochladen") && docsTab.html.includes("Vertragsunterlagen"), "Dokumente-Tab: gruppiert, Versichererschreiben mit Öffnen/Herunterladen, Upload");
+  const yardDocs = await fPage(ueYard, "?tab=dokumente");
+  report(yardDocs.status === 200 && !yardDocs.html.includes("Kuerzungsschreiben.pdf") && !yardDocs.html.includes("Dokument hochladen"), "Hofmitarbeiter: keine Unfallersatz-Dokumente, kein Upload");
+
+  // Kürzung über die Fallakte mit dem Schreiben; offener Betrag bleibt; Restforderung nur mit Bestätigung
+  const idAdj = boundIdOf(bill1.html, "recordAccidentAdjustmentAction");
+  const adjCall = actionState((await callAction(casePath, idAdj, ueDispo, { bound: [fCase.id, fInvId], form: { reasonKind: "TARIFF", amount: "10,00", decidedAt: toDateInputValue(new Date()), note: "Smoke-Kürzung", documentId: docId } })).text);
+  const adjRow = await db.invoiceAdjustment.findFirst({ where: { invoiceId: fInvId } });
+  const yardAdj = await callAction(casePath, idAdj, ueYard, { bound: [fCase.id, fInvId], form: { reasonKind: "TARIFF", amount: "1,00", decidedAt: toDateInputValue(new Date()) } });
+  const bill2 = await fPage(ueDispo, "?tab=abrechnung");
+  const openAfter = Math.round(gross * 100) - 2_000;
+  report(!adjCall?.error && adjRow?.documentId === docId && adjRow?.amountCents === 1_000 && yardAdj.redirectTo.includes("fehler=rechte") && bill2.html.includes("Kürzung dokumentiert") && bill2.html.includes("Restforderung an Mieter erstellen") && bill2.html.includes("mindern die offene Forderung nicht"), "Kürzung mit Versichererschreiben dokumentiert; Hof abgewiesen; Restforderung wird angeboten");
+  report((await db.invoice.findUniqueOrThrow({ where: { id: fInvId }, select: { currentVersion: { select: { grossTotal: true } } } })).currentVersion!.grossTotal.toString() === fFinal.grossTotal.toString() && openAfter > 0, "Kürzung ändert den Rechnungsbetrag nicht");
+  const idRem = boundIdOf(bill2.html, "createAccidentRemainderAction");
+  const remNoAck = actionState((await callAction(casePath, idRem, ueDispo, { bound: [fCase.id, fInvId], form: { amount: "10,00", nonce: `smoke-f-${Date.now()}-r` } })).text);
+  const remCall = await callAction(casePath, idRem, ueDispo, { bound: [fCase.id, fInvId], form: { amount: "10,00", nonce: `smoke-f-${Date.now()}-r2`, acknowledge: "1" } });
+  const remInv = (await invoicesOf()).find((i) => i.id !== fInvId);
+  report(Boolean(remNoAck?.error?.includes("bestätigen")) && Boolean(remInv) && remCall.redirectTo.includes(remInv?.id ?? "-"), `${remCall.status} Restforderung an den Mieter nur mit ausdrücklicher Bestätigung (Entwurf)`);
+  const remPage = await plain(await fetch(`${base}/buchungen/${fBooking}/rechnung?nr=${remInv?.id}`, { headers: { cookie: ueDispo } }));
+  report(remPage.includes("Derselbe Betrag ist auch in der Rechnung") && remPage.includes("per Gutschrift mindern"), "Restforderung im Entwurf: deutliche Warnung zur Doppelforderung");
+
+  // geschlossener Fall: keine neue Zahlung, kein Upload; Abrechnung nur lesbar, Dokumente abrufbar
+  const closeCall = actionState((await callAction(casePath, idClose, ueDispo, { bound: [fCase.id], form: { reason: "Smoke Phase F", acknowledge: "1" } })).text);
+  const payClosed = actionState((await callAction(casePath, idPay, ueDispo, { bound: [fCase.id, fInvId], form: { ...payForm, nonce: `smoke-f-${Date.now()}-pc` } })).text);
+  const upClosed = await upload(ueDispo, fCase.id, pdfBytes);
+  const billClosed = await fPage(ueDispo, "?tab=abrechnung");
+  const dlClosed = await fetch(`${base}/api/accident-documents/${docId}`, { headers: { cookie: ueDispo } });
+  report(!closeCall?.error && payClosed?.error === ONLY_CLOSED_F && upClosed.status === 409 && upClosed.json.error === ONLY_CLOSED_F && billClosed.html.includes("Der Fall ist abgeschlossen. Neue Rechnungen") && !billClosed.html.includes("Zahlung erfassen") && dlClosed.status === 200 && (await db.payment.count({ where: { invoiceId: fInvId } })) === 1, "Geschlossener Fall: Zahlung und Upload abgelehnt (verständliche Meldung), Abrechnung nur lesbar, Dokument weiter abrufbar");
+}
 
 const health = await fetch(`${base}/api/health`);
 const healthJson = await health.json().catch(() => ({}));

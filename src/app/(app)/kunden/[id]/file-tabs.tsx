@@ -63,16 +63,16 @@ export async function BookingsTab({ tenantId, customerId, page, now }: { tenantI
               <tbody>
                 {list.rows.map((b) => {
                   const live = b.status === "ACTIVE" || (b.status === "RESERVED" && b.startAt.getTime() >= now);
-                  const overdue = b.status === "ACTIVE" && b.endAt.getTime() < now;
+                  const overdue = b.status === "ACTIVE" && b.endAt !== null && b.endAt.getTime() < now;
                   const inv = b.invoices[0];
                   return (
                     <tr key={b.id} className={`border-b border-line-soft last:border-0 hover:bg-panel-2/60 ${live ? "bg-brand-soft/40" : ""}`}>
                       <td className="px-3 py-2.5 font-mono tnum"><Link href={`/buchungen/${b.id}`} className="hover:underline font-medium">{b.number}</Link></td>
                       <td className="px-3 py-2.5"><Plate>{b.vehicle.plate}</Plate> <span className="text-xs text-ink-3">{b.vehicle.make} {b.vehicle.model}</span></td>
                       <td className="px-3 py-2.5 font-mono tnum">{fmtDateTime(b.actualPickupAt ?? b.startAt)}{b.actualPickupAt && <span className="block text-[11px] text-ink-3">geplant {fmtDateTime(b.startAt)}</span>}</td>
-                      <td className={`px-3 py-2.5 font-mono tnum ${overdue ? "text-bad font-semibold" : ""}`}>{fmtDateTime(b.actualReturnAt ?? b.endAt)}{b.actualReturnAt && <span className="block text-[11px] text-ink-3">geplant {fmtDateTime(b.endAt)}</span>}</td>
+                      <td className={`px-3 py-2.5 font-mono tnum ${overdue ? "text-bad font-semibold" : ""}`}>{b.actualReturnAt ?? b.endAt ? fmtDateTime(b.actualReturnAt ?? b.endAt) : b.status === "CANCELLED" ? "entfällt" : "offen"}{b.actualReturnAt && <span className="block text-[11px] text-ink-3">geplant {b.endAt ? fmtDateTime(b.endAt) : "offen"}</span>}</td>
                       <td className="px-3 py-2.5">{b.contract ? <Link href={`/buchungen/${b.id}/vertrag`} className="font-mono tnum hover:underline">{b.contract.number}</Link> : <span className="text-ink-3">–</span>}{b.contract && <span className="block text-[11px] text-ink-3">{CONTRACT_STATUS[b.contract.status as keyof typeof CONTRACT_STATUS] ?? b.contract.status}</span>}</td>
-                      <td className="px-3 py-2.5 text-right font-mono tnum">{inv ? <Link href={`/buchungen/${b.id}/rechnung?nr=${inv.id}`} className="hover:underline">{fmtEur(inv.currentVersion?.grossTotal)}</Link> : b.contractTotalCents != null ? fmtCents(b.contractTotalCents) : "–"}{inv && <span className="block text-[11px] text-ink-3">{inv.number}</span>}</td>
+                      <td className="px-3 py-2.5 text-right font-mono tnum">{inv ? <Link href={`/buchungen/${b.id}/rechnung?nr=${inv.id}`} className="hover:underline">{fmtEur(inv.currentVersion?.grossTotal)}</Link> : b.accidentRent ? (b.accidentRent.phase === "NONE" ? "–" : <>{fmtCents(b.accidentRent.value.cents)}<span className="block text-[11px] text-ink-3 font-sans">{b.accidentRent.phase === "RUNNING" ? "Unfallersatz, bisher" : "Unfallersatz, Endwert"}</span></>) : b.contractTotalCents != null ? fmtCents(b.contractTotalCents) : "–"}{inv && <span className="block text-[11px] text-ink-3">{inv.number}</span>}</td>
                       <td className="px-3 py-2.5">{overdue ? <Chip tone="bad">Überfällig</Chip> : <BookingStatusChip status={b.status} />}</td>
                     </tr>
                   );
@@ -142,7 +142,7 @@ export async function FinanceTab({ tenantId, customerId }: { tenantId: string; c
                   return (
                     <tr key={d.id} className={`border-b border-line-soft last:border-0 hover:bg-panel-2/60 ${counter ? "text-ink-2" : ""}`}>
                       <td className="px-3 py-2.5 font-mono tnum"><Link href={d.href} className="hover:underline font-medium">{d.number}</Link><span className="block text-[11px] text-ink-3">Buchung {d.bookingNumber}</span></td>
-                      <td className="px-3 py-2.5">{INVOICE_DOCUMENT_TYPES[d.documentType as InvoiceDocumentTypeKey] ?? d.documentType}{isSideInvoice(d.kind) ? <span className="block text-[11px] text-ink-3">{invoiceKindWord(d.kind)}</span> : null}{counter && d.original && <span className="block text-[11px] text-ink-3">zu {d.original.number}</span>}</td>
+                      <td className="px-3 py-2.5">{INVOICE_DOCUMENT_TYPES[d.documentType as InvoiceDocumentTypeKey] ?? d.documentType}{isSideInvoice(d.kind) ? <span className="block text-[11px] text-ink-3">{invoiceKindWord(d.kind)}{d.otherRecipient ? " · an Versicherung bzw. anderen Empfänger (nicht in den Summen)" : ""}</span> : null}{counter && d.original && <span className="block text-[11px] text-ink-3">zu {d.original.number}</span>}</td>
                       <td className="px-3 py-2.5 font-mono tnum">{fmtDate(d.issueDate ?? d.finalizedAt)}</td>
                       <td className="px-3 py-2.5 text-right font-mono tnum">{counter ? `− ${fmtCents(d.grossCents)}` : fmtCents(d.grossCents)}</td>
                       <td className="px-3 py-2.5 text-right font-mono tnum">{fin ? fmtCents(fin.effectiveCents) : "–"}</td>

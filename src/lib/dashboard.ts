@@ -9,6 +9,7 @@ import { AUTHORITY_CASE_STATUS, DAMAGE_CASE_STATUS, DOCUMENT_TYPES, type Authori
 import { AUTHORITY_OPEN_STATUS } from "@/lib/authority";
 import { deadlineInfo } from "@/lib/authority-matching";
 import { financialsFor } from "@/lib/counter-documents";
+import { ACCIDENT_BILLING_WHERE } from "@/lib/accident-replacement-events";
 import { bookingLabel, invoiceHref } from "@/lib/invoice-links";
 import { receivablesSummary, type ReceivableSummary } from "@/lib/dunning";
 import { openDepositRows } from "@/lib/deposits";
@@ -84,7 +85,7 @@ const veh = { select: { id: true, plate: true, make: true, model: true } } as co
 const LIST_CAP = 40;
 
 /** Alle Aufgaben des Mandanten für den Kalendertag von now (Europe/Berlin), optional mit Vorschau auf 7 oder 30 Tage. */
-export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon; now?: Date } = {}): Promise<Dashboard> {
+export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon; now?: Date; /** Befehl 29 Phase F: Hof-Sicht ohne Unfallersatz-Abrechnung */ hideAccidentBilling?: boolean } = {}): Promise<Dashboard> {
   const now = opts.now ?? new Date();
   const horizon: Horizon = HORIZONS.some((h) => h.key === opts.horizon) ? opts.horizon! : "heute";
   const days = HORIZONS.find((h) => h.key === horizon)!.days;
@@ -97,16 +98,16 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
   const [bookings, activeRentals, finalInvoices, depositRows, claims, damageCases, maint, authorityCases, failedMails, contractsNoDoc, handoversNoDoc, versionsNoDoc, payoutsNoDoc] = await Promise.all([
     db.booking.findMany({ where: { tenantId, OR: [{ status: "RESERVED", startAt: { gte: staleStart, lt: fetchEnd } }, { status: "ACTIVE", endAt: { lt: fetchEnd } }] }, select: { id: true, number: true, status: true, startAt: true, endAt: true, customer: cust, vehicle: veh }, orderBy: { startAt: "asc" } }),
     db.booking.count({ where: { tenantId, status: "ACTIVE" } }),
-    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", documentType: "INVOICE", currentVersionId: { not: null } }, select: { id: true, number: true, kind: true, bookingId: true, customer: cust, booking: { select: { number: true, customer: cust } }, currentVersion: { select: { grossTotal: true, paymentDueDate: true } } } }),
+    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", documentType: "INVOICE", currentVersionId: { not: null }, ...(opts.hideAccidentBilling ? { NOT: ACCIDENT_BILLING_WHERE } : {}) }, select: { id: true, number: true, kind: true, bookingId: true, customer: cust, booking: { select: { number: true, customer: cust } }, currentVersion: { select: { grossTotal: true, paymentDueDate: true } } } }),
     openDepositRows(tenantId),
     openPayoutClaims(tenantId),
     db.damageCase.findMany({ where: { tenantId, status: { not: "CLOSED" } }, select: { id: true, caseNumber: true, status: true, liabilityStatus: true, description: true, createdAt: true, vehicle: veh }, orderBy: { createdAt: "asc" }, take: 200 }),
     maintenanceCounts(tenantId, now),
     db.authorityCase.findMany({ where: { tenantId, status: { in: AUTHORITY_OPEN_STATUS } }, select: { id: true, caseNumber: true, status: true, authorityName: true, responseDeadline: true, licensePlateSnapshot: true, createdAt: true }, orderBy: [{ responseDeadline: "asc" }, { createdAt: "asc" }], take: 200 }),
-    db.emailLog.findMany({ where: { tenantId, status: "FAILED" }, select: { id: true, template: true, recipient: true, error: true, bookingId: true, payoutId: true, createdAt: true, lastAttemptAt: true, booking: { select: { number: true } } }, orderBy: { createdAt: "desc" }, take: LIST_CAP }),
+    db.emailLog.findMany({ where: { tenantId, status: "FAILED", ...(opts.hideAccidentBilling ? { NOT: [{ invoiceVersion: { is: { invoice: { is: ACCIDENT_BILLING_WHERE } } } }, { dunningNotice: { is: { invoice: { is: { kind: "ACCIDENT_REPLACEMENT" } } } } }] } : {}) }, select: { id: true, template: true, recipient: true, error: true, bookingId: true, payoutId: true, createdAt: true, lastAttemptAt: true, booking: { select: { number: true } } }, orderBy: { createdAt: "desc" }, take: LIST_CAP }),
     db.rentalContract.findMany({ where: { tenantId, status: "SIGNED", documents: { none: { type: "RENTAL_CONTRACT" } } }, select: { id: true, number: true, bookingId: true, signedAt: true, createdAt: true }, orderBy: { createdAt: "desc" }, take: LIST_CAP }),
     db.handover.findMany({ where: { tenantId, status: "FINALIZED", correctsId: null, corrections: { none: {} }, documents: { none: {} } }, select: { id: true, number: true, type: true, bookingId: true, finalizedAt: true }, orderBy: { finalizedAt: "desc" }, take: LIST_CAP }),
-    db.invoiceVersion.findMany({ where: { tenantId, status: "FINALIZED", documents: { none: {} }, invoice: { status: "FINALIZED" } }, select: { id: true, versionNo: true, invoice: { select: { id: true, number: true, documentType: true, kind: true, bookingId: true, currentVersionId: true, finalizedAt: true } } }, orderBy: { finalizedAt: "desc" }, take: LIST_CAP * 2 }),
+    db.invoiceVersion.findMany({ where: { tenantId, status: "FINALIZED", documents: { none: {} }, invoice: { status: "FINALIZED", ...(opts.hideAccidentBilling ? { NOT: ACCIDENT_BILLING_WHERE } : {}) } }, select: { id: true, versionNo: true, invoice: { select: { id: true, number: true, documentType: true, kind: true, bookingId: true, currentVersionId: true, finalizedAt: true } } }, orderBy: { finalizedAt: "desc" }, take: LIST_CAP * 2 }),
     db.payout.findMany({ where: { tenantId, status: "COMPLETED", documents: { none: { type: "PAYOUT_RECEIPT" } } }, select: { id: true, number: true, completedAt: true, executedAt: true }, orderBy: { completedAt: "desc" }, take: LIST_CAP }),
   ]);
 
@@ -158,30 +159,34 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
         if (!b.customer.licenseNumber) {
           counts.licenses++;
           add({ area: "LICENSE", href: `/kunden/${b.customer.id}`, plate: b.vehicle.plate, key: `license-missing-${b.id}`, group: "NOTE", title: `Führerschein fehlt · ${name}`, detail: `Abholung ${fmtDate(b.startAt)} · Buchung ${b.number}`, at: b.startAt, status: "Vor Abholung erfassen" });
-        } else if (b.customer.licenseValidUntil && b.customer.licenseValidUntil < b.endAt) {
+        } else if (b.customer.licenseValidUntil && b.endAt && b.customer.licenseValidUntil < b.endAt) {
           counts.licenses++;
           add({ area: "LICENSE", href: `/kunden/${b.customer.id}`, plate: b.vehicle.plate, key: `license-expiring-${b.id}`, group: "NOTE", title: `Führerschein läuft vor Rückgabe ab · ${name}`, detail: `gültig bis ${fmtDate(b.customer.licenseValidUntil)} · Rückgabe ${fmtDate(b.endAt)} · Buchung ${b.number}`, at: b.startAt, status: "Prüfen" });
         }
       }
     } else if (b.status === "ACTIVE") {
+      // Befehl 29: eine laufende Miete mit offenem Ende (Unfallersatz) ist nie überfällig und hat keinen Rückgabetermin; die Abfrage
+      // oben (endAt < fetchEnd) liefert sie nicht – die Fallakte führt sie über Wiedervorlagen, nicht über Rückgabe-Aufgaben.
+      const plannedEnd = b.endAt;
+      if (plannedEnd === null) continue;
       if (keyDropReported.has(b.id)) {
         // Befehl 20.6: kontaktlos zurückgegeben – nicht „überfällig“, sondern Kontrolle ausstehend
-        add({ ...base, href: `/buchungen/${b.id}/rueckgabe`, key: `keydrop-${b.id}`, group: "TODAY", title: `Schlüsselbox-Rückgabe prüfen · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)} · Rückgabe gemeldet, Kontrolle ausstehend`, at: b.endAt, status: "Kontrolle ausstehend" });
-      } else if (b.endAt < now) {
+        add({ ...base, href: `/buchungen/${b.id}/rueckgabe`, key: `keydrop-${b.id}`, group: "TODAY", title: `Schlüsselbox-Rückgabe prüfen · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)} · Rückgabe gemeldet, Kontrolle ausstehend`, at: plannedEnd, status: "Kontrolle ausstehend" });
+      } else if (plannedEnd < now) {
         counts.overdueReturns++;
-        const daysLate = zonedDaysBetween(b.endAt, now);
-        add({ ...base, key: `return-overdue-${b.id}`, group: "OVERDUE", title: `Rückgabe überfällig · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)} · sollte ${fmtDate(b.endAt)} um ${fmtTime(b.endAt)} zurück sein${daysLate > 0 ? ` · ${daysLate} ${daysLate === 1 ? "Tag" : "Tage"}` : ""}`, at: b.endAt, status: "Überfällig" });
-        if (inRange(b.endAt, start, end)) { counts.returnsToday++; events.push({ kind: "RETURN", at: b.endAt, bookingId: b.id, bookingNumber: b.number, customer: name, vehicle: vehicleText(b.vehicle), plate: b.vehicle.plate, licenseMissing: false }); }
-      } else if (inRange(b.endAt, start, end)) {
+        const daysLate = zonedDaysBetween(plannedEnd, now);
+        add({ ...base, key: `return-overdue-${b.id}`, group: "OVERDUE", title: `Rückgabe überfällig · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)} · sollte ${fmtDate(plannedEnd)} um ${fmtTime(plannedEnd)} zurück sein${daysLate > 0 ? ` · ${daysLate} ${daysLate === 1 ? "Tag" : "Tage"}` : ""}`, at: plannedEnd, status: "Überfällig" });
+        if (inRange(plannedEnd, start, end)) { counts.returnsToday++; events.push({ kind: "RETURN", at: plannedEnd, bookingId: b.id, bookingNumber: b.number, customer: name, vehicle: vehicleText(b.vehicle), plate: b.vehicle.plate, licenseMissing: false }); }
+      } else if (inRange(plannedEnd, start, end)) {
         counts.returnsToday++;
-        events.push({ kind: "RETURN", at: b.endAt, bookingId: b.id, bookingNumber: b.number, customer: name, vehicle: vehicleText(b.vehicle), plate: b.vehicle.plate, licenseMissing: false });
-        add({ ...base, key: `return-${b.id}`, group: "TODAY", title: `Rückgabe ${fmtTime(b.endAt)} · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)}`, at: b.endAt, status: "Rückgabe heute" });
-      } else if (days > 0 && inRange(b.endAt, end, horizonEnd)) {
-        add({ ...base, key: `return-${b.id}`, group: "SOON", title: `Rückgabe ${fmtDate(b.endAt)} ${fmtTime(b.endAt)} · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)}`, at: b.endAt, status: "Rückgabe bald" });
+        events.push({ kind: "RETURN", at: plannedEnd, bookingId: b.id, bookingNumber: b.number, customer: name, vehicle: vehicleText(b.vehicle), plate: b.vehicle.plate, licenseMissing: false });
+        add({ ...base, key: `return-${b.id}`, group: "TODAY", title: `Rückgabe ${fmtTime(plannedEnd)} · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)}`, at: plannedEnd, status: "Rückgabe heute" });
+      } else if (days > 0 && inRange(plannedEnd, end, horizonEnd)) {
+        add({ ...base, key: `return-${b.id}`, group: "SOON", title: `Rückgabe ${fmtDate(plannedEnd)} ${fmtTime(plannedEnd)} · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)}`, at: plannedEnd, status: "Rückgabe bald" });
       }
-      if (b.customer.licenseValidUntil && b.customer.licenseValidUntil < b.endAt && b.customer.licenseValidUntil >= start) {
+      if (b.customer.licenseValidUntil && b.customer.licenseValidUntil < plannedEnd && b.customer.licenseValidUntil >= start) {
         counts.licenses++;
-        add({ area: "LICENSE", href: `/kunden/${b.customer.id}`, plate: b.vehicle.plate, key: `license-active-${b.id}`, group: "NOTE", title: `Führerschein läuft während der Miete ab · ${name}`, detail: `gültig bis ${fmtDate(b.customer.licenseValidUntil)} · Rückgabe ${fmtDate(b.endAt)} · Buchung ${b.number}`, at: b.customer.licenseValidUntil, status: "Prüfen" });
+        add({ area: "LICENSE", href: `/kunden/${b.customer.id}`, plate: b.vehicle.plate, key: `license-active-${b.id}`, group: "NOTE", title: `Führerschein läuft während der Miete ab · ${name}`, detail: `gültig bis ${fmtDate(b.customer.licenseValidUntil)} · Rückgabe ${fmtDate(plannedEnd)} · Buchung ${b.number}`, at: b.customer.licenseValidUntil, status: "Prüfen" });
       }
     }
   }

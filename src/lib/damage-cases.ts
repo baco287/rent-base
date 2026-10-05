@@ -250,7 +250,8 @@ export async function reopenCase(tenantId: string, caseId: string, actor: Actor,
 // ---------------------------------------------------------------------------
 
 export async function futureBookingsOf(tenantId: string, vehicleId: string) {
-  return db.booking.findMany({ where: { tenantId, vehicleId, status: { in: ["RESERVED", "ACTIVE"] }, endAt: { gt: new Date() } }, orderBy: { startAt: "asc" }, select: { id: true, number: true, startAt: true, endAt: true, status: true, customer: { select: { type: true, companyName: true, firstName: true, lastName: true } } } });
+  // Befehl 29: offenes Mietende (Unfallersatz, endAt null) läuft weiter
+  return db.booking.findMany({ where: { tenantId, vehicleId, status: { in: ["RESERVED", "ACTIVE"] }, OR: [{ endAt: { gt: new Date() } }, { endAt: null }] }, orderBy: { startAt: "asc" }, select: { id: true, number: true, startAt: true, endAt: true, status: true, customer: { select: { type: true, companyName: true, firstName: true, lastName: true } } } });
 }
 
 /** „Fahrzeug wegen Schaden sperren“: setzt den zentralen Status BLOCKED (nicht buchbar, nicht übergebbar). Zukünftige Buchungen bleiben unverändert. */
@@ -263,7 +264,7 @@ export async function blockVehicleForCase(tenantId: string, caseId: string, acto
     if (locked[0].status === "BLOCKED") throw new DomainError("Das Fahrzeug ist bereits gesperrt.");
     if (locked[0].status === "INACTIVE") throw new DomainError("Ein inaktives Fahrzeug wird nicht gesperrt.");
     await tx.vehicle.update({ where: { id: c.vehicleId }, data: { status: "BLOCKED" } });
-    const future = await tx.booking.count({ where: { tenantId, vehicleId: c.vehicleId, status: { in: ["RESERVED", "ACTIVE"] }, endAt: { gt: new Date() } } });
+    const future = await tx.booking.count({ where: { tenantId, vehicleId: c.vehicleId, status: { in: ["RESERVED", "ACTIVE"] }, OR: [{ endAt: { gt: new Date() } }, { endAt: null }] } });
     await event(tx, tenantId, c.id, actor, { type: "VEHICLE_BLOCKED", fromValue: locked[0].status, toValue: "BLOCKED", note: note?.trim() || null });
     await recordAudit(tx, tenantId, actor, { action: "VEHICLE_BLOCKED_FOR_DAMAGE", bookingId: c.bookingId, details: { caseNumber: c.caseNumber, vehicleId: c.vehicleId, from: locked[0].status, futureBookings: future } });
     return { vehicleStatus: "BLOCKED", futureBookings: future };

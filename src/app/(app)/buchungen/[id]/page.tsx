@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireSession } from "@/lib/auth";
+import { isFeatureEnabled } from "@/lib/features";
 import { KeyDropPanel } from "./key-drop-panel";
 import { db } from "@/lib/db";
 import { customerName, fmtDateTime, fmtEur, toDateTimeInput } from "@/lib/format";
@@ -31,6 +32,9 @@ import { DamageCasesPanel } from "../../schaeden/damages-panel";
 import { AuthorityCasesPanel } from "../../behoerden/authority-panel";
 import { AmendmentsCard } from "./nachtrag/amendments-card";
 import { agreedAmendmentOf, effectiveStateForBooking } from "@/lib/amendments";
+import { accidentRentState } from "@/lib/accident-pricing";
+import { caseTariff } from "@/lib/accident-case-file";
+import { ACCIDENT_BILLING_WHERE, ACCIDENT_CASE_CLOSED_MESSAGE } from "@/lib/accident-replacement-events";
 
 export default async function BookingPage({ params, searchParams }: PageProps<"/buchungen/[id]">) {
   const { tenant, user, supportSession } = await requireSession();
@@ -41,10 +45,23 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   if (!b) notFound();
 
   // Mit unterschriebenem Vertrag sind Zeitraum, Fahrzeug und Preis festgeschrieben
-  const editable = (b.status === "RESERVED" || b.status === "ACTIVE") && b.contract?.status !== "SIGNED";
+  // Befehl 29: Unfallersatz-Buchungen werden nicht über das Buchungsformular bearbeitet (Zeitraum und Tarif gehören zur Fallakte)
+  const accident = b.rentalType === "ACCIDENT_REPLACEMENT";
+  const accidentCase = accident ? await db.accidentReplacementCase.findFirst({ where: { tenantId: tenant.id, bookingId: b.id }, select: { id: true, caseNumber: true, status: true } }) : null;
+  // Phase D: Unfallersatz wird in der Fallakte geführt (Link nur, wenn das Modul freigeschaltet ist – sonst gäbe es keine Akte zu öffnen)
+  const caseHref = accidentCase && (await isFeatureEnabled(tenant.id, "ACCIDENT_REPLACEMENT")) ? `/unfallersatz/${accidentCase.id}` : null;
+  const editable = (b.status === "RESERVED" || b.status === "ACTIVE") && b.contract?.status !== "SIGNED" && !accident;
   const { vehicles } = editable ? await loadBookingOptions(tenant.id) : { vehicles: [] };
   const initialCustomer = editable ? customerOptionOf(b.customer) : null;
-  const price = calculateRentalPrice({ start: b.startAt, end: b.endAt, rates: rateCardFrom(b), discountPercent: b.customer.discountPercent });
+  // Befehl 29: Unfallersatz zeigt nur den Mietwert ab der tatsächlichen Übergabe – bis jetzt bzw. bis zur Rückgabe (Endwert), nie bis
+  // zum geplanten Ende und nie mit erfundenem Datum. Phase E: dieselbe Rechnung wie Fallakte und Rechnung (Tagessatz + Tarifpositionen,
+  // im Vertrag eingefroren); vor der Übergabe kein Ist-Wert.
+  const accidentTariff = accident && accidentCase ? await caseTariff(tenant.id, accidentCase.id, b.id) : null;
+  const accidentRent = accidentTariff ? accidentRentState(b, accidentTariff) : null;
+  const accidentPerDayCents = accidentTariff ? accidentTariff.dailyRateCents + accidentTariff.items.filter((i) => i.perDay && i.unitPriceCents > 0).reduce((sum, i) => sum + i.unitPriceCents, 0) : 0;
+  // Phase E: geschlossener Unfallersatzfall – Vertrag, Übergabe, Rückgabe und Storno sind serverseitig gesperrt; keine Knöpfe in die Sperre
+  const caseLocked = accidentCase?.status === "CLOSED";
+  const price = calculateRentalPrice({ start: b.startAt, end: b.endAt ?? b.startAt, rates: rateCardFrom(b), discountPercent: b.customer.discountPercent });
   // Befehl 28: vereinbarte, noch nicht unterschriebene Vertragsänderung (reserviert operativ, wirkt vertraglich erst mit Unterschrift)
   const agreed = await agreedAmendmentOf(tenant.id, b.id);
   const overdue = isOverdue({ status: b.status, endAt: b.endAt, agreedEndAt: agreed?.newEndAt ?? null });
@@ -62,7 +79,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const damageInvoices = await db.invoice.findMany({ where: { tenantId: tenant.id, bookingId: b.id, kind: "DAMAGE", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "asc" }, select: { id: true, number: true, status: true, currentVersion: { select: { grossTotal: true } }, damageCase: { select: { id: true, caseNumber: true } } } });
   // Bearbeitungsentgelte zu Behördenvorgängen (kind AUTHORITY_FEE), nur Entwurf aus dem Vertrag
   const feeInvoices = await db.invoice.findMany({ where: { tenantId: tenant.id, bookingId: b.id, kind: "AUTHORITY_FEE", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "asc" }, select: { id: true, number: true, status: true, currentVersion: { select: { grossTotal: true } }, authorityCase: { select: { id: true, caseNumber: true } } } });
-  const counterDocs = await db.invoice.findMany({ where: { tenantId: tenant.id, bookingId: b.id, documentType: { in: ["CREDIT_NOTE", "CANCELLATION"] }, status: { in: ["DRAFT", "FINALIZED"] } }, orderBy: { createdAt: "asc" }, select: { id: true, number: true, status: true, documentType: true, currentVersion: { select: { grossTotal: true } }, original: { select: { number: true } } } });
+  const counterDocs = await db.invoice.findMany({ where: { tenantId: tenant.id, bookingId: b.id, documentType: { in: ["CREDIT_NOTE", "CANCELLATION"] }, status: { in: ["DRAFT", "FINALIZED"] }, ...(user.role === "YARD" ? { NOT: ACCIDENT_BILLING_WHERE } : {}) }, orderBy: { createdAt: "asc" }, select: { id: true, number: true, status: true, documentType: true, currentVersion: { select: { grossTotal: true } }, original: { select: { number: true } } } });
   const charges = b.status === "RETURNED" || returnDraft ? await db.extraCharge.findMany({ where: { tenantId: tenant.id, bookingId: b.id }, orderBy: { createdAt: "asc" } }) : [];
   const chargesTotal = charges.reduce((s, c) => s + Number(c.amount), 0);
   const update = updateBookingAction.bind(null, b.id);
@@ -70,9 +87,9 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const finish = setBookingStatusAction.bind(null, b.id, "RETURNED");
   // Befehl 27: Storno nur über den Dialog mit Grund; was an der Buchung hängt, prüft der Server (cancellationCheck)
   // Befehl 28: Storno-Assistent (Übersicht und Abrechnung aus lib/cancellation; Entscheidungen bewusst im Dialog)
-  const cancelOv = canCancel(b) && user.role !== "YARD" && !supportSession ? await cancellationOverview(tenant.id, b.id) : null;
+  const cancelOv = canCancel(b) && user.role !== "YARD" && !supportSession && !caseLocked ? await cancellationOverview(tenant.id, b.id) : null;
   const cancelView: CancellationAssistantView | null = cancelOv ? {
-    booking: { number: cancelOv.booking.number, statusLabel: cancelOv.booking.statusLabel, customerName: cancelOv.booking.customerName, vehicle: cancelOv.booking.vehicle, plate: cancelOv.booking.plate, start: fmtDateTime(cancelOv.booking.startAt), end: fmtDateTime(cancelOv.booking.endAt) },
+    booking: { number: cancelOv.booking.number, statusLabel: cancelOv.booking.statusLabel, customerName: cancelOv.booking.customerName, vehicle: cancelOv.booking.vehicle, plate: cancelOv.booking.plate, start: fmtDateTime(cancelOv.booking.startAt), end: cancelOv.booking.endAt ? fmtDateTime(cancelOv.booking.endAt) + (accident ? " (geplant, nur Disposition)" : "") : "offen (bis zur Rückgabe)" },
     contract: cancelOv.contract,
     finances: {
       agreed: fmtCents(cancelOv.finances.agreedCents), agreedSource: cancelOv.finances.agreedSource, prepaidCents: cancelOv.finances.prepaidCents, prepaid: fmtCents(cancelOv.finances.prepaidCents),
@@ -90,7 +107,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
     defaultWhen: toDateTimeInputValue(new Date()),
   } : null;
   // Befehl 28: Zeitraum vor der Vertragsunterschrift nur über „Zeitraum ändern“ (Grund, Preisvorschlag, Verfügbarkeit, Audit)
-  const canChangePeriod = b.status === "RESERVED" && b.contract?.status !== "SIGNED" && user.role !== "YARD" && !supportSession;
+  const canChangePeriod = b.status === "RESERVED" && b.contract?.status !== "SIGNED" && user.role !== "YARD" && !supportSession && !accident;
   // Befehl 28: vertragliche Verspätungsregel (eingefroren im Vertrag) – nur Anzeige; ein Betrag entsteht erst bei der Rückgabe als Vorschlag
   const lateRule = overdue && contractSigned ? (readContractRules((await db.rentalContract.findFirst({ where: { tenantId: tenant.id, bookingId: b.id }, select: { conditions: true } }))?.conditions)?.values as { lateReturnRule?: LateReturnRule; lateReturnFeeCents?: number | null } | undefined) : undefined;
   const lateRuleText = lateRule?.lateReturnRule && lateRule.lateReturnRule in LATE_RETURN_RULES ? `${LATE_RETURN_RULES[lateRule.lateReturnRule]}${lateRule.lateReturnRule === "CONFIGURED_FEE" && lateRule.lateReturnFeeCents ? ` (Richtwert ${fmtCents(lateRule.lateReturnFeeCents)})` : ""}` : null;
@@ -99,30 +116,40 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const pickupNext = pickupAction(b, b.contract, b.handovers);
   const returnNext = returnAction(b, b.contract, b.handovers);
   const canContract = user.role !== "YARD";
-  const nextStep: { title: string; text: string; action: React.ReactNode } | null =
-    stage === "NEEDS_CONTRACT" ? { title: "Mietvertrag fehlt", text: canContract ? "Für diese Buchung gibt es noch keinen Mietvertrag. Ohne Vertrag ist keine Übergabe möglich." : "Der Mietvertrag wird von der Disposition erstellt. Danach kann die Übergabe beginnen.", action: canContract ? <form action={startContract}><button className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">Mietvertrag erstellen</button></form> : null }
-    : stage === "CONTRACT_DRAFT" ? { title: "Mietvertrag noch nicht abgeschlossen", text: canContract ? "Der Vertragsentwurf ist angelegt. Bitte prüfen, unterschreiben lassen und abschließen." : "Die Disposition schließt den Mietvertrag ab. Danach kann die Übergabe beginnen.", action: canContract ? <Link href={`/buchungen/${b.id}/vertrag`} className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">Mietvertrag fortsetzen</Link> : null }
+  // Phase E: Vertrag, Übergabe und Rückgabe laufen beim Unfallersatz über die normalen Schritte; die Fallakte übernimmt Abrechnung und
+  // Abschluss. Ein geschlossener Fall sperrt alle operativen Schritte.
+  const accidentStep: { title: string; text: string; action: React.ReactNode } | null = accident && caseLocked
+    ? { title: `Unfallersatzfall ${accidentCase!.caseNumber} abgeschlossen`, text: `${ACCIDENT_CASE_CLOSED_MESSAGE} Vertrag, Übergabe und Rückgabe sind gesperrt, bis der Fall in der Fallakte wieder geöffnet wird.`, action: caseHref ? <Link href={caseHref} className="btn btn-primary !py-3 !px-5 !text-[15px] justify-center">Unfallersatzfall öffnen</Link> : null }
+    : accident && caseHref && b.status === "RETURNED"
+      ? { title: `Unfallersatzfall ${accidentCase!.caseNumber}`, text: "Die Rückgabe ist abgeschlossen. Abrechnung, Zahlungen und Kürzungen stehen in der Fallakte; der Fall bleibt offen, bis er bewusst abgeschlossen wird.", action: <Link href={caseHref} className="btn btn-primary !py-3 !px-5 !text-[15px] justify-center">Unfallersatzfall öffnen</Link> }
+      : null;
+  const nextStep: { title: string; text: string; action: React.ReactNode } | null = accidentStep ??
+    (stage === "NEEDS_CONTRACT" ? { title: "Mietvertrag fehlt", text: canContract ? (accident ? "Für diese Unfallersatz-Buchung gibt es noch keinen Mietvertrag. Er läuft bis zur Rückgabe (Mietende offen); ohne Vertrag ist keine Übergabe möglich." : "Für diese Buchung gibt es noch keinen Mietvertrag. Ohne Vertrag ist keine Übergabe möglich.") : "Der Mietvertrag wird von der Disposition erstellt. Danach kann die Übergabe beginnen.", action: canContract ? <form action={startContract}><button className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">Mietvertrag erstellen</button></form> : null }
+    : stage === "CONTRACT_DRAFT" ? { title: "Mietvertrag noch nicht abgeschlossen", text: canContract ? (accident ? "Der Unfallersatz-Vertrag (Mietende offen, Tarif aus der Fallakte) ist vorbereitet. Bitte prüfen, unterschreiben lassen und abschließen." : "Der Vertragsentwurf ist angelegt. Bitte prüfen, unterschreiben lassen und abschließen.") : "Die Disposition schließt den Mietvertrag ab. Danach kann die Übergabe beginnen.", action: canContract ? <Link href={`/buchungen/${b.id}/vertrag`} className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">Mietvertrag fortsetzen</Link> : null }
     : pickupNext.kind === "START" || pickupNext.kind === "CONTINUE" ? { title: "Bereit zur Übergabe", text: "Der Mietvertrag ist abgeschlossen. Jetzt auf dem Tablet mit der Übergabe weitermachen.", action: <Link href={`/buchungen/${b.id}/uebergabe`} className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">{pickupNext.label}</Link> }
     : returnNext.kind === "START" || returnNext.kind === "CONTINUE" ? { title: overdue ? "Rückgabe überfällig" : "Fahrzeug ist unterwegs", text: "Wenn das Fahrzeug zurückkommt: Rückgabe am besten auf dem Tablet durchführen.", action: <Link href={`/buchungen/${b.id}/rueckgabe`} className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">{returnNext.label}</Link> }
-    : b.status === "RETURNED" && returnDone && invoice?.status !== "FINALIZED" ? { title: invoice ? "Rechnung noch nicht abgeschlossen" : "Rechnung fehlt", text: canContract ? "Die Rückgabe ist abgeschlossen. Die Rechnung wird am PC geprüft und finalisiert." : "Die Rechnung wird von der Disposition erstellt.", action: canContract ? <Link href={`/buchungen/${b.id}/rechnung`} className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">{invoice ? "Rechnung fortsetzen" : "Rechnung erstellen"}</Link> : null }
-    : null;
+    : b.status === "RETURNED" && returnDone && invoice?.status !== "FINALIZED" && !accident ? { title: invoice ? "Rechnung noch nicht abgeschlossen" : "Rechnung fehlt", text: canContract ? "Die Rückgabe ist abgeschlossen. Die Rechnung wird am PC geprüft und finalisiert." : "Die Rechnung wird von der Disposition erstellt.", action: canContract ? <Link href={`/buchungen/${b.id}/rechnung`} className="btn btn-primary !py-3 !px-5 !text-[15px] w-full sm:w-auto justify-center">{invoice ? "Rechnung fortsetzen" : "Rechnung erstellen"}</Link> : null }
+    : null);
 
   return (
     <>
       <PageHeader title={`Buchung ${b.number}`} sub={<Plate>{b.vehicle.plate}</Plate>}>
         {overdue ? <Chip tone="bad">Rückgabe überfällig</Chip> : <BookingStageChip stage={stage} />}
-        {stage === "NEEDS_CONTRACT" && user.role !== "YARD" && <form action={startContract}><button className="btn btn-primary">Mietvertrag erstellen</button></form>}
-        {stage === "CONTRACT_DRAFT" && user.role !== "YARD" && <Link href={`/buchungen/${b.id}/vertrag`} className="btn btn-primary">Mietvertrag fortsetzen</Link>}
+        {accident && <Chip tone="info">Unfallersatz{accidentCase ? ` ${accidentCase.caseNumber}` : ""}</Chip>}
+        {caseHref && <Link href={caseHref} className="btn btn-primary">Unfallersatzfall öffnen</Link>}
+        {stage === "NEEDS_CONTRACT" && user.role !== "YARD" && !caseLocked && <form action={startContract}><button className="btn btn-primary">Mietvertrag erstellen</button></form>}
+        {stage === "CONTRACT_DRAFT" && user.role !== "YARD" && !caseLocked && <Link href={`/buchungen/${b.id}/vertrag`} className="btn btn-primary">Mietvertrag fortsetzen</Link>}
+        {caseLocked && <Chip tone="grey">Fall abgeschlossen – gesperrt</Chip>}
         {(stage === "NEEDS_CONTRACT" || stage === "CONTRACT_DRAFT") && user.role === "YARD" && <Chip tone="amber">Mietvertrag wird von der Disposition erstellt</Chip>}
         {b.contract && b.contract.status !== "DRAFT" && <Link href={`/buchungen/${b.id}/vertrag`} className="btn">Mietvertrag anzeigen</Link>}
-        {stage === "READY_FOR_PICKUP" && <Link href={`/buchungen/${b.id}/uebergabe`} className="btn btn-primary">{pickupDraft ? "Übergabe fortsetzen" : "Übergabe starten"}</Link>}
+        {stage === "READY_FOR_PICKUP" && !caseLocked && <Link href={`/buchungen/${b.id}/uebergabe`} className="btn btn-primary">{pickupDraft ? "Übergabe fortsetzen" : "Übergabe starten"}</Link>}
         {pickupDone && <Link href={`/buchungen/${b.id}/uebergabe`} className="btn">Übergabeprotokoll anzeigen</Link>}
-        {b.status === "ACTIVE" && pickupDone && !returnDone && <Link href={`/buchungen/${b.id}/rueckgabe`} className="btn btn-primary">{returnDraft ? "Rückgabe fortsetzen" : "Rückgabe starten"}</Link>}
+        {b.status === "ACTIVE" && pickupDone && !returnDone && !caseLocked && <Link href={`/buchungen/${b.id}/rueckgabe`} className="btn btn-primary">{returnDraft ? "Rückgabe fortsetzen" : "Rückgabe starten"}</Link>}
         {returnDone && <Link href={`/buchungen/${b.id}/rueckgabe`} className="btn">Rückgabeprotokoll anzeigen</Link>}
-        {b.status === "RETURNED" && returnDone && !invoice && user.role !== "YARD" && <Link href={`/buchungen/${b.id}/rechnung`} className="btn btn-primary">Rechnung erstellen</Link>}
+        {b.status === "RETURNED" && returnDone && !invoice && user.role !== "YARD" && !accident && <Link href={`/buchungen/${b.id}/rechnung`} className="btn btn-primary">Rechnung erstellen</Link>}
         {invoice?.status === "DRAFT" && user.role !== "YARD" && <Link href={`/buchungen/${b.id}/rechnung`} className="btn btn-primary">Rechnung fortsetzen</Link>}
         {invoice?.status === "FINALIZED" && <Link href={`/buchungen/${b.id}/rechnung`} className="btn">Rechnung {invoice.number} anzeigen</Link>}
-        {b.status === "ACTIVE" && !pickupDone && (
+        {b.status === "ACTIVE" && !pickupDone && !caseLocked && (
           <form action={finish}><button className="btn btn-primary">Fahrzeug zurücknehmen</button></form>
         )}
         {canChangePeriod && <PeriodChangeDialog action={changePeriodAction.bind(null, b.id)} preview={previewPeriodChangeAction.bind(null, b.id)} startAt={toDateTimeInput(b.startAt)} endAt={toDateTimeInput(b.endAt)} />}
@@ -164,19 +191,26 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
         {overdue && contractSigned && (
           <section aria-label="Rückgabe überfällig" className="rounded-xl border-2 border-bad bg-bad-soft/60 p-4 flex flex-col sm:flex-row sm:items-center gap-3">
             <div className="flex-1 min-w-0 text-sm">
-              <div className="font-semibold text-bad">Rückgabe überfällig – geplant {fmtDateTime(agreed?.newEndAt && agreed.newEndAt > b.endAt ? agreed.newEndAt : b.endAt)}</div>
-              <p>Ruft der Kunde an und verlängert, die Verlängerung hier erfassen – Folgebuchungen werden dabei sofort geprüft.{lateRuleText ? ` Vertragliche Verspätungsregel: ${lateRuleText}. Ein Betrag wird erst bei der Rückgabe als Vorschlag gezeigt und nur nach Bestätigung berechnet.` : ""}</p>
+              <div className="font-semibold text-bad">Rückgabe überfällig – geplant {fmtDateTime(agreed?.newEndAt && b.endAt && agreed.newEndAt > b.endAt ? agreed.newEndAt : b.endAt)}</div>
+              {accident && caseLocked ? <p>Das geplante Mietende (nur Disposition) ist überschritten. Der Unfallersatzfall ist abgeschlossen; Mietdauer und Rückgabe sind gesperrt, bis der Fall wieder geöffnet wird.</p> : accident ? <p>Das geplante Mietende (nur Disposition) ist überschritten. Beim Unfallersatz entsteht dadurch keine Verspätungsgebühr und kein Nachtrag – der Vertrag läuft bis zur Rückgabe. Mietdauer in der Fallakte aktualisieren oder die Rückgabe durchführen.</p> : <p>Ruft der Kunde an und verlängert, die Verlängerung hier erfassen – Folgebuchungen werden dabei sofort geprüft.{lateRuleText ? ` Vertragliche Verspätungsregel: ${lateRuleText}. Ein Betrag wird erst bei der Rückgabe als Vorschlag gezeigt und nur nach Bestätigung berechnet.` : ""}</p>}
             </div>
-            {user.role !== "YARD" && !supportSession && !agreed && <form action={createAmendmentAction.bind(null, b.id)}><input type="hidden" name="nonce" value={randomUUID()} /><button className="btn btn-primary !py-3 justify-center w-full">Miete verlängern</button></form>}
+            {user.role !== "YARD" && !supportSession && !agreed && !accident && <form action={createAmendmentAction.bind(null, b.id)}><input type="hidden" name="nonce" value={randomUUID()} /><button className="btn btn-primary !py-3 justify-center w-full">Miete verlängern</button></form>}
+            {user.role !== "YARD" && !supportSession && accident && caseHref && accidentCase?.status === "OPEN" && <Link href={`${caseHref}?tab=miete#mietdauer`} className="btn btn-primary !py-3 justify-center">Mietdauer in der Fallakte aktualisieren</Link>}
           </section>
         )}
-        {b.status === "ACTIVE" && pickupDone && (
+        {b.status === "ACTIVE" && pickupDone && !caseLocked && (
           <p className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm">Übergeben mit Protokoll {pickupDone.number}. Die Rückgabe läuft über „Rückgabe starten“ und vergleicht den Zustand mit der Übergabe.</p>
         )}
         {b.status === "RETURNED" && returnDone && (
           <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm">Zurückgegeben mit Protokoll {returnDone.number}. Übergabe {pickupDone?.number ?? "–"}. <Link href={`/fahrzeuge/${b.vehicleId}`} className="underline">Fahrzeughistorie ansehen</Link>.</p>
         )}
-        {b.status === "RETURNED" && returnDone && (
+        {b.status === "RETURNED" && returnDone && accident && caseHref && (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="label-xs">Abrechnung</span>
+            <Link href={`${caseHref}?tab=abrechnung`} className="chip bg-info-soft text-info hover:underline">Unfallersatz-Abrechnung in der Fallakte</Link>
+          </div>
+        )}
+        {b.status === "RETURNED" && returnDone && !accident && (
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="label-xs">Rechnung</span>
             {!invoice && <Chip tone="amber">noch nicht erstellt</Chip>}
@@ -215,13 +249,13 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
             ))}
           </div>
         )}
-        {contractSigned && b.status === "RESERVED" && (
+        {contractSigned && b.status === "RESERVED" && !caseLocked && (
           <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Mietvertrag {b.contract!.number} ist abgeschlossen. Die Buchung ist bereit zur Übergabe.</p>
         )}
 
-        {(b.status === "ACTIVE" || b.status === "RETURNED") && pickupDone && <KeyDropPanel tenantId={tenant.id} booking={{ id: b.id, status: b.status, endAt: b.endAt, vehicleId: b.vehicleId }} role={user.role} supportMode={Boolean(supportSession)} returnStarted={Boolean(returnDraft || returnDone)} />}
+        {(b.status === "ACTIVE" || b.status === "RETURNED") && pickupDone && <KeyDropPanel tenantId={tenant.id} booking={{ id: b.id, status: b.status, endAt: b.endAt, vehicleId: b.vehicleId }} role={user.role} supportMode={Boolean(supportSession)} returnStarted={Boolean(returnDraft || returnDone)} locked={caseLocked} />}
         {/* Befehl 25: Vertrag & Nachträge – Änderungen während der Miete nur als unterschriebener Nachtrag */}
-        <AmendmentsCard tenantId={tenant.id} bookingId={b.id} role={user.role} supportMode={Boolean(supportSession)} />
+        <AmendmentsCard tenantId={tenant.id} bookingId={b.id} role={user.role} supportMode={Boolean(supportSession)} locked={caseLocked} />
         <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
         {(b.status === "RETURNED" || b.status === "ACTIVE") && <DamageCasesPanel tenantId={tenant.id} where={{ OR: [{ bookingId: b.id }, { discoveredIn: { bookingId: b.id, type: "RETURN" } }] }} title="Schäden dieser Vermietung" empty="Zu dieser Vermietung wurde kein Schaden festgestellt." />}
         <AuthorityCasesPanel tenantId={tenant.id} scope={{ bookingId: b.id }} canManage={user.role !== "YARD"} />
@@ -252,19 +286,21 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
               />
             ) : (
               <dl className="grid grid-cols-[140px_1fr] gap-y-2 text-sm">
-                {contractSigned && <><dt className="label-xs self-center">Vertrag</dt><dd>{b.contract!.number}. Zeitraum, Fahrzeug und Preis sind festgeschrieben{effective?.amendments.length ? <>; geändert durch Nachtrag {effective.amendments.map((a) => a.number).join(", ")} (siehe <a href="#vertrag" className="underline">Vertrag &amp; Nachträge</a>)</> : <>. Änderungen nur per <a href="#vertrag" className="underline">Nachtrag</a></>}.</dd></>}
+                {contractSigned && accident && <><dt className="label-xs self-center">Vertrag</dt><dd>{b.contract!.number}. Mietende offen (bis zur Rückgabe), Tarif laut Vertrag festgeschrieben. Das geplante Ende ist nur Disposition und wird in der Fallakte geändert; Kilometer, Kaution und Fahrer per <a href="#vertrag" className="underline">Nachtrag</a>.</dd></>}
+                {contractSigned && !accident && <><dt className="label-xs self-center">Vertrag</dt><dd>{b.contract!.number}. Zeitraum, Fahrzeug und Preis sind festgeschrieben{effective?.amendments.length ? <>; geändert durch Nachtrag {effective.amendments.map((a) => a.number).join(", ")} (siehe <a href="#vertrag" className="underline">Vertrag &amp; Nachträge</a>)</> : <>. Änderungen nur per <a href="#vertrag" className="underline">Nachtrag</a></>}.</dd></>}
                 <dt className="label-xs self-center">Kunde</dt><dd><Link href={`/kunden/${b.customerId}`} className="hover:underline font-medium">{customerName(b.customer)}</Link></dd>
                 <dt className="label-xs self-center">Fahrzeug</dt><dd><Link href={`/fahrzeuge/${b.vehicleId}`} className="hover:underline">{b.vehicle.make} {b.vehicle.model}</Link></dd>
                 <dt className="label-xs self-center">Abholung</dt><dd className="font-mono tnum">{fmtDateTime(b.startAt)}</dd>
-                <dt className="label-xs self-center">Rückgabe</dt><dd className="font-mono tnum">{fmtDateTime(b.endAt)}{effective?.changedBy.endAt && <span className="block text-[11px] text-ink-3 font-sans">geändert durch {effective.changedBy.endAt}</span>}</dd>
+                <dt className="label-xs self-center">Rückgabe</dt><dd className="font-mono tnum">{b.endAt ? fmtDateTime(b.endAt) : accident ? "offen (bis zur Rückgabe)" : "–"}{effective?.changedBy.endAt && <span className="block text-[11px] text-ink-3 font-sans">geändert durch {effective.changedBy.endAt}</span>}</dd>
                 <dt className="label-xs self-center">Kilometer</dt><dd className="font-mono tnum">{effective ? <>{effective.kmIncludedPerDay.toLocaleString("de-DE")} km/Tag frei · {fmtEur(effective.extraKmRate)} je Mehrkilometer (laut Vertrag{effective.changedBy.km ? `, geändert durch ${effective.changedBy.km}` : ""})</> : <>{(b.kmIncludedPerDay ?? b.vehicle.kmIncludedPerDay).toLocaleString("de-DE")} km/Tag frei · {fmtEur(Number(b.extraKmRate ?? b.vehicle.extraKmRate))} je Mehrkilometer</>}</dd>
                 <dt className="label-xs self-center">Notizen</dt><dd>{b.notes || "–"}</dd>
               </dl>
             )}
           </Card>
           {/* Mietzahlung und Kaution bleiben getrennt: gemeinsamer Überblick (Befehl 20.7), eigene Bereiche, keine automatische Verrechnung */}
-          <MoneyOverview tenantId={tenant.id} bookingId={b.id} role={user.role} />
-          <RentalPaymentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
+          <MoneyOverview tenantId={tenant.id} bookingId={b.id} role={user.role} accident={accident} />
+          {/* Befehl 29: beim Unfallersatz keine Mietvorauszahlung – Zahlungen gehören zur Unfallersatz-Rechnung */}
+          {!accident && <RentalPaymentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />}
           {/* Befehl 21: der Bereich ist immer erreichbar („Zur Kaution“); ohne Vertrag erklärt er, wann der Eingang dokumentiert wird */}
           <div id="kaution" className="scroll-mt-20">
             <DepositPanel tenantId={tenant.id} bookingId={b.id} role={user.role} charges={returnDone ? { count: charges.length, total: chargesTotal } : null} />
@@ -280,13 +316,25 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                     <div key={c.id} className="flex justify-between gap-3 py-1.5 border-b border-line-soft"><span>{EXTRA_CHARGE_TYPES[c.type as ExtraChargeType] ?? c.type}: {c.description}</span><span className="font-mono tnum">{fmtEur(Number(c.amount))}</span></div>
                   ))}
                   {charges.length > 0 && <div className="flex justify-between py-2 mt-1 border-t-2 border-ink font-semibold"><span>Gesamt Zusatzkosten</span><span className="font-mono tnum">{fmtEur(chargesTotal)}</span></div>}
-                  <div className="flex justify-between py-1.5 text-ink-3"><span>Kaution laut Buchung</span><span className="font-mono tnum">{fmtEur(b.deposit)}</span></div>
+                  <div className="flex justify-between py-1.5 text-ink-3"><span>Kaution laut Buchung</span><span className="font-mono tnum">{accident && !(Number(b.deposit) > 0) ? "keine" : fmtEur(b.deposit)}</span></div>
                   <p className="text-xs text-ink-3 mt-1">Zusatzkosten und Kaution werden nicht automatisch verrechnet. Stand der Kaution siehe Bereich „Kaution“.</p>
                 </div>
               </Card>
             )}
             <Card title="Kosten">
-              {b.status === "CANCELLED" ? (
+              {accident && b.status !== "CANCELLED" ? (
+                <div className="p-4 text-sm flex flex-col">
+                  <div className="text-xs text-ink-3 pb-1">Unfallersatz{accidentCase ? ` · Fall ${accidentCase.caseNumber}` : ""}</div>
+                  <div className="flex justify-between py-1.5 border-b border-line-soft"><span>Tagessatz</span><span className="font-mono tnum">{fmtCents(accidentTariff?.dailyRateCents ?? Math.round(Number(b.dailyRate) * 100))} je Miettag</span></div>
+                  {accidentTariff && accidentPerDayCents !== accidentTariff.dailyRateCents && <div className="flex justify-between py-1.5 border-b border-line-soft"><span>Je Miettag mit Tarifpositionen</span><span className="font-mono tnum">{fmtCents(accidentPerDayCents)}</span></div>}
+                  <div className="flex justify-between py-1.5 border-b border-line-soft"><span>Mietende</span><span className="font-mono tnum">{b.actualReturnAt ? `zurückgegeben ${fmtDateTime(b.actualReturnAt)}` : b.endAt ? `geplant ${fmtDateTime(b.endAt)}` : "offen"}</span></div>
+                  {accidentRent && accidentRent.phase !== "NONE"
+                    ? <div className="flex justify-between py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>{accidentRent.phase === "FINAL" ? "Endwert" : "Bisher"} ({accidentRent.value.days} {accidentRent.value.days === 1 ? "Miettag" : "Miettage"}{accidentRent.phase === "RUNNING" ? ", Stand jetzt" : ""})</span><span className="font-mono tnum">{fmtCents(accidentRent.value.cents)}</span></div>
+                    : <div className="flex justify-between py-2 mt-1 border-t-2 border-ink text-ink-3"><span>Mietwert</span><span>noch kein Ist-Wert</span></div>}
+                  <div className="flex justify-between py-1.5 text-ink-3"><span>zzgl. Kaution</span><span className="font-mono tnum">{Number(b.deposit) > 0 ? fmtEur(b.deposit) : "keine"}</span></div>
+                  <p className="text-xs text-ink-3 mt-2">Abgerechnet wird nach tatsächlichen Miettagen ab der Übergabe zum Tarif laut Mietvertrag (Tagessatz und Positionen des Falls). Kein Gesamtpreis im Voraus.</p>
+                </div>
+              ) : b.status === "CANCELLED" ? (
                 <p className="p-4 text-sm text-ink-2">Die Buchung ist storniert; es besteht keine Mietforderung mehr. Vorauszahlung, Stornogebühr, Erstattung und Kaution stehen in der eingefrorenen Storno-Abrechnung oben.</p>
               ) : effective ? (
                 <div className="p-4 text-sm flex flex-col">
@@ -333,7 +381,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                 {b.customer.phone && <span>{b.customer.phone}</span>}
                 {b.customer.email && <span className="text-ink-3">{b.customer.email}</span>}
                 {!b.customer.licenseNumber && <Chip tone="amber">Führerschein noch nicht erfasst</Chip>}
-                {b.customer.licenseValidUntil && b.customer.licenseValidUntil < b.endAt && <Chip tone="bad">Führerschein läuft vor Rückgabe ab</Chip>}
+                {b.customer.licenseValidUntil && b.endAt && b.customer.licenseValidUntil < b.endAt && <Chip tone="bad">Führerschein läuft vor Rückgabe ab</Chip>}
               </div>
             </Card>
           </div>

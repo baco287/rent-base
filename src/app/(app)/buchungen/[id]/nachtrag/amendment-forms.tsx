@@ -29,7 +29,7 @@ export type ChangesValues = {
   newReturnLocation: string | null;
   agreementText: string | null;
 };
-export type CurrentValues = { startAt: string; canChangeStart: boolean; endAt: string; totalEur: string; kmIncludedPerDay: number; extraKmRateEur: string; kmPolicy: string; kmPolicyLabel: string; depositEur: string; returnLocation: string };
+export type CurrentValues = { startAt: string; canChangeStart: boolean; /** Befehl 29 Phase E: Unfallersatz – Mietende offen, kein Gesamtpreis */ openEnd?: boolean; endAt: string; totalEur: string; kmIncludedPerDay: number; extraKmRateEur: string; kmPolicy: string; kmPolicyLabel: string; depositEur: string; returnLocation: string };
 
 const eur = (cents: number) => (cents / 100).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -70,7 +70,8 @@ export function ChangesForm({ action, values: v, current: c, locked }: { action:
             <p className="text-xs text-ink-3">Der Originalvertrag bleibt unverändert. Verfügbarkeit und Preisvorschlag (eingefrorene Preislogik des Vertrags) werden für den neuen Zeitraum geprüft.</p>
           </Toggle>
         )}
-        <Toggle id="changePeriod" label="Mietdauer / geplante Rückgabe ändern" checked={period} onChange={setPeriod}>
+        {c.openEnd && <p className="text-sm rounded-md bg-info-soft text-info px-3 py-2">Unfallersatz: Der Vertrag läuft bis zur Rückgabe. Das geplante Mietende ändern Sie in der Fallakte (ohne Nachtrag); der Mietbeginn steht fest, abgerechnet wird ab der tatsächlichen Übergabe. Der Mietpreis richtet sich nach dem Tarif laut Mietvertrag. Hier lassen sich Kilometer, Kaution, Fahrer, Rückgabeort und freie Vereinbarungen ändern.</p>}
+        {!c.openEnd && <Toggle id="changePeriod" label="Mietdauer / geplante Rückgabe ändern" checked={period} onChange={setPeriod}>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Bisher"><div className="input bg-panel-2 font-mono tnum">{c.endAt}</div></Field>
             <Field label="Neue geplante Rückgabe" htmlFor="newEndAt"><input id="newEndAt" name="newEndAt" type="datetime-local" defaultValue={v.newEndAt} className="input tnum" required={period} /></Field>
@@ -79,9 +80,9 @@ export function ChangesForm({ action, values: v, current: c, locked }: { action:
           {v.priceProposalCents != null && (
             <p className="text-sm rounded-md bg-info-soft text-info px-3 py-2">Vorschlag der Preislogik dieses Vertrags für den neuen Zeitraum: <b className="font-mono tnum">{v.priceProposalCents >= 0 ? "+" : "−"}{eur(Math.abs(v.priceProposalCents))} €</b>. {price || locked ? "" : "Zum Übernehmen „Mietpreis ändern“ anhaken."}</p>
           )}
-        </Toggle>
+        </Toggle>}
 
-        <Toggle id="changePrice" label="Mietpreis ändern" checked={price} onChange={(on) => {
+        {!c.openEnd && <Toggle id="changePrice" label="Mietpreis ändern" checked={price} onChange={(on) => {
           // Befehl 28: der Vorschlag entsteht oft erst nach dem Speichern des Zeitraums – das Vorzeichen folgt ihm beim Öffnen
           // (eine Minderung darf nie als Aufschlag vorbelegt sein); ein bereits gespeicherter Preis bleibt unverändert
           if (on && v.priceDeltaCents == null && v.priceProposalCents != null) setSign(v.priceProposalCents < 0 ? "-" : "+");
@@ -100,7 +101,7 @@ export function ChangesForm({ action, values: v, current: c, locked }: { action:
             </Field>
             <Field label="Begründung" htmlFor="priceReason" hint={v.priceProposalCents != null ? "Pflicht, wenn vom Vorschlag abweichend und bei jeder Preisreduktion" : "Pflicht bei manueller Preisänderung"}><input id="priceReason" name="priceReason" defaultValue={v.priceReason} maxLength={300} className="input" /></Field>
           </div>
-        </Toggle>
+        </Toggle>}
 
         <Toggle id="changeKm" label="Kilometervereinbarung ändern" checked={km} onChange={setKm}>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

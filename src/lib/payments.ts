@@ -12,6 +12,7 @@ import { db } from "@/lib/db";
 import { recordAudit, type Actor } from "@/lib/audit";
 import { PAYMENT_METHODS, type InvoicePaymentStatus, type PaymentMethod } from "@/lib/constants";
 import { DomainError } from "@/lib/integrity";
+import { assertAccidentInvoiceCaseOpen } from "@/lib/accident-replacement-events";
 import { fmtCents, toCents, type Cents } from "@/lib/money";
 import { isUniqueViolation } from "@/lib/numbering";
 import { financialsFor, type InvoiceFinancials } from "@/lib/counter-documents";
@@ -129,6 +130,8 @@ export async function recordInvoicePayment(tenantId: string, actor: Actor, input
   }
   try {
     const outcome = await db.$transaction(async (tx) => {
+      // Befehl 29 Phase F: Zahlung auf eine Rechnung eines geschlossenen Unfallersatzfalls gesperrt (vor der Rechnungssperre)
+      await assertAccidentInvoiceCaseOpen(tx, tenantId, input.invoiceId);
       const locked = await tx.$queryRaw<{ id: string; status: string; bookingId: string; number: string | null; documentType: string }[]>`SELECT "id", "status", "bookingId", "number", "documentType" FROM "Invoice" WHERE "id" = ${input.invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
       if (locked.length === 0) throw new DomainError("Rechnung nicht gefunden.");
       const inv = locked[0];
@@ -177,6 +180,8 @@ export async function cancelPayment(tenantId: string, actor: Actor, paymentId: s
   const why = reason.trim();
   if (why.length < 3) throw new DomainError("Bitte den Grund der Korrektur angeben.");
   return db.$transaction(async (tx) => {
+    // Befehl 29 Phase F: Storno einer Zahlung zu einem geschlossenen Unfallersatzfall gesperrt
+    await assertAccidentInvoiceCaseOpen(tx, tenantId, (await tx.payment.findFirst({ where: { id: paymentId, tenantId }, select: { invoiceId: true } }))?.invoiceId);
     const locked = await tx.$queryRaw<{ id: string; status: string }[]>`SELECT "id", "status" FROM "Payment" WHERE "id" = ${paymentId} AND "tenantId" = ${tenantId} FOR UPDATE`;
     if (locked.length === 0) throw new DomainError("Zahlung nicht gefunden.");
     if (locked[0].status !== "CONFIRMED") throw new DomainError("Diese Zahlung ist bereits storniert.");

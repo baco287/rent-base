@@ -2,6 +2,7 @@ import Link from "next/link";
 import { zonedDayStart } from "@/lib/time";
 import { invoiceHref } from "@/lib/invoice-links";
 import { requireSession } from "@/lib/auth";
+import { ACCIDENT_BILLING_WHERE } from "@/lib/accident-replacement-events";
 import { db } from "@/lib/db";
 import { Card, Chip, Content, Empty, PageHeader } from "@/components/ui";
 import { DAMAGE_TAX_TREATMENTS, INVOICE_CHAIN_STATUS, INVOICE_DOCUMENT_TYPES, INVOICE_KINDS, INVOICE_PAYMENT_STATUS, type DamageTaxTreatment } from "@/lib/constants";
@@ -29,6 +30,7 @@ const KINDS: { key: string; label: string; kind: string | null }[] = [
   { key: "behoerde", label: "Bearbeitungsentgelte Behörde", kind: "AUTHORITY_FEE" },
   { key: "mahngebuehr", label: "Mahngebühren", kind: "DUNNING_FEE" },
   { key: "frei", label: "Freie Rechnungen", kind: "GENERAL" },
+  { key: "unfallersatz", label: "Unfallersatz", kind: "ACCIDENT_REPLACEMENT" },
 ];
 const DOCS: { key: string; label: string; types: string[] }[] = [
   { key: "rechnungen", label: "Rechnungen", types: ["INVOICE"] },
@@ -37,7 +39,7 @@ const DOCS: { key: string; label: string; types: string[] }[] = [
   { key: "alle", label: "Alle Belege", types: ["INVOICE", "CREDIT_NOTE", "CANCELLATION"] },
 ];
 const PAGE = 50;
-const KindChip = ({ kind }: { kind: string }) => (kind === "DAMAGE" ? <Chip tone="amber">Schaden</Chip> : kind === "AUTHORITY_FEE" ? <Chip tone="info">Behörde</Chip> : kind === "DUNNING_FEE" ? <Chip tone="bad">Mahngebühr</Chip> : kind === "GENERAL" ? <Chip tone="info">Frei</Chip> : <Chip>Miete</Chip>);
+const KindChip = ({ kind }: { kind: string }) => (kind === "DAMAGE" ? <Chip tone="amber">Schaden</Chip> : kind === "AUTHORITY_FEE" ? <Chip tone="info">Behörde</Chip> : kind === "DUNNING_FEE" ? <Chip tone="bad">Mahngebühr</Chip> : kind === "GENERAL" ? <Chip tone="info">Frei</Chip> : kind === "ACCIDENT_REPLACEMENT" ? <Chip tone="info">Unfallersatz</Chip> : kind === "CANCELLATION_FEE" ? <Chip>Stornogebühr</Chip> : <Chip>Miete</Chip>);
 const DocChip = ({ type }: { type: string }) => (type === "CREDIT_NOTE" ? <Chip tone="info">Gutschrift</Chip> : type === "CANCELLATION" ? <Chip tone="bad">Storno</Chip> : null);
 
 /** Belegstatus in mehreren Dimensionen: Zahlungsstand · Belegkette · Erstattungsbedarf – alles aus der zentralen Summierung, nie gespeichert. */
@@ -62,14 +64,17 @@ export default async function InvoicesPage({ searchParams }: PageProps<"/rechnun
   const { tenant, user } = await requireSession();
   const sp = await searchParams;
   const filter = FILTERS.find((f) => f.key === sp.filter) ?? FILTERS[FILTERS.length - 1];
-  const kindF = KINDS.find((k) => k.key === sp.art) ?? KINDS[0];
+  // Befehl 29 Phase F: Hofmitarbeiter sehen keine Unfallersatz-Abrechnung (auch nicht in der globalen Liste)
+  const hideAccident = user.role === "YARD";
+  const kinds = hideAccident ? KINDS.filter((k) => k.kind !== "ACCIDENT_REPLACEMENT") : KINDS;
+  const kindF = kinds.find((k) => k.key === sp.art) ?? kinds[0];
   const docF = DOCS.find((d) => d.key === sp.beleg) ?? DOCS[0];
   const qs = (over: Record<string, string | number>) => { const u = new URLSearchParams({ filter: filter.key, art: kindF.key, beleg: docF.key, ...Object.fromEntries(Object.entries(over).map(([k, v]) => [k, String(v)])) }); return `/rechnungen?${u.toString()}`; };
   const page = Math.max(1, parseInt(typeof sp.seite === "string" ? sp.seite : "1", 10) || 1);
 
   // Eine Zeile je Beleg; Betrag, Empfänger und Fälligkeit stammen aus der aktuellen Fassung
   const rows0 = await db.invoice.findMany({
-    where: { tenantId: tenant.id, status: "FINALIZED", currentVersionId: { not: null }, documentType: { in: docF.types }, ...(kindF.kind ? { kind: kindF.kind } : {}) },
+    where: { tenantId: tenant.id, status: "FINALIZED", currentVersionId: { not: null }, documentType: { in: docF.types }, ...(kindF.kind ? { kind: kindF.kind } : {}), ...(hideAccident ? { NOT: ACCIDENT_BILLING_WHERE } : {}) },
     orderBy: [{ finalizedAt: "desc" }, { number: "desc" }],
     select: { id: true, number: true, kind: true, documentType: true, damageCase: { select: { id: true, caseNumber: true } }, bookingId: true, booking: { select: { number: true } }, original: { select: { id: true, number: true, bookingId: true } }, currentVersion: { select: { id: true, versionNo: true, kind: true, issueDate: true, paymentDueDate: true, grossTotal: true, customerSnapshot: true, deliveredAt: true, taxTreatment: true } }, _count: { select: { versions: true } } },
   });
@@ -105,7 +110,7 @@ export default async function InvoicesPage({ searchParams }: PageProps<"/rechnun
           ))}
         </div>
         <div className="flex gap-1.5 flex-wrap" aria-label="Rechnungsart">
-          {KINDS.map((k) => (
+          {kinds.map((k) => (
             <Link key={k.key} href={qs({ art: k.key })} className={`btn !py-1.5 ${k.key === kindF.key ? "!bg-brand !text-brand-ink !border-brand" : ""}`}>{k.label}</Link>
           ))}
           <span className="w-px bg-line-soft mx-1" aria-hidden />

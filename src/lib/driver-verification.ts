@@ -23,6 +23,7 @@ import { DomainError, ImmutableError, contentHash } from "@/lib/integrity";
 import { EU_EEA_CH_COUNTRIES, LICENSE_CLASS_IMPLIES, type LicenseClass } from "@/lib/constants";
 import { assertKeyBelongsToTenant, buildStorageKey, getStorage, sniffImageType, MAX_PHOTO_BYTES } from "@/lib/storage";
 import { stampAsCopy } from "@/lib/driver-copy-stamp";
+import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed } from "@/lib/accident-replacement-events";
 
 type Tx = Prisma.TransactionClient;
 const TX = { timeout: 20_000, maxWait: 10_000 };
@@ -107,7 +108,7 @@ export type VerificationRow = Prisma.DriverVerificationGetPayload<object>;
  * laufender Miete). Ein string ist die Protokoll-Id (bisherige Aufrufe bleiben unverändert).
  */
 export type VerificationScope = string | { amendmentId: string };
-type OpenContext = { bookingId: string; contractId: string; handoverId: string | null; amendmentId: string | null; /** geplante Rückgabe, gegen die der Führerschein-Ablauf geprüft wird */ endAt: Date };
+type OpenContext = { bookingId: string; contractId: string; handoverId: string | null; amendmentId: string | null; /** geplante Rückgabe, gegen die der Führerschein-Ablauf geprüft wird; null = offenes Mietende (Unfallersatz), dann nur „abgelaufen“ */ endAt: Date | null };
 const scopeOf = (v: { handoverId: string | null; amendmentId: string | null }): VerificationScope => (v.handoverId ? v.handoverId : { amendmentId: v.amendmentId! });
 const scopeWhere = (scope: VerificationScope): Prisma.DriverVerificationWhereInput => (typeof scope === "string" ? { handoverId: scope } : { amendmentId: scope.amendmentId });
 /** Referenzprüfungen: alle bestätigten Vermerke außerhalb dieses Kontexts (auch die aus Übergaben bzw. Nachträgen). */
@@ -120,11 +121,14 @@ async function loadOpenContext(tx: Tx | typeof db, tenantId: string, scope: Veri
     if (h.status !== "DRAFT") throw new ImmutableError("Das Protokoll ist finalisiert. Fahrerprüfungen können nicht mehr geändert werden.");
     if (h.type !== "PICKUP") throw new DomainError("Die Fahrerprüfung gehört zur Übergabe, nicht zur Rückgabe.");
     if (!h.contractId) throw new DomainError("Zu diesem Protokoll gehört kein Mietvertrag.");
+    // Befehl 29 Phase E: geschlossener Unfallersatzfall – auch die Fahrerprüfung der Übergabe ist gesperrt
+    if (await accidentCaseClosed(tx, tenantId, h.bookingId)) throw new DomainError(ACCIDENT_CASE_CLOSED_MESSAGE);
     return { bookingId: h.bookingId, contractId: h.contractId, handoverId: h.id, amendmentId: null, endAt: h.booking.endAt };
   }
   const a = await tx.contractAmendment.findFirst({ where: { id: scope.amendmentId, tenantId }, select: { id: true, status: true, bookingId: true, contractId: true, newEndAt: true, booking: { select: { endAt: true } } } });
   if (!a) throw new DomainError("Nachtrag nicht gefunden.");
   if (a.status !== "DRAFT") throw new ImmutableError("Der Nachtrag ist unterschrieben oder verworfen. Fahrerprüfungen können nicht mehr geändert werden.");
+  if (await accidentCaseClosed(tx, tenantId, a.bookingId)) throw new DomainError(ACCIDENT_CASE_CLOSED_MESSAGE);
   return { bookingId: a.bookingId, contractId: a.contractId, handoverId: null, amendmentId: a.id, endAt: a.newEndAt ?? a.booking.endAt };
 }
 
@@ -225,7 +229,7 @@ export async function recordLicenseCheck(tenantId: string, actor: Actor, verific
 
     const now = new Date();
     const expiredNow = !!input.licenseValidUntil && input.licenseValidUntil < now;
-    const expiresBeforeReturn = !!input.licenseValidUntil && input.licenseValidUntil < booking.endAt;
+    const expiresBeforeReturn = !!input.licenseValidUntil && booking.endAt !== null && input.licenseValidUntil < booking.endAt;
     const foreignNeedsManualReview = !isEuEeaChCountry(input.licenseCountry) && !(input.translationPresented || input.internationalPermitPresented);
 
     const reasons = new Set(v.blockedReasons);
@@ -373,14 +377,14 @@ async function latestConfirmedReference(client: Tx | typeof db, tenantId: string
 const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase();
 
 /** Gründe, aus denen die Schnellbestätigung NICHT zulässig ist. Leer = zulässig. Reine Regeln, keine Datenbank. */
-export function repeatCheckReasons(ref: VerificationRow, driver: Pick<RequiredDriver, "firstName" | "lastName" | "birthDate" | "licenseNumber">, requiredClass: string | null, bookingEnd: Date, customer: { licenseNumber: string | null; licenseValidUntil: Date | null } | null, now = new Date()): string[] {
+export function repeatCheckReasons(ref: VerificationRow, driver: Pick<RequiredDriver, "firstName" | "lastName" | "birthDate" | "licenseNumber">, requiredClass: string | null, bookingEnd: Date | null, customer: { licenseNumber: string | null; licenseValidUntil: Date | null } | null, now = new Date()): string[] {
   const reasons: string[] = [];
   if (ref.status !== "CONFIRMED") reasons.push("Die letzte Prüfung ist nicht bestätigt.");
   if (norm(ref.driverFirstNameSnapshot) !== norm(driver.firstName) || norm(ref.driverLastNameSnapshot) !== norm(driver.lastName) || ref.driverBirthDateSnapshot.getTime() !== driver.birthDate.getTime()) reasons.push("Name oder Geburtsdatum weichen von der letzten Prüfung ab.");
   if (!ref.identityOriginalSeen || ref.identityNameMatched !== true || ref.identityBirthDateMatched !== true) reasons.push("Die letzte Identitätsprüfung ist nicht vollständig gespeichert.");
   if (!ref.licenseOriginalSeen || ref.licenseDocumentValid !== true || ref.licenseNameMatched !== true || !ref.licenseNumberSnapshot || ref.licenseClassesSnapshot.length === 0) reasons.push("Die letzte Führerscheinprüfung ist nicht vollständig gespeichert.");
   if (ref.licenseValidUntilSnapshot && ref.licenseValidUntilSnapshot < now) reasons.push("Der zuletzt geprüfte Führerschein ist abgelaufen.");
-  else if (ref.licenseValidUntilSnapshot && ref.licenseValidUntilSnapshot < bookingEnd) reasons.push("Der zuletzt geprüfte Führerschein läuft vor der geplanten Rückgabe ab.");
+  else if (ref.licenseValidUntilSnapshot && bookingEnd && ref.licenseValidUntilSnapshot < bookingEnd) reasons.push("Der zuletzt geprüfte Führerschein läuft vor der geplanten Rückgabe ab.");
   if (!requiredClass) reasons.push("Für dieses Fahrzeug ist keine erforderliche Fahrerlaubnisklasse hinterlegt.");
   else if (!classSatisfiesRequirement(requiredClass, ref.licenseClassesSnapshot)) reasons.push(`Die für dieses Fahrzeug erforderliche Fahrerlaubnisklasse ${requiredClass} fehlt in der letzten Prüfung.`);
   if (ref.manualReviewRequired && ref.manualReviewConfirmed !== true) reasons.push("Ausländischer Führerschein: die manuelle Prüfung ist nicht bestätigt.");
@@ -546,6 +550,8 @@ export async function recordDriverDocumentCopy(tenantId: string, actor: Actor, i
   const handover = await db.handover.findFirst({ where: { id: input.handoverId, tenantId }, select: { status: true } });
   if (!handover) throw new DomainError("Protokoll nicht gefunden.");
   if (handover.status !== "DRAFT") throw new ImmutableError("Das Protokoll ist finalisiert. Es können keine Dokumentkopien mehr hinzugefügt werden.");
+  // Befehl 29 Phase E: keine Dokumentkopien zu einem geschlossenen Unfallersatzfall (vor dem Speichern der Datei)
+  if (await accidentCaseClosed(db, tenantId, input.bookingId)) throw new DomainError(ACCIDENT_CASE_CLOSED_MESSAGE);
 
   const consentRequired = input.documentKind === "IDENTITY";
   if (consentRequired && !input.consent?.given) throw new DomainError("Für die Speicherung einer Personalausweiskopie ist die Zustimmung des Ausweisinhabers erforderlich.");

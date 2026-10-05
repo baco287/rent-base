@@ -1,5 +1,7 @@
 "use server";
 
+import { accidentInvoiceOf } from "@/lib/accident-replacement-events";
+
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
@@ -89,6 +91,8 @@ export async function generateInvoicePdfAction(bookingId: string | null, invoice
   const { tenant, user } = await requireRole("DISPO", "YARD");
   const invoice = await finalizedInvoice(tenant.id, bookingId, invoiceId);
   if (!invoice) return { error: "Zu dieser Rechnung gibt es keine abgeschlossene Fassung." };
+  // Befehl 29 Phase F: Unfallersatz-Abrechnung nur Inhaber und Disposition
+  if (user.role === "YARD" && (await accidentInvoiceOf(db, tenant.id, invoice.invoiceId))) return { error: "Die Unfallersatz-Abrechnung bearbeiten nur Inhaber und Disposition." };
   try {
     const res = await ensureInvoiceDocument(tenant.id, invoice.id, user.id);
     refresh(bookingId);

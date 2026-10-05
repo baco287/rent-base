@@ -101,7 +101,8 @@ async function refreshStatus(tx: Tx, tenantId: string, id: string, actor: Actor 
 async function rentalInputs(tx: Tx | typeof db, tenantId: string, vehicleId: string, offenseAt: Date): Promise<RentalCandidateInput[]> {
   const from = new Date(offenseAt.getTime() - 2 * 86_400_000), to = new Date(offenseAt.getTime() + 2 * 86_400_000);
   const rows = await tx.booking.findMany({
-    where: { tenantId, vehicleId, status: { not: "CANCELLED" }, OR: [{ startAt: { lt: to }, endAt: { gt: from } }, { actualPickupAt: { lt: to } }] },
+    // Befehl 29: offenes Mietende (null) läuft – zählt wie ein Ende nach dem Fenster
+    where: { tenantId, vehicleId, status: { not: "CANCELLED" }, OR: [{ startAt: { lt: to }, OR: [{ endAt: { gt: from } }, { endAt: null }] }, { actualPickupAt: { lt: to } }] },
     select: { id: true, number: true, status: true, startAt: true, endAt: true, actualPickupAt: true, actualReturnAt: true, contract: { select: { id: true, status: true } } },
   });
   return rows.map((b) => ({ bookingId: b.id, bookingNumber: b.number, status: b.status, startAt: b.startAt, endAt: b.endAt, actualPickupAt: b.actualPickupAt, actualReturnAt: b.actualReturnAt, contractId: b.contract?.id ?? null, contractStatus: b.contract?.status ?? null }));
@@ -417,7 +418,7 @@ async function buildResponseContent(tx: Tx | typeof db, tenantId: string, c: Cas
   const vehicle = c.vehicleId ? await tx.vehicle.findFirst({ where: { id: c.vehicleId, tenantId }, select: { plate: true, make: true, model: true } }) : null;
   const actual = !!booking?.actualPickupAt;
   const rentalSnapshot = booking && responseType !== "NO_MATCHING_RENTAL" && responseType !== "VEHICLE_NOT_IN_FLEET"
-    ? { bookingNumber: booking.number, contractNumber: booking.contract?.status === "SIGNED" ? booking.contract.number : null, windowStart: (actual ? booking.actualPickupAt! : booking.startAt).toISOString(), windowEnd: actual ? booking.actualReturnAt?.toISOString() ?? null : booking.endAt.toISOString(), basis: actual ? "ACTUAL" : "PLANNED", dayOnly: c.rentalMatchDayOnly }
+    ? { bookingNumber: booking.number, contractNumber: booking.contract?.status === "SIGNED" ? booking.contract.number : null, windowStart: (actual ? booking.actualPickupAt! : booking.startAt).toISOString(), windowEnd: actual ? booking.actualReturnAt?.toISOString() ?? null : booking.endAt?.toISOString() ?? null, basis: actual ? "ACTUAL" : "PLANNED", dayOnly: c.rentalMatchDayOnly }
     : null;
   return {
     responseType, submissionMethod: input.submissionMethod, authorityReference: c.authorityReference,

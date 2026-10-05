@@ -19,13 +19,14 @@ const nextText = (r: Receivable) => (r.next.kind === "WAIT_DUE" || r.next.kind =
  * Mahnstufe, was ist als Nächstes zu tun. Suche, Filter, Sortierung und Seiten serverseitig; Stand aus der zentralen Summierung.
  */
 export default async function ReceivablesPage({ searchParams }: PageProps<"/forderungen">) {
-  const { tenant } = await requireSession();
+  const { tenant, user } = await requireSession();
   const sp = await searchParams;
   const filter = (typeof sp.filter === "string" && sp.filter in RECEIVABLE_FILTERS ? sp.filter : "offen") as ReceivableFilter;
   const sort = (typeof sp.sort === "string" && sp.sort in RECEIVABLE_SORTS ? sp.sort : "faelligkeit") as ReceivableSort;
   const q = typeof sp.q === "string" ? sp.q.slice(0, 100) : "";
   const page = Math.max(1, Number(typeof sp.seite === "string" ? sp.seite : 1) || 1);
-  const list = await listReceivables(tenant.id, { filter, sort, q, page });
+  // Befehl 29 Phase F: Hofmitarbeiter sehen keine Unfallersatz-Forderungen
+  const list = await listReceivables(tenant.id, { filter, sort, q, page, hideAccidentBilling: user.role === "YARD" });
   const qs = (over: Record<string, string | number | null>) => {
     const p = new URLSearchParams();
     const merged: Record<string, string | number | null> = { filter, sort, q: q || null, seite: null, ...over };

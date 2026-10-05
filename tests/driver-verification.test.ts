@@ -156,11 +156,11 @@ test("Abgelaufen: Führerschein am Übergabetag abgelaufen blockiert; Ablauf vor
   await assert.rejects(() => confirmVerification(w.tenantId, w.actor, v.id), DomainError);
 
   const booking = await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } });
-  const beforeReturn = await recordLicenseCheck(w.tenantId, w.actor, v.id, { originalSeen: true, documentValid: true, nameMatched: true, licenseNumber: "B072RRE2I55", licenseCountry: "DE", licenseIssuedAt: new Date("2005-01-01"), licenseValidUntil: new Date(booking.endAt.getTime() - 86_400_000), licenseClasses: ["B"], internationalPermitPresented: false, translationPresented: false });
+  const beforeReturn = await recordLicenseCheck(w.tenantId, w.actor, v.id, { originalSeen: true, documentValid: true, nameMatched: true, licenseNumber: "B072RRE2I55", licenseCountry: "DE", licenseIssuedAt: new Date("2005-01-01"), licenseValidUntil: new Date(booking.endAt!.getTime() - 86_400_000), licenseClasses: ["B"], internationalPermitPresented: false, translationPresented: false });
   assert.ok(beforeReturn.blockedReasons.includes("LICENSE_EXPIRES_BEFORE_RETURN"));
 
   // gültig bis weicht bewusst vom Kundenstammdatensatz ab (realistischer Fall: Original zeigt ein neueres Datum) → braucht die bewusste Bestätigung
-  const ok = await recordLicenseCheck(w.tenantId, w.actor, v.id, { originalSeen: true, documentValid: true, nameMatched: true, licenseNumber: "B072RRE2I55", licenseCountry: "DE", licenseIssuedAt: new Date("2005-01-01"), licenseValidUntil: new Date(booking.endAt.getTime() + 365 * 86_400_000), licenseClasses: ["B"], internationalPermitPresented: false, translationPresented: false, deviationConfirmed: true });
+  const ok = await recordLicenseCheck(w.tenantId, w.actor, v.id, { originalSeen: true, documentValid: true, nameMatched: true, licenseNumber: "B072RRE2I55", licenseCountry: "DE", licenseIssuedAt: new Date("2005-01-01"), licenseValidUntil: new Date(booking.endAt!.getTime() + 365 * 86_400_000), licenseClasses: ["B"], internationalPermitPresented: false, translationPresented: false, deviationConfirmed: true });
   assert.equal(ok.blockedReasons.length, 0);
   await confirmVerification(w.tenantId, w.actor, v.id);
 });

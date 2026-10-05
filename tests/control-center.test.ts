@@ -120,15 +120,16 @@ test("Feature-Flags: ohne Zeile Standard (alles an), Sperren/Freischalten protok
   await grant(admin.id, "SUPER_ADMIN");
 
   assert.deepEqual(await tenantFeatures(tenant.id), defaultFeatureState());
-  for (const k of FEATURE_KEYS) assert.equal(await isFeatureEnabled(tenant.id, k), true, `${k} Standard an`);
-  assert.deepEqual(hiddenNavPaths(defaultFeatureState()), []);
+  // Bestehende Module sind ohne Zeile an (Bestandsmandanten unverändert); Befehl 29: Unfallersatz ist neu und standardmäßig gesperrt
+  for (const k of FEATURE_KEYS) assert.equal(await isFeatureEnabled(tenant.id, k), k !== "ACCIDENT_REPLACEMENT", `${k} Standard ${k === "ACCIDENT_REPLACEMENT" ? "aus" : "an"}`);
+  assert.deepEqual(hiddenNavPaths(defaultFeatureState()), ["/unfallersatz"]);
 
   assert.equal((await setTenantFeature(actorOf(admin), tenant.id, "AUTHORITIES", false, "Testsperre")).changed, true);
   assert.equal(await isFeatureEnabled(tenant.id, "AUTHORITIES"), false);
   assert.equal(await isFeatureEnabled(other.id, "AUTHORITIES"), true, "anderer Mandant unberührt");
   await rejectsDomain(assertFeature(tenant.id, "AUTHORITIES"), /nicht freigeschaltet/);
   await assertFeature(tenant.id, "DAMAGE_CASES");
-  assert.deepEqual(hiddenNavPaths(await tenantFeatures(tenant.id)), ["/behoerden"]);
+  assert.deepEqual(hiddenNavPaths(await tenantFeatures(tenant.id)), ["/behoerden", "/unfallersatz"]);
 
   const audit = await db.auditLog.findMany({ where: { tenantId: tenant.id, action: { in: ["FEATURE_ENABLED", "FEATURE_DISABLED"] } }, orderBy: { createdAt: "asc" } });
   assert.equal(audit.length, 1);

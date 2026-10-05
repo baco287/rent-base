@@ -5,8 +5,10 @@ import { db } from "@/lib/db";
 import { customerName, fmtDateTime, fmtEur } from "@/lib/format";
 import { rentalDays } from "@/lib/pricing";
 import { SIGNED_AMENDMENTS_SELECT } from "@/lib/amendments";
-import { AGREED_EXTENSION_SELECT, agreedEndOf, isOverdue } from "@/lib/bookings";
+import { AGREED_EXTENSION_SELECT, agreedEndOf, isOverdue, pricingEnd } from "@/lib/bookings";
 import { expectedRentalCents } from "@/lib/rental-payments";
+import { accidentTariffsFor } from "@/lib/accident-case-file";
+import { accidentRentState } from "@/lib/accident-pricing";
 import { BookingStageChip, Card, Chip, Content, Empty, PageHeader, Plate } from "@/components/ui";
 import { bookingStage, pickupAction, returnAction } from "@/lib/booking-status";
 import { bookingSearchWhere, SEARCH_MAX } from "@/lib/search";
@@ -45,6 +47,8 @@ export default async function BookingsPage({ searchParams }: PageProps<"/buchung
     }),
   ]);
   const pages = Math.max(1, Math.ceil(total / PAGE));
+  // Befehl 29 Phase E: Unfallersatz – Miettage und Mietwert wie Fallakte und Rechnung (ab Übergabe, Tarif laut Vertrag), vorher kein Ist-Wert
+  const accidentTariffs = await accidentTariffsFor(tenant.id, bookings.filter((b) => b.rentalType === "ACCIDENT_REPLACEMENT").map((b) => b.id));
 
   return (
     <>
@@ -88,8 +92,11 @@ export default async function BookingsPage({ searchParams }: PageProps<"/buchung
                 <tbody>
                   {bookings.map((b) => {
                     // Befehl 27: mit unterschriebenem Vertrag der wirksame Vertragspreis (inkl. Nachträgen), sonst Schätzung aus der Buchung
-                    const d = rentalDays(b.startAt, b.endAt);
-                    const total = expectedRentalCents(b).cents / 100;
+                    // Befehl 29: offenes Mietende (Unfallersatz) – bisherige Miettage bis zur Rückgabe bzw. bis jetzt
+                    const accidentTariff = accidentTariffs.get(b.id);
+                    const rent = accidentTariff ? accidentRentState(b, accidentTariff) : null;
+                    const d = rent ? (rent.phase === "NONE" ? null : rent.value.days) : rentalDays(b.startAt, pricingEnd(b));
+                    const total = rent ? (rent.phase === "NONE" ? null : rent.value.cents / 100) : expectedRentalCents(b).cents / 100;
                     // Befehl 28: überfällig gemessen am operativen Ende (vereinbarte Verlängerung zählt)
                     const overdue = isOverdue({ status: b.status, endAt: b.endAt, agreedEndAt: agreedEndOf(b) });
                     // Befehl 21: die nächste Prozessaktion direkt in der Zeile – Rückgabe (laufende Miete) bzw. Übergabe (bereit)
@@ -101,10 +108,10 @@ export default async function BookingsPage({ searchParams }: PageProps<"/buchung
                         <td className="px-3 py-2.5 font-mono tnum"><Link href={`/buchungen/${b.id}`} className="hover:underline">{b.number}</Link></td>
                         <td className="px-3 py-2.5"><Link href={`/buchungen/${b.id}`} className="font-medium hover:underline">{customerName(b.customer)}</Link></td>
                         <td className="px-3 py-2.5"><Plate>{b.vehicle.plate}</Plate> <span className="text-ink-3 text-xs">{b.vehicle.make} {b.vehicle.model}</span></td>
-                        <td className="px-3 py-2.5 font-mono tnum">{fmtDateTime(b.startAt)}</td>
-                        <td className={`px-3 py-2.5 font-mono tnum ${overdue ? "text-bad font-semibold" : ""}`}>{fmtDateTime(b.endAt)}</td>
-                        <td className="px-3 py-2.5 text-right tnum">{d}</td>
-                        <td className="px-3 py-2.5 text-right font-mono tnum">{fmtEur(total)}</td>
+                        <td className="px-3 py-2.5 font-mono tnum">{rent && b.actualPickupAt ? <>{fmtDateTime(b.actualPickupAt)}<span className="block text-[11px] text-ink-3 font-sans">übergeben</span></> : fmtDateTime(b.startAt)}</td>
+                        <td className={`px-3 py-2.5 font-mono tnum ${overdue ? "text-bad font-semibold" : ""}`}>{rent ? (b.status === "CANCELLED" ? "entfällt" : b.actualReturnAt ? <>{fmtDateTime(b.actualReturnAt)}<span className="block text-[11px] text-ink-3 font-sans">zurückgegeben</span></> : b.endAt ? <>{fmtDateTime(b.endAt)}<span className="block text-[11px] text-ink-3 font-sans">geplant</span></> : "offen") : fmtDateTime(b.endAt)}</td>
+                        <td className="px-3 py-2.5 text-right tnum">{d ?? "–"}</td>
+                        <td className="px-3 py-2.5 text-right font-mono tnum">{total == null ? "–" : fmtEur(total)}</td>
                         <td className="px-3 py-2.5">{overdue ? <span className="chip bg-bad-soft text-bad">Überfällig</span> : <BookingStageChip stage={bookingStage(b, b.contract)} />}</td>
                         <td className="px-3 py-2">{rowAction ? <Link href={rowAction.href} className="btn btn-primary !py-1.5 whitespace-nowrap">{rowAction.label}</Link> : <Link href={`/buchungen/${b.id}`} className="btn !py-1.5 whitespace-nowrap">Öffnen</Link>}</td>
                       </tr>

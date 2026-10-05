@@ -44,7 +44,7 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
   const { tenant, user } = await requireSession();
   const sp = await searchParams;
   const horizon: Horizon = (HORIZONS.find((h) => h.key === sp.zeitraum)?.key ?? "heute") as Horizon;
-  const d = await loadDashboard(tenant.id, { horizon });
+  const d = await loadDashboard(tenant.id, { horizon, hideAccidentBilling: user.role === "YARD" });
   const keyDrops = await keyDropsToInspect(tenant.id);
   const { counts: c, now } = d;
 
@@ -52,11 +52,12 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
   const weekEnd = zonedDayStartPlus(now, 7);
   const [vehicles, weekBookings, damage] = await Promise.all([
     db.vehicle.findMany({ where: { tenantId: tenant.id, status: { not: "INACTIVE" } }, select: { id: true, status: true } }),
-    db.booking.findMany({ where: { tenantId: tenant.id, status: { in: ["RESERVED", "ACTIVE"] }, startAt: { lt: weekEnd }, endAt: { gt: d.range.start } }, select: { startAt: true, endAt: true } }),
+    // Befehl 29: offenes Mietende (Unfallersatz) belegt bis zum Ende des Zeitfensters
+    db.booking.findMany({ where: { tenantId: tenant.id, status: { in: ["RESERVED", "ACTIVE"] }, startAt: { lt: weekEnd }, OR: [{ endAt: { gt: d.range.start } }, { endAt: null }] }, select: { startAt: true, endAt: true } }),
     caseCounts(tenant.id),
   ]);
   const weekMs = weekEnd.getTime() - d.range.start.getTime();
-  const bookedMs = weekBookings.reduce((sum, b) => sum + (Math.min(b.endAt.getTime(), weekEnd.getTime()) - Math.max(b.startAt.getTime(), d.range.start.getTime())), 0);
+  const bookedMs = weekBookings.reduce((sum, b) => sum + (Math.min(b.endAt?.getTime() ?? weekEnd.getTime(), weekEnd.getTime()) - Math.max(b.startAt.getTime(), d.range.start.getTime())), 0);
   const fleet = vehicles.filter((v) => v.status === "AVAILABLE").length || vehicles.length;
   const utilization = fleet ? Math.round((bookedMs / (weekMs * fleet)) * 100) : 0;
 
@@ -145,7 +146,7 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
                   <Plate>{k.plate}</Plate>
                   <Link href={`/buchungen/${k.bookingId}/rueckgabe`} className="font-medium hover:underline">{k.vehicle}</Link>
                   <span className="text-ink-2">{k.customer}</span>
-                  <span className="text-ink-3">Abgabe laut Kunde {k.dropOffAt ? fmtDateTime(k.dropOffAt) : "–"} · geplantes Mietende {fmtDateTime(k.plannedEnd)}</span>
+                  <span className="text-ink-3">Abgabe laut Kunde {k.dropOffAt ? fmtDateTime(k.dropOffAt) : "–"} · geplantes Mietende {k.plannedEnd ? fmtDateTime(k.plannedEnd) : "offen"}</span>
                   <Chip tone="amber">{k.confirmedAt ? `seit ${sinceText(k.confirmedAt, now)}` : "gemeldet"}</Chip>
                   {k.inspectionStarted && <Chip tone="info">Kontrolle begonnen</Chip>}
                   {k.nextBooking && <Chip tone="bad">Folgebuchung {k.nextBooking.number} ab {fmtDateTime(k.nextBooking.startAt)}</Chip>}

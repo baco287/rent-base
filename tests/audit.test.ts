@@ -219,9 +219,9 @@ test("Fahrzeugverfügbarkeit: Status, Überschneidung, Zeitgrenzen [start, end),
   const b = await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } });
   // Zeitgrenzen: Ende 10:00 und Beginn 10:00 ist kein Konflikt, eine Minute Überschneidung schon
   await db.$transaction(async (tx) => {
-    assert.equal((await findConflicts(tx, w.tenantId, w.vehicleId, b.endAt, new Date(b.endAt.getTime() + DAY))).length, 0, "[start, end): Anschluss zur selben Minute ist frei");
+    assert.equal((await findConflicts(tx, w.tenantId, w.vehicleId, b.endAt!, new Date(b.endAt!.getTime() + DAY))).length, 0, "[start, end): Anschluss zur selben Minute ist frei");
     assert.equal((await findConflicts(tx, w.tenantId, w.vehicleId, new Date(b.startAt.getTime() - DAY), b.startAt)).length, 0);
-    assert.equal((await findConflicts(tx, w.tenantId, w.vehicleId, new Date(b.endAt.getTime() - 60_000), new Date(b.endAt.getTime() + DAY))).length, 1);
+    assert.equal((await findConflicts(tx, w.tenantId, w.vehicleId, new Date(b.endAt!.getTime() - 60_000), new Date(b.endAt!.getTime() + DAY))).length, 1);
     assert.equal((await findConflicts(tx, w.tenantId, w.vehicleId, new Date(b.startAt.getTime() - DAY), new Date(b.startAt.getTime() + 60_000))).length, 1);
   });
   // Fahrzeugstatus
@@ -232,7 +232,7 @@ test("Fahrzeugverfügbarkeit: Status, Überschneidung, Zeitgrenzen [start, end),
   await db.vehicle.update({ where: { id: w.vehicleId }, data: { status: "AVAILABLE" } });
   // fremder Mandant sieht das Fahrzeug nicht
   const other = await world("avail-other");
-  await assert.rejects(() => db.$transaction((tx) => assertVehicleBookable(tx, other.tenantId, w.vehicleId, b.endAt, new Date(b.endAt.getTime() + DAY))), /Fahrzeug nicht gefunden/);
+  await assert.rejects(() => db.$transaction((tx) => assertVehicleBookable(tx, other.tenantId, w.vehicleId, b.endAt!, new Date(b.endAt!.getTime() + DAY))), /Fahrzeug nicht gefunden/);
   // stornierte Buchung blockiert nicht mehr
   await changeBookingStatus(w.tenantId, w.bookingId, "CANCELLED", { actor: w.actor, reason: "Test-Storno" });
   await db.$transaction(async (tx) => assert.equal((await findConflicts(tx, w.tenantId, w.vehicleId, b.startAt, b.endAt)).length, 0));

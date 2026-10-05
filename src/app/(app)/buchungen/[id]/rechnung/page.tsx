@@ -3,7 +3,10 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { DAMAGE_TAX_TREATMENTS, EXTRA_CHARGE_TYPES, INVOICE_CHAIN_STATUS, INVOICE_ITEM_SOURCES, INVOICE_VERSION_KINDS, invoiceKindWord, isSideInvoice, type DamageTaxTreatment, type ExtraChargeType } from "@/lib/constants";
+import { isFeatureEnabled } from "@/lib/features";
+import { DAMAGE_TAX_TREATMENTS, EXTRA_CHARGE_TYPES, INVOICE_CHAIN_STATUS, INVOICE_ITEM_SOURCES, INVOICE_RECIPIENT_ROLES, INVOICE_VERSION_KINDS, invoiceKindWord, isSideInvoice, recipientRoleOf, type DamageTaxTreatment, type ExtraChargeType } from "@/lib/constants";
+import type { InvoiceDocumentData } from "@/lib/invoice-view";
+import { accidentInvoiceOf } from "@/lib/accident-replacement-events";
 import { loadInvoiceDocumentData } from "@/lib/document-data";
 import { customerName, fmtDateTime, fmtEur } from "@/lib/format";
 import { getInvoiceState, invoiceSettingsMissing, listVersions, type CompanySnapshot, type InvoiceCustomerSnapshot, type VersionDiff } from "@/lib/invoices";
@@ -57,6 +60,16 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
   const damageCase = invoice?.damageCaseId ? await db.damageCase.findFirst({ where: { id: invoice.damageCaseId, tenantId: tenant.id }, select: { id: true, caseNumber: true, customerChargeBasis: true } }) : null;
   const authorityCase = invoice?.authorityCaseId ? await db.authorityCase.findFirst({ where: { id: invoice.authorityCaseId, tenantId: tenant.id }, select: { id: true, caseNumber: true, authorityName: true, authorityReference: true } }) : null;
   const kindLabel = invoiceKindWord(invoice?.kind);
+  // Befehl 29 Phase F: Unfallersatz – Fallbezug, Abrechnungsart, Empfängerrolle; die Abrechnung sieht nur Inhaber und Disposition
+  const accident = invoice?.kind === "ACCIDENT_REPLACEMENT";
+  // auch Mahngebühr-Rechnungen und Gegenbelege zu Unfallersatz-Rechnungen gehören zur Abrechnung
+  const accidentRef = invoice ? await accidentInvoiceOf(db, tenant.id, invoice.id) : null;
+  if (accidentRef && !canEdit) redirect(`/buchungen/${b.id}?hinweis=${encodeURIComponent("Die Unfallersatz-Abrechnung sehen nur Inhaber und Disposition.")}`);
+  const accidentCase = accidentRef ? await db.accidentReplacementCase.findFirst({ where: { tenantId: tenant.id, bookingId: accidentRef.bookingId }, select: { id: true, caseNumber: true, status: true } }) : null;
+  // geschlossener Fall: Rechnung, Zahlungen, Gegenbelege, Mahnungen, Guthaben nur lesen (der Server lehnt Änderungen ab)
+  const caseLocked = accidentCase?.status === "CLOSED";
+  const financeRole = caseLocked ? "YARD" : user.role;
+  const accidentLink = accidentCase ? <Link href={`/unfallersatz/${accidentCase.id}?tab=abrechnung`} className="btn">Zur Fallakte</Link> : null;
   const feeNote = authorityCase ? <div className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm"><span className="font-semibold">Bearbeitungsentgelt zum Behördenvorgang {authorityCase.caseNumber}</span> ({authorityCase.authorityName}, Az. {authorityCase.authorityReference}). Grundlage ist das im Mietvertrag vereinbarte Bearbeitungsentgelt für Behördenanfragen. Das Bußgeld selbst wird nicht weiterberechnet; diese Rechnung ist von der Mietrechnung getrennt.</div> : null;
 
   // Hofmitarbeiter: nur abgeschlossene Rechnungen, kein Entwurf und keine Neuanlage (serverseitig auch in den Actions)
@@ -66,6 +79,25 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
 
   // Befehl 23.1: freie Rechnungen (und ihre Gegenbelege) haben ihre eigene Seite /rechnungen/<id>
   if (invoice?.kind === "GENERAL") redirect(`/rechnungen/${invoice.id}`);
+  // Befehl 29 Phase E: Unfallersatz wird nicht über die Standard-Mietrechnung abgerechnet (die Fachlogik lehnt sie ab) – keine Sackgasse
+  if (!invoice && b.rentalType === "ACCIDENT_REPLACEMENT") {
+    const accidentCase = await db.accidentReplacementCase.findFirst({ where: { tenantId: tenant.id, bookingId: b.id }, select: { id: true, caseNumber: true } });
+    const caseHref = accidentCase && (await isFeatureEnabled(tenant.id, "ACCIDENT_REPLACEMENT")) ? `/unfallersatz/${accidentCase.id}?tab=abrechnung` : null;
+    return (
+      <>
+        <PageHeader title="Rechnung" sub={<>Buchung {b.number} · <Plate>{b.vehicle.plate}</Plate></>}>
+          <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
+        </PageHeader>
+        <Content>
+          <Card className="p-5 flex flex-col gap-3 max-w-2xl">
+            <h2 className="font-semibold text-lg">Unfallersatz{accidentCase ? ` ${accidentCase.caseNumber}` : ""}</h2>
+            <p className="text-sm text-ink-2">Eine Unfallersatzmiete wird nicht über die Mietrechnung der Buchung abgerechnet, sondern nach tatsächlicher Mietdauer in der Fallakte (Unfallersatz-Rechnung an Versicherung bzw. Mieter).</p>
+            {caseHref && canEdit && <div><Link href={caseHref} className="btn btn-primary">Zur Abrechnung in der Fallakte</Link></div>}
+          </Card>
+        </Content>
+      </>
+    );
+  }
   if (!invoice) {
     const ret = b.handovers[0];
     const ready = b.status === "RETURNED" && b.contract?.status === "SIGNED" && !!ret;
@@ -136,7 +168,9 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
     // Befehl 21: Ausgangslage für die bewusste Kautionsverrechnung beim Abschluss – nur Zahlen, es wird nichts gebucht
     const paidBefore = draft.versionNo === 1 ? prepaidCents : mode?.paidCents ?? 0;
     const dep = await depositView(tenant.id, b.id);
-    const offsetStart = depositOffsetStart({ bookingStatus: b.status, grossCents: newGross, paidCents: paidBefore, receivedCents: dep.receivedCents, remainingCents: dep.remainingCents });
+    // Befehl 29: Rechnung an Versicherung bzw. anderen Empfänger – die Kaution des Mieters wird dort gar nicht erst angeboten
+    const renterInvoice = recipientRoleOf(draft.customerSnapshot as { recipientRole?: string } | null) === "RENTER";
+    const offsetStart = renterInvoice ? depositOffsetStart({ bookingStatus: b.status, grossCents: newGross, paidCents: paidBefore, receivedCents: dep.receivedCents, remainingCents: dep.remainingCents }) : null;
     const depositOffset = offsetStart ? { ...offsetStart, nonce: randomUUID(), when: toDateTimeInputValue(new Date()) } : null;
     const title = draft.versionNo === 1 ? `${kindLabel} (Entwurf)` : `${kindLabel} ${inv.number} · Fassung ${draft.versionNo} (Entwurf)`;
     return (
@@ -145,8 +179,9 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
           <Chip tone="amber">{draft.versionNo === 1 ? "Entwurf" : kind === "CORRECTION" ? "Berichtigung in Bearbeitung" : "Neufassung in Bearbeitung"}</Chip>
           {damageCase && <Link href={`/schaeden/${damageCase.id}`} className="btn">Zur Schadenakte</Link>}
           {authorityCase && <Link href={`/behoerden/${authorityCase.id}`} className="btn">Zum Behördenvorgang</Link>}
+          {accidentLink}
           <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
-          <form action={discardInvoiceDraftAction.bind(null, b.id, key)}><button className="btn btn-danger">Entwurf verwerfen</button></form>
+          {accidentCase?.status !== "CLOSED" && <form action={discardInvoiceDraftAction.bind(null, b.id, key)}><button className="btn btn-danger">Entwurf verwerfen</button></form>}
         </PageHeader>
         <Content>
           {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
@@ -156,6 +191,7 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
             </div>
           )}
           {feeNote}
+          {accident && <AccidentInvoiceNote doc={doc} caseNumber={accidentCase?.caseNumber ?? null} closed={accidentCase?.status === "CLOSED"} renterInvoice={renterInvoice} />}
           {draft.versionNo > 1 && mode && (
             <div className={`rounded-md px-3.5 py-2.5 text-sm ${mode.delivered ? "bg-amber-soft text-amber" : "bg-info-soft text-info"}`}>
               {mode.delivered ? (
@@ -185,20 +221,20 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
           )}
           {draft.versionNo > 1 && <p className="text-xs text-ink-3">Dieser Entwurf startet aus dem Snapshot der Fassung {draft.versionNo - 1}, nicht aus aktuellen Kunden-, Vertrags- oder Einstellungsdaten. Änderungen wirken nur auf diese Rechnung.</p>}
           {/* Befehl 20.9: finanzielle Gesamtsituation (Forderung + Kaution) vor dem Abschluss – Verrechnung erst danach, bewusst */}
-          <DepositSettlementCard tenantId={tenant.id} bookingId={b.id} role={user.role} invoice={{ id: inv.id, number: inv.number, status: "DRAFT", grossCents: newGross, prepaidCents: draft.versionNo === 1 ? prepaidCents : mode?.paidCents ?? 0 }} />
+          {renterInvoice && <DepositSettlementCard tenantId={tenant.id} bookingId={b.id} role={user.role} invoice={{ id: inv.id, number: inv.number, status: "DRAFT", grossCents: newGross, prepaidCents: draft.versionNo === 1 ? prepaidCents : mode?.paidCents ?? 0 }} />}
           <InvoiceEditor
             defaultPaymentTermDays={tenant.paymentTermDays}
             version={draft.updatedAt.getTime()}
             versionNo={draft.versionNo}
             kind={kind}
-            invoiceKind={inv.kind === "DAMAGE" ? "DAMAGE" : "RENTAL"}
+            invoiceKind={inv.kind === "DAMAGE" ? "DAMAGE" : accident ? "ACCIDENT" : "RENTAL"}
             doc={doc}
             items={items}
             allowedRates={allowedRates}
             draft={{
               customerNote: s(draft.customerNote), taxNote: s(draft.taxNote), taxTreatment: draft.taxTreatment, notes: s(inv.notes), reason: s(draft.reason), paymentTermDays: draft.paymentTermDays ?? (draft.versionNo === 1 ? tenant.paymentTermDays : null) ?? null,
               servicePeriodStart: toDateTimeInputValue(draft.servicePeriodStart), servicePeriodEnd: toDateTimeInputValue(draft.servicePeriodEnd),
-              customer: { type: c.type ?? "PRIVATE", companyName: s(c.companyName), firstName: s(c.firstName), lastName: s(c.lastName), street: s(c.street), zip: s(c.zip), city: s(c.city), country: s(c.country) || "DE", email: s(c.email), number: s(c.number) },
+              customer: { type: c.type ?? "PRIVATE", companyName: s(c.companyName), firstName: s(c.firstName), lastName: s(c.lastName), street: s(c.street), zip: s(c.zip), city: s(c.city), country: s(c.country) || "DE", email: s(c.email), number: s(c.number), ...(accident ? { claimNumber: s(c.claimNumber), insuredName: s(c.insuredName) } : {}) },
               company: { name: s(co.name), legalForm: s(co.legalForm), street: s(co.street), zip: s(co.zip), city: s(co.city), country: s(co.country) || "DE", email: s(co.email), phone: s(co.phone), vatId: s(co.vatId), taxNumber: s(co.taxNumber), bankName: s(co.bankName), iban: s(co.iban), bic: s(co.bic), invoiceFooter: s(co.invoiceFooter) },
             }}
             blocking={blockingIssues.length > 0}
@@ -240,8 +276,9 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
         {finance.chain !== "NONE" && <Chip tone={finance.chain === "CANCELLED" ? "bad" : "info"}>{INVOICE_CHAIN_STATUS[finance.chain]}</Chip>}
         {damageCase && <Link href={`/schaeden/${damageCase.id}`} className="btn">Zur Schadenakte</Link>}
           {authorityCase && <Link href={`/behoerden/${authorityCase.id}`} className="btn">Zum Behördenvorgang</Link>}
+        {accidentLink}
         <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
-        {canEdit && mode?.editable && <form action={startInvoiceEditAction.bind(null, b.id, key)}><button className="btn btn-primary">Rechnung bearbeiten</button></form>}
+        {canEdit && !caseLocked && mode?.editable && <form action={startInvoiceEditAction.bind(null, b.id, key)}><button className="btn btn-primary">Rechnung bearbeiten</button></form>}
       </PageHeader>
       <Content>
         {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
@@ -251,6 +288,7 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
           </div>
         )}
         {feeNote}
+        {accident && <AccidentInvoiceNote doc={doc} caseNumber={accidentCase?.caseNumber ?? null} closed={accidentCase?.status === "CLOSED"} renterInvoice={recipientRoleOf(shown.customerSnapshot as { recipientRole?: string } | null) === "RENTER"} />}
         {Number.isFinite(finishedNo) && finishedNo === current.versionNo && (
           <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 font-medium">
             {finishedNo === 1 ? `Die Rechnung ${inv.number} ist abgeschlossen und versiegelt.` : `Fassung ${finishedNo} der Rechnung ${inv.number} ist abgeschlossen und versiegelt (${INVOICE_VERSION_KINDS[current.kind as keyof typeof INVOICE_VERSION_KINDS]}). Fassung ${finishedNo - 1} bleibt archiviert.`} Rechnungsbetrag {fmtCents(toCents(current.grossTotal))}.
@@ -261,7 +299,8 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
         {pay.status === "OVERPAID" && finance.refundRemainingCents > 0 && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm font-medium">Kundenguthaben {fmtCents(pay.overpaidCents)}: wirksame Forderung {fmtCents(pay.grossCents)}, bezahlt {fmtCents(pay.paidCents)}{finance.completedRefundCents > 0 ? `, bereits ausgezahlt ${fmtCents(finance.completedRefundCents)}` : ""}{finance.returnedToDepositCents > 0 ? `, zur Kaution zurückgeführt ${fmtCents(finance.returnedToDepositCents)}` : ""}, noch verfügbar {fmtCents(finance.refundRemainingCents)}. Offen ist 0,00 €. Rent-Base entscheidet nicht automatisch – siehe „Kundenguthaben“.</p>}
         {pay.status === "OVERPAID" && finance.refundRemainingCents === 0 && <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Kundenguthaben {fmtCents(pay.overpaidCents)} ist erledigt{finance.completedRefundCents > 0 ? ` – ausgezahlt ${fmtCents(finance.completedRefundCents)}` : ""}{finance.returnedToDepositCents > 0 ? ` – zur Kaution zurückgeführt ${fmtCents(finance.returnedToDepositCents)}` : ""}.</p>}
         {(pay.chain !== "NONE" || finance.hasDraftCounter) && <FinancialSummary f={finance} numberLabel={inv.number ?? ""} />}
-        <ChainCard tenantId={tenant.id} invoiceId={inv.id} currentId={inv.id} canEdit={canEdit} mode={mode} bookingId={b.id} />
+        {caseLocked && !accident && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">Der Unfallersatzfall ist abgeschlossen und kann nicht mehr bearbeitet werden. Zahlungen, Gutschriften und Mahnungen zu dieser Rechnung sind erst nach dem Wiederöffnen der Fallakte möglich.</p>}
+        <ChainCard tenantId={tenant.id} invoiceId={inv.id} currentId={inv.id} canEdit={canEdit && !caseLocked} mode={mode} bookingId={b.id} />
         {shown.id !== current.id && <p className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm font-medium">Sie sehen die ersetzte Fassung {shown.versionNo}. <Link href={self} className="underline">Zur aktuellen Fassung {current.versionNo}</Link>.</p>}
 
         <Card title="Fassungsverlauf" right={<Chip>{versions.length === 1 ? "1 Fassung" : `${versions.length} Fassungen`}</Chip>}>
@@ -299,12 +338,12 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
         </Card>
 
         {shown.id === current.id && <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} invoiceId={inv.id} />}
-        {shown.id === current.id && inv.kind !== "DUNNING_FEE" && <DunningCard tenantId={tenant.id} bookingId={b.id} role={user.role} invoiceId={inv.id} />}
+        {shown.id === current.id && inv.kind !== "DUNNING_FEE" && <DunningCard tenantId={tenant.id} bookingId={b.id} role={financeRole} invoiceId={inv.id} />}
         {shown.id === current.id && inv.kind === "DUNNING_FEE" && <DunningFeeNote tenantId={tenant.id} bookingId={b.id} invoiceId={inv.id} />}
-        {shown.id === current.id && <CustomerCreditCard tenantId={tenant.id} bookingId={b.id} role={user.role} invoiceId={inv.id} />}
-        {shown.id === current.id && <PaymentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} invoiceId={inv.id} />}
-        {shown.id === current.id && <DepositSettlementCard tenantId={tenant.id} bookingId={b.id} role={user.role} invoice={{ id: inv.id, number: inv.number, status: "FINALIZED", grossCents: finance.effectiveCents, prepaidCents: pay.paidCents }} />}
-        {shown.id === current.id && (finance.refundRequired || finance.completedRefundCents > 0) && <PayoutPanel tenantId={tenant.id} role={user.role} sourceRef={{ sourceType: "INVOICE_REFUND", invoiceId: inv.id }} bookingId={b.id} />}
+        {shown.id === current.id && <CustomerCreditCard tenantId={tenant.id} bookingId={b.id} role={financeRole} invoiceId={inv.id} />}
+        {shown.id === current.id && <PaymentsPanel tenantId={tenant.id} bookingId={b.id} role={financeRole} invoiceId={inv.id} />}
+        {shown.id === current.id && (!accident || recipientRoleOf(current.customerSnapshot as { recipientRole?: string } | null) === "RENTER") && <DepositSettlementCard tenantId={tenant.id} bookingId={b.id} role={financeRole} invoice={{ id: inv.id, number: inv.number, status: "FINALIZED", grossCents: finance.effectiveCents, prepaidCents: pay.paidCents }} />}
+        {shown.id === current.id && (finance.refundRequired || finance.completedRefundCents > 0) && <PayoutPanel tenantId={tenant.id} role={financeRole} sourceRef={{ sourceType: "INVOICE_REFUND", invoiceId: inv.id }} bookingId={b.id} />}
         <InvoiceDocumentView doc={doc} />
         {shown.diffFromPrevious && <DiffCard diff={shown.diffFromPrevious as unknown as VersionDiff} />}
         {canEdit && (
@@ -345,5 +384,20 @@ function ChangeLog({ entries }: { entries: { at: string; by: string; summary: st
         <li key={i} className="py-1.5 flex flex-wrap gap-x-2 items-baseline"><span className="font-mono tnum text-xs text-ink-3">{fmtDateTime(new Date(e.at))}</span><span className="text-xs text-ink-3">{e.by}</span>{e.versionNo ? <span className="text-xs text-ink-3">F{e.versionNo}</span> : null}<span>{e.summary}</span></li>
       ))}
     </ul>
+  );
+}
+
+/** Befehl 29 Phase F: Hinweis zu einer Unfallersatz-Rechnung – Fall, Abrechnungsart, Empfänger, Kaution, Fallsperre. */
+function AccidentInvoiceNote({ doc, caseNumber, closed, renterInvoice }: { doc: InvoiceDocumentData; caseNumber: string | null; closed: boolean; renterInvoice: boolean }) {
+  const role = doc.customer.roleLabel ?? INVOICE_RECIPIENT_ROLES.RENTER;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm">
+        <span className="font-semibold">{doc.accident?.typeLabel ?? "Unfallersatz-Rechnung"}{caseNumber ? ` zum Unfallersatzfall ${caseNumber}` : ""}</span> · Empfänger: {role}{doc.customer.claimNumber ? ` · Schadennummer ${doc.customer.claimNumber}` : ""}{doc.customer.insuredName && !renterInvoice ? ` · Geschädigter ${doc.customer.insuredName}` : ""}.
+        {doc.accident ? ` ${doc.accident.note}` : ""}
+        {!renterInvoice ? " Die Kaution des Mieters wird mit dieser Rechnung nicht verrechnet." : ""}
+      </div>
+      {closed && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">Der Unfallersatzfall ist abgeschlossen und kann nicht mehr bearbeitet werden. Abschließen, Bearbeiten, Zahlungen, Gutschriften, Mahnungen und Auszahlungen sind erst nach dem Wiederöffnen der Fallakte möglich; PDF und Versand bleiben verfügbar.</p>}
+    </div>
   );
 }

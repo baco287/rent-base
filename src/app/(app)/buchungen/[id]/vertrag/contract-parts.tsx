@@ -113,11 +113,11 @@ export function ContractDocumentView({ doc, showSignatures = true }: { doc: Cont
 
         <Card title="Preis">
           <div className="px-4 py-3 text-sm flex flex-col">
-            <div className="text-xs text-ink-3 pb-1">Mietdauer {doc.price.days} {doc.price.days === 1 ? "Tag" : "Tage"}</div>
+            <div className="text-xs text-ink-3 pb-1">{doc.price.durationText}</div>
             {doc.price.lines.map((l, i) => (
               <div key={i} className="flex justify-between gap-3 py-1.5 border-b border-line-soft"><span>{i > 0 ? "+ " : ""}{l.text}</span><span className="font-mono tnum">{l.amount}</span></div>
             ))}
-            <div className="flex justify-between gap-3 py-1.5 border-b border-line-soft"><span>Zwischensumme</span><span className="font-mono tnum">{doc.price.subtotal}</span></div>
+            <div className="flex justify-between gap-3 py-1.5 border-b border-line-soft"><span>{doc.price.subtotalLabel}</span><span className="font-mono tnum">{doc.price.subtotal}</span></div>
             {doc.price.discount && <div className="flex justify-between gap-3 py-1.5 border-b border-line-soft"><span>{doc.price.discount.text}</span><span className="font-mono tnum">{doc.price.discount.amount}</span></div>}
             {doc.price.agreed && (
               <>
@@ -126,8 +126,9 @@ export function ContractDocumentView({ doc, showSignatures = true }: { doc: Cont
               </>
             )}
             {doc.price.extras.map((e, i) => <div key={`x${i}`} className="flex justify-between gap-3 py-1.5 border-b border-line-soft"><span>+ {e.text}</span><span className="font-mono tnum">{e.amount}</span></div>)}
-            <div className="flex justify-between gap-3 py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>Gesamtmietpreis (brutto)</span><span className="font-mono tnum">{doc.price.total}</span></div>
-            <div className="flex justify-between gap-3 py-1.5 text-ink-2"><span>Kaution, wird zurückgezahlt</span><span className="font-mono tnum">{doc.price.deposit}</span></div>
+            <div className="flex justify-between gap-3 py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>Gesamtmietpreis (brutto)</span><span className={doc.price.openEnd ? "text-right" : "font-mono tnum"}>{doc.price.total}</span></div>
+            {doc.price.totalNote && <p className="text-xs text-ink-2 pb-1">{doc.price.totalNote}</p>}
+            <div className="flex justify-between gap-3 py-1.5 text-ink-2"><span>{doc.price.deposit === "keine" ? "Kaution" : "Kaution, wird zurückgezahlt"}</span><span className="font-mono tnum">{doc.price.deposit}</span></div>
           </div>
         </Card>
 

@@ -16,11 +16,12 @@ import { accessoryPrice, accessoryProposalKey, missingAccessories, type Checklis
 import { readContractRules, resolveRules, type BusinessRules } from "@/lib/business-rules";
 import { CHARGE_UNITS, EXTRA_CHARGE_TYPES, FUEL_POLICIES, LATE_RETURN_RULES, energyRequirements, type ExtraChargeType, type LateReturnRule } from "@/lib/constants";
 import { fmtDateTime } from "@/lib/format";
-import { extraMileageCharge, flatCharge, fuelCharge, saveExtraCharge, type ChargeDraft } from "@/lib/extra-charges";
+import { extraMileageCharge, flatCharge, fuelCharge, mileagePeriod, saveExtraCharge, type ChargeDraft } from "@/lib/extra-charges";
 import { touchHandover } from "@/lib/handovers";
 import { contractKmPolicy, extensionPriceProposal, loadEffectiveContract } from "@/lib/amendments";
 import type { KmPolicy } from "@/lib/constants";
 import { DomainError, assertHandoverDraft } from "@/lib/integrity";
+import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed } from "@/lib/accident-replacement-events";
 import { rentalDays } from "@/lib/pricing";
 import type { VehicleSnapshot } from "@/lib/contracts";
 import { fmtMinutes } from "@/lib/handover-view";
@@ -42,7 +43,8 @@ export type ReturnComparison = {
   mileage: { pickup: number | null; return: number | null; driven: number | null };
   fuel: { pickup: number | null; return: number | null; diff: number | null } | null;
   battery: { pickup: number | null; return: number | null; diff: number | null } | null;
-  time: { start: Date; plannedEnd: Date; actualEnd: Date; lateMinutes: number; rentalDays: number };
+  /** plannedEnd null = offenes Mietende (Unfallersatz): keine Verspätung, Miettage bis zur tatsächlichen Rückgabe */
+  time: { start: Date; plannedEnd: Date | null; actualEnd: Date; lateMinutes: number; rentalDays: number };
   /** Befehl 27: kmPolicy laut wirksamem Vertragsstand; bei UNLIMITED gibt es keine Mehrkilometer (includedKm = null) */
   contract: { number: string; amendmentNumbers: string[]; kmPolicy: KmPolicy; kmIncludedPerDay: number; includedKm: number | null; extraKmRate: number; fuelPolicy: string; fuelPolicyLabel: string; fuelPolicyNote: string | null; fuelPricePerLiter: number | null; deposit: number; deductible: number; tankCapacityLiters: number | null };
   /** Literpreis, der für die Rechnung gilt: aus dem Vertrag, sonst der bei der Rückgabe angegebene */
@@ -127,7 +129,7 @@ async function loadReturn(tx: Tx, tenantId: string, handoverId: string) {
 /** Der komplette Vergleich Übergabe/Rückgabe samt Vorschlägen. Rechnet nur mit Snapshots. */
 export function buildComparison(input: {
   handover: Prisma.HandoverGetPayload<{ include: { extraCharges: true } }>;
-  booking: { startAt: Date; endAt: Date; actualPickupAt: Date | null };
+  booking: { startAt: Date; endAt: Date | null; actualPickupAt: Date | null };
   /** wirksamer Vertragsstand (lib/amendments overlayAmendments); der Original-Vertrag allein wäre nach einem Nachtrag falsch */
   contract: Prisma.RentalContractGetPayload<object> & { amended?: { numbers: string[]; kmPolicy?: KmPolicy } };
   pickup: Prisma.HandoverGetPayload<object>;
@@ -144,8 +146,12 @@ export function buildComparison(input: {
   // Befehl 20.6: kontaktlos zählt die vom Kunden gemeldete Abgabe als Mietende (nicht der spätere Kontrollzeitpunkt)
   const actualEnd = effectiveKeyDropEnd(h) ?? h.finalizedAt ?? input.now ?? new Date();
   const start = booking.actualPickupAt ?? contract.startAt;
-  const days = rentalDays(contract.startAt, contract.endAt);
-  const lateMinutes = Math.max(0, Math.round((actualEnd.getTime() - contract.endAt.getTime()) / 60_000));
+  // Befehl 29: offenes Vertragsende (Unfallersatz) – Miettage und Freikilometer ab der tatsächlichen Übergabe bis zur tatsächlichen
+  // Rückgabe (Phase E: wie Fallakte und Rechnung), keine Verspätung. Standardmiete: Vertragszeitraum wie bisher.
+  const contractEnd = contract.endAt;
+  const kmPeriod = mileagePeriod(contract, booking.actualPickupAt, actualEnd);
+  const days = rentalDays(kmPeriod.start, kmPeriod.end);
+  const lateMinutes = contractEnd ? Math.max(0, Math.round((actualEnd.getTime() - contractEnd.getTime()) / 60_000)) : 0;
 
   const driven = h.mileage != null && pickup.mileage != null ? h.mileage - pickup.mileage : null;
   const contractFuelPrice = num(contract.fuelPricePerLiter);
@@ -165,7 +171,7 @@ export function buildComparison(input: {
   // Mehrkilometer: Freikilometer je Vertrag × Vertragstage, Preis aus dem Vertrag. Bei „Unbegrenzte Kilometer“ nie.
   if (kmPolicy === "UNLIMITED") hints.push({ code: "KM_UNLIMITED", text: "Unbegrenzte Kilometer vereinbart – es werden keine Mehrkilometer berechnet. Der Kilometerstand wird trotzdem dokumentiert." });
   else if (driven != null && driven >= 0) {
-    const draft = extraMileageCharge({ pickupMileage: pickup.mileage!, returnMileage: h.mileage!, start: contract.startAt, end: contract.endAt, kmIncludedPerDay: contract.kmIncludedPerDay, extraKmRate: Number(contract.extraKmRate) });
+    const draft = extraMileageCharge({ pickupMileage: pickup.mileage!, returnMileage: h.mileage!, start: kmPeriod.start, end: kmPeriod.end, kmIncludedPerDay: contract.kmIncludedPerDay, extraKmRate: Number(contract.extraKmRate) });
     if (draft) { const c = confirmedOf("EXTRA_MILEAGE"); proposals.push({ key: "EXTRA_MILEAGE", draft, confirmed: !!c, chargeId: c?.id ?? null, dismissed: dismissed.has("EXTRA_MILEAGE") }); }
   }
 
@@ -205,20 +211,20 @@ export function buildComparison(input: {
   if (batteryDiff != null && batteryDiff < 0) hints.push({ code: "CHARGING_NO_BASIS", text: `Die Batterie ist um ${-batteryDiff} Prozentpunkte niedriger als bei der Übergabe. Ein Ladepreis ist nicht vereinbart; bei Bedarf eine Position „Ladung“ manuell erfassen.` });
   // Befehl 28: Verspätung nach der im Mietvertrag eingefrorenen Regel – nur ein Vorschlag (bewusst bestätigen), nie automatisch.
   // Ohne maschinenlesbare Regel (manuell/individuell) wird nur die Regel angezeigt, kein Betrag erfunden.
-  if (lateMinutes > 15) {
+  if (contractEnd && lateMinutes > 15) {
     const rules = readContractRules(contract.conditions)?.values as (Partial<BusinessRules> & { lateReturnRule?: LateReturnRule; lateReturnFeeCents?: number | null }) | undefined;
     const lateRule = rules?.lateReturnRule;
     const ruleText = lateRule && lateRule in LATE_RETURN_RULES ? LATE_RETURN_RULES[lateRule] : null;
     const confirmedLate = confirmedOf("LATE_RETURN");
     let draft: ChargeDraft | null = null;
     if (lateRule === "CONFIGURED_FEE" && rules?.lateReturnFeeCents && rules.lateReturnFeeCents > 0) {
-      draft = flatCharge("LATE_RETURN", `Verspätete Rückgabe (${fmtMinutes(lateMinutes)} nach ${fmtDateTime(contract.endAt)}) – Richtwert laut Mietvertrag`, 1, "pauschal", rules.lateReturnFeeCents / 100);
+      draft = flatCharge("LATE_RETURN", `Verspätete Rückgabe (${fmtMinutes(lateMinutes)} nach ${fmtDateTime(contractEnd)}) – Richtwert laut Mietvertrag`, 1, "pauschal", rules.lateReturnFeeCents / 100);
       draft.calculation = { ...draft.calculation, rule: lateRule, lateMinutes };
     } else if (lateRule === "ADDITIONAL_RENTAL_TIME") {
-      const cents = extensionPriceProposal(contract, contract.endAt, actualEnd);
+      const cents = extensionPriceProposal(contract, contractEnd, actualEnd);
       if (cents != null && cents > 0) {
-        draft = flatCharge("LATE_RETURN", `Zusätzliche Mietzeit bis ${fmtDateTime(actualEnd)} nach Vertragspreis (geplant ${fmtDateTime(contract.endAt)})`, 1, "pauschal", cents / 100);
-        draft.calculation = { ...draft.calculation, rule: lateRule, lateMinutes, plannedEnd: contract.endAt.toISOString(), actualEnd: actualEnd.toISOString() };
+        draft = flatCharge("LATE_RETURN", `Zusätzliche Mietzeit bis ${fmtDateTime(actualEnd)} nach Vertragspreis (geplant ${fmtDateTime(contractEnd)})`, 1, "pauschal", cents / 100);
+        draft.calculation = { ...draft.calculation, rule: lateRule, lateMinutes, plannedEnd: contractEnd.toISOString(), actualEnd: actualEnd.toISOString() };
       }
     }
     if (draft) proposals.push({ key: "LATE_RETURN", draft, confirmed: !!confirmedLate, chargeId: confirmedLate?.id ?? null, dismissed: dismissed.has("LATE_RETURN"), facts: [`Vertragliche Verspätungsregel: ${ruleText}`, `Verspätung: ${fmtMinutes(lateMinutes)}`] });
@@ -231,7 +237,7 @@ export function buildComparison(input: {
     mileage: { pickup: pickup.mileage, return: h.mileage, driven },
     fuel: energy.fuel ? { pickup: pickup.fuelLevelEighths, return: h.fuelLevelEighths, diff: fuelDiff } : null,
     battery: energy.battery ? { pickup: pickup.batteryPercent, return: h.batteryPercent, diff: batteryDiff } : null,
-    time: { start, plannedEnd: contract.endAt, actualEnd, lateMinutes, rentalDays: days },
+    time: { start, plannedEnd: contractEnd, actualEnd, lateMinutes, rentalDays: days },
     contract: {
       number: contract.number,
       amendmentNumbers: contract.amended?.numbers ?? [],
@@ -298,6 +304,8 @@ export async function dismissProposal(tenantId: string, handoverId: string, acto
     await tx.$queryRaw`SELECT "id" FROM "Handover" WHERE "id" = ${handoverId} AND "tenantId" = ${tenantId} FOR UPDATE`;
     const { h, booking, contract, pickup, accessories, vehicleTankLiters } = await loadReturn(tx, tenantId, handoverId);
     assertHandoverDraft(h);
+    // Befehl 29 Phase E: geschlossener Unfallersatzfall – auch „Nicht berechnen“ ist gesperrt (wie jede Änderung am Entwurf)
+    if (booking.rentalType === "ACCIDENT_REPLACEMENT" && (await accidentCaseClosed(tx, tenantId, h.bookingId))) throw new DomainError(ACCIDENT_CASE_CLOSED_MESSAGE);
     // Befehl 28: dieselben Eingaben wie die Anzeige (inkl. Tankgröße am Fahrzeug als Ersatz) – sonst fehlte der Vorschlag beim Bestätigen
     const cmp = buildComparison({ handover: h, booking, contract, pickup, accessories, vehicleTankLiters });
     const p = cmp.proposals.find((x) => x.key === key);

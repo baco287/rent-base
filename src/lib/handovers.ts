@@ -16,7 +16,8 @@ import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { fmtDateTime } from "@/lib/format";
 import { balanceOf } from "@/lib/deposits";
-import { loadEffectiveDepositCents } from "@/lib/amendments";
+import { contractKmPolicy, loadEffectiveContract, loadEffectiveDepositCents } from "@/lib/amendments";
+import { extraMileageCharge, mileagePeriod } from "@/lib/extra-charges";
 import { fmtCents } from "@/lib/money";
 import { DAMAGE_KINDS, DAMAGE_SEVERITY, DAMAGE_VIEWS, PHOTO_CATEGORIES, REQUIRED_PHOTO_CATEGORIES, RETURN_ATTENTION_ON_YES, VISIBLE_DAMAGE_STATUS, energyRequirements, type HandoverType } from "@/lib/constants";
 import { DomainError, assertHandoverDraft, contentHash, sha256 } from "@/lib/integrity";
@@ -24,6 +25,7 @@ import { nextHandoverNumber } from "@/lib/numbering";
 import { ALLOWED_PHOTO_TYPES, MAX_PHOTO_BYTES, assertKeyBelongsToTenant, buildStorageKey } from "@/lib/storage";
 import { itemsForDrive, resolveChecklist } from "@/lib/checklists";
 import { vehicleStatusProblem } from "@/lib/bookings";
+import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed, accidentCaseEventForBooking, assertAccidentCaseOpen } from "@/lib/accident-replacement-events";
 import { resolveSketch } from "@/lib/sketches";
 import { recordVehicleEvent } from "@/lib/vehicle-events";
 import { driverVerificationBlockers } from "@/lib/driver-verification";
@@ -41,6 +43,8 @@ async function loadDraft(tx: Tx, tenantId: string, handoverId: string) {
   const h = await tx.handover.findFirst({ where: { id: handoverId, tenantId } });
   if (!h) throw new DomainError("Protokoll nicht gefunden.");
   assertHandoverDraft(h);
+  // Befehl 29 Phase E: Entwürfe eines geschlossenen Unfallersatzfalls werden nicht weiter bearbeitet (Abschluss zusätzlich gesperrt)
+  if (await accidentCaseClosed(tx, tenantId, h.bookingId)) throw new DomainError(ACCIDENT_CASE_CLOSED_MESSAGE);
   return h;
 }
 
@@ -60,6 +64,8 @@ export type StartHandoverOptions = {
 
 export async function startHandover(tenantId: string, bookingId: string, type: HandoverType, actor: Actor, opts: StartHandoverOptions = {}) {
   return db.$transaction(async (tx) => {
+    // Befehl 29 Phase E: geschlossener Unfallersatzfall – keine Übergabe, keine Rückgabe (vor der Buchungssperre: Fall → Buchung)
+    await assertAccidentCaseOpen(tx, tenantId, bookingId);
     const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Booking" WHERE "id" = ${bookingId} AND "tenantId" = ${tenantId} FOR UPDATE`;
     if (locked.length === 0) throw new DomainError("Buchung nicht gefunden.");
     const booking = await tx.booking.findFirst({
@@ -421,6 +427,8 @@ export async function returnDraftBlockers(client: Tx | typeof db, tenantId: stri
  */
 export async function discardEmptyReturnDraft(tenantId: string, bookingId: string, handoverId: string, actor: Actor) {
   return db.$transaction(async (tx) => {
+    // Befehl 29 Phase E: auch Aufräumen an der Rückgabe eines geschlossenen Unfallersatzfalls ist gesperrt (Fall → Buchung)
+    await assertAccidentCaseOpen(tx, tenantId, bookingId);
     const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Booking" WHERE "id" = ${bookingId} AND "tenantId" = ${tenantId} FOR UPDATE`;
     if (locked.length === 0) throw new DomainError("Buchung nicht gefunden.");
     const rows = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Handover" WHERE "id" = ${handoverId} AND "tenantId" = ${tenantId} AND "bookingId" = ${bookingId} FOR UPDATE`;
@@ -695,6 +703,8 @@ async function collectIssues(tx: Tx, tenantId: string, handoverId: string, opts:
   if (agreed && h.type === "PICKUP") warn("BOOKING", "AGREED_AMENDMENT_PENDING", "Eine Vertragsänderung ist vereinbart, aber noch nicht unterschrieben. Am besten jetzt bei der Übergabe unterschreiben lassen.");
   const pickup = h.type === "RETURN" ? await tx.handover.findFirst({ where: { tenantId, bookingId: h.bookingId, type: "PICKUP", status: "FINALIZED" }, orderBy: { finalizedAt: "desc" }, include: { checklistItems: true } }) : null;
   if (h.type === "RETURN" && !pickup) err("BOOKING", "PICKUP_MISSING", "Zu dieser Miete gibt es kein abgeschlossenes Übergabeprotokoll.");
+  // Befehl 29 Phase E: geschlossener Unfallersatzfall – Übergabe und Rückgabe gesperrt, bis der Fall wieder geöffnet wird
+  if (booking.rentalType === "ACCIDENT_REPLACEMENT" && (await accidentCaseClosed(tx, tenantId, booking.id))) err("BOOKING", "CASE_CLOSED", ACCIDENT_CASE_CLOSED_MESSAGE);
 
   // Messwerte
   if (h.mileage == null) err("READINGS", "MILEAGE_MISSING", "Der Kilometerstand fehlt.");
@@ -726,6 +736,19 @@ async function collectIssues(tx: Tx, tenantId: string, handoverId: string, opts:
     if (missing.length > 0) err("PHOTOS", "PHOTOS_MISSING", `Es fehlen Pflichtfotos: ${missing.map((c) => PHOTO_CATEGORIES[c]).join(", ")}.`);
   }
 
+  // Befehl 29 Phase E: offenes Mietende – Freikilometer gelten je tatsächlichem Miettag bis zur Rückgabe. Ein früher bestätigter
+  // Mehrkilometer-Betrag muss zum Stand beim Abschluss passen (sonst würde z. B. ein inzwischen begonnener Miettag fehlen).
+  const confirmedKm = h.type === "RETURN" ? h.extraCharges.find((c) => c.type === "EXTRA_MILEAGE" && c.source === "PROPOSAL") : undefined;
+  if (confirmedKm && h.contractId && pickup?.mileage != null && h.mileage != null && h.mileage >= pickup.mileage) {
+    const original = await tx.rentalContract.findFirst({ where: { id: h.contractId, tenantId } });
+    if (original && original.endAt === null) {
+      const contract = await loadEffectiveContract(tx, tenantId, original);
+      const period = mileagePeriod(contract, booking.actualPickupAt, effectiveKeyDropEnd(h) ?? new Date());
+      const current = (contract.amended?.kmPolicy ?? contractKmPolicy(contract.conditions)) === "UNLIMITED" ? null : extraMileageCharge({ pickupMileage: pickup.mileage, returnMileage: h.mileage, start: period.start, end: period.end, kmIncludedPerDay: contract.kmIncludedPerDay, extraKmRate: Number(contract.extraKmRate) });
+      if (Math.round((current?.amount ?? 0) * 100) !== Math.round(Number(confirmedKm.amount) * 100)) err("CHARGES", "EXTRA_MILEAGE_STALE", `Mehrkilometer: Der bestätigte Betrag passt nicht mehr zur Mietdauer bis jetzt (Mietende offen, Freikilometer je tatsächlichem Miettag; aktuell ${current ? `${current.quantity.toLocaleString("de-DE")} km, ${current.amount.toLocaleString("de-DE", { style: "currency", currency: "EUR" })}` : "keine Mehrkilometer"}). Bitte die Position entfernen und den Vorschlag neu bestätigen.`);
+    }
+  }
+
   // Zusatzkosten (nur Rückgabe): jede Position muss zu einem Schaden dieses Protokolls passen, wenn sie einen nennt
   for (const c of h.extraCharges) {
     if (Number(c.amount) < 0 || Number(c.quantity) <= 0) err("CHARGES", "CHARGE_INVALID", `Zusatzkosten „${c.description}“: Betrag oder Menge sind ungültig.`);
@@ -739,7 +762,8 @@ async function collectIssues(tx: Tx, tenantId: string, handoverId: string, opts:
     if (Number.isFinite(given) && Number.isFinite(returned) && returned < given) warn("CHECKLIST", "ACCESSORY_MISSING", `Bei der Übergabe wurden ${given} Schlüssel dokumentiert, zurück kamen ${returned}. Falls etwas fehlt, kann in Schritt 7 eine Position „Fehlendes Zubehör“ erfasst werden.`);
     for (const c of h.checklistItems.filter(isAttention)) warn("CHECKLIST", "CHECKLIST_ATTENTION", `Auffällig: ${c.label}${c.note ? ` (${c.note})` : ""}.`);
     const effectiveEnd = effectiveKeyDropEnd(h) ?? new Date(); // kontaktlos: maßgebliches Mietende (Korrektur oder Abgabe laut Kunde), nicht der Kontrollzeitpunkt
-    if (booking.endAt.getTime() < effectiveEnd.getTime() - 15 * 60_000) {
+    // Befehl 29: offenes Mietende (Unfallersatz) kennt keine Verspätung
+    if (booking.rentalType !== "ACCIDENT_REPLACEMENT" && booking.endAt && booking.endAt.getTime() < effectiveEnd.getTime() - 15 * 60_000) {
       const minutes = Math.round((effectiveEnd.getTime() - booking.endAt.getTime()) / 60_000);
       warn("BOOKING", "LATE_RETURN", `Die Rückgabe liegt ${Math.floor(minutes / 60)} Std. ${minutes % 60} Min. nach der vereinbarten Zeit. Eine Gebühr entsteht nur, wenn sie in Schritt 7 bewusst erfasst wird.`);
     }
@@ -809,6 +833,8 @@ export async function finalizeHandover(tenantId: string, handoverId: string, act
     if (locked.length === 0) throw new DomainError("Protokoll nicht gefunden.");
     const { handover: h, hash } = await handoverContent(tx, tenantId, handoverId);
     assertHandoverDraft(h);
+    // Befehl 29 Phase E: geschlossener Unfallersatzfall – der Fall kann während des Abschlusses nicht geschlossen werden (FOR SHARE)
+    await assertAccidentCaseOpen(tx, tenantId, h.bookingId);
 
     const problems = (await collectIssues(tx, tenantId, handoverId, { requireSignature: true, enforcePhotos: options.enforcePhotos !== false })).filter((i) => i.severity === "error");
     if (problems.length > 0) throw new DomainError(problems.length === 1 ? problems[0].message : `${problems[0].message} (und ${problems.length - 1} weitere Punkte)`);
@@ -858,6 +884,11 @@ export async function finalizeHandover(tenantId: string, handoverId: string, act
     if (mileage > vehicle.mileage) await tx.vehicle.update({ where: { id: vehicle.id }, data: { mileage } });
     await recordVehicleEvent(tx, { tenantId, vehicleId: h.vehicleId, type: h.type as "PICKUP" | "RETURN", occurredAt: now, mileage, bookingId: h.bookingId, handoverId: h.id, actor, description: `${h.type === "PICKUP" ? "Übergabe" : "Rückgabe"} ${h.number}` });
     await recordVehicleEvent(tx, { tenantId, vehicleId: h.vehicleId, type: "MILEAGE", occurredAt: now, mileage, bookingId: h.bookingId, handoverId: h.id, actor });
+
+    // Befehl 29: Unfallersatz – Übergabe/Rückgabe im Verlauf der Fallakte (nur wenn eine existiert; Standardmieten unberührt)
+    if (booking.rentalType === "ACCIDENT_REPLACEMENT") {
+      await accidentCaseEventForBooking(tx, tenantId, booking.id, actor, { type: h.type === "PICKUP" ? "VEHICLE_PICKED_UP" : "VEHICLE_RETURNED", note: `${h.type === "PICKUP" ? "Übergabe" : "Rückgabe"} ${h.number}` });
+    }
 
     // Befehl 20.6: Kontrolle abgeschlossen – Kontrollzeitpunkt und Mitarbeiter getrennt von der Kundenmeldung; Link endgültig ungültig
     if (h.type === "RETURN" && h.returnMode === "KEY_DROP" && h.keyDropId) {

@@ -23,6 +23,7 @@ import { financialsFor, invoiceFinancials } from "@/lib/counter-documents";
 import { balanceOf, type DepositBalance } from "@/lib/deposit-balance";
 import { settleDepositIn } from "@/lib/deposits";
 import { DomainError, contentHash } from "@/lib/integrity";
+import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed, assertAccidentCaseOpen } from "@/lib/accident-replacement-events";
 import { companySnapshotOf, createCancellationFeeInvoiceDraft, finalizeInvoiceIn, invoiceSettingsMissing, type CompanySnapshot } from "@/lib/invoices";
 import { fmtCents, lineAmounts, toBasisPoints, toCents, type Cents } from "@/lib/money";
 import { isUniqueViolation, withNumberRetry } from "@/lib/numbering";
@@ -75,10 +76,11 @@ export async function discardHandoverDrafts(tx: Tx, tenantId: string, bookingId:
 // ---------------------------------------------------------------------------
 
 export type CancellationOverview = {
-  booking: { id: string; number: string; status: string; statusLabel: string; startAt: Date; endAt: Date; customerId: string; customerName: string; vehicle: string; plate: string };
+  booking: { id: string; number: string; status: string; statusLabel: string; startAt: Date; endAt: Date | null; customerId: string; customerName: string; vehicle: string; plate: string };
   contract: { state: "NONE" | "DRAFT" | "SIGNED" | "CANCELLED"; number: string | null };
   finances: {
-    agreedCents: Cents; agreedSource: "CONTRACT" | "ESTIMATE" | "INVOICE";
+    /** ACCIDENT (Befehl 29 Phase E): Unfallersatz – kein Mietpreis im Voraus (Abrechnung nach tatsächlicher Mietdauer ab Übergabe); agreedCents 0 ist nur Platzhalter */
+    agreedCents: Cents; agreedSource: "CONTRACT" | "ESTIMATE" | "INVOICE" | "ACCIDENT";
     /** bestätigte, keiner Rechnung zugeordnete Mietzahlungen (Vorauszahlung) */
     prepaidCents: Cents;
     invoices: { id: string; number: string | null; kind: string; status: string; grossCents: Cents; openCents: Cents; creditCents: Cents }[];
@@ -104,7 +106,7 @@ export async function cancellationOverview(tenantId: string, bookingId: string, 
   const b = await client.booking.findFirst({
     where: { id: bookingId, tenantId },
     select: {
-      id: true, number: true, status: true, startAt: true, endAt: true, customerId: true,
+      id: true, number: true, status: true, startAt: true, endAt: true, customerId: true, rentalType: true,
       customer: { select: { type: true, firstName: true, lastName: true, companyName: true } },
       vehicle: { select: { make: true, model: true, plate: true } },
       contract: { select: { number: true, status: true } },
@@ -129,6 +131,8 @@ export async function cancellationOverview(tenantId: string, bookingId: string, 
   const deposit = b.securityDeposit ? { ...balanceOf(b.securityDeposit.expectedAmountCents, b.securityDeposit.events), depositId: b.securityDeposit.id } : null;
   const blockers: string[] = [];
   const warnings: string[] = [];
+  // Befehl 29 Phase E: geschlossener Unfallersatzfall – kein Storno, bis der Fall wieder geöffnet ist (Vorschau, Prüfung und Abschluss)
+  if (await accidentCaseClosed(client, tenantId, b.id)) blockers.push(ACCIDENT_CASE_CLOSED_MESSAGE);
   if (b.status === "CANCELLED") blockers.push("Diese Buchung ist bereits storniert.");
   else if (b.status === "ACTIVE") blockers.push("Das Fahrzeug ist bereits übergeben. Eine laufende Miete wird über die Rückgabe beendet, nicht storniert.");
   else if (b.status === "RETURNED") blockers.push("Diese Miete ist abgeschlossen und kann nicht mehr storniert werden.");
@@ -145,7 +149,8 @@ export async function cancellationOverview(tenantId: string, bookingId: string, 
     booking: { id: b.id, number: b.number, status: b.status, statusLabel: BOOKING_STATUS[b.status as BookingStatus] ?? b.status, startAt: b.startAt, endAt: b.endAt, customerId: b.customerId, customerName: nameOf(b.customer), vehicle: `${b.vehicle.make} ${b.vehicle.model}`.trim(), plate: b.vehicle.plate },
     contract: { state: contractState, number: b.contract?.number ?? null },
     finances: {
-      agreedCents: summary.grossCents, agreedSource: summary.source,
+      // Unfallersatz: storniert wird nur vor der Übergabe – es gibt keinen Mietwert und keinen Schätzpreis (nie „0,00 €“ als Mietpreis)
+      ...(b.rentalType === "ACCIDENT_REPLACEMENT" ? { agreedCents: 0, agreedSource: "ACCIDENT" as const } : { agreedCents: summary.grossCents, agreedSource: summary.source }),
       prepaidCents: pre.paidCents,
       invoices,
       openReceivableCents: invoices.reduce((a, i) => a + i.openCents, 0),
@@ -286,7 +291,7 @@ export type CancellationSnapshot = {
   company: CompanySnapshot;
   customer: { name: string; number: string | null; addressLines: string[]; email: string | null };
   vehicle: { label: string; plate: string };
-  period: { startAt: string; endAt: string };
+  period: { startAt: string; endAt: string | null }; // endAt null = offenes Mietende (Unfallersatz)
   contract: { number: string; signed: boolean } | null;
   finances: {
     agreedCents: Cents;
@@ -361,7 +366,8 @@ export async function cancelBooking(tenantId: string, actor: Actor, bookingId: s
     return done;
   }
   const run = () => db.$transaction(async (tx) => {
-    // Sperrfolge: Buchung → Kaution (danach Rechnung, Zahlungen, Auszahlungen)
+    // Sperrfolge: (Unfallersatzfall →) Buchung → Kaution (danach Rechnung, Zahlungen, Auszahlungen)
+    await assertAccidentCaseOpen(tx, tenantId, bookingId);
     const locked = await tx.$queryRaw<{ id: string; cancellationKey: string | null }[]>`SELECT "id", "cancellationKey" FROM "Booking" WHERE "id" = ${bookingId} AND "tenantId" = ${tenantId} FOR UPDATE`;
     if (locked.length === 0) throw new DomainError("Buchung nicht gefunden.");
     if (locked[0].cancellationKey === key) return null; // paralleler Klick mit demselben Schlüssel war schneller
@@ -432,7 +438,7 @@ export async function cancelBooking(tenantId: string, actor: Actor, bookingId: s
       company: companySnapshotOf(booking.tenant),
       customer: customerOf(booking.contract && booking.contract.status !== "DRAFT" ? booking.contract.customerSnapshot : null, booking.customer),
       vehicle: { label: `${booking.vehicle.make} ${booking.vehicle.model}`.trim(), plate: booking.vehicle.plate },
-      period: { startAt: booking.startAt.toISOString(), endAt: booking.endAt.toISOString() },
+      period: { startAt: booking.startAt.toISOString(), endAt: booking.endAt?.toISOString() ?? null },
       contract: contract && contract.status !== "DRAFT" ? { number: contract.number, signed: contract.status === "SIGNED" } : null,
       finances: {
         agreedCents: ov.finances.agreedCents,

@@ -54,8 +54,9 @@ export function buildAmendmentDocument(s: AmendmentSnapshot, hash: string, signa
     priorAmendments: s.priorAmendments.map((p) => ({ number: p.number, date: p.signedAt ? fmtDate(new Date(p.signedAt)) : "–" })),
     changes: s.changes.map((ch) => ({ label: ch.label, before: ch.before, after: ch.after, note: ch.note ?? null })),
     after: {
-      endAt: d(s.after.endAt),
-      total: fmtCents(s.after.totalCents),
+      endAt: s.after.endAt ? d(s.after.endAt) : "offen (bis zur Rückgabe)",
+      // Befehl 29 Phase E: offenes Mietende (Unfallersatz) – kein Gesamtpreis, nie „0,00 €“
+      total: s.after.endAt ? fmtCents(s.after.totalCents) : "nach tatsächlicher Mietdauer (Tarif laut Mietvertrag)",
       km: s.after.kmPolicy === "UNLIMITED" ? "Unbegrenzte Kilometer" : `${s.after.kmIncludedPerDay.toLocaleString("de-DE")} km je Tag · Mehrkilometer ${s.after.extraKmRate.toLocaleString("de-DE", { minimumFractionDigits: 2 })} € je km`,
       deposit: fmtCents(s.after.depositCents),
       returnLocation: s.after.returnLocation ?? "wie Abholort",

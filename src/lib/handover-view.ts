@@ -183,7 +183,7 @@ export function buildDocComparison(c: ReturnComparison, damages: DocDamage[]): D
   return {
     pickupNumber: c.pickup.number,
     rows,
-    time: { start: dateTime(c.time.start), plannedEnd: dateTime(c.time.plannedEnd), actualEnd: dateTime(c.time.actualEnd), late: c.time.lateMinutes > 15 ? fmtMinutes(c.time.lateMinutes) : null, rentalDays: c.time.rentalDays },
+    time: { start: dateTime(c.time.start), plannedEnd: c.time.plannedEnd ? dateTime(c.time.plannedEnd) : "offen (bis zur Rückgabe)", actualEnd: dateTime(c.time.actualEnd), late: c.time.lateMinutes > 15 ? fmtMinutes(c.time.lateMinutes) : null, rentalDays: c.time.rentalDays },
     mileageBasis: c.contract.includedKm == null ? `Unbegrenzte Kilometer vereinbart${c.contract.amendmentNumbers.length ? ` (Vertragsstand mit Nachtrag ${c.contract.amendmentNumbers.join(", ")})` : ""}` : `${c.contract.kmIncludedPerDay.toLocaleString("de-DE")} km je Tag, ${c.contract.includedKm.toLocaleString("de-DE")} km frei, Mehrkilometer ${eur(c.contract.extraKmRate)} je km${c.contract.amendmentNumbers.length ? ` (Vertragsstand mit Nachtrag ${c.contract.amendmentNumbers.join(", ")})` : ""}`,
     fuelPolicy: c.contract.fuelPolicy === "OTHER" ? `${c.contract.fuelPolicyLabel}: ${c.contract.fuelPolicyNote ?? ""}` : c.contract.fuelPolicyLabel,
     hints: c.hints.map((x) => x.text),

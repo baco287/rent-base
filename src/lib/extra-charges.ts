@@ -25,6 +25,16 @@ export type ChargeDraft = {
   calculation: Record<string, unknown>;
 };
 
+/**
+ * Befehl 29 Phase E: Zeitraum, für den Freikilometer gelten. Standardmiete: Vertragszeitraum (inkl. unterschriebener Nachträge),
+ * unverändert. Offenes Mietende (Unfallersatz): tatsächliche Übergabe bis tatsächliche Rückgabe – dieselben Miettage wie Fallakte
+ * und Rechnung; nie ein geplantes oder erfundenes Ende.
+ */
+export function mileagePeriod(contract: { startAt: Date; endAt: Date | null }, actualPickupAt: Date | null, actualEnd: Date): { start: Date; end: Date } {
+  if (contract.endAt !== null) return { start: contract.startAt, end: contract.endAt };
+  return { start: actualPickupAt ?? contract.startAt, end: actualEnd };
+}
+
 /** Mehrkilometer: gefahrene km minus Freikilometer (Tage × Frei-km je Tag) × Preis je km. */
 export function extraMileageCharge(p: { pickupMileage: number; returnMileage: number; start: Date; end: Date; kmIncludedPerDay: number; extraKmRate: number }): ChargeDraft | null {
   const driven = p.returnMileage - p.pickupMileage;

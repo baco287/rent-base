@@ -72,6 +72,17 @@ export function rentalDays(start: Date, end: Date): number {
   return Math.max(1, Math.ceil(wallMs / (24 * 60 * 60 * 1000)));
 }
 
+/**
+ * Phase F: Zeitpunkt, ab dem nach `days` vollen Miettagen der nächste Miettag beginnt (eine Minute nach dem Ende von Tag `days`),
+ * gezählt wie rentalDays (Wanduhr Europe/Berlin, auch über die Zeitumstellung).
+ */
+export function nextRentalDayStart(start: Date, days: number): Date {
+  let t = new Date(start.getTime() + days * 24 * 60 * 60 * 1000 + 60_000);
+  for (let i = 0; i < 3 && rentalDays(start, t) <= days; i++) t = new Date(t.getTime() + 60 * 60 * 1000);
+  for (let i = 0; i < 3 && rentalDays(start, new Date(t.getTime() - 60 * 60 * 1000)) > days; i++) t = new Date(t.getTime() - 60 * 60 * 1000);
+  return t;
+}
+
 function normalizeRates(r: RateCard) {
   const pos = (v: number | null | undefined) => (typeof v === "number" && v > 0 ? v : null);
   return {

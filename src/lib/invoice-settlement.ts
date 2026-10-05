@@ -18,6 +18,7 @@ import type { Actor } from "@/lib/audit";
 import { applyDepositOffsetIn, type DepositOffsetResult } from "@/lib/deposit-offset";
 import { checkDate, checkKey, domainFromDb, lockOrCreateDeposit, parseAmount } from "@/lib/deposits";
 import { DomainError } from "@/lib/integrity";
+import { assertAccidentInvoiceCaseOpen } from "@/lib/accident-replacement-events";
 import { finalizeErrorOf, finalizeInvoiceIn, type FinalizeOptions, type VersionWithItems } from "@/lib/invoices";
 import { isUniqueViolation, withNumberRetry } from "@/lib/numbering";
 
@@ -66,6 +67,8 @@ export async function finalizeInvoiceWithDepositOffset(tenantId: string, invoice
   try {
     return await withNumberRetry(() =>
       db.$transaction(async (tx) => {
+        // Befehl 29 Phase F: geschlossener Unfallersatzfall zuerst (Fall → Buchung)
+        await assertAccidentInvoiceCaseOpen(tx, tenantId, invoiceId);
         // Reihenfolge der Sperren: zuerst Buchung und Kaution, dann (im Abschluss) die Rechnung
         await lockOrCreateDeposit(tx, tenantId, bookingId, actor);
         const version = await finalizeInvoiceIn(tx, tenantId, invoiceId, actor, opts);

@@ -132,6 +132,14 @@ export async function nextMaintenanceNumber(tx: Tx, tenantId: string, date = new
   return `${prefix}${String(n).padStart(6, "0")}`;
 }
 
+/** Befehl 29: Unfallersatzfall UE-JJJJ-NNNNNN, je Mandant fortlaufend; Eindeutigkeit über den Index (tenantId, caseNumber), Kollision → erneut ziehen. */
+export async function nextAccidentCaseNumber(tx: Tx, tenantId: string, date = new Date()) {
+  const prefix = `UE-${date.getFullYear()}-`;
+  const last = await tx.accidentReplacementCase.findFirst({ where: { tenantId, caseNumber: { startsWith: prefix } }, orderBy: { caseNumber: "desc" }, select: { caseNumber: true } });
+  const n = last?.caseNumber ? parseInt(last.caseNumber.slice(prefix.length), 10) + 1 : 1;
+  return `${prefix}${String(n).padStart(6, "0")}`;
+}
+
 /** Behördenvorgang: BH-JJJJ-NNNNNN, mandantenweit eindeutig; mit withNumberRetry verwenden. */
 export async function nextAuthorityCaseNumber(tx: Tx, tenantId: string, date = new Date()) {
   const prefix = `BH-${date.getFullYear()}-`;

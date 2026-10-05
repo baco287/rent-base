@@ -242,7 +242,7 @@ test("8 Unterschriebener Vertrag bleibt unverändert (Inhalt, Prüfsumme, Unters
   await cancelBooking(w.tenantId, w.actor, w.bookingId, { reason: "Storno", idempotencyKey: key() });
   const c1 = await db.rentalContract.findUniqueOrThrow({ where: { id: w.contractId } });
   assert.equal(c1.status, "CANCELLED");
-  assert.deepEqual([c1.contentHash, String(c1.totalAmount), c1.startAt.getTime(), c1.endAt.getTime()], [c0.contentHash, String(c0.totalAmount), c0.startAt.getTime(), c0.endAt.getTime()]);
+  assert.deepEqual([c1.contentHash, String(c1.totalAmount), c1.startAt.getTime(), c1.endAt!.getTime()], [c0.contentHash, String(c0.totalAmount), c0.startAt.getTime(), c0.endAt!.getTime()]);
   assert.equal(await db.signature.count({ where: { tenantId: w.tenantId, contractId: w.contractId } }), sig0);
   await assert.rejects(() => db.rentalContract.update({ where: { id: w.contractId }, data: { totalAmount: 1 } }), /RB_IMMUTABLE/);
   const ov = await cancellationOverview(w.tenantId, w.bookingId);
@@ -294,7 +294,8 @@ test("12/13 Rollen und Supportmodus: Storno, Gebühr, Erstattung, Vereinbarung n
   const auth = readFileSync(path.join(process.cwd(), "src/lib/auth.ts"), "utf8");
   assert.match(auth, /export async function requireRole[\s\S]*?if \(session\.supportSession\) redirect\("\/heute\?fehler=support"\)/);
   const page = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/page.tsx"), "utf8");
-  assert.match(page, /canCancel\(b\) && user\.role !== "YARD" && !supportSession \? await cancellationOverview/);
+  // Befehl 29 Phase E: zusätzlich kein Storno-Dialog bei geschlossenem Unfallersatzfall (serverseitig ebenfalls gesperrt)
+  assert.match(page, /canCancel\(b\) && user\.role !== "YARD" && !supportSession(?: && !caseLocked)? \? await cancellationOverview/);
   assert.match(page, /const canChangePeriod = b\.status === "RESERVED" && b\.contract\?\.status !== "SIGNED" && user\.role !== "YARD" && !supportSession/);
 });
 
@@ -333,8 +334,8 @@ test("14/15 Zeitraum vor dem Vertrag: kontrolliert mit Grund, Preisvorschlag, Au
   const ns = plusMs(b0.startAt, 5 * HOUR);
   const pv = await previewBookingPeriodChange(w.tenantId, w.bookingId, ns, b0.endAt);
   assert.equal(pv.error, null); assert.ok(pv.after); assert.equal(pv.paidCents, 10000);
-  await assert.rejects(() => changeBookingPeriod(w.tenantId, w.actor, w.bookingId, { startAt: ns, endAt: b0.endAt, reason: "" }), /Grund/);
-  await changeBookingPeriod(w.tenantId, w.actor, w.bookingId, { startAt: ns, endAt: b0.endAt, reason: "Kunde kommt erst um 15:00" });
+  await assert.rejects(() => changeBookingPeriod(w.tenantId, w.actor, w.bookingId, { startAt: ns, endAt: b0.endAt!, reason: "" }), /Grund/);
+  await changeBookingPeriod(w.tenantId, w.actor, w.bookingId, { startAt: ns, endAt: b0.endAt!, reason: "Kunde kommt erst um 15:00" });
   const b1 = await booking(w);
   assert.equal(b1.startAt.getTime(), ns.getTime());
   const a = (await audits(w, "BOOKING_PERIOD_CHANGED"))[0];
@@ -342,15 +343,15 @@ test("14/15 Zeitraum vor dem Vertrag: kontrolliert mit Grund, Preisvorschlag, Au
   assert.equal(new Date(d.startBefore).getTime(), b0.startAt.getTime()); assert.equal(d.reason, "Kunde kommt erst um 15:00"); assert.equal(typeof d.priceAfterCents, "number");
   assert.equal(await db.payment.count({ where: { tenantId: w.tenantId, bookingId: w.bookingId, status: "CONFIRMED" } }), 1, "Zahlung bleibt an der Buchung");
   // Konflikt: zweite Buchung desselben Fahrzeugs direkt danach
-  const other = await db.booking.create({ data: { tenantId: w.tenantId, number: `X-${Date.now()}`, vehicleId: w.vehicleId, customerId: w.customerId, startAt: plusMs(b0.endAt, 2 * HOUR), endAt: plusMs(b0.endAt, 2 * DAY), dailyRate: 89, deposit: 500 } });
-  await assert.rejects(() => changeBookingPeriod(w.tenantId, w.actor, w.bookingId, { startAt: ns, endAt: plusMs(b0.endAt, DAY), reason: "länger" }), new RegExp(`bereits für Buchung ${other.number} vorgesehen`));
-  assert.equal((await booking(w)).endAt.getTime(), b0.endAt.getTime());
+  const other = await db.booking.create({ data: { tenantId: w.tenantId, number: `X-${Date.now()}`, vehicleId: w.vehicleId, customerId: w.customerId, startAt: plusMs(b0.endAt!, 2 * HOUR), endAt: plusMs(b0.endAt!, 2 * DAY), dailyRate: 89, deposit: 500 } });
+  await assert.rejects(() => changeBookingPeriod(w.tenantId, w.actor, w.bookingId, { startAt: ns, endAt: plusMs(b0.endAt!, DAY), reason: "länger" }), new RegExp(`bereits für Buchung ${other.number} vorgesehen`));
+  assert.equal((await booking(w)).endAt!.getTime(), b0.endAt!.getTime());
 });
 
 test("16 Unterschriebener Vertrag: keine direkte Zeitraumänderung; Startverschiebung nur per Nachtrag (Original unverändert)", async () => {
   const w = await signedWorld("b28-start");
   const b0 = await booking(w);
-  await assert.rejects(() => changeBookingPeriod(w.tenantId, w.actor, w.bookingId, { startAt: plusMs(b0.startAt, HOUR), endAt: b0.endAt, reason: "später" }), /Nachtrag/);
+  await assert.rejects(() => changeBookingPeriod(w.tenantId, w.actor, w.bookingId, { startAt: plusMs(b0.startAt, HOUR), endAt: b0.endAt!, reason: "später" }), /Nachtrag/);
   const a = await draft(w, "start");
   const ns = plusMs(b0.startAt, 3 * HOUR);
   await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newStartAt: ns });
@@ -371,7 +372,7 @@ test("17/18/19 Telefonische Verlängerung: sofort reserviert, ohne Vertrags-/Rec
   const b0 = await booking(w);
   const c0 = await effectiveContractState(w.tenantId, w.contractId);
   const a = await draft(w, "ext");
-  const newEnd = plusMs(b0.endAt, DAY);
+  const newEnd = plusMs(b0.endAt!, DAY);
   await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: newEnd });
   const row0 = await db.contractAmendment.findUniqueOrThrow({ where: { id: a.id } });
   await updateAmendmentDraft(w.tenantId, w.actor, a.id, { priceDeltaCents: row0.priceProposalCents });
@@ -379,13 +380,13 @@ test("17/18/19 Telefonische Verlängerung: sofort reserviert, ohne Vertrags-/Rec
   const agreed = await agreeAmendment(w.tenantId, w.actor, a.id, { channel: "PHONE", note: "Anruf 15:05" });
   assert.equal(agreed.status, "AGREED"); assert.ok(agreed.agreedAt);
   // operativ: blockiert sofort
-  const conflicts = await findConflicts(db, w.tenantId, w.vehicleId, plusMs(b0.endAt, 2 * HOUR), plusMs(b0.endAt, 5 * HOUR));
+  const conflicts = await findConflicts(db, w.tenantId, w.vehicleId, plusMs(b0.endAt!, 2 * HOUR), plusMs(b0.endAt!, 5 * HOUR));
   assert.deepEqual(conflicts.map((c) => c.id), [w.bookingId]);
-  await assert.rejects(() => db.$transaction(async (tx) => { const r = await assertVehicleBookable(tx, w.tenantId, w.vehicleId, plusMs(b0.endAt, 2 * HOUR), plusMs(b0.endAt, 5 * HOUR)); if (r.conflicts.length) throw new Error("Doppelbelegung"); }), /Doppelbelegung/);
+  await assert.rejects(() => db.$transaction(async (tx) => { const r = await assertVehicleBookable(tx, w.tenantId, w.vehicleId, plusMs(b0.endAt!, 2 * HOUR), plusMs(b0.endAt!, 5 * HOUR)); if (r.conflicts.length) throw new Error("Doppelbelegung"); }), /Doppelbelegung/);
   // vertraglich/finanziell: noch nichts
   const c1 = await effectiveContractState(w.tenantId, w.contractId);
-  assert.deepEqual([c1.endAt.getTime(), c1.totalCents], [c0.endAt.getTime(), c0.totalCents]);
-  assert.equal((await booking(w)).endAt.getTime(), b0.endAt.getTime());
+  assert.deepEqual([c1.endAt!.getTime(), c1.totalCents], [c0.endAt!.getTime(), c0.totalCents]);
+  assert.equal((await booking(w)).endAt!.getTime(), b0.endAt!.getTime());
   assert.equal((await rentalPaymentSummary(w.tenantId, w.bookingId)).grossCents, c0.totalCents);
   // Inhalt fest: weder Fachlogik noch Datenbank ändern eine vereinbarte Änderung
   await assert.rejects(() => updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusMs(newEnd, DAY) }), /vereinbart/);
@@ -394,7 +395,7 @@ test("17/18/19 Telefonische Verlängerung: sofort reserviert, ohne Vertrags-/Rec
   // Unterschrift nachholen
   const s = await signed(w, a.id);
   assert.equal(s.status, "SIGNED");
-  assert.equal((await booking(w)).endAt.getTime(), newEnd.getTime());
+  assert.equal((await booking(w)).endAt!.getTime(), newEnd.getTime());
   const c2 = await effectiveContractState(w.tenantId, w.contractId);
   assert.equal(c2.totalCents, c0.totalCents + (row0.priceProposalCents ?? 0), "Verlängerung genau einmal im Preis");
   assert.equal((s.snapshot as { agreed?: { channel: string } }).agreed?.channel, "PHONE");
@@ -406,13 +407,13 @@ test("20 Zurücknahme einer vereinbarten Verlängerung: nur mit Grund, Reservier
   const w = await active("b28-withdraw");
   const b0 = await booking(w);
   const a = await draft(w, "w");
-  await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusMs(b0.endAt, DAY) });
+  await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusMs(b0.endAt!, DAY) });
   await agreeAmendment(w.tenantId, w.actor, a.id, { channel: "PHONE" });
   await assert.rejects(() => discardAmendment(w.tenantId, w.actor, a.id), /Grund/);
   const d = await discardAmendment(w.tenantId, w.actor, a.id, "Kunde hat doch abgesagt");
   assert.deepEqual([d.status, d.discardReason], ["DISCARDED", "Kunde hat doch abgesagt"]);
-  assert.deepEqual(await findConflicts(db, w.tenantId, w.vehicleId, plusMs(b0.endAt, 2 * HOUR), plusMs(b0.endAt, 5 * HOUR)), [], "Reservierung aufgehoben");
-  assert.equal((await booking(w)).endAt.getTime(), b0.endAt.getTime());
+  assert.deepEqual(await findConflicts(db, w.tenantId, w.vehicleId, plusMs(b0.endAt!, 2 * HOUR), plusMs(b0.endAt!, 5 * HOUR)), [], "Reservierung aufgehoben");
+  assert.equal((await booking(w)).endAt!.getTime(), b0.endAt!.getTime());
   const audit = (await audits(w, "AMENDMENT_DISCARDED"))[0].details as { wasAgreed: boolean; reason: string };
   assert.deepEqual([audit.wasAgreed, audit.reason], [true, "Kunde hat doch abgesagt"]);
   assert.equal(await db.contractAmendment.count({ where: { id: a.id } }), 1, "nicht gelöscht");
@@ -422,13 +423,13 @@ test("21 Rennen: Verlängerung vs. neue Buchung – nur eine gewinnt; zwei Verei
   const w = await active("b28-race");
   const b0 = await booking(w);
   const a = await draft(w, "r");
-  await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusMs(b0.endAt, 2 * DAY) });
+  await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusMs(b0.endAt!, 2 * DAY) });
   const res = await Promise.allSettled([
     agreeAmendment(w.tenantId, w.actor, a.id, { channel: "PHONE" }),
     db.$transaction(async (tx) => {
-      const r = await assertVehicleBookable(tx, w.tenantId, w.vehicleId, plusMs(b0.endAt, 3 * HOUR), plusMs(b0.endAt, DAY));
+      const r = await assertVehicleBookable(tx, w.tenantId, w.vehicleId, plusMs(b0.endAt!, 3 * HOUR), plusMs(b0.endAt!, DAY));
       if (r.conflicts.length) throw new Error("Doppelbelegung");
-      return tx.booking.create({ data: { tenantId: w.tenantId, number: `R-${Date.now()}`, vehicleId: w.vehicleId, customerId: w.customerId, startAt: plusMs(b0.endAt, 3 * HOUR), endAt: plusMs(b0.endAt, DAY), dailyRate: 89, deposit: 0 } });
+      return tx.booking.create({ data: { tenantId: w.tenantId, number: `R-${Date.now()}`, vehicleId: w.vehicleId, customerId: w.customerId, startAt: plusMs(b0.endAt!, 3 * HOUR), endAt: plusMs(b0.endAt!, DAY), dailyRate: 89, deposit: 0 } });
     }),
   ]);
   assert.equal(res.filter((x) => x.status === "fulfilled").length, 1, JSON.stringify(res.map((x) => (x.status === "rejected" ? String(x.reason).slice(0, 120) : "ok"))));
@@ -436,12 +437,12 @@ test("21 Rennen: Verlängerung vs. neue Buchung – nur eine gewinnt; zwei Verei
   const v = await active("b28-race2");
   const v0 = await booking(v);
   const b = await draft(v, "r2");
-  await updateAmendmentDraft(v.tenantId, v.actor, b.id, { newEndAt: plusMs(v0.endAt, DAY) });
+  await updateAmendmentDraft(v.tenantId, v.actor, b.id, { newEndAt: plusMs(v0.endAt!, DAY) });
   const two = await Promise.allSettled([agreeAmendment(v.tenantId, v.actor, b.id, { channel: "PHONE" }), agreeAmendment(v.tenantId, v.actor, b.id, { channel: "EMAIL" })]);
   assert.ok(two.every((x) => x.status === "fulfilled"));
   assert.equal((await audits(v, "AMENDMENT_AGREED")).length, 1, "einmal vereinbart");
   // Datenbank: höchstens eine vereinbarte Änderung je Vertrag
-  const extra = await db.contractAmendment.create({ data: { tenantId: v.tenantId, contractId: v.contractId, bookingId: v.bookingId, idempotencyKey: nonce("raw"), newEndAt: plusMs(v0.endAt, 3 * DAY) } });
+  const extra = await db.contractAmendment.create({ data: { tenantId: v.tenantId, contractId: v.contractId, bookingId: v.bookingId, idempotencyKey: nonce("raw"), newEndAt: plusMs(v0.endAt!, 3 * DAY) } });
   await assert.rejects(() => db.contractAmendment.update({ where: { id: extra.id }, data: { status: "AGREED", agreedAt: new Date(), agreedChannel: "PHONE" } }), /rb_amendment_one_agreed|Unique|unique/i);
   await db.contractAmendment.delete({ where: { id: extra.id } });
   // Unterschrift gleichzeitig mit Zurücknahme
@@ -450,7 +451,7 @@ test("21 Rennen: Verlängerung vs. neue Buchung – nur eine gewinnt; zwei Verei
   assert.equal(end.filter((x) => x.status === "fulfilled").length, 1, JSON.stringify(end.map((x) => (x.status === "rejected" ? String(x.reason).slice(0, 120) : "ok"))));
   const final = await db.contractAmendment.findUniqueOrThrow({ where: { id: b.id } });
   assert.ok(final.status === "SIGNED" || final.status === "DISCARDED");
-  assert.equal((await booking(v)).endAt.getTime(), final.status === "SIGNED" ? plusMs(v0.endAt, DAY).getTime() : v0.endAt.getTime());
+  assert.equal((await booking(v)).endAt!.getTime(), final.status === "SIGNED" ? plusMs(v0.endAt!, DAY).getTime() : v0.endAt!.getTime());
 });
 
 test("22/23 Verkürzung senkt den Preis nicht automatisch; bewusste Reduktion nur mit Begründung", async () => {
@@ -458,7 +459,7 @@ test("22/23 Verkürzung senkt den Preis nicht automatisch; bewusste Reduktion nu
   const b0 = await booking(w);
   const c0 = await effectiveContractState(w.tenantId, w.contractId);
   const a = await draft(w, "s");
-  const row = await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusMs(b0.endAt, -2 * DAY) });
+  const row = await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusMs(b0.endAt!, -2 * DAY) });
   assert.ok(row.priceProposalCents != null && row.priceProposalCents < 0, "Vorschlag zeigt die mögliche Minderung");
   assert.equal((await getAmendmentState(w.tenantId, a.id)).changes.some((c) => c.kind === "PRICE"), false);
   await signed(w, a.id);
@@ -468,7 +469,7 @@ test("22/23 Verkürzung senkt den Preis nicht automatisch; bewusste Reduktion nu
   const v0 = await booking(v);
   const d0 = await effectiveContractState(v.tenantId, v.contractId);
   const b = await draft(v, "s2");
-  const r2 = await updateAmendmentDraft(v.tenantId, v.actor, b.id, { newEndAt: plusMs(v0.endAt, -2 * DAY) });
+  const r2 = await updateAmendmentDraft(v.tenantId, v.actor, b.id, { newEndAt: plusMs(v0.endAt!, -2 * DAY) });
   await updateAmendmentDraft(v.tenantId, v.actor, b.id, { priceDeltaCents: r2.priceProposalCents });
   assert.ok((await getAmendmentState(v.tenantId, b.id)).issues.some((i) => i.code === "PRICE_REASON" && /Preisreduktion/.test(i.message)));
   await renterSign(v, b.id);
@@ -481,25 +482,25 @@ test("22/23 Verkürzung senkt den Preis nicht automatisch; bewusste Reduktion nu
 test("24/25 Folgekonflikt blockiert die Verlängerung klar; eine überfällige Miete wird durch vereinbarte Verlängerung nicht mehr als überfällig geführt", async () => {
   const w = await active("b28-follow");
   const b0 = await booking(w);
-  const next = await db.booking.create({ data: { tenantId: w.tenantId, number: `F-${Date.now()}`, vehicleId: w.vehicleId, customerId: w.customerId, startAt: plusMs(b0.endAt, 14 * HOUR), endAt: plusMs(b0.endAt, 3 * DAY), dailyRate: 89, deposit: 0 } });
+  const next = await db.booking.create({ data: { tenantId: w.tenantId, number: `F-${Date.now()}`, vehicleId: w.vehicleId, customerId: w.customerId, startAt: plusMs(b0.endAt!, 14 * HOUR), endAt: plusMs(b0.endAt!, 3 * DAY), dailyRate: 89, deposit: 0 } });
   const a = await draft(w, "f");
-  await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusMs(b0.endAt, 18 * HOUR) });
+  await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusMs(b0.endAt!, 18 * HOUR) });
   const st = await getAmendmentState(w.tenantId, a.id);
   assert.ok(st.issues.some((i) => i.code === "CONFLICT" && new RegExp(`Verlängerung nicht möglich\\. Das Fahrzeug ist ab .+ bereits für Buchung ${next.number} vorgesehen`).test(i.message)), JSON.stringify(st.issues));
   await assert.rejects(() => agreeAmendment(w.tenantId, w.actor, a.id, { channel: "PHONE" }), /Verlängerung nicht möglich/);
   assert.equal((await db.booking.findUniqueOrThrow({ where: { id: next.id } })).startAt.getTime(), next.startAt.getTime(), "keine Umbuchung der Folgebuchung");
   // überfällig (simuliertes „jetzt“ nach dem geplanten Ende) → mit vereinbarter Verlängerung nicht mehr überfällig
-  const now = plusMs(b0.endAt, 2 * HOUR);
+  const now = plusMs(b0.endAt!, 2 * HOUR);
   assert.equal(isOverdue({ status: "ACTIVE", endAt: b0.endAt }, now), true);
-  assert.equal(isOverdue({ status: "ACTIVE", endAt: b0.endAt, agreedEndAt: plusMs(b0.endAt, DAY) }, now), false);
-  assert.equal(occupiedUntil({ status: "ACTIVE", endAt: b0.endAt, agreedEndAt: plusMs(b0.endAt, DAY) }, now).getTime(), plusMs(b0.endAt, DAY).getTime());
+  assert.equal(isOverdue({ status: "ACTIVE", endAt: b0.endAt, agreedEndAt: plusMs(b0.endAt!, DAY) }, now), false);
+  assert.equal(occupiedUntil({ status: "ACTIVE", endAt: b0.endAt!, agreedEndAt: plusMs(b0.endAt!, DAY) }, now)!.getTime(), plusMs(b0.endAt!, DAY).getTime());
 });
 
 test("Rückgabe: vereinbarte, nicht unterschriebene Änderung sperrt den Abschluss der Rückgabe", async () => {
   const w = await active("b28-return-block");
   const b0 = await booking(w);
   const a = await draft(w, "rb");
-  await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusMs(b0.endAt, DAY) });
+  await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusMs(b0.endAt!, DAY) });
   await agreeAmendment(w.tenantId, w.actor, a.id, { channel: "PHONE" });
   const r = await startHandover(w.tenantId, w.bookingId, "RETURN", w.actor);
   const st = await getHandoverState(w.tenantId, r.id);
@@ -546,7 +547,7 @@ test("26/27 Historie und Kundenakte: Storno mit Grund, Vereinbarung, Unterschrif
   const w = await active("b28-hist");
   const b0 = await booking(w);
   const a = await draft(w, "h");
-  await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusMs(b0.endAt, DAY) });
+  await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusMs(b0.endAt!, DAY) });
   await agreeAmendment(w.tenantId, w.actor, a.id, { channel: "PHONE" });
   const row = await signed(w, a.id);
   const h = await bookingTimeline(w.tenantId, w.bookingId);
@@ -557,7 +558,7 @@ test("26/27 Historie und Kundenakte: Storno mit Grund, Vereinbarung, Unterschrif
   const v = await reservedWorld("b28-hist2");
   await pay(v, "120");
   const vb = await booking(v);
-  await changeBookingPeriod(v.tenantId, v.actor, v.bookingId, { startAt: plusMs(vb.startAt, HOUR), endAt: vb.endAt, reason: "später" });
+  await changeBookingPeriod(v.tenantId, v.actor, v.bookingId, { startAt: plusMs(vb.startAt, HOUR), endAt: vb.endAt!, reason: "später" });
   await cancelBooking(v.tenantId, v.actor, v.bookingId, { reason: "Termin entfällt", idempotencyKey: key(), refund: { mode: "CREDIT" } });
   const hv = await bookingTimeline(v.tenantId, v.bookingId);
   assert.ok(hv.some((e) => e.kind === "Storno" && e.detail?.startsWith("Termin entfällt")));
@@ -588,7 +589,7 @@ test("DB-Invarianten: Stornogebühr nur zu stornierter Buchung und mit Steuerbeh
   await assert.rejects(() => recordRentalPayment(w.tenantId, w.actor, w.bookingId, { amount: "1", method: "CASH", paidAt: at }), /storniert/);
   // vereinbart ohne Vereinbarungsangaben ist unzulässig
   const s = await signedWorld("b28-inv2");
-  const raw = await db.contractAmendment.create({ data: { tenantId: s.tenantId, contractId: s.contractId, bookingId: s.bookingId, idempotencyKey: nonce("a"), newEndAt: plusMs((await booking(s)).endAt, DAY) } });
+  const raw = await db.contractAmendment.create({ data: { tenantId: s.tenantId, contractId: s.contractId, bookingId: s.bookingId, idempotencyKey: nonce("a"), newEndAt: plusMs((await booking(s)).endAt!, DAY) } });
   await assert.rejects(() => db.contractAmendment.update({ where: { id: raw.id }, data: { status: "AGREED" } }), /rb_amendment_agreed|check/i);
   await db.contractAmendment.delete({ where: { id: raw.id } });
 });

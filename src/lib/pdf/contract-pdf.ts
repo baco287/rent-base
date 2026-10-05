@@ -88,15 +88,17 @@ export async function renderContractPdf(data: ContractDocumentData, signatureIma
   pdf.sectionTitle("Mietpreis", 80);
   const rows = [
     ...data.price.lines.map((l) => [l.text, l.amount]),
-    ["Zwischensumme", data.price.subtotal],
+    [data.price.subtotalLabel, data.price.subtotal],
     ...(data.price.discount ? [[data.price.discount.text, data.price.discount.amount]] : []),
     ...(data.price.agreed ? [["Berechneter Mietpreis", data.price.calculated], [data.price.agreed.text, data.price.agreed.amount]] : []),
     ...data.price.extras.map((e) => [e.text, e.amount]),
   ];
   pdf.table(
-    [{ header: `Position (Mietdauer ${data.price.days} ${data.price.days === 1 ? "Tag" : "Tage"})`, width: 75 }, { header: "Betrag", width: 25, align: "right" }],
+    [{ header: `Position (${data.price.durationText})`, width: 75 }, { header: "Betrag", width: 25, align: "right" }],
     [...rows, [{ text: "Gesamtmietpreis", bold: true }, { text: data.price.total, bold: true }], ["Kaution", data.price.deposit]],
   );
+  // Befehl 29 Phase E: offenes Mietende – wie der Gesamtmietpreis nach der Rückgabe entsteht
+  if (data.price.totalNote) pdf.paragraph(data.price.totalNote, { size: 8.6, color: COLORS.ink2, gapAfter: 6 });
 
   const conditions = byKey.get("conditions");
   if (conditions) section(pdf, conditions);

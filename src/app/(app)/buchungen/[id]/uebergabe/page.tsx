@@ -34,6 +34,7 @@ import { PhotoUploader } from "./photo-uploader";
 import { ReadingsIssueList } from "./readings-issues";
 import { DriverVerificationSection } from "./driver-verification-panel";
 import { driverCheckSummaries } from "@/lib/driver-verification";
+import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed } from "@/lib/accident-replacement-events";
 
 export const metadata = { title: "Übergabe" };
 
@@ -49,6 +50,9 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
   if (!b) notFound();
   const stage = bookingStage(b, b.contract);
   const existing = b.handovers[0];
+  // Befehl 29 Phase E: geschlossener Unfallersatzfall – die Übergabe ist serverseitig gesperrt; hier deutlich sagen, warum
+  const caseClosed = b.rentalType === "ACCIDENT_REPLACEMENT" && (await accidentCaseClosed(db, tenant.id, b.id));
+  const closedNotice = caseClosed ? <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm font-medium">{ACCIDENT_CASE_CLOSED_MESSAGE} Übergabe und Rückgabe sind gesperrt, bis der Fall in der Fallakte wieder geöffnet wird.</p> : null;
 
   // Noch keine Übergabe begonnen
   if (!existing) {
@@ -59,20 +63,21 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
           <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
         </PageHeader>
         <Content>
+          {closedNotice}
           {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
           <DepositNotice tenantId={tenant.id} bookingId={b.id} />
           <Card className="p-5 max-w-2xl flex flex-col gap-3">
             <div className="flex flex-wrap items-center gap-2"><Plate>{b.vehicle.plate}</Plate><span className="font-medium">{b.vehicle.make} {b.vehicle.model}</span><span className="text-ink-3">für {customerName(b.customer)}</span></div>
             {stage === "READY_FOR_PICKUP" ? (
               <>
-                <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 font-medium">Mietvertrag {b.contract!.number} ist abgeschlossen. Die Übergabe kann beginnen.</p>
-                <p className="text-sm text-ink-2">Geplante Abholung: {fmtDateTime(b.startAt)}. Der Assistent führt durch Kilometerstand, Tank, Fahrzeugzustand, Fotos, Checkliste und Unterschrift. Erst das finalisierte Protokoll setzt das Fahrzeug auf „Unterwegs“.</p>
-                <form action={startPickupAction.bind(null, b.id)}><button className="btn btn-primary !py-2.5 !px-5">Übergabe starten</button></form>
+                {!caseClosed && <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 font-medium">Mietvertrag {b.contract!.number} ist abgeschlossen. Die Übergabe kann beginnen.</p>}
+                {!caseClosed && <p className="text-sm text-ink-2">Geplante Abholung: {fmtDateTime(b.startAt)}. Der Assistent führt durch Kilometerstand, Tank, Fahrzeugzustand, Fotos, Checkliste und Unterschrift. Erst das finalisierte Protokoll setzt das Fahrzeug auf „Unterwegs“.</p>}
+                {!caseClosed && <form action={startPickupAction.bind(null, b.id)}><button className="btn btn-primary !py-2.5 !px-5">Übergabe starten</button></form>}
               </>
             ) : stage === "NEEDS_CONTRACT" || stage === "CONTRACT_DRAFT" ? (
               <>
                 <p role="alert" className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 font-medium">Die Übergabe ist erst möglich, wenn der Mietvertrag abgeschlossen ist.</p>
-                <div><Link href={`/buchungen/${b.id}/vertrag`} className="btn btn-primary">{stage === "CONTRACT_DRAFT" ? "Mietvertrag fortsetzen" : "Zum Mietvertrag"}</Link></div>
+                {!caseClosed && <div><Link href={`/buchungen/${b.id}/vertrag`} className="btn btn-primary">{stage === "CONTRACT_DRAFT" ? "Mietvertrag fortsetzen" : "Zum Mietvertrag"}</Link></div>}
               </>
             ) : (
               <p className="text-sm text-ink-2">Für diese Buchung gibt es kein Übergabeprotokoll. Sie wurde vor Einführung des Assistenten übergeben.</p>
@@ -96,6 +101,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
           <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
         </PageHeader>
         <Content>
+          {closedNotice}
           {sp.abgeschlossen === "1" && <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 font-medium">Die Übergabe ist abgeschlossen und versiegelt. {b.vehicle.plate} ist jetzt unterwegs.</p>}
           {sp.abgeschlossen === "1" && <FollowUpNotice tenantId={tenant.id} bookingId={b.id} handoverId={handover.id} />}
           <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
@@ -126,6 +132,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
         <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
       </PageHeader>
       <Content className="max-w-6xl">
+        {closedNotice}
         <WizardProgress bookingId={b.id} current={step} reached={reached} steps={PICKUP_STEPS} basePath={base} />
         <h2 className="text-lg font-semibold -mb-1">Schritt {step} von {PICKUP_STEPS.length}: {PICKUP_STEPS[step - 1]}</h2>
         {step < 8 && <DepositNotice tenantId={tenant.id} bookingId={b.id} />}
@@ -140,7 +147,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
                   <dt className="text-ink-3">Fahrer</dt><dd className="font-medium">{primaryDriver ? `${primaryDriver.firstName} ${primaryDriver.lastName}` : "–"}</dd>
                   <dt className="text-ink-3">Zusatzfahrer</dt><dd>{b.contract?.drivers.filter((d) => d.role === "ADDITIONAL_DRIVER").map((d) => `${d.firstName} ${d.lastName}`).join(", ") || "keine"}</dd>
                   <dt className="text-ink-3">Geplante Abholung</dt><dd className="font-mono tnum">{fmtDateTime(b.startAt)}</dd>
-                  <dt className="text-ink-3">Geplante Rückgabe</dt><dd className="font-mono tnum">{fmtDateTime(b.endAt)}</dd>
+                  <dt className="text-ink-3">{b.rentalType === "ACCIDENT_REPLACEMENT" ? "Mietende" : "Geplante Rückgabe"}</dt><dd className="font-mono tnum">{b.rentalType === "ACCIDENT_REPLACEMENT" ? <>offen (bis zur Rückgabe){b.endAt ? <span className="block text-xs text-ink-3 font-sans">geplant {fmtDateTime(b.endAt)} – nur Disposition</span> : null}</> : fmtDateTime(b.endAt)}</dd>
                   <dt className="text-ink-3">Telefon</dt><dd>{b.customer.phone || "–"}</dd>
                 </dl>
               </Card>

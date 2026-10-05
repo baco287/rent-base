@@ -11,10 +11,11 @@
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { recordAudit, type Actor } from "@/lib/audit";
-import { DEPOSIT_OFFSET_METHOD } from "@/lib/constants";
+import { DEPOSIT_OFFSET_METHOD, recipientRoleOf } from "@/lib/constants";
 import { invoiceFinancials, financialsFor } from "@/lib/counter-documents";
 import { checkDate, checkKey, depositView, domainFromDb, lockOrCreateDeposit, parseAmount, syncStatus, type DepositEventRow, type DepositView } from "@/lib/deposits";
 import { DomainError } from "@/lib/integrity";
+import { assertAccidentInvoiceCaseOpen } from "@/lib/accident-replacement-events";
 import { fmtCents, type Cents } from "@/lib/money";
 import { isUniqueViolation } from "@/lib/numbering";
 import { paymentStatusOf, type PaymentRow } from "@/lib/payments";
@@ -38,7 +39,9 @@ export type DepositOffsetOptions = {
 };
 
 async function openInvoicesOf(client: Tx | typeof db, tenantId: string, bookingId: string): Promise<OffsetInvoiceOption[]> {
-  const rows = await client.invoice.findMany({ where: { tenantId, bookingId, status: "FINALIZED", documentType: "INVOICE" }, orderBy: { finalizedAt: "asc" }, select: { id: true, number: true, kind: true, grossTotal: true, currentVersion: { select: { grossTotal: true } } } });
+  const all = await client.invoice.findMany({ where: { tenantId, bookingId, status: "FINALIZED", documentType: "INVOICE" }, orderBy: { finalizedAt: "asc" }, select: { id: true, number: true, kind: true, grossTotal: true, currentVersion: { select: { grossTotal: true, customerSnapshot: true } } } });
+  // Befehl 29: die Kaution des Mieters wird nie gegen eine Rechnung an Dritte (Versicherung, anderer Empfänger) verrechnet
+  const rows = all.filter((r) => recipientRoleOf(r.currentVersion?.customerSnapshot as { recipientRole?: string } | null) === "RENTER");
   if (rows.length === 0) return [];
   const fin = await financialsFor(tenantId, rows.map((r) => ({ id: r.id, grossTotal: r.currentVersion?.grossTotal ?? r.grossTotal })), client);
   return rows.map((r) => { const f = fin.get(r.id)!; return { id: r.id, number: r.number ?? "", kind: r.kind, grossCents: f.effectiveCents, paidCents: f.paidCents, openCents: f.openCents, hasDraftCounter: f.hasDraftCounter }; }).filter((r) => r.openCents > 0);
@@ -139,7 +142,8 @@ export async function applyDepositOffset(tenantId: string, actor: Actor, input: 
     if (existing) return { payment: existing, event: existing.depositOffsetEvent, created: false };
   }
   try {
-    return await db.$transaction((tx) => applyDepositOffsetIn(tx, tenantId, actor, input, key), TX);
+    // Befehl 29 Phase F: Verrechnung mit einer Rechnung eines geschlossenen Unfallersatzfalls gesperrt (vor Buchungs-/Kautionssperre)
+    return await db.$transaction(async (tx) => { await assertAccidentInvoiceCaseOpen(tx, tenantId, input.invoiceId); return applyDepositOffsetIn(tx, tenantId, actor, input, key); }, TX);
   } catch (e) {
     if (key && isUniqueViolation(e, "idempotencyKey")) {
       const winner = await paymentByKey(db, tenantId, key);
@@ -166,6 +170,9 @@ export async function applyDepositOffsetIn(tx: Tx, tenantId: string, actor: Acto
   if (inv.bookingId !== input.bookingId) throw new DomainError("Die Rechnung gehört nicht zu dieser Buchung. Verrechnet wird nur die Kaution derselben Miete.");
   if (inv.status !== "FINALIZED") throw new DomainError("Verrechnet wird nur mit abgeschlossenen Rechnungen.");
   if (inv.documentType !== "INVOICE") throw new DomainError("Verrechnet wird nur mit Rechnungen, nicht mit Gutschriften oder Stornobelegen.");
+  // Befehl 29: die Kaution des Mieters deckt nur Rechnungen an den Mieter, nie eine Rechnung an die Versicherung oder Dritte
+  const cur = await tx.invoice.findUniqueOrThrow({ where: { id: inv.id }, select: { currentVersion: { select: { customerSnapshot: true } } } });
+  if (recipientRoleOf(cur.currentVersion?.customerSnapshot as { recipientRole?: string } | null) !== "RENTER") throw new DomainError("Diese Rechnung ist an die Versicherung bzw. einen anderen Empfänger gerichtet. Die Kaution des Mieters wird damit nicht verrechnet.");
   if (!OFFSET_ALLOWED_BOOKING_STATUS.has(bookingStatus)) throw new DomainError("Eine Verrechnung ist erst nach der Rückgabe (oder bei Storno) möglich.");
   if (balance.receivedCents <= 0) throw new DomainError("Es wurde noch keine Kaution als erhalten dokumentiert.");
   const f = await invoiceFinancials(tenantId, inv.id, tx);
@@ -210,6 +217,7 @@ export async function cancelDepositOffset(tenantId: string, actor: Actor, paymen
       if (!p0) throw new DomainError("Verrechnung nicht gefunden.");
       if (p0.type !== "DEPOSIT_OFFSET" || !p0.invoiceId) throw new DomainError("Dieser Eintrag ist keine Kautionsverrechnung.");
       if (!p0.bookingId) throw new DomainError("Diese Verrechnung hat keinen Buchungsbezug.");
+      await assertAccidentInvoiceCaseOpen(tx, tenantId, p0.invoiceId);
       const { row: deposit } = await lockOrCreateDeposit(tx, tenantId, p0.bookingId, actor);
       await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${p0.invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
       const locked = await tx.$queryRaw<{ id: string; status: string }[]>`SELECT "id", "status" FROM "Payment" WHERE "id" = ${paymentId} AND "tenantId" = ${tenantId} FOR UPDATE`;

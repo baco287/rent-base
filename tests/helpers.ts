@@ -37,6 +37,14 @@ export async function purgeTenants(tenantIds: string[]) {
         const w = { where: { tenantId: t } };
         await tx.emailLog.deleteMany(w);
         await tx.auditLog.deleteMany(w);
+        // Befehl 29: Unfallersatz – Kürzungen vor Rechnungen/Dokumenten, Fallakte vor Buchungen
+        await tx.invoiceAdjustment.deleteMany(w);
+        await tx.caseFollowUp.deleteMany(w);
+        await tx.accidentReplacementCaseEvent.deleteMany(w);
+        await tx.accidentReplacementCaseDocument.deleteMany(w);
+        await tx.accidentReplacementTariffItem.deleteMany(w);
+        await tx.accidentReplacementCase.deleteMany(w);
+        await tx.businessPartner.deleteMany(w);
         await tx.document.deleteMany({ where: { tenantId: t, payoutId: { not: null } } });
         await tx.payout.deleteMany(w);
         // Befehl 23: Mahnschreiben vor den Rechnungen (verweisen auf gemahnte Rechnung und Gebührenrechnung)

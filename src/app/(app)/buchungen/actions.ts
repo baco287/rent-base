@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
-import { agreedEndOf, occupiedUntil, assertVehicleBookable, nextBookingNumber, vehicleStatusProblem } from "@/lib/bookings";
+import { agreedEndOf, occupiedUntil, assertVehicleBookable, nextBookingNumber, vehicleStatusProblem, type OccupancyLike } from "@/lib/bookings";
 import { customerName, fmtDateTime } from "@/lib/format";
 import { customerFieldsFromForm, customerSchema, customerToData } from "@/lib/customer-schema";
 import { nextCustomerNumber, withNumberRetry } from "@/lib/numbering";
@@ -92,6 +92,12 @@ const bookingSchema = z
   })
   .refine((d) => d.endAt > d.startAt, { message: "Die Rückgabe muss nach der Abholung liegen.", path: ["endAt"] });
 
+/** Belegt bis: Zeitpunkt oder – bei offenem Mietende (Unfallersatz) – „bis zur Rückgabe“. */
+function occupiedUntilText(c: OccupancyLike) {
+  const until = occupiedUntil(c);
+  return until ? fmtDateTime(until) : "zur Rückgabe (offenes Mietende)";
+}
+
 function revalidate(id?: string) {
   revalidatePath("/buchungen");
   revalidatePath("/dispo");
@@ -143,7 +149,7 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
     const { conflicts } = await assertVehicleBookable(tx, tenant.id, d.vehicleId, d.startAt, d.endAt);
     if (conflicts.length > 0) {
       const c = conflicts[0];
-      return { error: `Doppelbelegung: ${refs.vehicle.plate} ist von ${fmtDateTime(c.startAt)} bis ${fmtDateTime(occupiedUntil({ ...c, agreedEndAt: agreedEndOf(c) }))} an ${customerName(c.customer)} vergeben (Nr. ${c.number})${agreedEndOf(c) ? " – Verlängerung vereinbart, Unterschrift ausstehend" : ""}.` };
+      return { error: `Doppelbelegung: ${refs.vehicle.plate} ist von ${fmtDateTime(c.startAt)} bis ${occupiedUntilText({ ...c, agreedEndAt: agreedEndOf(c) })} an ${customerName(c.customer)} vergeben (Nr. ${c.number})${agreedEndOf(c) ? " – Verlängerung vereinbart, Unterschrift ausstehend" : ""}.` };
     }
     // Erst nach bestandener Konfliktprüfung den Kunden anlegen, damit bei Ablehnung kein Kunde übrig bleibt.
     const customerId = customerData ? (await tx.customer.create({ data: { tenantId: tenant.id, number: await nextCustomerNumber(tx, tenant.id), ...customerData } })).id : d.customerId!;
@@ -183,18 +189,22 @@ export async function updateBookingAction(id: string, _prev: FormState, formData
   if (!d.customerId) return { error: "Bitte einen Kunden wählen." };
   const contract = await db.rentalContract.findFirst({ where: { bookingId: id, tenantId: tenant.id }, select: { number: true, status: true } });
   if (contract && contract.status === "SIGNED") return { error: `Zu dieser Buchung gibt es den unterschriebenen Vertrag ${contract.number}. Zeitraum, Fahrzeug und Preis sind damit festgeschrieben.` };
+  // Befehl 29: Unfallersatz-Buchungen (ggf. offenes Mietende) werden in der Fallakte bearbeitet, nicht über das Buchungsformular
+  if (existing.rentalType === "ACCIDENT_REPLACEMENT") return { error: "Diese Buchung gehört zu einem Unfallersatzfall und wird in der Fallakte bearbeitet." };
+  const existingEnd = existing.endAt;
+  if (!existingEnd) return { error: "Diese Buchung hat kein Mietende." };
   // Befehl 28: der Zeitraum ändert sich nur über „Zeitraum ändern“ (Pflichtgrund, Preisvorschlag, Audit BOOKING_PERIOD_CHANGED)
   const minute = (x: Date) => Math.floor(x.getTime() / 60_000);
-  if (minute(d.startAt) !== minute(existing.startAt) || minute(d.endAt) !== minute(existing.endAt)) return { error: "Der Zeitraum wird über „Zeitraum ändern“ geändert (mit Grund und Verfügbarkeitsprüfung). Bitte dort anpassen." };
+  if (minute(d.startAt) !== minute(existing.startAt) || minute(d.endAt) !== minute(existingEnd)) return { error: "Der Zeitraum wird über „Zeitraum ändern“ geändert (mit Grund und Verfügbarkeitsprüfung). Bitte dort anpassen." };
 
   const refs = await validateRefs(tenant.id, d.vehicleId, d.customerId);
   if ("error" in refs) return refs;
 
   const result = await db.$transaction(async (tx) => {
-    const { conflicts } = await assertVehicleBookable(tx, tenant.id, d.vehicleId, existing.startAt, existing.endAt, id);
+    const { conflicts } = await assertVehicleBookable(tx, tenant.id, d.vehicleId, existing.startAt, existingEnd, id);
     if (conflicts.length > 0) {
       const c = conflicts[0];
-      return { error: `Doppelbelegung: ${refs.vehicle.plate} ist von ${fmtDateTime(c.startAt)} bis ${fmtDateTime(occupiedUntil({ ...c, agreedEndAt: agreedEndOf(c) }))} an ${customerName(c.customer)} vergeben (Nr. ${c.number})${agreedEndOf(c) ? " – Verlängerung vereinbart, Unterschrift ausstehend" : ""}.` };
+      return { error: `Doppelbelegung: ${refs.vehicle.plate} ist von ${fmtDateTime(c.startAt)} bis ${occupiedUntilText({ ...c, agreedEndAt: agreedEndOf(c) })} an ${customerName(c.customer)} vergeben (Nr. ${c.number})${agreedEndOf(c) ? " – Verlängerung vereinbart, Unterschrift ausstehend" : ""}.` };
     }
     await tx.booking.update({
       where: { id },
@@ -338,7 +348,7 @@ export type PeriodPreviewResult = { error: string | null; before: { range: strin
 export async function previewPeriodChangeAction(id: string, formData: FormData): Promise<PeriodPreviewResult> {
   const { tenant } = await requireRole("DISPO");
   const p = await previewBookingPeriodChange(tenant.id, id, parseLocalDateTime(str(formData, "startAt")), parseLocalDateTime(str(formData, "endAt")));
-  const range = (a: Date, b: Date) => `${fmtDateTime(a)} – ${fmtDateTime(b)}`;
+  const range = (a: Date, b: Date | null) => `${fmtDateTime(a)} – ${b ? fmtDateTime(b) : "offen"}`;
   return {
     error: p.error,
     before: { range: range(p.before.startAt, p.before.endAt), days: p.before.days, price: fmtCents(p.before.priceCents) },

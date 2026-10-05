@@ -2,10 +2,10 @@
 // Positionen) und die Nummer der logischen Rechnung; nichts wird nachgerechnet oder aus Stammdaten nachgeladen. Frei von Server-Importen.
 
 import type { Prisma } from "@prisma/client";
-import { DAMAGE_TAX_NOTES, CANCELLATION_FEE_TAX_NOTE, CANCELLATION_FEE_TAX_TREATMENTS, type CancellationFeeTaxTreatment, DAMAGE_TAX_TREATMENTS, type DamageTaxTreatment } from "@/lib/constants";
+import { ACCIDENT_BILLING_TYPES, DAMAGE_TAX_NOTES, CANCELLATION_FEE_TAX_NOTE, CANCELLATION_FEE_TAX_TREATMENTS, INVOICE_RECIPIENT_ROLES, accidentBillingOf, type AccidentBillingType, type CancellationFeeTaxTreatment, DAMAGE_TAX_TREATMENTS, type DamageTaxTreatment } from "@/lib/constants";
 import { fmtCents, fmtRate, summarize, toBasisPoints, toCents } from "@/lib/money";
 import { APP_TIME_ZONE } from "@/lib/time";
-import type { CompanySnapshot, InvoiceCustomerSnapshot } from "@/lib/invoices";
+import { recipientRoleOf, type CompanySnapshot, type InvoiceCustomerSnapshot } from "@/lib/invoices";
 
 export type VersionInfo = {
   versionNo: number;
@@ -42,7 +42,8 @@ export type InvoiceDocumentData = {
   servicePeriod: string;
   reference: { contractNumber: string | null; bookingNumber: string | null; returnNumber: string | null; caseNumber: string | null };
   company: CompanySnapshot & { fullName: string; addressLines: string[]; taxLine: string | null; bankLines: string[] };
-  customer: { name: string; number: string | null; addressLines: string[]; email: string | null };
+  /** Befehl 29: roleLabel nur, wenn der Empfänger nicht der Mieter ist (Versicherung / anderer Empfänger); insuredName = Geschädigter/Mieter */
+  customer: { name: string; number: string | null; addressLines: string[]; email: string | null; roleLabel: string | null; claimNumber: string | null; insuredName: string | null; accidentDate: string | null; caseNumber: string | null };
   pricesIncludeTax: boolean;
   items: { index: number; description: string; quantity: string; unit: string; unitPrice: string; taxRate: string; net: string; tax: string; gross: string; source: string }[];
   taxSummary: { rate: string; net: string; tax: string; gross: string }[];
@@ -65,6 +66,11 @@ export type InvoiceDocumentData = {
    * Fassung und keine Rechnungsposition: Rechnungsbetrag und Positionen bleiben unverändert.
    */
   paymentStatus?: InvoicePaymentBlock | null;
+  /**
+   * Befehl 29 Phase F: Unfallersatz – Abrechnungsart und Miettage aus der versiegelten Empfängerkopie, dazu ein sachlicher
+   * Erläuterungstext (keine Aussage zur Erstattungsfähigkeit oder Haftung).
+   */
+  accident?: { type: AccidentBillingType; typeLabel: string; days: number | null; totalDays: number | null; priorDays: number | null; note: string } | null;
 };
 
 const date = (d: Date | null | undefined) => (d ? d.toLocaleDateString("de-DE", { timeZone: APP_TIME_ZONE, day: "2-digit", month: "2-digit", year: "numeric" }) : null);
@@ -97,6 +103,24 @@ export function invoicePaymentBlock(f: { invoiceCents: number; creditedCents: nu
   return { asOf: asOfText, lines, open: fmtCents(open), openCents: open, settled: open === 0, creditCents: Math.max(0, f.customerCreditCents), credit: fmtCents(Math.max(0, f.customerCreditCents)) };
 }
 
+const dayText = (n: number) => `${n} ${n === 1 ? "Miettag" : "Miettage"}`;
+/** Phase F: Erläuterung einer Unfallersatz-Rechnung aus der versiegelten Kopie – nachvollziehbar, ohne rechtliche Bewertung. */
+function accidentBlock(c: InvoiceCustomerSnapshot, items: readonly { source: string; unit: string; quantity: unknown }[]): InvoiceDocumentData["accident"] {
+  const b = accidentBillingOf(c);
+  if (!b) return null;
+  // Miettage dieser Rechnung aus den Positionen (Grundmiete) – auch nach einer bewusst geänderten Menge stimmt der Text mit der Rechnung überein
+  const inItems = items.filter((i) => i.source === "RENTAL" && i.unit === "Tag").reduce((s, i) => s + Number(i.quantity), 0);
+  const days = b.type === "REMAINDER" ? null : inItems, total = typeof b.totalDays === "number" ? b.totalDays : null, prior = typeof b.priorDays === "number" ? b.priorDays : null;
+  const priorText = prior && b.prior?.length ? `, davon ${dayText(prior)} zuvor mit ${b.prior.length === 1 ? "Rechnung" : "den Rechnungen"} ${b.prior.join(", ")} berechnet` : prior ? `, davon ${dayText(prior)} zuvor berechnet` : "";
+  const count = "Miettage zählen ab der Fahrzeugübergabe nach Ortszeit; jeder angefangene Zeitraum bis zur gleichen Uhrzeit des Folgetags ist ein Miettag.";
+  const note = b.type === "REMAINDER"
+    ? `Restforderung zur Rechnung ${b.remainderOf?.number ?? ""}${b.remainderOf?.insurerName ? ` an ${b.remainderOf.insurerName}` : ""}: Betrag aus derselben Unfallersatzmiete, den die Versicherung nicht übernommen hat.`.replace("  ", " ")
+    : b.type === "INTERIM"
+      ? `Zwischenrechnung über die tatsächliche Mietdauer bis zum Ende des Leistungszeitraums${total != null ? ` (seit der Übergabe ${dayText(total)}${priorText})` : ""}. Diese Rechnung umfasst ${dayText(days ?? 0)}. Die Miete läuft weiter; abgerechnet wird abschließend mit der Schlussrechnung nach der Rückgabe. ${count}`
+      : `Schlussrechnung über die tatsächliche Mietdauer von der Übergabe bis zur Rückgabe${total != null ? `: ${dayText(total)}${priorText}` : ""}. Diese Rechnung umfasst ${dayText(days ?? 0)}. ${count}`;
+  return { type: b.type, typeLabel: ACCIDENT_BILLING_TYPES[b.type], days, totalDays: total, priorDays: prior, note };
+}
+
 export function buildInvoiceDocument(inv: VersionFull, refs: DocumentRefs): InvoiceDocumentData {
   const company = inv.companySnapshot as CompanySnapshot;
   const c = inv.customerSnapshot as InvoiceCustomerSnapshot;
@@ -111,8 +135,11 @@ export function buildInvoiceDocument(inv: VersionFull, refs: DocumentRefs): Invo
   const documentType = refs.documentType === "CREDIT_NOTE" || refs.documentType === "CANCELLATION" ? refs.documentType : "INVOICE";
   const baseTitle = documentType !== "INVOICE" ? DOCUMENT_TITLES[documentType] : invoiceKind === "DAMAGE" ? "Schadenabrechnung" : "Rechnung";
   const o = refs.original ?? null;
+  const accident = refs.kind === "ACCIDENT_REPLACEMENT" && documentType === "INVOICE" ? accidentBlock(c, items) : null;
+  const title0 = accident && accident.type !== "REMAINDER" ? accident.typeLabel : baseTitle;
   return {
-    title: kind === "CORRECTION" ? `Berichtigte ${baseTitle}` : baseTitle,
+    title: kind === "CORRECTION" ? `Berichtigte ${title0}` : title0,
+    accident,
     dunningFee: refs.kind === "DUNNING_FEE",
     general: refs.kind === "GENERAL",
     documentType,
@@ -144,6 +171,11 @@ export function buildInvoiceDocument(inv: VersionFull, refs: DocumentRefs): Invo
       number: c.number,
       addressLines: [c.street, [c.zip, c.city].filter(Boolean).join(" "), c.country && c.country !== "DE" ? c.country : null].filter((x): x is string => !!x),
       email: c.email,
+      roleLabel: recipientRoleOf(c) === "RENTER" ? null : INVOICE_RECIPIENT_ROLES[recipientRoleOf(c)],
+      claimNumber: c.claimNumber ?? null,
+      insuredName: c.insuredName ?? null,
+      accidentDate: c.accidentDate ? date(new Date(c.accidentDate)) : null,
+      caseNumber: c.caseNumber ?? null,
     },
     pricesIncludeTax: inv.pricesIncludeTax,
     items: items.map((i, n) => ({ index: n + 1, description: i.description, quantity: qty(i.quantity), unit: i.unit, unitPrice: fmtCents(toCents(i.unitPrice)), taxRate: nonTaxable ? "–" : fmtRate(toBasisPoints(i.taxRate)), net: fmtCents(toCents(i.netAmount)), tax: fmtCents(toCents(i.taxAmount)), gross: fmtCents(toCents(i.grossAmount)), source: i.source })),

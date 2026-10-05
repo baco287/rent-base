@@ -179,11 +179,11 @@ test("Konditionen: Tankregelungen, Orte, vereinbarter Preis, Zeitraum mit besteh
   assert.equal((await db.booking.findFirstOrThrow({ where: { id: w.bookingId } })).deposit.toString(), "750");
 
   // anderer Zeitraum kollidiert mit einer zweiten Buchung desselben Fahrzeugs
-  const later = new Date(booking.endAt.getTime() + 2 * 24 * 3600_000);
+  const later = new Date(booking.endAt!.getTime() + 2 * 24 * 3600_000);
   await db.booking.create({ data: { tenantId: w.tenantId, number: `X-${Date.now()}`, vehicleId: w.vehicleId, customerId: w.customerId, startAt: later, endAt: new Date(later.getTime() + 3 * 24 * 3600_000), dailyRate: 89 } });
   await assert.rejects(() => saveConditions(w.tenantId, c.id, { ...baseInput, endAt: new Date(later.getTime() + 24 * 3600_000) }), /überschneidet sich/);
   const unchanged = await db.booking.findFirstOrThrow({ where: { id: w.bookingId } });
-  assert.equal(unchanged.endAt.getTime(), booking.endAt.getTime());
+  assert.equal(unchanged.endAt!.getTime(), booking.endAt!.getTime());
 });
 
 test("Fahrzeug nicht mehr vermietbar oder inzwischen belegt: Abschluss wird verweigert", async () => {

@@ -102,6 +102,8 @@ export const FEATURES = {
   KEY_DROP: { label: "Kontaktlose Rückgabe / Schlüsselbox", description: "Rückgabelinks für Kunden, Kundenmeldung, nachgelagerte Kontrolle", defaultEnabled: true, nav: [] },
   TENANT_SMTP: { label: "Eigener E-Mail-Versand (SMTP)", description: "Geschäftliche Mails über den SMTP-Server des Vermieters statt über RentBase", defaultEnabled: true, nav: [] },
   CUSTOMER_IMPORT: { label: "Kundenimport (CSV/Excel)", description: "Kundenstammdaten aus einer Alt-Software importieren", defaultEnabled: true, nav: [] },
+  // Befehl 29: neues Modul, bewusst nicht standardmäßig aktiv – Freischaltung je Mandant im Control Center
+  ACCIDENT_REPLACEMENT: { label: "Unfallersatz", description: "Unfallersatzmieten mit Fallakte, offenem Mietende, Versicherung als Rechnungsempfänger, Kürzungen, Wiedervorlagen", defaultEnabled: false, nav: ["/unfallersatz"] },
 } as const;
 export type FeatureKey = keyof typeof FEATURES;
 export const FEATURE_KEYS = Object.keys(FEATURES) as FeatureKey[];
@@ -153,7 +155,7 @@ export const PASSWORD_RESET_EXPIRY_MINUTES = 60;
 export const SUPPORT_SESSION_MAX_MINUTES = 60;
 // Supportzugriff ist read-only und zeigt keine besonders sensiblen Dokumentarten (item 36): Ausweis-/Führerscheinkopien,
 // Behördendokumente, volle IBAN. Jede Ausliefer-Route entscheidet selbst anhand dieser Liste (lib/support-sessions.ts).
-export const SUPPORT_BLOCKED_DOCUMENT_KINDS = ["DRIVER_DOCUMENT_COPY", "AUTHORITY_DOCUMENT", "DAMAGE_DOCUMENT"] as const;
+export const SUPPORT_BLOCKED_DOCUMENT_KINDS = ["DRIVER_DOCUMENT_COPY", "AUTHORITY_DOCUMENT", "DAMAGE_DOCUMENT", "ACCIDENT_DOCUMENT"] as const;
 export type SupportBlockedKind = (typeof SUPPORT_BLOCKED_DOCUMENT_KINDS)[number];
 
 export const VEHICLE_STATUS = {
@@ -645,6 +647,23 @@ export const AUDIT_ACTIONS = {
   KEY_DROP_EXCEPTION_USED: "Kontaktlose Rückgabe ohne Kundenbestätigung abgeschlossen (Ausnahme)",
   KEY_DROP_RETURN_TIME_CORRECTED: "Mietende bei kontaktloser Rückgabe korrigiert",
   RETURN_DRAFT_DISCARDED: "Leerer Rückgabeentwurf verworfen",
+  // Befehl 29: Unfallersatz (Bezug immer die Buchung; Details nur Fallnummer, Statuswerte, Beträge – keine Personendaten)
+  ACCIDENT_CASE_CREATED: "Unfallersatzfall angelegt",
+  ACCIDENT_CASE_UPDATED: "Unfallersatzfall geändert",
+  ACCIDENT_CASE_LIABILITY_CHANGED: "Haftungsstatus im Unfallersatzfall geändert",
+  ACCIDENT_CASE_PLANNED_END_CHANGED: "Geplantes Mietende (Unfallersatz) geändert",
+  ACCIDENT_CASE_TARIFF_CHANGED: "Unfallersatztarif geändert",
+  ACCIDENT_CASE_DOCUMENT_ADDED: "Dokument zum Unfallersatzfall hinzugefügt",
+  ACCIDENT_CASE_DOCUMENT_ARCHIVED: "Dokument im Unfallersatzfall archiviert",
+  ACCIDENT_CASE_CLOSED: "Unfallersatzfall abgeschlossen",
+  ACCIDENT_CASE_REOPENED: "Unfallersatzfall wieder geöffnet",
+  ACCIDENT_FOLLOW_UP_CREATED: "Wiedervorlage angelegt",
+  ACCIDENT_FOLLOW_UP_DONE: "Wiedervorlage erledigt",
+  ACCIDENT_FOLLOW_UP_CANCELLED: "Wiedervorlage verworfen",
+  INVOICE_ADJUSTMENT_RECORDED: "Versicherungskürzung dokumentiert",
+  INVOICE_ADJUSTMENT_CANCELLED: "Versicherungskürzung storniert",
+  BUSINESS_PARTNER_UPDATED: "Adressbucheintrag (Partner) geändert",
+  BUSINESS_PARTNER_DELETED: "Adressbucheintrag (Partner) gelöscht",
 } as const;
 export type AuditAction = keyof typeof AUDIT_ACTIONS;
 
@@ -702,12 +721,70 @@ export const DAMAGE_CASE_EVENT_TYPES = {
   PHOTO_ADDED: "Foto hinzugefügt", DOCUMENT_ADDED: "Dokument hinzugefügt", NOTE_ADDED: "Notiz ergänzt", VEHICLE_BLOCKED: "Fahrzeug gesperrt", VEHICLE_RELEASED: "Fahrzeug freigegeben",
   CUSTOMER_CHARGE_CREATED: "Kundenbelastung festgelegt", INVOICE_CREATED: "Schadenabrechnung erstellt", CLOSED: "Akte geschlossen", REOPENED: "Akte wieder geöffnet",
 } as const;
-export const INVOICE_KINDS = { RENTAL: "Mietrechnung", DAMAGE: "Schadenabrechnung", AUTHORITY_FEE: "Bearbeitungsentgelt Behörde", DUNNING_FEE: "Mahngebühr", GENERAL: "Freie Rechnung", CANCELLATION_FEE: "Stornogebühr" } as const;
+export const INVOICE_KINDS = { RENTAL: "Mietrechnung", DAMAGE: "Schadenabrechnung", AUTHORITY_FEE: "Bearbeitungsentgelt Behörde", DUNNING_FEE: "Mahngebühr", GENERAL: "Freie Rechnung", CANCELLATION_FEE: "Stornogebühr", ACCIDENT_REPLACEMENT: "Unfallersatz-Rechnung" } as const;
 export type InvoiceKind = keyof typeof INVOICE_KINDS;
 /** Kurzes Wort für Listen und Knöpfe („Rechnung RE-…“, „Schadenabrechnung RE-…“). */
-export const invoiceKindWord = (kind: string | null | undefined) => (kind === "DAMAGE" ? "Schadenabrechnung" : kind === "AUTHORITY_FEE" ? "Bearbeitungsentgelt" : kind === "DUNNING_FEE" ? "Mahngebühr" : kind === "CANCELLATION_FEE" ? "Stornogebühr" : "Rechnung");
+export const invoiceKindWord = (kind: string | null | undefined) => (kind === "DAMAGE" ? "Schadenabrechnung" : kind === "AUTHORITY_FEE" ? "Bearbeitungsentgelt" : kind === "DUNNING_FEE" ? "Mahngebühr" : kind === "CANCELLATION_FEE" ? "Stornogebühr" : kind === "ACCIDENT_REPLACEMENT" ? "Unfallersatz-Rechnung" : "Rechnung");
 /** Nebenrechnungen (nicht die Mietrechnung der Buchung) werden über ?nr=<id> adressiert. */
-export const isSideInvoice = (kind: string | null | undefined) => kind === "DAMAGE" || kind === "AUTHORITY_FEE" || kind === "DUNNING_FEE" || kind === "GENERAL" || kind === "CANCELLATION_FEE";
+export const isSideInvoice = (kind: string | null | undefined) => kind === "DAMAGE" || kind === "AUTHORITY_FEE" || kind === "DUNNING_FEE" || kind === "GENERAL" || kind === "CANCELLATION_FEE" || kind === "ACCIDENT_REPLACEMENT";
+
+// ---------------------------------------------------------------------------
+// Befehl 29: Unfallersatz. Mietart auf der Buchung; Fallakte mit abgeleiteten Zuständen (kein großes Status-Enum).
+// Rent-Base berechnet und dokumentiert Beträge, trifft aber keine Aussage zur Erstattungsfähigkeit oder Haftung.
+// ---------------------------------------------------------------------------
+export const RENTAL_TYPES = { STANDARD: "Standardvermietung", ACCIDENT_REPLACEMENT: "Unfallersatz" } as const;
+export type RentalType = keyof typeof RENTAL_TYPES;
+export const ACCIDENT_CASE_STATUS = { OPEN: "Offen", CLOSED: "Abgeschlossen" } as const;
+export type AccidentCaseStatus = keyof typeof ACCIDENT_CASE_STATUS;
+export const ACCIDENT_DAMAGE_KINDS = { REPAIR: "Reparaturschaden", TOTAL_LOSS: "Totalschaden", UNKNOWN: "Noch unbekannt" } as const;
+export type AccidentDamageKind = keyof typeof ACCIDENT_DAMAGE_KINDS;
+export const ACCIDENT_LIABILITY_STATUS = { UNKNOWN: "Unbekannt", REPORTED: "Schaden gemeldet", UNCLEAR: "Haftung ungeklärt", CONFIRMED: "Haftung bestätigt", QUOTA: "Haftungsquote" } as const;
+export type AccidentLiabilityStatus = keyof typeof ACCIDENT_LIABILITY_STATUS;
+export const ACCIDENT_TARIFF_KINDS = { LIABILITY_REDUCTION: "Haftungsreduzierung", DELIVERY: "Zustellung", PICKUP: "Abholung", ADDITIONAL_DRIVER: "Zusatzfahrer", WINTER_TIRES: "Winterbereifung", OTHER: "Sonstige Position" } as const;
+export type AccidentTariffKind = keyof typeof ACCIDENT_TARIFF_KINDS;
+export const ACCIDENT_CASE_DOCUMENT_TYPES = { ASSIGNMENT: "Abtretung / Zahlungsanweisung", INSURER_LETTER: "Schreiben der Versicherung", OTHER: "Sonstiges Dokument" } as const;
+export type AccidentCaseDocumentType = keyof typeof ACCIDENT_CASE_DOCUMENT_TYPES;
+export const ACCIDENT_CASE_EVENT_TYPES = {
+  CREATED: "Fall angelegt", DAMAGED_VEHICLE_CHANGED: "Beschädigtes Fahrzeug geändert", ACCIDENT_CHANGED: "Unfalldaten geändert", INSURER_CHANGED: "Versicherung geändert",
+  LIABILITY_CHANGED: "Haftungsstatus geändert", WORKSHOP_CHANGED: "Werkstatt geändert", LAWYER_CHANGED: "Rechtsanwalt geändert", TARIFF_CHANGED: "Tarif geändert",
+  PLANNED_END_CHANGED: "Geplantes Mietende geändert", VEHICLE_PICKED_UP: "Fahrzeug übergeben", VEHICLE_RETURNED: "Fahrzeug zurückgegeben", DOCUMENT_ADDED: "Dokument hinzugefügt",
+  DOCUMENT_ARCHIVED: "Dokument archiviert", NOTE_ADDED: "Notiz ergänzt", INVOICE_CREATED: "Rechnung erstellt", ADJUSTMENT_RECORDED: "Kürzung dokumentiert", ADJUSTMENT_CANCELLED: "Kürzung storniert",
+  FOLLOW_UP_CREATED: "Wiedervorlage angelegt", FOLLOW_UP_DONE: "Wiedervorlage erledigt", FOLLOW_UP_CANCELLED: "Wiedervorlage verworfen", CLOSED: "Fall abgeschlossen", REOPENED: "Fall wieder geöffnet",
+} as const;
+export type AccidentCaseEventType = keyof typeof ACCIDENT_CASE_EVENT_TYPES;
+export const FOLLOW_UP_STATUS = { OPEN: "Offen", DONE: "Erledigt", CANCELLED: "Verworfen" } as const;
+export type FollowUpStatus = keyof typeof FOLLOW_UP_STATUS;
+export const BUSINESS_PARTNER_KINDS = { INSURER: "Versicherung", WORKSHOP: "Werkstatt", LAWYER: "Rechtsanwalt / Kanzlei" } as const;
+export type BusinessPartnerKind = keyof typeof BUSINESS_PARTNER_KINDS;
+/** Rolle des Rechnungsempfängers (Teil der versiegelten Rechnungskopie). Ohne Angabe (ältere Rechnungen) gilt RENTER. */
+export const INVOICE_RECIPIENT_ROLES = { RENTER: "Mieter / Geschädigter", INSURER: "Versicherung", OTHER: "Anderer Rechnungsempfänger" } as const;
+export type InvoiceRecipientRole = keyof typeof INVOICE_RECIPIENT_ROLES;
+/** Rolle eines Rechnungsempfängers aus der Rechnungskopie; ältere Kopien ohne Angabe sind Mieterrechnungen. */
+export const recipientRoleOf = (c: { recipientRole?: string | null } | null | undefined): InvoiceRecipientRole => (c?.recipientRole && c.recipientRole in INVOICE_RECIPIENT_ROLES ? (c.recipientRole as InvoiceRecipientRole) : "RENTER");
+/** Befehl 29 Phase F: Abrechnungsart einer Unfallersatz-Rechnung (Zwischen-/Schlussrechnung, Restforderung an den Mieter). */
+export type AccidentBillingType = "INTERIM" | "FINAL" | "REMAINDER";
+/** Abrechnungsart einer Unfallersatz-Rechnung – Teil der versiegelten Empfängerkopie (ändert sich über Fassungen nicht). */
+export type AccidentBilling = {
+  type: AccidentBillingType;
+  /** Miettage dieser Rechnung (Zwischen-/Schlussrechnung) */
+  days?: number;
+  /** Miettage seit der Übergabe bis zum Ende dieses Leistungszeitraums */
+  totalDays?: number;
+  /** davon mit früheren Rechnungen bereits berechnet */
+  priorDays?: number;
+  /** Nummern der früheren wirksamen Rechnungen dieser Leistung */
+  prior?: string[];
+  /** nur Restforderung: die gekürzte Versicherungsrechnung */
+  remainderOf?: { invoiceId: string; number: string | null; insurerName: string | null };
+};
+export const ACCIDENT_BILLING_TYPES: Record<AccidentBillingType, string> = { INTERIM: "Zwischenrechnung", FINAL: "Schlussrechnung", REMAINDER: "Restforderung" };
+
+export function accidentBillingOf(snapshot: unknown): AccidentBilling | null {
+  const b = (snapshot as { accidentBilling?: unknown } | null)?.accidentBilling as AccidentBilling | undefined;
+  return b && typeof b === "object" && (b.type === "INTERIM" || b.type === "FINAL" || b.type === "REMAINDER") ? b : null;
+}
+export const INVOICE_ADJUSTMENT_REASONS = { TARIFF: "Tarifhöhe", DURATION: "Mietdauer", ANCILLARY: "Nebenkosten", VEHICLE_CLASS: "Fahrzeugklasse", LIABILITY_QUOTA: "Haftungsquote", OTHER: "Sonstiges" } as const;
+export type InvoiceAdjustmentReason = keyof typeof INVOICE_ADJUSTMENT_REASONS;
 
 /**
  * Befehl 28: steuerliche Behandlung der Stornogebühr – je Storno bewusst gewählt (Entscheidung des Vermieters, ggf. mit

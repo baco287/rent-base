@@ -8,6 +8,7 @@ import { db } from "@/lib/db";
 import { Card, Chip, Content, PageHeader } from "@/components/ui";
 import { AMENDMENT_AGREED_CHANNELS, AMENDMENT_HELP, AMENDMENT_STATUS, DRIVER_ROLES, KM_POLICIES, DRIVER_VERIFICATION_STATUS, type AmendmentStatus, type DriverRole, type DriverVerificationStatus } from "@/lib/constants";
 import { getAmendmentState, type AmendmentSnapshot } from "@/lib/amendments";
+import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed } from "@/lib/accident-replacement-events";
 import { DRIVER_BLOCKER_LABELS, driverVerificationOverview } from "@/lib/driver-verification";
 import { fmtDate, fmtDateTime, toDateTimeInput } from "@/lib/format";
 import { fmtCents } from "@/lib/money";
@@ -60,10 +61,10 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
               </Card>
               <Card title="Stand nach diesem Nachtrag">
                 <dl className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
-                  <div><dt className="text-ink-3">Geplante Rückgabe</dt><dd className="font-mono tnum">{fmtDateTime(new Date(snap.after.endAt))}</dd></div>
-                  <div><dt className="text-ink-3">Gesamtmietpreis</dt><dd className="font-mono tnum">{fmtCents(snap.after.totalCents)}</dd></div>
+                  <div><dt className="text-ink-3">Geplante Rückgabe</dt><dd className="font-mono tnum">{snap.after.endAt ? fmtDateTime(new Date(snap.after.endAt)) : "offen (bis zur Rückgabe)"}</dd></div>
+                  <div><dt className="text-ink-3">Gesamtmietpreis</dt><dd className="font-mono tnum">{snap.after.endAt ? fmtCents(snap.after.totalCents) : "nach tatsächlicher Mietdauer (Tarif laut Mietvertrag)"}</dd></div>
                   <div><dt className="text-ink-3">Kilometer</dt><dd className="font-mono tnum">{snap.after.kmPolicy === "UNLIMITED" ? KM_POLICIES.UNLIMITED : `${snap.after.kmIncludedPerDay.toLocaleString("de-DE")} km/Tag · ${snap.after.extraKmRate.toLocaleString("de-DE", { minimumFractionDigits: 2 })} €/km`}</dd></div>
-                  <div><dt className="text-ink-3">Vereinbarte Kaution</dt><dd className="font-mono tnum">{fmtCents(snap.after.depositCents)}</dd></div>
+                  <div><dt className="text-ink-3">Vereinbarte Kaution</dt><dd className="font-mono tnum">{!snap.after.endAt && snap.after.depositCents === 0 ? "keine" : fmtCents(snap.after.depositCents)}</dd></div>
                   <div><dt className="text-ink-3">Rückgabeort</dt><dd>{snap.after.returnLocation ?? "wie Abholort"}</dd></div>
                   <div><dt className="text-ink-3">Fahrer</dt><dd>{snap.after.drivers.map((d) => `${d.name}${d.role === "PRIMARY_DRIVER" ? " (Hauptfahrer)" : ""}`).join(", ")}</dd></div>
                 </dl>
@@ -121,7 +122,9 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
     );
   }
 
-  // Entwurf
+  // Entwurf – Befehl 29 Phase E: bei geschlossenem Unfallersatzfall nur lesbar (der Server lehnt Änderungen ohnehin ab)
+  const caseClosed = await accidentCaseClosed(db, tenant.id, id);
+  const mayEdit = canEdit && !caseClosed;
   const overview = addedDrivers.length ? await driverVerificationOverview(tenant.id, { amendmentId: a.id }) : [];
   const errors = issues.filter((i) => i.severity === "error");
   const renterSig = a.signatures.find((s) => s.role === "RENTER" && s.contentHash === hash);
@@ -134,13 +137,14 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
   const agreed = a.status === "AGREED";
   const periodChange = !!a.newEndAt || !!a.newStartAt;
   const agreeErrors = errors.filter((i) => i.code !== "SIGNATURE" && i.code !== "SIGNATURE_STALE");
-  const canAgree = canEdit && a.status === "DRAFT" && periodChange && addedDrivers.length === 0 && removedDrivers.length === 0 && agreeErrors.length === 0;
+  const canAgree = mayEdit && a.status === "DRAFT" && periodChange && addedDrivers.length === 0 && removedDrivers.length === 0 && agreeErrors.length === 0;
 
   return (
     <>
       <PageHeader title="Nachtrag zum Mietvertrag" sub={<>Mietvertrag {a.contract.number} · Buchung {b.number} · <Chip tone={tone[a.status as AmendmentStatus] ?? "amber"}>{AMENDMENT_STATUS[a.status as AmendmentStatus] ?? a.status}</Chip></>}>{back}</PageHeader>
       <Content>
         {hint}
+        {caseClosed && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{ACCIDENT_CASE_CLOSED_MESSAGE} Der Nachtrag kann erst nach dem Wiederöffnen des Falls bearbeitet werden.</p>}
         {agreed ? (
           <section aria-label="Vereinbart – Unterschrift ausstehend" className="rounded-xl border-2 border-amber bg-amber-soft/60 p-4 flex flex-col gap-1.5">
             <div className="font-semibold text-amber">Vereinbart – Unterschrift ausstehend</div>
@@ -157,9 +161,9 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
               <div className="p-4">
                 <ChangesForm
                   action={saveAmendmentChangesAction.bind(null, id, a.id)}
-                  locked={!canEdit || agreed}
+                  locked={!mayEdit || agreed}
                   values={{ newStartAt: toDateTimeInput(a.newStartAt), newEndAt: toDateTimeInput(a.newEndAt), priceDeltaCents: a.priceDeltaCents, priceProposalCents: a.priceProposalCents, priceReason: a.priceReason ?? "", newKmIncludedPerDay: a.newKmIncludedPerDay, newExtraKmRate: a.newExtraKmRate != null ? dec(a.newExtraKmRate) : "", newKmPolicy: a.newKmPolicy, newDepositCents: a.newDepositCents, newReturnLocation: a.newReturnLocation, agreementText: a.agreementText }}
-                  current={{ startAt: fmtDateTime(eff.startAt), canChangeStart: b.status === "RESERVED", endAt: fmtDateTime(eff.endAt), totalEur: dec(eff.totalCents / 100), kmIncludedPerDay: eff.kmIncludedPerDay, extraKmRateEur: dec(eff.extraKmRate), kmPolicy: eff.kmPolicy, kmPolicyLabel: KM_POLICIES[eff.kmPolicy], depositEur: dec(eff.depositCents / 100), returnLocation: eff.returnLocation ?? eff.pickupLocation ?? "wie Abholort" }}
+                  current={{ startAt: fmtDateTime(eff.startAt), canChangeStart: b.status === "RESERVED" && eff.endAt !== null, openEnd: eff.endAt === null, endAt: fmtDateTime(eff.endAt), totalEur: dec(eff.totalCents / 100), kmIncludedPerDay: eff.kmIncludedPerDay, extraKmRateEur: dec(eff.extraKmRate), kmPolicy: eff.kmPolicy, kmPolicyLabel: KM_POLICIES[eff.kmPolicy], depositEur: dec(eff.depositCents / 100), returnLocation: eff.returnLocation ?? eff.pickupLocation ?? "wie Abholort" }}
                 />
               </div>
             </Card>
@@ -177,7 +181,7 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
                           <Chip tone="info">{DRIVER_ROLES[d.role as DriverRole] ?? d.role}</Chip>
                           <span className="text-xs text-ink-3">geb. {fmtDate(d.birthDate)} · Klasse {d.licenseClass}</span>
                           <span className="flex-1" />
-                          {canEdit && d.role !== "PRIMARY_DRIVER" && (
+                          {mayEdit && d.role !== "PRIMARY_DRIVER" && (
                             <form action={setDriverRemovalAction.bind(null, id, a.id, d.id, !removed)}><button className="btn !py-1.5">{removed ? "Herausnahme zurücknehmen" : "Mit diesem Nachtrag herausnehmen"}</button></form>
                           )}
                         </div>
@@ -208,12 +212,12 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
                               <Chip tone="info">Zusatzfahrer</Chip>
                               <Chip tone={statusTone[status]}>{DRIVER_VERIFICATION_STATUS[status]}</Chip>
                               <span className="flex-1" />
-                              {canEdit && !v && <form action={dropAmendmentDriverAction.bind(null, id, a.id, d.id)}><button className="btn !py-1.5">Entfernen</button></form>}
+                              {mayEdit && !v && <form action={dropAmendmentDriverAction.bind(null, id, a.id, d.id)}><button className="btn !py-1.5">Entfernen</button></form>}
                             </summary>
                             <div className="px-4 pb-4 pt-3 border-t border-line-soft flex flex-col gap-3">
                               {status === "CONFIRMED" && v ? (
                                 <div className="rounded-md bg-good-soft px-3.5 py-3 text-sm"><p className="font-medium text-good">{v.checkKind === "REPEAT" ? "Wiederholungsprüfung bestätigt." : "Identität und Führerschein bestätigt."}</p><p className="text-xs text-ink-2">Klasse {v.licenseClassesSnapshot.join(", ")}{view?.requiredLicenseClass ? ` (erforderlich: ${view.requiredLicenseClass})` : ""} · geprüft {v.verifiedAt ? fmtDateTime(v.verifiedAt) : "–"} von {v.verifiedByName ?? "–"}</p></div>
-                              ) : !canEdit ? <p className="text-ink-3">Prüfung noch offen.</p> : !v && view?.repeat && fullCheckFor !== d.id ? (
+                              ) : !mayEdit ? <p className="text-ink-3">Prüfung noch offen.</p> : !v && view?.repeat && fullCheckFor !== d.id ? (
                                 <div className="flex flex-col gap-3">
                                   <div className="rounded-md bg-info-soft px-3.5 py-3 text-sm"><p className="font-medium text-info">{name} · Bereits vollständig geprüft (Buchung {view.repeat.bookingNumber}, {view.repeat.verifiedAt ? fmtDateTime(view.repeat.verifiedAt) : "–"})</p><p className="text-xs text-ink-2">Klasse {view.repeat.licenseClasses.join(", ") || "–"} · gültig bis {view.repeat.licenseValidUntil ? fmtDate(view.repeat.licenseValidUntil) : "nicht angegeben"}</p></div>
                                   {view.repeat.eligible ? <RepeatVerificationForm action={repeatAmendmentDriverAction.bind(null, id, a.id, d.id)} /> : <div className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm"><div className="font-semibold mb-1">Schnellbestätigung nicht möglich</div><ul className="list-disc pl-5">{view.repeat.reasons.map((r) => <li key={r}>{r}</li>)}</ul></div>}
@@ -232,7 +236,7 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
                     </div>
                   )}
 
-                  {canEdit && !agreed && (
+                  {mayEdit && !agreed && (
                     <details className="rounded-md border border-line-soft">
                       <summary className="cursor-pointer px-3 py-2.5 font-medium">+ Zusatzfahrer aufnehmen</summary>
                       <div className="p-3 pt-1">
@@ -263,7 +267,7 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
               <Card title="3. Unterschrift">
                 <div className="p-4 flex flex-col gap-4 text-sm">
                   {!readyToSign && <p className="text-ink-3">Unterschrieben wird erst, wenn alle Prüfpunkte erfüllt sind.</p>}
-                  {readyToSign && canEdit && (
+                  {readyToSign && mayEdit && (
                     <>
                       {renterSig ? (
                         <div className="flex flex-wrap items-center gap-2"><Chip tone="good">Mieter unterschrieben</Chip><span>{renterSig.signerName} · {fmtDateTime(renterSig.signedAt)}</span><form action={removeAmendmentSignatureAction.bind(null, id, a.id, "RENTER")}><button className="btn !py-1">Entfernen</button></form></div>
@@ -282,14 +286,14 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
                       </details>
                     </>
                   )}
-                  {canEdit && (
+                  {mayEdit && (
                     <FinalizeForm action={signAmendmentAction.bind(null, id, a.id)} disabled={!canFinalize} reason={!renterSig ? "Die Unterschrift des Mieters fehlt." : undefined} label="Nachtrag unterschreiben und wirksam machen" pendingLabel="Nachtrag wird wirksam gemacht…" />
                   )}
                   <p className="text-xs text-ink-3">Mit dem Wirksamwerden erhält der Nachtrag seine Nummer, der Inhalt wird versiegelt, Buchung und Kaution übernehmen den neuen Stand. Es wird nichts automatisch bezahlt, erstattet oder versendet.</p>
                 </div>
               </Card>
             </div>
-            {canEdit && a.status === "DRAFT" && periodChange && (
+            {mayEdit && a.status === "DRAFT" && periodChange && (
               <Card title="Telefonisch / extern vereinbart?">
                 <div className="p-4 flex flex-col gap-2 text-sm">
                   <p className="text-ink-3">Wenn der Kunde die Änderung des Mietzeitraums bereits zugesagt hat (z. B. am Telefon), aber noch nicht unterschreiben kann: als <b>vereinbart</b> speichern. Das Fahrzeug wird sofort reserviert; Preis und Rechnung ändern sich erst mit der Unterschrift.</p>
@@ -309,7 +313,7 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
                 </div>
               </Card>
             )}
-            {canEdit && agreed && (
+            {mayEdit && agreed && (
               <Card title="Vereinbarte Änderung zurücknehmen">
                 <div className="p-4 flex flex-col gap-2 text-sm">
                   <p className="text-ink-3">Der Kunde möchte doch nicht? Die Reservierung entfällt, der Mietvertrag gilt unverändert, es entsteht kein Betrag. Die Zurücknahme wird mit Grund protokolliert.</p>
@@ -319,7 +323,7 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
                 </div>
               </Card>
             )}
-            {canEdit && a.status === "DRAFT" && (
+            {mayEdit && a.status === "DRAFT" && (
               <Card title="Entwurf verwerfen">
                 <div className="p-4 flex flex-col gap-2 text-sm">
                   <p className="text-ink-3">Ein verworfener Entwurf hat keine Wirkung und verbraucht keine Nummer.</p>

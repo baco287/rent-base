@@ -69,6 +69,7 @@ export async function DunningCard({ tenantId, bookingId, role, invoiceId }: { te
                     </div>
                     <div className="flex flex-wrap gap-2 items-start">
                       {doc ? <a href={`/api/documents/${doc.id}?download=1`} className="btn !py-2.5">PDF</a> : <span className="text-xs text-ink-3">PDF wird beim Versand erzeugt</span>}
+                      {canManage && !n.recipientEmail && <span className="text-xs text-ink-3">Beim Rechnungsempfänger ist keine E-Mail-Adresse hinterlegt – Versand nur per Post (kein Ersatzversand an andere Adressen).</span>}
                       {canManage && n.recipientEmail && <DunningSendForm action={sendDunningAction.bind(null, bookingId)} id={n.id} nonce={randomUUID()} label={n.sentAt ? "Erneut senden" : "Per E-Mail senden"} question={`${n.label} an ${n.recipientName} (${n.recipientEmail}) ${n.sentAt ? "erneut " : ""}senden?`} />}
                       {canManage && !n.delivered && <DunningDeliveredForm action={markDunningDeliveredAction.bind(null, bookingId)} id={n.id} />}
                     </div>

@@ -361,7 +361,8 @@ test("Storno: Rollen und Supportmodus – Aktion nur DISPO/OWNER (requireRole is
   const auth = readFileSync(path.join(process.cwd(), "src/lib/auth.ts"), "utf8");
   assert.match(auth, /export async function requireRole[\s\S]*?if \(session\.supportSession\) redirect\("\/heute\?fehler=support"\)/, "Supportmodus: keine Schreibaktion");
   const page = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/page.tsx"), "utf8");
-  assert.match(page, /user\.role !== "YARD" && !supportSession \? await cancellationOverview/, "Dialog weder für Hofmitarbeiter noch im Supportmodus");
+  // Befehl 29 Phase E: zusätzlich gesperrt bei geschlossenem Unfallersatzfall (der Server lehnt das Storno dort ohnehin ab)
+  assert.match(page, /user\.role !== "YARD" && !supportSession(?: && !caseLocked)? \? await cancellationOverview/, "Dialog weder für Hofmitarbeiter noch im Supportmodus");
 });
 
 // ===========================================================================
@@ -468,16 +469,16 @@ test("Überfällig: laufende Miete nach geplantem Ende belegt das Fahrzeug bis j
   assert.equal(isOverdue({ status: "ACTIVE", endAt: end }, new Date(end.getTime() - 1)), false);
   assert.equal(isOverdue({ status: "RESERVED", endAt: end }, new Date(end.getTime() + DAY)), false, "nicht abgeholte Reservierung ist nicht „überfällig“");
   const now = new Date(end.getTime() + 5 * 3600_000);
-  assert.equal(occupiedUntil({ status: "ACTIVE", endAt: end }, now).getTime(), now.getTime());
-  assert.equal(occupiedUntil({ status: "RETURNED", endAt: end }, now).getTime(), end.getTime());
+  assert.equal(occupiedUntil({ status: "ACTIVE", endAt: end }, now)!.getTime(), now.getTime());
+  assert.equal(occupiedUntil({ status: "RETURNED", endAt: end }, now)!.getTime(), end.getTime());
 
   const w = track(await pickedUpWorld("b27-overdue"));
   const b = await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } });
   assert.equal(b.status, "ACTIVE");
-  const later = new Date(b.endAt.getTime() + DAY); // simuliertes „jetzt“: einen Tag nach dem geplanten Ende
+  const later = new Date(b.endAt!.getTime() + DAY); // simuliertes „jetzt“: einen Tag nach dem geplanten Ende
   const ids = async (from: Date, to: Date, n: Date) => (await findConflicts(db, w.tenantId, w.vehicleId, from, to, undefined, n)).map((x) => x.id);
-  assert.deepEqual(await ids(new Date(b.endAt.getTime() + 3600_000), new Date(b.endAt.getTime() + 5 * 3600_000), later), [w.bookingId], "überfällig: Folgebuchung kollidiert");
-  assert.deepEqual(await ids(new Date(b.endAt.getTime() + 3600_000), new Date(b.endAt.getTime() + 5 * 3600_000), new Date(b.endAt.getTime() - 3600_000)), [], "noch nicht überfällig: kein Konflikt");
+  assert.deepEqual(await ids(new Date(b.endAt!.getTime() + 3600_000), new Date(b.endAt!.getTime() + 5 * 3600_000), later), [w.bookingId], "überfällig: Folgebuchung kollidiert");
+  assert.deepEqual(await ids(new Date(b.endAt!.getTime() + 3600_000), new Date(b.endAt!.getTime() + 5 * 3600_000), new Date(b.endAt!.getTime() - 3600_000)), [], "noch nicht überfällig: kein Konflikt");
   assert.deepEqual(await ids(new Date(later.getTime() + 3600_000), new Date(later.getTime() + 2 * 3600_000), later), [], "Zeitraum nach „jetzt“ bleibt frei");
   const dispo = readFileSync(path.join(process.cwd(), "src/app/(app)/dispo/page.tsx"), "utf8");
   assert.match(dispo, /occupyingWhere\(/); assert.match(dispo, /Rückgabe überfällig/); assert.match(dispo, /occupiedUntil\(/);

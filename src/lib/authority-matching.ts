@@ -37,7 +37,7 @@ export type RentalCandidateInput = {
   bookingNumber: string;
   status: string;
   startAt: Date;
-  endAt: Date;
+  endAt: Date | null; // null = offenes Mietende (Unfallersatz): geplanter Zeitraum läuft bis zur Rückgabe
   actualPickupAt: Date | null;
   actualReturnAt: Date | null;
   contractId: string | null;

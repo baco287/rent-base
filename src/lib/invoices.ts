@@ -16,7 +16,7 @@
 import { logoRefOf, type LogoRef } from "@/lib/branding-ref";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { DAMAGE_TAX_NOTES, CANCELLATION_FEE_TAX_NOTE, CANCELLATION_FEE_TAX_TREATMENTS, DAMAGE_TAX_TREATMENTS, type DamageTaxTreatment } from "@/lib/constants";
+import { ACCIDENT_BILLING_TYPES, DAMAGE_TAX_NOTES, CANCELLATION_FEE_TAX_NOTE, CANCELLATION_FEE_TAX_TREATMENTS, DAMAGE_TAX_TREATMENTS, INVOICE_RECIPIENT_ROLES, accidentBillingOf, recipientRoleOf, type AccidentBilling, type AccidentBillingType, type DamageTaxTreatment, type InvoiceRecipientRole } from "@/lib/constants";
 import { recordAudit } from "@/lib/audit";
 import { EXTRA_CHARGE_TYPES, INVOICE_ITEM_SOURCES, INVOICE_STATUS, INVOICE_UNITS, type ExtraChargeType } from "@/lib/constants";
 import type { CustomerSnapshot, VehicleSnapshot } from "@/lib/contracts";
@@ -24,6 +24,8 @@ import { DomainError, contentHash, sha256 } from "@/lib/integrity";
 import { centsToDecimalString, fmtCents, fmtRate, lineAmounts, summarize, toBasisPoints, toCents, toHundredths, type Cents } from "@/lib/money";
 import { isUniqueViolation, nextInvoiceNumber, withNumberRetry } from "@/lib/numbering";
 import { rentalDays } from "@/lib/pricing";
+import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed, accidentCaseEvent, assertAccidentCaseOpen, assertAccidentInvoiceCaseOpen } from "@/lib/accident-replacement-events";
+import { contractTariffItems } from "@/lib/accident-pricing";
 import { overlayAmendments } from "@/lib/amendments";
 import { linkRentalPaymentsToInvoice, lockUnlinkedRentalPayments } from "@/lib/rental-payment-link";
 import { APP_TIME_ZONE } from "@/lib/time";
@@ -76,7 +78,21 @@ export type InvoiceCustomerSnapshot = {
   city: string | null;
   country: string;
   email: string | null;
+  /** Befehl 29: Rolle des Rechnungsempfängers (ohne Angabe = Mieter). Teil der versiegelten Kopie (sealedContent nimmt die ganze Kopie). */
+  recipientRole?: InvoiceRecipientRole;
+  /** Schadennummer der Versicherung (Empfänger INSURER) */
+  claimNumber?: string | null;
+  /** Geschädigter/Mieter, wenn der Empfänger nicht der Mieter ist */
+  insuredName?: string | null;
+  /** Unfalldatum (ISO) */
+  accidentDate?: string | null;
+  /** Unfallersatz-Fallnummer UE-… */
+  caseNumber?: string | null;
+  /** Phase F: Abrechnungsart (Zwischen-/Schlussrechnung, Restforderung) – versiegelt, über Fassungen unverändert */
+  accidentBilling?: AccidentBilling;
 };
+
+export { recipientRoleOf, accidentBillingOf, ACCIDENT_BILLING_TYPES, type AccidentBilling, type AccidentBillingType };
 
 type TenantRow = Prisma.TenantGetPayload<object>;
 
@@ -219,6 +235,10 @@ export async function ensureInvoiceDraft(tenantId: string, bookingId: string, ac
     const again = await tx.invoice.findFirst({ where: { tenantId, bookingId, kind: "RENTAL", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } } });
     if (again) return again;
     const { booking, contract, amendments, tenant, ret, pickup } = await loadSources(tx, tenantId, bookingId);
+    // Befehl 29: Unfallersatz rechnet nach tatsächlicher Mietdauer und Tarif über die Fallakte ab (eigene Rechnungsart), nicht über die Mietrechnung
+    if (booking.rentalType === "ACCIDENT_REPLACEMENT") throw new DomainError("Eine Unfallersatzmiete wird über die Fallakte abgerechnet (Unfallersatz-Rechnung), nicht über die Mietrechnung.");
+    const contractEnd = contract.endAt;
+    if (!contractEnd) throw new DomainError("Der Mietvertrag hat kein Mietende; eine Mietrechnung zum Vertragspreis ist nicht möglich.");
     const missing = invoiceSettingsMissing(tenant);
     if (missing.length > 0) throw new DomainError(`Bevor Rechnungen erstellt werden können, muss der Inhaber in den Einstellungen ergänzen: ${missing.join("; ")}.`);
     const mode = tenant.pricesIncludeTax ? "GROSS" : "NET";
@@ -226,8 +246,8 @@ export async function ensureInvoiceDraft(tenantId: string, bookingId: string, ac
     const v = contract.vehicleSnapshot as Partial<VehicleSnapshot>;
     const c = contract.customerSnapshot as Partial<CustomerSnapshot>;
     const start = booking.actualPickupAt ?? pickup?.finalizedAt ?? contract.startAt;
-    const end = booking.actualReturnAt ?? ret.finalizedAt ?? contract.endAt;
-    const days = rentalDays(contract.startAt, contract.endAt);
+    const end = booking.actualReturnAt ?? ret.finalizedAt ?? contractEnd;
+    const days = rentalDays(contract.startAt, contractEnd);
 
     // Eigene Vertragspositionen (z. B. Zusatzfahrer) erscheinen getrennt; der Mietpreis ist der Vertragsbetrag ohne diese Positionen.
     const priceSnap = contract.priceSnapshot as { extras?: { label: string; quantity: number; unitPrice: number; amount: number }[]; extrasTotal?: number } | null;
@@ -248,7 +268,7 @@ export async function ensureInvoiceDraft(tenantId: string, bookingId: string, ac
     const reductionNote = reductionTotal < 0 ? ` (Preisminderung ${fmtCents(reductionTotal)} laut Nachtrag berücksichtigt)` : "";
     const items: ItemInput[] = [
       {
-        description: `Fahrzeugmiete ${[v.make, v.model].filter(Boolean).join(" ")}${v.plate ? ` (${v.plate})` : ""}, ${dateFmt(contract.startAt)} bis ${dateFmt(contract.endAt)}, ${days} ${days === 1 ? "Tag" : "Tage"}, laut Mietvertrag ${contract.number}${periodNote}${reductionNote}`,
+        description: `Fahrzeugmiete ${[v.make, v.model].filter(Boolean).join(" ")}${v.plate ? ` (${v.plate})` : ""}, ${dateFmt(contract.startAt)} bis ${dateFmt(contractEnd)}, ${days} ${days === 1 ? "Tag" : "Tage"}, laut Mietvertrag ${contract.number}${periodNote}${reductionNote}`,
         quantity: 1,
         unit: "pauschal",
         unitPrice: (rentalCents / 100).toFixed(2),
@@ -357,9 +377,10 @@ export async function createDamageInvoiceDraft(tx: Tx, tenantId: string, actor: 
   const c = booking.contract.customerSnapshot as Partial<CustomerSnapshot>;
   const item = computeItem(mode, { description: `Schadenabrechnung zur Vermietung ${booking.number} (Schadenakte ${input.caseNumber}): ${input.basis.trim()}`, quantity: 1, unit: "pauschal", unitPrice: centsToDecimalString(input.amountCents), taxRate: rate, source: "MANUAL", reference: `Schadenakte ${input.caseNumber}` });
   const totals = summarize([{ taxRateBp: item.taxRateBp, amounts: item.amounts }]);
-  const start = booking.actualPickupAt ?? booking.contract.startAt;
-  const end = booking.actualReturnAt ?? booking.contract.endAt;
   const now = new Date();
+  const start = booking.actualPickupAt ?? booking.contract.startAt;
+  // offenes Vertragsende (Unfallersatz) und noch nicht zurückgegeben: Leistungszeitraum bis heute
+  const end = booking.actualReturnAt ?? booking.contract.endAt ?? now;
   const invoice = await tx.invoice.create({
     data: {
       tenantId, bookingId: booking.id, customerId: booking.customerId, contractId: booking.contract.id,
@@ -557,6 +578,406 @@ export async function createGeneralInvoiceDraft(tenantId: string, actor: Actor, 
   });
 }
 
+// ---------------------------------------------------------------------------
+// Befehl 29: Unfallersatz-Abrechnung (Phase F). Eine Leistung – die Miete ab der tatsächlichen Übergabe bis zur Rückgabe – wird je
+// Fall genau einmal fakturiert, gleich an wen: Zwischenrechnungen bis zu einem Stichtag (nie in der Zukunft), danach die
+// Schlussrechnung bis zur tatsächlichen Rückgabe. Jede Rechnung setzt am Ende der zuletzt wirksam abgerechneten an; Miettage,
+// Tagespositionen, Einmalpositionen und Zusatzkosten erscheinen dadurch nie doppelt. Stornierte bzw. vollständig gutgeschriebene
+// Rechnungen zählen nicht (die Leistung ist dann wieder offen). Eine Restforderung an den Mieter ist keine neue Leistung, sondern
+// ein bewusst gestellter Teil einer gekürzten Versicherungsrechnung (Bezug in der versiegelten Kopie). Rent-Base bucht nichts um.
+// ---------------------------------------------------------------------------
+
+
+type Client = Tx | typeof db;
+export type AccidentChainInvoice = {
+  id: string; number: string | null; status: string; createdAt: Date; role: InvoiceRecipientRole; billing: AccidentBilling | null;
+  periodStart: Date; periodEnd: Date; grossCents: Cents;
+  /** abgeschlossen und weder storniert noch vollständig gutgeschrieben */
+  effective: boolean;
+  items: { source: string; unit: string; quantity: unknown; extraChargeId: string | null; reference: string | null }[];
+};
+export type AccidentChain = {
+  invoices: AccidentChainInvoice[];
+  /** wirksame Leistungsrechnungen (ohne Restforderungen), nach Leistungszeitraum sortiert */
+  service: AccidentChainInvoice[];
+  /** offene Entwürfe (Fassung 1) */
+  drafts: AccidentChainInvoice[];
+  /** Ende des zuletzt wirksam abgerechneten Leistungszeitraums */
+  billedUntil: Date | null;
+  oneOffBilled: boolean;
+  billedChargeIds: Set<string>;
+  /** Lücken zwischen wirksamen Leistungszeiträumen (z. B. eine mittlere Rechnung wurde storniert) */
+  gaps: { from: Date; until: Date }[];
+};
+
+/**
+ * Alle Unfallersatz-Rechnungen einer Buchung mit ihrem Stand in der Abrechnungskette. Abgeschlossene Rechnungen mit ihrer
+ * aktuellen Fassung (nicht einem offenen Bearbeitungsentwurf), Entwürfe mit ihrer Entwurfsfassung.
+ */
+export async function accidentInvoiceChain(client: Client, tenantId: string, bookingId: string, opts: { excludeInvoiceId?: string; pickupAt?: Date | null } = {}): Promise<AccidentChain> {
+  const rows = await client.invoice.findMany({
+    where: { tenantId, bookingId, kind: "ACCIDENT_REPLACEMENT", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] }, ...(opts.excludeInvoiceId ? { id: { not: opts.excludeInvoiceId } } : {}) },
+    orderBy: { createdAt: "asc" },
+    select: {
+      id: true, number: true, status: true, createdAt: true,
+      currentVersion: { select: { servicePeriodStart: true, servicePeriodEnd: true, customerSnapshot: true, grossTotal: true, items: { select: { source: true, unit: true, quantity: true, extraChargeId: true, reference: true } } } },
+      versions: { where: { versionNo: 1 }, take: 1, select: { servicePeriodStart: true, servicePeriodEnd: true, customerSnapshot: true, grossTotal: true, items: { select: { source: true, unit: true, quantity: true, extraChargeId: true, reference: true } } } },
+    },
+  });
+  const finals = rows.filter((r) => r.status === "FINALIZED" && r.currentVersion);
+  const counters = finals.length ? await client.invoice.findMany({ where: { tenantId, originalInvoiceId: { in: finals.map((r) => r.id) }, status: "FINALIZED", documentType: { in: ["CREDIT_NOTE", "CANCELLATION"] } }, select: { originalInvoiceId: true, documentType: true, currentVersion: { select: { grossTotal: true } } } }) : [];
+  const invoices: AccidentChainInvoice[] = rows.map((r): AccidentChainInvoice | null => {
+    const v = r.status === "FINALIZED" ? r.currentVersion : r.versions[0];
+    if (!v) return null;
+    const gross = toCents(v.grossTotal);
+    const mine = counters.filter((c) => c.originalInvoiceId === r.id);
+    const cancelled = mine.some((c) => c.documentType === "CANCELLATION");
+    const credited = mine.filter((c) => c.documentType === "CREDIT_NOTE").reduce((s, c) => s + toCents(c.currentVersion?.grossTotal ?? 0), 0);
+    return {
+      id: r.id, number: r.number, status: r.status, createdAt: r.createdAt, role: recipientRoleOf(v.customerSnapshot as { recipientRole?: string } | null), billing: accidentBillingOf(v.customerSnapshot),
+      periodStart: v.servicePeriodStart, periodEnd: v.servicePeriodEnd, grossCents: gross,
+      effective: r.status === "FINALIZED" && !cancelled && !(credited > 0 && credited >= gross),
+      items: v.items,
+    };
+  }).filter((x): x is AccidentChainInvoice => x !== null);
+  const service = invoices.filter((i) => i.effective && i.billing?.type !== "REMAINDER").sort((a, b) => a.periodStart.getTime() - b.periodStart.getTime());
+  const billedUntil = service.reduce<Date | null>((m, i) => (!m || i.periodEnd > m ? i.periodEnd : m), null);
+  const gaps: AccidentChain["gaps"] = [];
+  let cursor = opts.pickupAt ?? service[0]?.periodStart ?? null;
+  for (const i of service) {
+    if (cursor && i.periodStart.getTime() - cursor.getTime() > 60_000) gaps.push({ from: cursor, until: i.periodStart });
+    if (!cursor || i.periodEnd > cursor) cursor = i.periodEnd;
+  }
+  return {
+    invoices, service, drafts: invoices.filter((i) => i.status === "DRAFT"), billedUntil,
+    // Einmalpositionen des Tarifs (Bezug „Tarif Fall …“, ältere Rechnungen „Fall …“, nicht je Tag) – aus den Positionen, nicht aus der Anzahl
+    oneOffBilled: service.some((i) => i.items.some(isOneOffTariffItem)),
+    billedChargeIds: new Set(service.flatMap((i) => i.items.map((x) => x.extraChargeId).filter((x): x is string => !!x))),
+    gaps,
+  };
+}
+
+const isOneOffTariffItem = (x: { source: string; unit: string; reference: string | null }) => x.source === "MANUAL" && x.unit !== "Tag" && /^(Tarif )?Fall /.test(x.reference ?? "");
+
+/**
+ * Phase F: Storno bzw. vollständige Gutschrift einer Leistungsrechnung nur, wenn danach keine wirksame Leistungsrechnung folgt –
+ * sonst entstünde eine Lücke, die keine neue Rechnung mehr schließen kann. Teilgutschriften bleiben möglich. Restforderungen
+ * und andere Rechnungsarten: keine Einschränkung.
+ */
+export async function assertNotMidChain(client: Client, tenantId: string, invoiceId: string): Promise<void> {
+  const inv = await client.invoice.findFirst({ where: { id: invoiceId, tenantId }, select: { kind: true, bookingId: true, number: true, currentVersion: { select: { customerSnapshot: true, servicePeriodEnd: true } } } });
+  if (!inv || inv.kind !== "ACCIDENT_REPLACEMENT" || !inv.bookingId || !inv.currentVersion) return;
+  if (accidentBillingOf(inv.currentVersion.customerSnapshot)?.type === "REMAINDER") return;
+  const chain = await accidentInvoiceChain(client, tenantId, inv.bookingId, { excludeInvoiceId: invoiceId });
+  const later = chain.service.filter((i) => i.periodStart.getTime() >= inv.currentVersion!.servicePeriodEnd.getTime() - 60_000);
+  if (later.length > 0) throw new DomainError(`Die Rechnung ${inv.number} liegt mitten in der Unfallersatz-Abrechnung (danach: ${later.map((i) => i.number).join(", ")}). Ein Storno oder eine vollständige Gutschrift würde eine Lücke hinterlassen, die sich nicht mehr abrechnen lässt. Bitte zuerst die späteren Rechnungen stornieren oder diese Rechnung über „Rechnung bearbeiten“ berichtigen (z. B. anderer Empfänger).`);
+}
+
+/** Miettage der Grundmiete in den Positionen einer Fassung (Einheit „Tag“ aus der Miete). */
+export const rentalDaysInItems = (items: readonly { source: string; unit: string; quantity: unknown }[]) => items.filter((i) => i.source === "RENTAL" && i.unit === "Tag").reduce((s, i) => s + Number(i.quantity), 0);
+
+export type AccidentRecipientInput = { type?: string | null; companyName?: string | null; firstName?: string | null; lastName?: string | null; street?: string | null; zip?: string | null; city?: string | null; country?: string | null; email?: string | null };
+
+type AccidentCaseForBilling = Prisma.AccidentReplacementCaseGetPayload<{ include: { tariffItems: true } }>;
+type AccidentService = {
+  booking: Prisma.BookingGetPayload<{ include: { contract: true; tenant: true; customer: true } }>;
+  ret: Prisma.HandoverGetPayload<{ include: { extraCharges: true } }> | null;
+  type: "INTERIM" | "FINAL";
+  periodStart: Date; end: Date; days: number; totalDays: number; priorDays: number; prior: string[];
+  mode: "NET" | "GROSS"; items: ItemInput[];
+  chain: AccidentChain;
+};
+
+/**
+ * Daten der nächsten Leistungsrechnung (Zwischen- oder Schlussrechnung) – dieselbe Rechnung für Vorschau und Entwurf.
+ * Grundlage: tatsächliche Übergabe → Stichtag bzw. tatsächliche Rückgabe; Tarif aus dem unterschriebenen Mietvertrag
+ * (Phase E: eingefroren), nie aus aktuellen Stammdaten oder dem geplanten Mietende.
+ */
+async function accidentServiceData(client: Client, tenantId: string, c: AccidentCaseForBilling, periodEnd: Date | null | undefined, now = new Date()): Promise<AccidentService> {
+  const booking = await client.booking.findFirstOrThrow({ where: { id: c.bookingId, tenantId }, include: { contract: true, tenant: true, customer: true } });
+  if (booking.status === "CANCELLED") throw new DomainError("Die Buchung ist storniert; es gibt keine Miete abzurechnen.");
+  if (!booking.contract || booking.contract.status !== "SIGNED" || !booking.contract.contentHash) throw new DomainError("Zu dieser Buchung gibt es keinen abgeschlossenen Mietvertrag.");
+  if (!booking.actualPickupAt) throw new DomainError("Das Fahrzeug wurde noch nicht übergeben; abgerechnet wird erst ab der Übergabe.");
+  const missing = invoiceSettingsMissing(booking.tenant);
+  if (missing.length > 0) throw new DomainError(`Bevor Rechnungen erstellt werden können, muss der Inhaber in den Einstellungen ergänzen: ${missing.join("; ")}.`);
+  const returned = booking.status === "RETURNED";
+  const ret = returned ? await client.handover.findFirst({ where: { tenantId, bookingId: booking.id, type: "RETURN", status: "FINALIZED", correctsId: null }, orderBy: { finalizedAt: "desc" }, include: { extraCharges: { orderBy: { createdAt: "asc" } } } }) : null;
+  const start = booking.actualPickupAt;
+  let end: Date;
+  if (returned) {
+    // nach der Rückgabe gibt es nur noch die Schlussrechnung bis zur tatsächlichen Rückgabe
+    end = booking.actualReturnAt ?? ret?.finalizedAt ?? now;
+  } else {
+    if (booking.status !== "ACTIVE") throw new DomainError("Abgerechnet wird erst ab der Übergabe.");
+    const dropped = await client.keyDropReturn.findFirst({ where: { tenantId, bookingId: booking.id, status: "CUSTOMER_CONFIRMED" }, select: { customerDropOffAt: true } });
+    if (dropped) throw new DomainError(`Die Rückgabe per Schlüsselbox ist gemeldet${dropped.customerDropOffAt ? ` (Abgabe ${dateFmt(dropped.customerDropOffAt)})` : ""}. Bitte zuerst die Rückgabe kontrollieren und abschließen; abgerechnet wird dann mit der Schlussrechnung über die tatsächliche Mietdauer.`);
+    if (!periodEnd) throw new DomainError("Die Miete läuft noch. Für eine Zwischenrechnung bitte den Stichtag angeben, bis zu dem abgerechnet wird.");
+    if (periodEnd.getTime() > now.getTime() + 60_000) throw new DomainError("Der Stichtag einer Zwischenrechnung darf nicht in der Zukunft liegen.");
+    end = periodEnd;
+  }
+  if (!(end > start)) throw new DomainError("Das Ende des Leistungszeitraums muss nach der Übergabe liegen.");
+  const chain = await accidentInvoiceChain(client, tenantId, booking.id, { pickupAt: start });
+  const prevEnd = chain.billedUntil;
+  if (returned && prevEnd && prevEnd > end && rentalDays(start, prevEnd) > rentalDays(start, end)) throw new DomainError(`Bereits abgerechnet bis ${dateFmt(prevEnd)} – mehr Miettage als bis zur tatsächlichen Rückgabe (${dateFmt(end)}). Bitte die letzte Zwischenrechnung (${chain.service[chain.service.length - 1]?.number ?? ""}) stornieren; danach wird die Schlussrechnung über die tatsächliche Mietdauer erstellt.`);
+  if (!returned && prevEnd && !(end > prevEnd)) throw new DomainError(`Die Miete ist bis ${dateFmt(prevEnd)} bereits abgerechnet. Der Stichtag muss danach liegen.`);
+  // Beginn = Ende der zuletzt wirksam abgerechneten Leistung (nie nach dem Ende dieses Zeitraums)
+  const periodStart = prevEnd && prevEnd > start ? (prevEnd > end ? end : prevEnd) : start;
+  const totalDays = rentalDays(start, end);
+  const priorDays = prevEnd && prevEnd > start ? rentalDays(start, prevEnd) : 0;
+  const days = Math.max(0, totalDays - priorDays);
+  const mode = booking.tenant.pricesIncludeTax ? "GROSS" : "NET";
+  const rate = Number(booking.tenant.defaultTaxRate);
+  const snap = booking.contract.priceSnapshot as { rates?: { dailyRate?: number | null } } | null;
+  // Phase E: Tarifpositionen wie im Mietvertrag unterschrieben (eingefroren); nur ältere Verträge ohne Kopie lesen den Fall.
+  // Wie Vertrag und Fallakte: nur Positionen mit Betrag (0-€-Positionen sind nicht Teil der Abrechnung)
+  const tariffItems = (contractTariffItems(booking.contract.priceSnapshot) ?? c.tariffItems).filter((t) => t.unitPriceCents > 0 && (t.perDay || t.quantityHundredths > 0));
+  const dailyRate = typeof snap?.rates?.dailyRate === "number" && snap.rates.dailyRate > 0 ? snap.rates.dailyRate : Number(booking.dailyRate);
+  if (!(dailyRate > 0)) throw new DomainError("Für diese Miete ist kein Tagessatz hinterlegt.");
+  const v = booking.contract.vehicleSnapshot as Partial<VehicleSnapshot>;
+  const dayWord = days === 1 ? "Tag" : "Tage";
+  const periodText = `${dateFmt(periodStart)} bis ${dateFmt(end)}`;
+  const items: ItemInput[] = [
+    ...(days > 0 ? [{ description: `Unfallersatzfahrzeug ${[v.make, v.model].filter(Boolean).join(" ")}${v.plate ? ` (${v.plate})` : ""}, ${periodText}, ${days} ${dayWord} Grundmiete laut Mietvertrag ${booking.contract.number} (Fall ${c.caseNumber})`, quantity: days, unit: "Tag", unitPrice: dailyRate.toFixed(2), taxRate: rate, source: "RENTAL", reference: `Mietvertrag ${booking.contract.number}` } as ItemInput] : []),
+    ...tariffItems.filter((t) => (t.perDay ? days > 0 : !chain.oneOffBilled)).map((t): ItemInput => (t.perDay
+      ? { description: `${t.label}, ${days} ${dayWord} (${periodText})`, quantity: days, unit: "Tag", unitPrice: (t.unitPriceCents / 100).toFixed(2), taxRate: rate, source: "MANUAL", reference: `Tarif Fall ${c.caseNumber}` }
+      : { description: t.label, quantity: (t.quantityHundredths / 100).toFixed(2), unit: t.quantityHundredths === 100 ? "pauschal" : "Stk", unitPrice: (t.unitPriceCents / 100).toFixed(2), taxRate: rate, source: "MANUAL", reference: `Tarif Fall ${c.caseNumber}` })),
+    ...(ret?.extraCharges ?? []).filter((e) => !chain.billedChargeIds.has(e.id)).map((e): ItemInput => ({ description: `${EXTRA_CHARGE_TYPES[e.type as ExtraChargeType] ?? e.type}: ${e.description}`, quantity: String(e.quantity), unit: (INVOICE_UNITS as readonly string[]).includes(e.unit) ? e.unit : "pauschal", unitPrice: String(e.unitPrice), taxRate: rate, source: "EXTRA_CHARGE", extraChargeId: e.id, reference: `${ret!.number}: ${e.formula}` })),
+  ];
+  if (items.length === 0) throw new DomainError(returned ? "Die Miete ist bereits vollständig abgerechnet: Alle Miettage bis zur Rückgabe und alle Zusatzkosten stehen in früheren Rechnungen." : "Für diesen Zeitraum ist nichts mehr abzurechnen – die Miettage bis zum Stichtag sind bereits berechnet.");
+  return { booking, ret, type: returned ? "FINAL" : "INTERIM", periodStart, end, days, totalDays, priorDays, prior: chain.service.map((i) => i.number).filter((n): n is string => !!n), mode, items, chain };
+}
+
+function computeAccidentItems(mode: "NET" | "GROSS", items: ItemInput[], ret: AccidentService["ret"]) {
+  const computed = items.map((it) => computeItem(mode, it));
+  // Zusatzkosten exakt wie bei der Rückgabe bestätigt (Rundung der Formel nicht neu interpretieren)
+  computed.forEach((ci, i) => {
+    const src = items[i].extraChargeId ? ret?.extraCharges.find((e) => e.id === items[i].extraChargeId) : null;
+    if (src && (mode === "GROSS" ? ci.amounts.gross : ci.amounts.net) !== toCents(src.amount)) computed[i] = computeItem(mode, { ...items[i], quantity: 1, unit: "pauschal", unitPrice: String(src.amount) });
+  });
+  return { computed, totals: summarize(computed.map((ci) => ({ taxRateBp: ci.taxRateBp, amounts: ci.amounts }))) };
+}
+
+export type AccidentInvoicePreview = {
+  type: "INTERIM" | "FINAL"; typeLabel: string; periodStart: Date; end: Date; days: number; totalDays: number; priorDays: number; prior: string[];
+  pricesIncludeTax: boolean;
+  items: { description: string; quantity: string; unit: string; unitPriceCents: Cents; netCents: Cents; taxCents: Cents; grossCents: Cents }[];
+  netCents: Cents; taxCents: Cents; grossCents: Cents;
+};
+
+/** Vorschau der nächsten Leistungsrechnung (nichts wird gespeichert) – dieselbe Rechnung wie createAccidentInvoiceDraft. */
+export async function previewAccidentInvoice(tenantId: string, input: { caseId: string; periodEnd?: Date | null }): Promise<AccidentInvoicePreview> {
+  const c = await db.accidentReplacementCase.findFirst({ where: { id: input.caseId, tenantId }, include: { tariffItems: { orderBy: { sortOrder: "asc" } } } });
+  if (!c) throw new DomainError("Unfallersatzfall nicht gefunden.");
+  const s = await accidentServiceData(db, tenantId, c, input.periodEnd);
+  const { computed, totals } = computeAccidentItems(s.mode, s.items, s.ret);
+  return {
+    type: s.type, typeLabel: ACCIDENT_BILLING_TYPES[s.type], periodStart: s.periodStart, end: s.end, days: s.days, totalDays: s.totalDays, priorDays: s.priorDays, prior: s.prior,
+    pricesIncludeTax: s.mode === "GROSS",
+    items: computed.map((ci) => ({ description: ci.description, quantity: (ci.quantityH / 100).toLocaleString("de-DE", { maximumFractionDigits: 2 }), unit: ci.unit, unitPriceCents: ci.unitPriceC, netCents: ci.amounts.net, taxCents: ci.amounts.tax, grossCents: ci.amounts.gross })),
+    netCents: totals.total.net, taxCents: totals.total.tax, grossCents: totals.total.gross,
+  };
+}
+
+const cleanField = (v: string | null | undefined, max = 200) => v?.replace(/\s+/g, " ").trim().slice(0, max) || null;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Anderer Rechnungsempfänger: Rechnungsdaten manuell erfasst (kein Kundenstamm, kein stiller Rückgriff auf den Mieter). */
+function otherRecipientOf(o: AccidentRecipientInput | null | undefined): InvoiceCustomerSnapshot {
+  const type = o?.type === "COMPANY" ? "COMPANY" : "PRIVATE";
+  const companyName = cleanField(o?.companyName), firstName = cleanField(o?.firstName, 100) ?? "", lastName = cleanField(o?.lastName, 100) ?? "";
+  const street = cleanField(o?.street), zip = cleanField(o?.zip, 20), city = cleanField(o?.city, 100), email = cleanField(o?.email, 320);
+  const country = (cleanField(o?.country, 2) ?? "DE").toUpperCase();
+  if (type === "COMPANY" ? !companyName : !lastName) throw new DomainError(type === "COMPANY" ? "Anderer Empfänger: bitte den Firmennamen angeben." : "Anderer Empfänger: bitte den Namen angeben.");
+  if (!street || !zip || !city) throw new DomainError("Anderer Empfänger: bitte die vollständige Anschrift angeben (Straße, PLZ, Ort).");
+  if (email && !EMAIL_RE.test(email)) throw new DomainError("Anderer Empfänger: die E-Mail-Adresse ist ungültig.");
+  return { number: null, type, companyName: type === "COMPANY" ? companyName : null, firstName, lastName, street, zip, city, country, email };
+}
+
+/**
+ * Befehl 29: Unfallersatz-Rechnung (kind ACCIDENT_REPLACEMENT) als Entwurf mit Fassung 1. Leistungsrechnung (Zwischen- oder
+ * Schlussrechnung) aus der tatsächlichen Mietdauer und dem Vertragstarif; Rechnungsempfänger bewusst gewählt: Versicherung
+ * (Kopie aus der Fallakte), Mieter (Vertragskopie) oder anderer Empfänger (manuell erfasst). Je Fall höchstens ein offener
+ * Entwurf. Doppelklick: derselbe Formularschlüssel liefert denselben Entwurf (sourceHash). Geschlossener Fall: gesperrt.
+ */
+export async function createAccidentInvoiceDraft(tenantId: string, actor: Actor, input: { caseId: string; recipientRole: InvoiceRecipientRole; periodEnd?: Date | null; nonce: string; other?: AccidentRecipientInput | null }): Promise<{ invoice: InvoiceRow; created: boolean }> {
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(input.nonce ?? "")) throw new DomainError("Die Seite ist veraltet. Bitte neu laden.");
+  if (!(input.recipientRole in INVOICE_RECIPIENT_ROLES)) throw new DomainError("Bitte den Rechnungsempfänger wählen.");
+  const other = input.recipientRole === "OTHER" ? otherRecipientOf(input.other) : null;
+  const sourceHash = sha256(`accident:${tenantId}:${input.caseId}:${input.nonce}`);
+  return db.$transaction(async (tx) => {
+    const c = await tx.accidentReplacementCase.findFirst({ where: { id: input.caseId, tenantId }, include: { tariffItems: { orderBy: { sortOrder: "asc" } } } });
+    if (!c) throw new DomainError("Unfallersatzfall nicht gefunden.");
+    // Reihenfolge der Sperren: Fall (geteilt) → Buchung
+    await assertAccidentCaseOpen(tx, tenantId, c.bookingId);
+    const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Booking" WHERE "id" = ${c.bookingId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+    if (locked.length === 0) throw new DomainError("Buchung nicht gefunden.");
+    const existing = await tx.invoice.findFirst({ where: { tenantId, kind: "ACCIDENT_REPLACEMENT", sourceHash } });
+    if (existing) return { invoice: existing, created: false };
+    const openDraft = await tx.invoice.findFirst({ where: { tenantId, bookingId: c.bookingId, kind: "ACCIDENT_REPLACEMENT", documentType: "INVOICE", status: "DRAFT" }, select: { createdAt: true } });
+    if (openDraft) throw new DomainError(`Zu diesem Fall ist bereits ein Rechnungsentwurf offen (angelegt ${dateFmt(openDraft.createdAt)}). Bitte zuerst abschließen oder verwerfen.`);
+    const s = await accidentServiceData(tx, tenantId, c, input.periodEnd);
+    const { booking, ret } = s;
+    const { computed, totals } = computeAccidentItems(s.mode, s.items, ret);
+    const now = new Date();
+    const dayWord = s.days === 1 ? "Tag" : "Tage";
+    // Empfänger nach Rolle; der Mieter bleibt als Geschädigter immer nachvollziehbar
+    const renter = customerSnapshotFromContract(booking.contract!.customerSnapshot as Partial<CustomerSnapshot>);
+    const renterName = renter.type === "COMPANY" && renter.companyName ? renter.companyName : `${renter.firstName} ${renter.lastName}`.trim();
+    const billing: AccidentBilling = { type: s.type, days: s.days, totalDays: s.totalDays, priorDays: s.priorDays, prior: s.prior };
+    const common = { claimNumber: c.insurerClaimNumber ?? null, accidentDate: c.accidentAt?.toISOString() ?? null, caseNumber: c.caseNumber, accidentBilling: billing };
+    let customer: InvoiceCustomerSnapshot;
+    if (input.recipientRole === "INSURER") {
+      if (!c.insurerName?.trim()) throw new DomainError("In der Fallakte ist keine Versicherung erfasst. Bitte zuerst die Versicherung eintragen.");
+      customer = { number: null, type: "COMPANY", companyName: c.insurerName.trim(), firstName: "", lastName: "", street: c.insurerStreet ?? null, zip: c.insurerZip ?? null, city: c.insurerCity ?? null, country: "DE", email: c.insurerEmail ?? null, recipientRole: "INSURER", insuredName: renterName, ...common };
+    } else if (input.recipientRole === "OTHER") {
+      customer = { ...other!, recipientRole: "OTHER", insuredName: renterName, ...common };
+    } else {
+      customer = { ...renter, recipientRole: "RENTER", ...common };
+    }
+    const invoice = await tx.invoice.create({
+      data: {
+        tenantId, bookingId: booking.id, customerId: booking.customerId, contractId: booking.contract!.id, returnHandoverId: ret?.id ?? null,
+        kind: "ACCIDENT_REPLACEMENT", sourceHash, createdById: actor.id,
+        changeLog: [{ at: now.toISOString(), by: actor.name, versionNo: 1, summary: `${ACCIDENT_BILLING_TYPES[s.type]} zum Fall ${c.caseNumber} als Entwurf erstellt (${INVOICE_RECIPIENT_ROLES[input.recipientRole]}, ${s.days} ${dayWord}${s.priorDays ? `, bereits berechnet ${s.priorDays}` : ""}, ${computed.length} Positionen)` }],
+      },
+    });
+    const version = await tx.invoiceVersion.create({
+      data: {
+        tenantId, invoiceId: invoice.id, versionNo: 1, kind: "ORIGINAL",
+        servicePeriodStart: s.periodStart, servicePeriodEnd: s.end, pricesIncludeTax: s.mode === "GROSS",
+        customerSnapshot: customer as unknown as Prisma.InputJsonValue, companySnapshot: companySnapshotOf(booking.tenant),
+        netTotal: centsToDecimalString(totals.total.net), taxTotal: centsToDecimalString(totals.total.tax), grossTotal: centsToDecimalString(totals.total.gross),
+        paymentTermDays: booking.tenant.paymentTermDays, taxNote: booking.tenant.taxNote,
+        createdById: actor.id, createdByName: actor.name,
+      },
+    });
+    await tx.invoiceVersionItem.createMany({ data: computed.map((ci, i) => itemData(tenantId, version.id, i, ci)) });
+    await accidentCaseEvent(tx, tenantId, c.id, actor, { type: "INVOICE_CREATED", toValue: input.recipientRole, note: `${ACCIDENT_BILLING_TYPES[s.type]} als Entwurf über ${fmtCents(totals.total.gross)} (${s.days} ${dayWord})` });
+    await recordAudit(tx, tenantId, actor, { action: "INVOICE_DRAFT_CREATED", bookingId: booking.id, invoiceId: invoice.id, amountCents: totals.total.gross, details: { kind: "ACCIDENT_REPLACEMENT", caseNumber: c.caseNumber, recipientRole: input.recipientRole, billingType: s.type, days: s.days, priorDays: s.priorDays } });
+    return { invoice, created: true };
+  }, TX);
+}
+
+/** Restbetrag einer gekürzten Versicherungsrechnung, der noch nicht als Restforderung gestellt ist (wirksame Restforderungen). */
+export async function remainderAvailability(client: Client, tenantId: string, insurerInvoiceId: string, opts: { excludeInvoiceId?: string } = {}) {
+  const inv = await client.invoice.findFirst({ where: { id: insurerInvoiceId, tenantId, kind: "ACCIDENT_REPLACEMENT", documentType: "INVOICE" }, select: { id: true, number: true, status: true, bookingId: true, currentVersion: { select: { customerSnapshot: true } } } });
+  if (!inv) throw new DomainError("Rechnung nicht gefunden.");
+  const reduced = (await client.invoiceAdjustment.aggregate({ where: { tenantId, invoiceId: inv.id, status: "CONFIRMED" }, _sum: { amountCents: true } }))._sum.amountCents ?? 0;
+  const chain = inv.bookingId ? await accidentInvoiceChain(client, tenantId, inv.bookingId, { excludeInvoiceId: opts.excludeInvoiceId }) : null;
+  const remainders = (chain?.invoices ?? []).filter((i) => i.billing?.type === "REMAINDER" && i.billing.remainderOf?.invoiceId === inv.id && (i.effective || i.status === "DRAFT"));
+  const claimedCents = remainders.reduce((s, i) => s + i.grossCents, 0);
+  const self = chain?.invoices.find((i) => i.id === inv.id) ?? null;
+  // Was die Versicherung bereits gezahlt hat, kann nicht zusätzlich beim Mieter verlangt werden: höchstens der Teil des
+  // ursprünglichen Rechnungsbetrags, den sie (noch) nicht gezahlt hat – und höchstens die dokumentierte Kürzung
+  const paidByInsurer = (await client.payment.aggregate({ where: { tenantId, invoiceId: inv.id, status: "CONFIRMED" }, _sum: { amountCents: true } }))._sum.amountCents ?? 0;
+  const cap = Math.min(reduced, Math.max(0, (self?.grossCents ?? 0) - paidByInsurer));
+  return { invoice: inv, role: recipientRoleOf(inv.currentVersion?.customerSnapshot as { recipientRole?: string } | null), effective: !!self?.effective, reducedCents: reduced, paidByInsurerCents: paidByInsurer, claimedCents, availableCents: Math.max(0, cap - claimedCents), remainders };
+}
+
+/**
+ * Restforderung an den Mieter – bewusst, nie automatisch: eine Position über den gewählten Betrag (höchstens die dokumentierte
+ * Kürzung abzüglich bereits gestellter Restforderungen), Bezug auf die Versicherungsrechnung in der versiegelten Kopie.
+ * Rent-Base entscheidet nicht, ob der Mieter den Betrag schuldet, und bucht nichts um: Die Versicherungsrechnung bleibt
+ * unverändert offen, bis sie bezahlt oder per Gutschrift gemindert wird (Hinweis in Prüfliste, Fallakte und Abschluss).
+ * Beträge sind Bruttobeträge (die Kürzung ist brutto dokumentiert) – deshalb rechnet diese Fassung immer brutto.
+ */
+export async function createAccidentRemainderDraft(tenantId: string, actor: Actor, input: { caseId: string; invoiceId: string; amountCents: Cents; nonce: string }): Promise<{ invoice: InvoiceRow; created: boolean }> {
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(input.nonce ?? "")) throw new DomainError("Die Seite ist veraltet. Bitte neu laden.");
+  if (!Number.isInteger(input.amountCents) || input.amountCents <= 0) throw new DomainError("Der Betrag der Restforderung muss größer als 0,00 € sein.");
+  const sourceHash = sha256(`accident-remainder:${tenantId}:${input.caseId}:${input.nonce}`);
+  return db.$transaction(async (tx) => {
+    const c = await tx.accidentReplacementCase.findFirst({ where: { id: input.caseId, tenantId } });
+    if (!c) throw new DomainError("Unfallersatzfall nicht gefunden.");
+    await assertAccidentCaseOpen(tx, tenantId, c.bookingId);
+    const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Booking" WHERE "id" = ${c.bookingId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+    if (locked.length === 0) throw new DomainError("Buchung nicht gefunden.");
+    const existing = await tx.invoice.findFirst({ where: { tenantId, kind: "ACCIDENT_REPLACEMENT", sourceHash } });
+    if (existing) return { invoice: existing, created: false };
+    const openDraft = await tx.invoice.findFirst({ where: { tenantId, bookingId: c.bookingId, kind: "ACCIDENT_REPLACEMENT", documentType: "INVOICE", status: "DRAFT" }, select: { createdAt: true } });
+    if (openDraft) throw new DomainError(`Zu diesem Fall ist bereits ein Rechnungsentwurf offen (angelegt ${dateFmt(openDraft.createdAt)}). Bitte zuerst abschließen oder verwerfen.`);
+    const a = await remainderAvailability(tx, tenantId, input.invoiceId);
+    if (a.invoice.bookingId !== c.bookingId) throw new DomainError("Die Rechnung gehört nicht zu diesem Unfallersatzfall.");
+    if (a.invoice.status !== "FINALIZED") throw new DomainError("Eine Restforderung gibt es nur zu einer abgeschlossenen Rechnung.");
+    if (a.role !== "INSURER") throw new DomainError("Eine Restforderung an den Mieter gibt es nur zu einer Rechnung an die Versicherung.");
+    if (!a.effective) throw new DomainError(`Die Rechnung ${a.invoice.number} ist storniert bzw. vollständig gutgeschrieben.`);
+    if (a.reducedCents <= 0) throw new DomainError(`Zur Rechnung ${a.invoice.number} ist keine Kürzung der Versicherung dokumentiert.`);
+    if (input.amountCents > a.availableCents) throw new DomainError(a.availableCents === 0 ? (a.claimedCents > 0 ? `Die dokumentierte Kürzung zur Rechnung ${a.invoice.number} ist bereits vollständig als Restforderung gestellt.` : `Die Versicherung hat die Rechnung ${a.invoice.number} bereits (bis auf weniger als die Kürzung) bezahlt; eine Restforderung an den Mieter ist dafür nicht möglich.`) : `Höchstens ${fmtCents(a.availableCents)}: dokumentierte Kürzung ${fmtCents(a.reducedCents)}, von der Versicherung bereits gezahlt ${fmtCents(a.paidByInsurerCents)}, bereits als Restforderung gestellt ${fmtCents(a.claimedCents)}.`);
+    const booking = await tx.booking.findUniqueOrThrow({ where: { id: c.bookingId }, include: { contract: true, tenant: true } });
+    if (!booking.contract) throw new DomainError("Zu dieser Buchung gibt es keinen Mietvertrag.");
+    const tenant = booking.tenant;
+    const missing = invoiceSettingsMissing(tenant);
+    if (missing.length > 0) throw new DomainError(`Bevor Rechnungen erstellt werden können, muss der Inhaber in den Einstellungen ergänzen: ${missing.join("; ")}.`);
+    const iv = (await tx.invoice.findUniqueOrThrow({ where: { id: a.invoice.id }, select: { currentVersion: { select: { servicePeriodStart: true, servicePeriodEnd: true, customerSnapshot: true } } } })).currentVersion;
+    if (!iv) throw new DomainError("Die Versicherungsrechnung hat keine abgeschlossene Fassung.");
+    const ic = iv.customerSnapshot as InvoiceCustomerSnapshot;
+    const renter = customerSnapshotFromContract(booking.contract.customerSnapshot as Partial<CustomerSnapshot>);
+    const customer: InvoiceCustomerSnapshot = {
+      ...renter, recipientRole: "RENTER", claimNumber: ic.claimNumber ?? c.insurerClaimNumber ?? null, accidentDate: c.accidentAt?.toISOString() ?? null, caseNumber: c.caseNumber,
+      accidentBilling: { type: "REMAINDER", remainderOf: { invoiceId: a.invoice.id, number: a.invoice.number, insurerName: ic.companyName ?? null } },
+    };
+    const item = computeItem("GROSS", {
+      description: `Restforderung zur Rechnung ${a.invoice.number} an ${ic.companyName ?? "die Versicherung"} (Unfallersatzfall ${c.caseNumber}${customer.claimNumber ? `, Schadennummer ${customer.claimNumber}` : ""}): von der Versicherung nicht übernommener Betrag`,
+      quantity: 1, unit: "pauschal", unitPrice: centsToDecimalString(input.amountCents), taxRate: Number(tenant.defaultTaxRate), source: "MANUAL", reference: `Restforderung zu ${a.invoice.number}`,
+    });
+    const totals = summarize([{ taxRateBp: item.taxRateBp, amounts: item.amounts }]);
+    const now = new Date();
+    const invoice = await tx.invoice.create({
+      data: {
+        tenantId, bookingId: booking.id, customerId: booking.customerId, contractId: booking.contract.id, returnHandoverId: null,
+        kind: "ACCIDENT_REPLACEMENT", sourceHash, createdById: actor.id,
+        changeLog: [{ at: now.toISOString(), by: actor.name, versionNo: 1, summary: `Restforderung an den Mieter zur Rechnung ${a.invoice.number} über ${fmtCents(input.amountCents)} als Entwurf erstellt (dokumentierte Kürzung ${fmtCents(a.reducedCents)})` }],
+      },
+    });
+    const version = await tx.invoiceVersion.create({
+      data: {
+        tenantId, invoiceId: invoice.id, versionNo: 1, kind: "ORIGINAL",
+        servicePeriodStart: iv.servicePeriodStart, servicePeriodEnd: iv.servicePeriodEnd, pricesIncludeTax: true,
+        customerSnapshot: customer as unknown as Prisma.InputJsonValue, companySnapshot: companySnapshotOf(tenant),
+        netTotal: centsToDecimalString(totals.total.net), taxTotal: centsToDecimalString(totals.total.tax), grossTotal: centsToDecimalString(totals.total.gross),
+        paymentTermDays: tenant.paymentTermDays, taxNote: tenant.taxNote,
+        createdById: actor.id, createdByName: actor.name,
+      },
+    });
+    await tx.invoiceVersionItem.createMany({ data: [itemData(tenantId, version.id, 0, item)] });
+    await accidentCaseEvent(tx, tenantId, c.id, actor, { type: "INVOICE_CREATED", toValue: "RENTER", note: `Restforderung zur Rechnung ${a.invoice.number} über ${fmtCents(input.amountCents)} (Entwurf)` });
+    await recordAudit(tx, tenantId, actor, { action: "INVOICE_DRAFT_CREATED", bookingId: booking.id, invoiceId: invoice.id, amountCents: input.amountCents, details: { kind: "ACCIDENT_REPLACEMENT", caseNumber: c.caseNumber, recipientRole: "RENTER", billingType: "REMAINDER", remainderOf: a.invoice.number, reducedCents: a.reducedCents } });
+    return { invoice, created: true };
+  }, TX);
+}
+
+/** Prüfliste einer Unfallersatz-Rechnung (Fassung 1 und spätere): Fall offen, Abrechnungskette, Restforderung, Miettage. */
+async function accidentIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, draft: VersionWithItems, booking: { id: string; status: string; actualPickupAt: Date | null; actualReturnAt: Date | null } | null, err: (code: string, message: string) => void, warn: (code: string, message: string) => void) {
+  if (!booking) return;
+  if (await accidentCaseClosed(tx, tenantId, booking.id)) err("CASE_CLOSED", ACCIDENT_CASE_CLOSED_MESSAGE);
+  const billing = accidentBillingOf(draft.customerSnapshot);
+  const pickup = booking.actualPickupAt;
+  if (billing?.type === "REMAINDER") {
+    if (!billing.remainderOf) return;
+    const a = await remainderAvailability(tx, tenantId, billing.remainderOf.invoiceId, { excludeInvoiceId: invoice.id });
+    if (!a.effective) err("REMAINDER_SOURCE", `Die Versicherungsrechnung ${a.invoice.number} ist storniert bzw. vollständig gutgeschrieben. Bitte diesen Entwurf verwerfen.`);
+    const gross = toCents(draft.grossTotal);
+    if (gross > a.availableCents) err("REMAINDER_AMOUNT", `Die Restforderung (${fmtCents(gross)}) übersteigt den zulässigen Betrag (${fmtCents(a.availableCents)}: dokumentierte Kürzung, abzüglich bereits von der Versicherung gezahlt und bereits gestellter Restforderungen).`);
+    warn("REMAINDER_DOUBLE", `Derselbe Betrag ist auch in der Rechnung ${a.invoice.number} an die Versicherung enthalten und bleibt dort offen. Rent-Base bucht nichts um: Wird der Mieter in Anspruch genommen, die Versicherungsrechnung entsprechend per Gutschrift mindern – sonst ist der Betrag doppelt gefordert.`);
+    return;
+  }
+  if (!pickup) return;
+  if (draft.versionNo === 1) {
+    const chain = await accidentInvoiceChain(tx, tenantId, booking.id, { excludeInvoiceId: invoice.id, pickupAt: pickup });
+    const chained = chain.billedUntil && chain.billedUntil > pickup ? chain.billedUntil : pickup;
+    const expectedStart = chained > draft.servicePeriodEnd ? draft.servicePeriodEnd : chained;
+    if (Math.abs(draft.servicePeriodStart.getTime() - expectedStart.getTime()) > 60_000) err("PERIOD_CHAIN", `Die Abrechnung hat sich seit dem Entwurf geändert (abgerechnet bis ${dateFmt(expectedStart)}). Bitte diesen Entwurf verwerfen und neu erstellen, damit kein Miettag doppelt oder gar nicht berechnet wird.`);
+    if (billing?.type === "FINAL") {
+      if (booking.status !== "RETURNED" || !booking.actualReturnAt) err("FINAL_NOT_RETURNED", "Eine Schlussrechnung gibt es erst nach der Rückgabe.");
+      else if (Math.abs(draft.servicePeriodEnd.getTime() - booking.actualReturnAt.getTime()) > 60_000) err("FINAL_PERIOD", "Die Schlussrechnung endet nicht mit der tatsächlichen Rückgabe. Bitte diesen Entwurf verwerfen und neu erstellen.");
+    }
+    if (chain.service.some((i) => i.billing?.type === "FINAL")) err("FINAL_EXISTS", "Zu diesem Fall gibt es bereits eine wirksame Schlussrechnung.");
+  }
+  // Grundmiete: Miettage laut Leistungszeitraum (Abweichung nur als Hinweis – bewusst geänderte Mengen bleiben möglich)
+  const expected = Math.max(0, rentalDays(pickup, draft.servicePeriodEnd) - (draft.servicePeriodStart > pickup ? rentalDays(pickup, draft.servicePeriodStart) : 0));
+  const inItems = rentalDaysInItems(draft.items);
+  if (inItems !== expected) warn("DAYS", `Grundmiete: ${inItems.toLocaleString("de-DE")} ${inItems === 1 ? "Tag" : "Tage"} in den Positionen, laut Leistungszeitraum ${expected} ${expected === 1 ? "Miettag" : "Miettage"}.`);
+}
+
 /**
  * Befehl 25 (Absicherung): Preiserhöhung aus einem Nachtrag, der in der bereits abgeschlossenen Mietrechnung nicht enthalten
  * ist, als eigene freie Rechnung (Entwurf, Bezug Buchung) mit genau einer Position (Abrechnungsbezug amendmentId). Die
@@ -673,6 +1094,7 @@ export async function startInvoiceEdit(tenantId: string, invoiceId: string, acto
   if (open) return open;
   try {
     return await db.$transaction(async (tx) => {
+      await assertAccidentInvoiceCaseOpen(tx, tenantId, invoiceId);
       const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Invoice" WHERE "id" = ${invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
       if (locked.length === 0) throw new DomainError("Rechnung nicht gefunden.");
       const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
@@ -745,7 +1167,7 @@ export async function markVersionDelivered(tenantId: string, versionId: string, 
 // Entwurf bearbeiten
 // ---------------------------------------------------------------------------
 
-export type CustomerInput = Partial<Pick<InvoiceCustomerSnapshot, "type" | "companyName" | "firstName" | "lastName" | "street" | "zip" | "city" | "country" | "email">>;
+export type CustomerInput = Partial<Pick<InvoiceCustomerSnapshot, "type" | "companyName" | "firstName" | "lastName" | "street" | "zip" | "city" | "country" | "email" | "claimNumber" | "insuredName">>;
 export type CompanyInput = Partial<Pick<CompanySnapshot, "name" | "legalForm" | "street" | "zip" | "city" | "country" | "email" | "phone" | "vatId" | "taxNumber" | "bankName" | "iban" | "bic" | "invoiceFooter">>;
 
 export type DraftInput = {
@@ -783,6 +1205,8 @@ export async function updateInvoiceDraft(tenantId: string, invoiceId: string, ac
   if (input.paymentTermDays != null && !(Number.isInteger(input.paymentTermDays) && input.paymentTermDays >= 0 && input.paymentTermDays <= 365)) throw new DomainError("Das Zahlungsziel liegt zwischen 0 und 365 Tagen.");
   if (input.servicePeriodStart && input.servicePeriodEnd && input.servicePeriodEnd.getTime() < input.servicePeriodStart.getTime()) throw new DomainError("Das Ende des Leistungszeitraums liegt vor dem Beginn.");
   return db.$transaction(async (tx) => {
+    // Phase F: geschlossener Unfallersatzfall – kein Bearbeiten (vor der Rechnungssperre)
+    await assertAccidentInvoiceCaseOpen(tx, tenantId, invoiceId);
     const { draft } = await lockDraft(tx, tenantId, invoiceId);
     const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
@@ -825,6 +1249,8 @@ export async function updateInvoiceDraft(tenantId: string, invoiceId: string, ac
     const paymentTermDays = input.paymentTermDays === undefined ? draft.paymentTermDays : input.paymentTermDays;
     const servicePeriodStart = input.servicePeriodStart ?? draft.servicePeriodStart;
     const servicePeriodEnd = input.servicePeriodEnd ?? draft.servicePeriodEnd;
+    // Phase F: Unfallersatz – der Leistungszeitraum ergibt sich aus Übergabe, Stichtag bzw. Rückgabe (Abrechnungskette), nie frei
+    if (invoice.kind === "ACCIDENT_REPLACEMENT" && (servicePeriodStart.getTime() !== draft.servicePeriodStart.getTime() || servicePeriodEnd.getTime() !== draft.servicePeriodEnd.getTime())) throw new DomainError("Der Leistungszeitraum einer Unfallersatz-Rechnung ergibt sich aus Übergabe, Stichtag bzw. Rückgabe und ist nicht änderbar.");
     if ((draft.customerNote ?? "") !== (customerNote ?? "")) changes.push("Rechnungstext geändert");
     if ((draft.taxNote ?? "") !== (taxNote ?? "")) changes.push("Steuerhinweis geändert");
     if ((draft.reason ?? "") !== (reason ?? "")) changes.push("Änderungsgrund erfasst");
@@ -926,6 +1352,14 @@ async function collectIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, draf
     if (booking && invoice.customerId && booking.customerId !== invoice.customerId) err("BOOKING_CUSTOMER", "Die gewählte Buchung gehört nicht zu diesem Kunden.");
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
     for (const m of invoiceSettingsMissing(tenant)) err("COMPANY", `Firmendaten unvollständig: ${m}.`);
+  } else if (draft.versionNo === 1 && invoice.kind === "ACCIDENT_REPLACEMENT") {
+    // Befehl 29: Unfallersatz – Vertrag unterschrieben, Fahrzeug übergeben; Leistungszeitraum nie in der Zukunft (keine erfundene Mietdauer)
+    if (booking && booking.rentalType !== "ACCIDENT_REPLACEMENT") err("RENTAL_TYPE", "Diese Buchung ist keine Unfallersatzmiete.");
+    if (booking && booking.contract?.status !== "SIGNED") err("CONTRACT", "Zu dieser Buchung gibt es keinen abgeschlossenen Mietvertrag.");
+    if (booking && !booking.actualPickupAt) err("PICKUP", "Das Fahrzeug wurde noch nicht übergeben; abgerechnet wird erst ab der Übergabe.");
+    if (draft.servicePeriodEnd.getTime() > Date.now() + 60_000) err("PERIOD_FUTURE", "Der Leistungszeitraum endet in der Zukunft. Abgerechnet wird nur die tatsächliche Mietdauer (Rückgabe oder Stichtag bis heute).");
+    const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+    for (const m of invoiceSettingsMissing(tenant)) err("COMPANY", `Firmendaten unvollständig: ${m}.`);
   } else if (draft.versionNo === 1) {
     if (booking && booking.status !== "RETURNED") err("BOOKING_STATUS", "Die Buchung ist nicht zurückgegeben.");
     if (booking && booking.contract?.status !== "SIGNED") err("CONTRACT", "Zu dieser Buchung gibt es keinen abgeschlossenen Mietvertrag.");
@@ -943,6 +1377,8 @@ async function collectIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, draf
     if (mode && mode.counterFinalized > 0) err("COUNTER_DOCUMENT", "Zu dieser Rechnung gibt es bereits eine Gutschrift oder einen Stornobeleg. Sie wird nicht mehr berichtigt; weitere Änderungen nur über einen weiteren Gegenbeleg.");
     if (mode?.delivered && !(draft.reason && draft.reason.trim().length >= 3)) err("REASON", "Der Kunde hat bereits eine frühere Fassung dieser Rechnung erhalten. Bitte den Grund der Berichtigung angeben.");
   }
+  // Phase F: Unfallersatz – Fall offen, Abrechnungskette, Restforderung, Miettage (alle Fassungen)
+  if (invoice.kind === "ACCIDENT_REPLACEMENT") await accidentIssues(tx, tenantId, invoice, draft, booking, err, warn);
   const c = draft.customerSnapshot as InvoiceCustomerSnapshot;
   const name = c.type === "COMPANY" ? c.companyName : `${c.firstName} ${c.lastName}`.trim();
   if (!name) err("CUSTOMER_NAME", "Der Rechnungsempfänger hat keinen Namen.");
@@ -1062,6 +1498,8 @@ export function diffVersions(prev: VersionWithItems, next: VersionWithItems): Ve
   push("customer.address", "Anschrift", addr(pc), addr(nc));
   push("customer.email", "E-Mail des Empfängers", pc.email, nc.email);
   push("customer.number", "Kundennummer", pc.number, nc.number);
+  push("customer.role", "Empfängerrolle", INVOICE_RECIPIENT_ROLES[recipientRoleOf(pc)], INVOICE_RECIPIENT_ROLES[recipientRoleOf(nc)]);
+  push("customer.claimNumber", "Schadennummer", pc.claimNumber ?? null, nc.claimNumber ?? null);
   const pf = prev.companySnapshot as CompanySnapshot, nf = next.companySnapshot as CompanySnapshot;
   push("company.name", "Rechnungssteller", [pf.name, pf.legalForm].filter(Boolean).join(" "), [nf.name, nf.legalForm].filter(Boolean).join(" "));
   push("company.address", "Anschrift des Rechnungsstellers", addr(pf), addr(nf));
@@ -1098,7 +1536,7 @@ export type FinalizeOptions = { reason?: string | null; confirmOverpayment?: boo
  * veralteter Entwurf (nicht Nachfolger der aktuellen Fassung) wird abgewiesen. Eine Nummer wird nie wiederverwendet.
  */
 export async function finalizeInvoice(tenantId: string, invoiceId: string, actor: Actor, opts: FinalizeOptions = {}): Promise<VersionWithItems> {
-  return withNumberRetry(() => db.$transaction((tx) => finalizeInvoiceIn(tx, tenantId, invoiceId, actor, opts), TX)).catch(finalizeErrorOf);
+  return withNumberRetry(() => db.$transaction(async (tx) => { await assertAccidentInvoiceCaseOpen(tx, tenantId, invoiceId); return finalizeInvoiceIn(tx, tenantId, invoiceId, actor, opts); }, TX)).catch(finalizeErrorOf);
 }
 
 /** Eindeutigkeitsverletzungen des Abschlusses als Fachmeldung. */
@@ -1215,6 +1653,7 @@ export async function verifyInvoice(tenantId: string, invoiceId: string) {
 /** Entwurf verwerfen: Fassung 1 → ganze Rechnung, spätere Fassung → nur der Entwurf. Abgeschlossene Fassungen bleiben immer. */
 export async function discardInvoiceDraft(tenantId: string, invoiceId: string, actor?: Actor) {
   return db.$transaction(async (tx) => {
+    await assertAccidentInvoiceCaseOpen(tx, tenantId, invoiceId);
     const { draft } = await lockDraft(tx, tenantId, invoiceId);
     await tx.invoiceVersionItem.deleteMany({ where: { tenantId, versionId: draft.id } });
     await tx.invoiceVersion.delete({ where: { id: draft.id } });

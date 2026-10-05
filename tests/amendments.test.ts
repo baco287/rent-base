@@ -100,7 +100,7 @@ test("applyAmendments: Vertrag + Nachträge in Reihenfolge, Entwürfe und verwor
   ] as unknown as Parameters<typeof applyAmendments>[1];
   // bewusst in falscher Reihenfolge übergeben: sortiert wird nach sequenceNo
   const st = applyAmendments(c, drivers, [a2, draftRow, a1, discarded] as unknown as Parameters<typeof applyAmendments>[2]);
-  assert.equal(st.endAt.getTime(), plusDays(end, 2).getTime());
+  assert.equal(st.endAt!.getTime(), plusDays(end, 2).getTime());
   assert.equal(st.totalCents, 53400 + 17800 - 5000);
   assert.equal(st.kmIncludedPerDay, 300);
   assert.equal(st.extraKmRate, 0.25);
@@ -153,16 +153,16 @@ test("Nachtrag nur zu unterschriebenem Vertrag und laufender Miete; Entwurf hat 
   assert.equal(r3.amendment.id, r1.amendment.id, "zweiter Klick öffnet den offenen Entwurf, legt keinen zweiten an");
   assert.equal(r1.amendment.status, "DRAFT"); assert.equal(r1.amendment.number, null);
 
-  await updateAmendmentDraft(w.tenantId, w.actor, r1.amendment.id, { newEndAt: plusDays(before.endAt, 3), newDepositCents: 80000, newKmIncludedPerDay: 300 });
+  await updateAmendmentDraft(w.tenantId, w.actor, r1.amendment.id, { newEndAt: plusDays(before.endAt!, 3), newDepositCents: 80000, newKmIncludedPerDay: 300 });
   const st = await effectiveContractState(w.tenantId, w.contractId);
-  assert.equal(st.endAt.getTime(), before.endAt.getTime(), "Entwurf ändert den wirksamen Stand nicht");
+  assert.equal(st.endAt!.getTime(), before.endAt!.getTime(), "Entwurf ändert den wirksamen Stand nicht");
   assert.equal(st.depositCents, 50000); assert.equal(st.kmIncludedPerDay, 200);
   const bk = await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } });
-  assert.equal(bk.endAt.getTime(), before.endAt.getTime(), "Buchung unverändert");
+  assert.equal(bk.endAt!.getTime(), before.endAt!.getTime(), "Buchung unverändert");
   assert.equal((await depositView(w.tenantId, w.bookingId)).expectedCents, 50000);
   const contract = await db.rentalContract.findUniqueOrThrow({ where: { id: w.contractId } });
   assert.equal((await rentalPaymentSummary(w.tenantId, w.bookingId)).grossCents, Math.round(Number(contract.totalAmount) * 100));
-  assert.equal(contract.endAt.getTime(), before.endAt.getTime(), "Vertragszeile unverändert");
+  assert.equal(contract.endAt!.getTime(), before.endAt!.getTime(), "Vertragszeile unverändert");
 
   // verwerfen: keine Wirkung, keine Nummer, kein zweiter Vorgang nötig
   const d = await discardAmendment(w.tenantId, w.actor, r1.amendment.id);
@@ -231,7 +231,7 @@ test("Verlängerung: Nummer NT-JJJJ-NNNNNN, Buchung übernimmt neues Ende, Origi
   const w = await signedWorld("amend-extend");
   const c0 = await db.rentalContract.findUniqueOrThrow({ where: { id: w.contractId } });
   const a = await draft(w, "e");
-  const newEnd = plusDays(c0.endAt, 2);
+  const newEnd = plusDays(c0.endAt!, 2);
   const row = await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: newEnd });
   assert.ok(row.priceProposalCents != null && row.priceProposalCents > 0, "Preisvorschlag aus der Preislogik");
   // Vorschlag übernehmen: keine Begründung nötig
@@ -260,18 +260,18 @@ test("Verlängerung: Nummer NT-JJJJ-NNNNNN, Buchung übernimmt neues Ende, Origi
 
   // Materialisierung und Original
   const bk = await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } });
-  assert.equal(bk.endAt.getTime(), newEnd.getTime(), "Buchung (Disposition, Verfügbarkeit, Rückgabe) trägt das neue Ende");
+  assert.equal(bk.endAt!.getTime(), newEnd.getTime(), "Buchung (Disposition, Verfügbarkeit, Rückgabe) trägt das neue Ende");
   const c1 = await db.rentalContract.findUniqueOrThrow({ where: { id: w.contractId } });
-  assert.equal(c1.endAt.getTime(), c0.endAt.getTime(), "Originalvertrag unverändert");
+  assert.equal(c1.endAt!.getTime(), c0.endAt!.getTime(), "Originalvertrag unverändert");
   assert.equal(c1.contentHash, c0.contentHash);
   assert.equal(String(c1.totalAmount), String(c0.totalAmount));
   const st = await effectiveContractState(w.tenantId, w.contractId);
-  assert.equal(st.endAt.getTime(), newEnd.getTime());
+  assert.equal(st.endAt!.getTime(), newEnd.getTime());
   assert.equal(st.totalCents, Math.round(Number(c0.totalAmount) * 100) + row.priceProposalCents!);
   assert.equal(st.changedBy.endAt, signedRow.number);
   assert.equal((await rentalPaymentSummary(w.tenantId, w.bookingId)).grossCents, st.totalCents, "Mietzahlung erwartet den wirksamen Gesamtpreis");
   const snap = signedRow.snapshot as { before: { endAt: string; totalCents: number }; after: { endAt: string; totalCents: number }; changes: unknown[]; signatures: unknown[] };
-  assert.equal(new Date(snap.before.endAt).getTime(), c0.endAt.getTime());
+  assert.equal(new Date(snap.before.endAt).getTime(), c0.endAt!.getTime());
   assert.equal(new Date(snap.after.endAt).getTime(), newEnd.getTime());
   assert.equal(snap.signatures.length, 1);
 
@@ -286,7 +286,7 @@ test("Verlängerung: Nummer NT-JJJJ-NNNNNN, Buchung übernimmt neues Ende, Origi
 
   // zweiter Nachtrag: sequenceNo 2, Preis kumuliert, Verkürzung senkt den Preis nicht automatisch
   const b = await draft(w, "e2");
-  await updateAmendmentDraft(w.tenantId, w.actor, b.id, { newEndAt: plusDays(c0.endAt, 1) });
+  await updateAmendmentDraft(w.tenantId, w.actor, b.id, { newEndAt: plusDays(c0.endAt!, 1) });
   const sb = await getAmendmentState(w.tenantId, b.id);
   assert.equal(sb.issues.filter((i) => i.severity === "error").length, 0);
   assert.ok(sb.changes.find((x) => x.kind === "PERIOD")!.note!.includes("verkürzte"));
@@ -295,9 +295,9 @@ test("Verlängerung: Nummer NT-JJJJ-NNNNNN, Buchung übernimmt neues Ende, Origi
   assert.equal(b2.sequenceNo, 2);
   assert.ok(b2.number! > signedRow.number!, "laufende Nummer");
   const st2 = await effectiveContractState(w.tenantId, w.contractId);
-  assert.equal(st2.endAt.getTime(), plusDays(c0.endAt, 1).getTime());
+  assert.equal(st2.endAt!.getTime(), plusDays(c0.endAt!, 1).getTime());
   assert.equal(st2.totalCents, st.totalCents, "Preis unverändert trotz Verkürzung");
-  assert.equal((await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } })).endAt.getTime(), plusDays(c0.endAt, 1).getTime());
+  assert.equal((await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } })).endAt!.getTime(), plusDays(c0.endAt!, 1).getTime());
   const list = await listAmendments(w.tenantId, w.bookingId);
   assert.deepEqual(list.map((x) => x.sequenceNo), [1, 2]);
 });
@@ -321,7 +321,7 @@ test("manuelle Preisänderung braucht Begründung; Abweichung vom Vorschlag eben
   // Abweichung vom Vorschlag: Begründung Pflicht
   const c = await db.rentalContract.findUniqueOrThrow({ where: { id: w.contractId } });
   const b = await draft(w, "p2");
-  const r = await updateAmendmentDraft(w.tenantId, w.actor, b.id, { newEndAt: plusDays(c.endAt, 1) });
+  const r = await updateAmendmentDraft(w.tenantId, w.actor, b.id, { newEndAt: plusDays(c.endAt!, 1) });
   await updateAmendmentDraft(w.tenantId, w.actor, b.id, { priceDeltaCents: r.priceProposalCents! + 1000 });
   assert.ok((await getAmendmentState(w.tenantId, b.id)).issues.some((i) => i.code === "PRICE_REASON"));
   await updateAmendmentDraft(w.tenantId, w.actor, b.id, { priceReason: "Wochenendzuschlag vereinbart" });
@@ -334,22 +334,22 @@ test("Verfügbarkeit: Konflikt mit Folgebuchung wird angezeigt und beim Untersch
   const w = await signedWorld("amend-conflict");
   const c = await db.rentalContract.findUniqueOrThrow({ where: { id: w.contractId } });
   const a = await draft(w, "c");
-  await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusDays(c.endAt, 3) });
+  await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusDays(c.endAt!, 3) });
   await renterSign(w, a.id);
   // zwischen Vorschau und Unterschrift entsteht eine Folgebuchung auf demselben Fahrzeug
-  const other = await db.booking.create({ data: { tenantId: w.tenantId, number: "T-FOLGE", vehicleId: w.vehicleId, customerId: w.customerId, startAt: plusDays(c.endAt, 1), endAt: plusDays(c.endAt, 5), dailyRate: 89, deposit: 0 } });
+  const other = await db.booking.create({ data: { tenantId: w.tenantId, number: "T-FOLGE", vehicleId: w.vehicleId, customerId: w.customerId, startAt: plusDays(c.endAt!, 1), endAt: plusDays(c.endAt!, 5), dailyRate: 89, deposit: 0 } });
   const st = await getAmendmentState(w.tenantId, a.id);
   const conflict = st.issues.find((i) => i.code === "CONFLICT");
   assert.ok(conflict && conflict.message.includes("T-FOLGE"), "Konfliktmeldung nennt die Buchung");
   await assert.rejects(() => signAmendment(w.tenantId, w.actor, a.id), /T-FOLGE/);
   assert.equal((await db.contractAmendment.findUniqueOrThrow({ where: { id: a.id } })).status, "DRAFT");
-  assert.equal((await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } })).endAt.getTime(), c.endAt.getTime(), "nichts materialisiert");
+  assert.equal((await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } })).endAt!.getTime(), c.endAt!.getTime(), "nichts materialisiert");
   // stornierte Folgebuchung blockiert nicht mehr
   await db.booking.update({ where: { id: other.id }, data: { status: "CANCELLED" } });
   await signAmendment(w.tenantId, w.actor, a.id);
   // Fahrzeug nicht vermietbar → Verlängerung blockiert
   const b = await draft(w, "c2");
-  await updateAmendmentDraft(w.tenantId, w.actor, b.id, { newEndAt: plusDays(c.endAt, 4) });
+  await updateAmendmentDraft(w.tenantId, w.actor, b.id, { newEndAt: plusDays(c.endAt!, 4) });
   await db.vehicle.update({ where: { id: w.vehicleId }, data: { status: "WORKSHOP" } });
   assert.ok((await getAmendmentState(w.tenantId, b.id)).issues.some((i) => i.code === "VEHICLE_STATUS"));
   await renterSign(w, b.id);
@@ -494,7 +494,7 @@ test("Rechnung: Verlängerung als eigene Position, Minderung mindert den Mietpre
   tenants.push(w.tenantId);
   const c0 = await db.rentalContract.findUniqueOrThrow({ where: { id: w.contractId } });
   const a = await draft(w, "i");
-  const r = await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusDays(c0.endAt, 2) });
+  const r = await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusDays(c0.endAt!, 2) });
   await updateAmendmentDraft(w.tenantId, w.actor, a.id, { priceDeltaCents: r.priceProposalCents });
   const na = await signed(w, a.id);
   const b = await draft(w, "i2");
@@ -577,7 +577,7 @@ test("PDF: „Nachtrag zum Mietvertrag“ mit alt/neu, Schlusssatz, Unterschrift
   const w = await signedWorld("amend-pdf");
   const c0 = await db.rentalContract.findUniqueOrThrow({ where: { id: w.contractId } });
   const a = await draft(w, "pdf");
-  const r = await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusDays(c0.endAt, 1), newDepositCents: 60000, agreementText: "Dachbox inklusive" });
+  const r = await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusDays(c0.endAt!, 1), newDepositCents: 60000, agreementText: "Dachbox inklusive" });
   await updateAmendmentDraft(w.tenantId, w.actor, a.id, { priceDeltaCents: r.priceProposalCents });
   await assert.rejects(() => ensureAmendmentDocument(w.tenantId, a.id, w.actor.id, { storage }), /erst, wenn der Nachtrag unterschrieben/);
   const row = await signed(w, a.id);

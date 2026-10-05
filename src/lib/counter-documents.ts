@@ -18,7 +18,8 @@ import { db } from "@/lib/db";
 import { recordAudit, type Actor } from "@/lib/audit";
 import { CANCELLATION_FEE_TAX_TREATMENTS, DAMAGE_TAX_TREATMENTS, INVOICE_UNITS, type InvoiceChainStatus } from "@/lib/constants";
 import { DomainError, contentHash } from "@/lib/integrity";
-import { companySnapshotOf, invoiceSettingsMissing, type CompanySnapshot, type InvoiceCustomerSnapshot, type InvoiceRow, type VersionWithItems } from "@/lib/invoices";
+import { assertAccidentInvoiceCaseOpen } from "@/lib/accident-replacement-events";
+import { assertNotMidChain, companySnapshotOf, invoiceSettingsMissing, type CompanySnapshot, type InvoiceCustomerSnapshot, type InvoiceRow, type VersionWithItems } from "@/lib/invoices";
 import { centsToDecimalString, fmtCents, fmtRate, lineAmounts, summarize, toBasisPoints, toCents, toHundredths, type Cents } from "@/lib/money";
 import { isUniqueViolation, nextDocumentNumber, withNumberRetry } from "@/lib/numbering";
 import { domainFromDb } from "@/lib/db-errors";
@@ -239,12 +240,16 @@ async function lockOriginal(tx: Tx, tenantId: string, invoiceId: string) {
 async function createCounterDraft(tenantId: string, invoiceId: string, actor: Actor, type: CounterDocumentType, inputs: CreditItemInput[] | null): Promise<InvoiceRow> {
   try {
     return await db.$transaction(async (tx) => {
+      // Befehl 29 Phase F: Gegenbeleg zu einer Rechnung eines geschlossenen Unfallersatzfalls gesperrt
+      await assertAccidentInvoiceCaseOpen(tx, tenantId, invoiceId);
       const { original, current } = await lockOriginal(tx, tenantId, invoiceId);
       const existing = await tx.invoice.findFirst({ where: { tenantId, originalInvoiceId: original.id, status: "DRAFT" } });
       if (existing) throw new DomainError(`Zur Rechnung ${original.number} ist bereits ein Entwurf (${COUNTER_WORD[existing.documentType as CounterDocumentType]}) offen. Bitte zuerst abschließen oder verwerfen.`);
       const residuals = await residualsOf(tx, tenantId, original);
       if (residuals.hasCancellation) throw new DomainError(`Die Rechnung ${original.number} ist bereits storniert; weitere Gutschriften oder Stornobelege sind nicht möglich.`);
       if (residuals.remaining.gross <= 0) throw new DomainError(`Die Rechnung ${original.number} ist bereits vollständig gutgeschrieben; weitere Gutschriften oder Stornobelege sind nicht möglich.`);
+      // Befehl 29 Phase F: Unfallersatz – kein Storno mitten in der Abrechnungskette
+      if (type === "CANCELLATION") await assertNotMidChain(tx, tenantId, original.id);
       const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
       const missing = invoiceSettingsMissing(tenant);
       if (missing.length > 0) throw new DomainError(`Bevor Belege erstellt werden können, muss der Inhaber in den Einstellungen ergänzen: ${missing.join("; ")}.`);
@@ -313,6 +318,7 @@ export type CounterDraftInput = { items?: CreditItemInput[]; reason?: string | n
 
 export async function updateCounterDocumentDraft(tenantId: string, counterId: string, actor: Actor, input: CounterDraftInput): Promise<VersionWithItems> {
   return db.$transaction(async (tx) => {
+    await assertAccidentInvoiceCaseOpen(tx, tenantId, counterId);
     const { counter, draft, type } = await lockCounterDraft(tx, tenantId, counterId);
     // Reihenfolge der Sperren immer Gegenbeleg → Original (wie beim Abschluss), damit sich parallele Vorgänge nicht verklemmen
     const { original, current } = await lockOriginal(tx, tenantId, counter.originalInvoiceId!);
@@ -344,6 +350,7 @@ export async function updateCounterDocumentDraft(tenantId: string, counterId: st
 /** Entwurf verwerfen: der ganze Gegenbeleg verschwindet (er hatte nie eine Nummer). Abgeschlossene Belege bleiben immer. */
 export async function discardCounterDocumentDraft(tenantId: string, counterId: string, actor: Actor) {
   return db.$transaction(async (tx) => {
+    await assertAccidentInvoiceCaseOpen(tx, tenantId, counterId);
     const { counter, draft, type } = await lockCounterDraft(tx, tenantId, counterId);
     await tx.invoiceVersionItem.deleteMany({ where: { tenantId, versionId: draft.id } });
     await tx.invoiceVersion.delete({ where: { id: draft.id } });
@@ -432,6 +439,7 @@ export async function finalizeCounterDocument(tenantId: string, counterId: strin
   if (!opts.confirmed) throw new DomainError("Bitte den Abschluss ausdrücklich bestätigen.");
   return withNumberRetry(() =>
     db.$transaction(async (tx) => {
+      await assertAccidentInvoiceCaseOpen(tx, tenantId, counterId);
       const { counter, draft: draft0, type } = await lockCounterDraft(tx, tenantId, counterId);
       const { original, current } = await lockOriginal(tx, tenantId, counter.originalInvoiceId!);
       let draft = draft0;
@@ -443,6 +451,8 @@ export async function finalizeCounterDocument(tenantId: string, counterId: strin
       if (residuals.remaining.gross <= 0) throw new DomainError(`Die Rechnung ${original.number} ist bereits vollständig gutgeschrieben; weitere Gutschriften oder Stornobelege sind nicht möglich.`);
       const problems = checkLines(draft, residuals, type, original.number!).filter((i) => i.severity === "error");
       if (problems.length > 0) throw new DomainError(problems.length === 1 ? problems[0].message : `${problems[0].message} (und ${problems.length - 1} weitere Punkte)`);
+      // Befehl 29 Phase F: Storno bzw. Gutschrift über den ganzen Rest neutralisiert die Rechnung – nicht mitten in der Unfallersatz-Kette
+      if (type === "CANCELLATION" || toCents(draft.grossTotal) >= residuals.remaining.gross) await assertNotMidChain(tx, tenantId, original.id);
       const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
       for (const m of invoiceSettingsMissing(tenant)) throw new DomainError(`Firmendaten unvollständig: ${m}.`);
       const now = new Date();

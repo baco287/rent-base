@@ -95,7 +95,7 @@ test("Mieten: Abholung/Rückgabe heute, überfällig, bald, nicht erfasste Abhol
   assert.ok(!k.includes(`return-${overdue.id}`), "überfällige Rückgabe nicht zusätzlich unter Heute");
   const ret = d.tasks.find((t) => t.key === `return-${returnLater.id}`);
   assert.equal(ret?.group, "TODAY");
-  assert.equal(d.counts.returnsToday, 1 + (overdue.endAt >= start ? 1 : 0), "Rückgaben heute: geplante plus heute überfällig gewordene");
+  assert.equal(d.counts.returnsToday, 1 + (overdue.endAt! >= start ? 1 : 0), "Rückgaben heute: geplante plus heute überfällig gewordene");
   assert.equal(d.tasks.find((t) => t.key === `pickup-stale-${stale.id}`)?.group, "NOTE");
   assert.ok(!k.includes(`pickup-${soon.id}`), "Horizont „heute“ zeigt kein „bald“");
   assert.equal(d.groups.SOON.length, 0);

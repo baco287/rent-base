@@ -76,7 +76,8 @@ const itemSchema = z.object({
   taxRate: z.string().trim().min(1, "Bitte einen Steuersatz wählen."),
 });
 const text = (max: number) => z.string().trim().max(max).optional();
-const customerSchema = z.object({ type: z.enum(["PRIVATE", "COMPANY"]), number: text(40), companyName: text(200), firstName: text(100), lastName: text(100), street: text(200), zip: text(20), city: text(100), country: z.string().trim().max(2).optional(), email: text(320) }).partial();
+// Befehl 29: Schadennummer und Geschädigter nur bei Unfallersatz-Rechnungen (der Editor sendet sie nur dort)
+const customerSchema = z.object({ type: z.enum(["PRIVATE", "COMPANY"]), number: text(40), companyName: text(200), firstName: text(100), lastName: text(100), street: text(200), zip: text(20), city: text(100), country: z.string().trim().max(2).optional(), email: text(320), claimNumber: text(100), insuredName: text(200) }).partial();
 const companySchema = z.object({ name: text(200), legalForm: text(60), street: text(200), zip: text(20), city: text(100), country: z.string().trim().max(2).optional(), email: text(320), phone: text(60), vatId: text(30), taxNumber: text(30), bankName: text(100), iban: text(40), bic: text(20), invoiceFooter: text(1000) }).partial();
 const draftSchema = z.object({
   items: z.array(itemSchema).min(1, "Eine Rechnung braucht mindestens eine Position."),
@@ -98,6 +99,7 @@ export async function saveInvoiceDraftAction(bookingId: string | null, invoiceId
   const parsed = draftSchema.safeParse(payload);
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   const d = parsed.data;
+  if (invoice.kind !== "ACCIDENT_REPLACEMENT" && d.customer) { delete d.customer.claimNumber; delete d.customer.insuredName; }
   const start = d.servicePeriodStart ? parseLocalDateTime(d.servicePeriodStart) : null;
   const end = d.servicePeriodEnd ? parseLocalDateTime(d.servicePeriodEnd) : null;
   if ((d.servicePeriodStart && !start) || (d.servicePeriodEnd && !end)) return { error: "Bitte einen gültigen Leistungszeitraum angeben." };
@@ -122,8 +124,11 @@ export async function discardInvoiceDraftAction(bookingId: string | null, invoic
   }
   refresh(bookingId);
   if (caseId) revalidatePath(`/schaeden/${caseId}`);
+  // Befehl 29: Unfallersatz-Entwurf gelöscht – zurück in die Abrechnung der Fallakte
+  const accidentCase = invoice.kind === "ACCIDENT_REPLACEMENT" && invoice.bookingId ? await db.accidentReplacementCase.findFirst({ where: { tenantId: tenant.id, bookingId: invoice.bookingId }, select: { id: true } }) : null;
+  if (accidentCase) revalidatePath(`/unfallersatz/${accidentCase.id}`);
   // Schadenabrechnung gelöscht: zurück zur Schadenakte, Mietrechnung gelöscht: zurück zur Buchung
-  redirect(deleted ? (caseId ? `/schaeden/${caseId}` : bookingId ? `/buchungen/${bookingId}` : "/rechnungen") : base(bookingId, key));
+  redirect(deleted ? (accidentCase ? `/unfallersatz/${accidentCase.id}?tab=abrechnung` : caseId ? `/schaeden/${caseId}` : bookingId ? `/buchungen/${bookingId}` : "/rechnungen") : base(bookingId, key));
 }
 
 /** Abschluss: Server prüft alles erneut, vergibt bei Fassung 1 die Nummer, versiegelt die Fassung. Danach PDF und E-Mail als Nachbearbeitung, die nie werfen. */
@@ -150,6 +155,7 @@ export async function finalizeInvoiceAction(bookingId: string | null, invoiceId:
   await runInvoiceFollowUp(tenant.id, version.id, actor.id);
   refresh(bookingId);
   if (caseId) revalidatePath(`/schaeden/${caseId}`);
+  if (invoice.kind === "ACCIDENT_REPLACEMENT") revalidatePath("/unfallersatz", "layout");
   redirect(withParam(base(bookingId, key), "abgeschlossen", String(version.versionNo)));
 }
 

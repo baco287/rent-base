@@ -25,6 +25,8 @@ export async function DocumentsPanel({ tenantId, bookingId, role, invoiceId = nu
     listBookingEmails(tenantId, bookingId, 16),
   ]);
   if (!contract || contract.status !== "SIGNED") return null;
+  // Befehl 29 Phase F: Mahnschreiben einer Unfallersatzmiete gehören zur Abrechnung (nur Inhaber und Disposition)
+  const accidentRental = role === "YARD" && (await db.booking.count({ where: { id: bookingId, tenantId, rentalType: "ACCIDENT_REPLACEMENT" } })) > 0;
 
   const storage = storageStatus();
   const mail = mailStatus();
@@ -122,7 +124,7 @@ export async function DocumentsPanel({ tenantId, bookingId, role, invoiceId = nu
           </div>
         )}
         {/* Befehl 23: Mahnschreiben (Zahlungserinnerung, 1. und 2. Mahnung) – unveränderliche Archivfassungen */}
-        {documents.some((d) => d.type === "DUNNING_NOTICE") && (
+        {documents.some((d) => d.type === "DUNNING_NOTICE") && !(role === "YARD" && accidentRental) && (
           <div className="border-t border-line px-4 py-3 flex flex-col gap-1.5">
             <div className="label-xs">Mahnschreiben</div>
             <ul className="text-sm flex flex-col gap-1">

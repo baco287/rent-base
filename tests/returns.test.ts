@@ -154,11 +154,11 @@ test("Vergleich: Kilometer, Mehrkilometer aus dem Vertrags-Snapshot, negative Di
   const handover = await db.handover.findUniqueOrThrow({ where: { id: r.id }, include: { extraCharges: true } });
   const pickup = await db.handover.findUniqueOrThrow({ where: { id: a.pickupId } });
   const booking = await db.booking.findUniqueOrThrow({ where: { id: a.w.bookingId } });
-  const late = buildComparison({ handover, booking, contract, pickup, now: new Date(contract.endAt.getTime() + (2 * 60 + 47) * 60_000) });
+  const late = buildComparison({ handover, booking, contract, pickup, now: new Date(contract.endAt!.getTime() + (2 * 60 + 47) * 60_000) });
   assert.equal(late.time.lateMinutes, 167);
   assert.ok(late.hints.some((h) => h.code === "LATE_RETURN" && h.text.includes("2 Std. 47 Min.")));
   assert.ok(!late.proposals.some((p) => (p.draft.type as string) === "LATE_RETURN"), "keine erfundene Verspätungsgebühr");
-  const onTime = buildComparison({ handover, booking, contract, pickup, now: new Date(contract.endAt.getTime() - 60_000) });
+  const onTime = buildComparison({ handover, booking, contract, pickup, now: new Date(contract.endAt!.getTime() - 60_000) });
   assert.equal(onTime.time.lateMinutes, 0);
 });
 

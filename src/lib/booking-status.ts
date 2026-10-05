@@ -22,6 +22,7 @@ import type { Actor } from "@/lib/audit";
 import type { BookingStage, BookingStatus } from "@/lib/constants";
 import { cancelBooking } from "@/lib/cancellation";
 import { DomainError } from "@/lib/integrity";
+import { assertAccidentCaseOpen } from "@/lib/accident-replacement-events";
 
 export const ALLOWED_TRANSITIONS: Record<BookingStatus, { to: BookingStatus; via: "HANDOVER" | "BUTTON" }[]> = {
   RESERVED: [{ to: "ACTIVE", via: "HANDOVER" }, { to: "CANCELLED", via: "BUTTON" }],
@@ -90,6 +91,8 @@ export async function changeBookingStatus(tenantId: string, bookingId: string, t
 
 async function changeBookingStatusIn(tenantId: string, bookingId: string, target: "ACTIVE" | "RETURNED" | "CANCELLED", opts: { actor?: Actor; reason?: string }): Promise<{ orphanedStorageKeys: string[] } | null> {
   return db.$transaction(async (tx) => {
+    // Befehl 29 Phase E: geschlossener Unfallersatzfall – kein Statuswechsel (vor der Buchungssperre: Fall → Buchung)
+    await assertAccidentCaseOpen(tx, tenantId, bookingId);
     const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Booking" WHERE "id" = ${bookingId} AND "tenantId" = ${tenantId} FOR UPDATE`;
     if (locked.length === 0) throw new DomainError("Buchung nicht gefunden.");
     const booking = await tx.booking.findFirstOrThrow({ where: { id: bookingId, tenantId } });

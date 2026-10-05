@@ -21,7 +21,8 @@ import { recordAudit, type Actor } from "@/lib/audit";
 import { DUNNING_LEVELS, dunningLevelLabel, RECEIVABLE_STATUS, type DunningLevel, type ReceivableStatus } from "@/lib/constants";
 import { financialsFor, type InvoiceFinancials } from "@/lib/counter-documents";
 import { DomainError, contentHash } from "@/lib/integrity";
-import { companySnapshotOf, createDunningFeeInvoiceDraft, finalizeInvoiceIn, type CompanySnapshot, type InvoiceCustomerSnapshot } from "@/lib/invoices";
+import { ACCIDENT_BILLING_WHERE, assertAccidentInvoiceCaseOpen } from "@/lib/accident-replacement-events";
+import { companySnapshotOf, createDunningFeeInvoiceDraft, finalizeInvoiceIn, recipientRoleOf, type CompanySnapshot, type InvoiceCustomerSnapshot } from "@/lib/invoices";
 import { fmtCents, toCents, type Cents } from "@/lib/money";
 import { isUniqueViolation, nextDunningNumber, withNumberRetry } from "@/lib/numbering";
 import { customerSearchWhere } from "@/lib/search";
@@ -264,10 +265,10 @@ export type ReceivableList = { rows: Receivable[]; total: number; page: number; 
  * Forderungsübersicht: serverseitig gesucht, gefiltert, sortiert und seitenweise. Die Suche (Kunde, Kundennummer,
  * Rechnungs- und Buchungsnummer) läuft in der Datenbank; der Status wird aus der zentralen Summierung abgeleitet.
  */
-export async function listReceivables(tenantId: string, opts: { filter?: ReceivableFilter; q?: string; sort?: ReceivableSort; page?: number; pageSize?: number; now?: Date } = {}): Promise<ReceivableList> {
+export async function listReceivables(tenantId: string, opts: { filter?: ReceivableFilter; q?: string; sort?: ReceivableSort; page?: number; pageSize?: number; now?: Date; /** Befehl 29 Phase F: Hof-Sicht ohne Unfallersatz-Abrechnung */ hideAccidentBilling?: boolean } = {}): Promise<ReceivableList> {
   const now = opts.now ?? new Date();
   const q = (opts.q ?? "").trim().slice(0, 100);
-  const where: Prisma.InvoiceWhereInput = { ...mainWhere(tenantId) };
+  const where: Prisma.InvoiceWhereInput = { ...mainWhere(tenantId), ...(opts.hideAccidentBilling ? { NOT: ACCIDENT_BILLING_WHERE } : {}) };
   if (q) where.OR = [{ number: { contains: q, mode: "insensitive" } }, { booking: { number: { contains: q, mode: "insensitive" } } }, { customer: await customerSearchWhere(tenantId, q) }];
   const rows = await db.invoice.findMany({ where, select: mainSelect, orderBy: { finalizedAt: "asc" } });
   const all = await buildReceivables(db, tenantId, rows, now);
@@ -326,8 +327,10 @@ export type DunningPlan = {
 async function recipientOf(client: Client, tenantId: string, row: MainRow): Promise<{ name: string; email: string | null }> {
   const c = row.currentVersion!.customerSnapshot as Partial<InvoiceCustomerSnapshot>;
   let email = typeof c?.email === "string" && c.email.trim() ? c.email.trim() : null;
-  // wie beim Rechnungsversand: Adresse aus der Rechnungskopie, sonst aus dem Mietvertrag (nie aus später geänderten Stammdaten)
-  if (!email && row.contractId) {
+  // wie beim Rechnungsversand: Adresse aus der Rechnungskopie, sonst aus dem Mietvertrag (nie aus später geänderten Stammdaten).
+  // Befehl 29: Ist der Empfänger nicht der Mieter (Versicherung, anderer Empfänger), gibt es keinen Rückgriff auf die
+  // Vertragsadresse – eine Mahnung an die Versicherung darf nie versehentlich den Mieter erreichen.
+  if (!email && row.contractId && recipientRoleOf(c) === "RENTER") {
     const k = await client.rentalContract.findFirst({ where: { id: row.contractId, tenantId }, select: { customerSnapshot: true } });
     const e = (k?.customerSnapshot as { email?: string | null } | null)?.email;
     email = typeof e === "string" && e.trim() ? e.trim() : null;
@@ -399,6 +402,8 @@ export async function createDunningNotice(tenantId: string, actor: Actor, input:
   try {
     return await withNumberRetry(() => db.$transaction(async (tx) => {
       const now = opts.now ?? new Date();
+      // Befehl 29 Phase F: keine neue Mahnung zu einer Rechnung eines geschlossenen Unfallersatzfalls
+      await assertAccidentInvoiceCaseOpen(tx, tenantId, input.invoiceId);
       const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Invoice" WHERE "id" = ${input.invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
       if (locked.length === 0) throw new DomainError("Rechnung nicht gefunden.");
       const dup = await tx.dunningNotice.findUnique({ where: { tenantId_idempotencyKey: { tenantId, idempotencyKey: key } } });

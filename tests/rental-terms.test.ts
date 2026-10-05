@@ -30,7 +30,7 @@ async function publish(w: World, content = TEXT, label?: string) {
 }
 const sign = async (w: World, contractId: string, role: "RENTER" | "EMPLOYEE" = "RENTER") => saveContractSignature(w.tenantId, w.actor, contractId, { role, signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getContractContentHash(w.tenantId, contractId) });
 const codes = async (w: World, id: string) => (await getContractState(w.tenantId, id)).issues.map((i) => `${i.severity}:${i.code}`);
-const baseConditions = (c: { startAt: Date; endAt: Date; deposit: unknown; kmIncludedPerDay: number; extraKmRate: unknown; deductible: unknown }): ConditionsInput => ({ startAt: c.startAt, endAt: c.endAt, deposit: Number(c.deposit), kmIncludedPerDay: c.kmIncludedPerDay, extraKmRate: Number(c.extraKmRate), deductible: Number(c.deductible), fuelPolicy: "FULL_TO_FULL", pickupLocation: "Hof" });
+const baseConditions = (c: { startAt: Date; endAt: Date | null; deposit: unknown; kmIncludedPerDay: number; extraKmRate: unknown; deductible: unknown }): ConditionsInput => ({ startAt: c.startAt, endAt: c.endAt, deposit: Number(c.deposit), kmIncludedPerDay: c.kmIncludedPerDay, extraKmRate: Number(c.extraKmRate), deductible: Number(c.deductible), fuelPolicy: "FULL_TO_FULL", pickupLocation: "Hof" });
 const driver = (over: Partial<DriverInput> = {}): DriverInput => ({ firstName: "Max", lastName: "Zusatz", birthDate: new Date("1990-05-01"), street: "Hafen 3", zip: "28217", city: "Bremen", country: "DE", licenseNumber: "Z1", licenseClass: "B", licenseIssuedAt: new Date("2010-06-01"), licenseValidUntil: new Date("2033-06-01"), licenseCountry: "DE", ...over });
 
 async function financialSnapshot(tenantId: string) {

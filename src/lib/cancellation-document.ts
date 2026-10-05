@@ -31,7 +31,10 @@ export function buildCancellationDocument(s: CancellationSnapshot, hash: string)
   const c = s.company;
   const f = s.finances;
   const finances: CancellationDocumentData["finances"] = [
-    { label: f.agreedSource === "CONTRACT" ? "Vereinbarter Mietpreis (laut Mietvertrag)" : "Voraussichtlicher Mietpreis (ohne Vertrag)", value: fmtCents(f.agreedCents) },
+    // Befehl 29 Phase E: Unfallersatz – abgerechnet wird nach tatsächlicher Mietdauer ab Übergabe; vor der Übergabe gibt es keinen Mietpreis
+    f.agreedSource === "ACCIDENT"
+      ? { label: "Mietpreis", value: "kein Mietpreis im Voraus (Unfallersatz, Abrechnung nach tatsächlicher Mietdauer ab Übergabe; nicht übergeben)" }
+      : { label: f.agreedSource === "CONTRACT" ? "Vereinbarter Mietpreis (laut Mietvertrag)" : "Voraussichtlicher Mietpreis (ohne Vertrag)", value: fmtCents(f.agreedCents) },
     { label: "Geleistete Mietvorauszahlung", value: fmtCents(f.prepaidCents) },
   ];
   if (f.fee) {
@@ -71,7 +74,7 @@ export function buildCancellationDocument(s: CancellationSnapshot, hash: string)
     },
     customer: { name: s.customer.name, number: s.customer.number, addressLines: s.customer.addressLines },
     vehicle: `${s.vehicle.label}${s.vehicle.plate ? ` (${s.vehicle.plate})` : ""}`,
-    period: `${fmtDateTime(new Date(s.period.startAt))} bis ${fmtDateTime(new Date(s.period.endAt))}`,
+    period: `${fmtDateTime(new Date(s.period.startAt))} bis ${s.period.endAt ? fmtDateTime(new Date(s.period.endAt)) : "offen (bis zur Rückgabe)"}`,
     contract: s.contract ? `${s.contract.number}${s.contract.signed ? " (unterschrieben, unverändert archiviert)" : ""}` : null,
     reason: s.reason,
     cancelledByName: s.cancelledByName,

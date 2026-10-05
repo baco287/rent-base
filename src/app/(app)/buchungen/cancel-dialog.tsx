@@ -111,7 +111,7 @@ export function CancelBookingDialog({ action, preview, view }: { action: (prev: 
 
         <Section title="Finanzen">
           <div className="rounded-md bg-panel-2 p-3 text-sm">
-            <Row label={v.finances.agreedSource === "CONTRACT" ? "Vereinbarter Mietpreis (Vertrag)" : "Voraussichtlicher Mietpreis"} value={v.finances.agreed} />
+            <Row label={v.finances.agreedSource === "CONTRACT" ? "Vereinbarter Mietpreis (Vertrag)" : v.finances.agreedSource === "ACCIDENT" ? "Mietpreis" : "Voraussichtlicher Mietpreis"} value={v.finances.agreedSource === "ACCIDENT" ? "kein Mietpreis im Voraus (Unfallersatz, nicht übergeben)" : v.finances.agreed} />
             <Row label="Bereits geleistete Mietzahlungen" value={v.finances.prepaid} strong={v.finances.prepaidCents > 0} />
             {v.finances.invoices.map((i) => <Row key={i.label} label={i.label} value={`${i.gross} · offen ${i.open}`} />)}
             {v.finances.invoices.length > 0 && <Row label="Offene Forderung" value={v.finances.openReceivable} />}

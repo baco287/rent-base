@@ -11,7 +11,7 @@ import { fmtCents } from "@/lib/money";
 import { rentalPaymentSummary } from "@/lib/rental-payments";
 import { RentalPaymentStatusChip } from "./panels";
 
-export async function MoneyOverview({ tenantId, bookingId, role }: { tenantId: string; bookingId: string; role: string }) {
+export async function MoneyOverview({ tenantId, bookingId, role, accident = false }: { tenantId: string; bookingId: string; role: string; /** Befehl 29: Unfallersatz – kein Mietpreis im Voraus, Abrechnung über die Unfallersatz-Rechnung */ accident?: boolean }) {
   const [rent, dep] = await Promise.all([rentalPaymentSummary(tenantId, bookingId), depositView(tenantId, bookingId)]);
   const canRecord = role !== "YARD";
   // Vereinbart: Kautionszeile bzw. abgeschlossener Vertrag; davor der Kautionsbetrag der Buchung (nur „vereinbart“, nie „erhalten“)
@@ -27,9 +27,11 @@ export async function MoneyOverview({ tenantId, bookingId, role }: { tenantId: s
     <Card title="Miete und Kaution" right={<span className="text-xs text-ink-3">getrennt geführt – keine automatische Verrechnung</span>}>
       <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
         <section className="flex flex-col gap-2" aria-label="Miete">
-          <div className="flex items-center gap-2"><span className="font-semibold text-sm">Miete</span>{rent.bookingStatus === "CANCELLED" ? <Chip tone="grey">Storniert</Chip> : <RentalPaymentStatusChip status={rent.status} />}</div>
+          <div className="flex items-center gap-2"><span className="font-semibold text-sm">Miete</span>{rent.bookingStatus === "CANCELLED" ? <Chip tone="grey">Storniert</Chip> : accident ? <Chip tone="info">Unfallersatz</Chip> : <RentalPaymentStatusChip status={rent.status} />}</div>
           {/* Befehl 28: nach dem Storno gibt es keine Mietforderung mehr – Vorauszahlung, Gebühr und Erstattung zeigt die eingefrorene Storno-Abrechnung */}
-          {rent.bookingStatus === "CANCELLED" ? (
+          {accident && rent.bookingStatus !== "CANCELLED" ? (
+            <p className="text-sm text-ink-2">Kein Mietpreis im Voraus. Abgerechnet wird nach tatsächlicher Mietdauer über die Unfallersatz-Rechnung; Zahlungen werden dort erfasst.</p>
+          ) : rent.bookingStatus === "CANCELLED" ? (
             <>
               <p className="text-sm text-ink-2">Keine Mietforderung mehr. Vorauszahlung, Stornogebühr und Erstattung stehen in der Storno-Abrechnung.</p>
               <div><Link href="#storno" className="btn !py-1.5 text-xs">Zur Storno-Abrechnung</Link></div>

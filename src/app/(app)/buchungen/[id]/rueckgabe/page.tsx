@@ -43,6 +43,8 @@ import {
   updateDamageAction,
 } from "./actions";
 import { ChargesEditor, CompareDamages, ComparePhotos, ReturnSummary } from "./return-parts";
+import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed } from "@/lib/accident-replacement-events";
+import { isFeatureEnabled } from "@/lib/features";
 
 export const metadata = { title: "Rückgabe" };
 
@@ -62,11 +64,17 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
   });
   if (!b) notFound();
   const stage = bookingStage(b, b.contract);
+  // Befehl 29 Phase E: geschlossener Unfallersatzfall – die Rückgabe ist serverseitig gesperrt; hier deutlich sagen, warum
+  const caseClosed = b.rentalType === "ACCIDENT_REPLACEMENT" && (await accidentCaseClosed(db, tenant.id, b.id));
+  // Unfallersatz: abgerechnet wird in der Fallakte (Unfallersatz-Rechnung), nie über die Standard-Mietrechnung
+  const accidentCaseRow = b.rentalType === "ACCIDENT_REPLACEMENT" ? await db.accidentReplacementCase.findFirst({ where: { tenantId: tenant.id, bookingId: b.id }, select: { id: true } }) : null;
+  const caseHref = accidentCaseRow && (await isFeatureEnabled(tenant.id, "ACCIDENT_REPLACEMENT")) ? `/unfallersatz/${accidentCaseRow.id}` : null;
+  const closedNotice = caseClosed ? <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm font-medium">{ACCIDENT_CASE_CLOSED_MESSAGE} Übergabe und Rückgabe sind gesperrt, bis der Fall in der Fallakte wieder geöffnet wird.</p> : null;
   const pickup = b.handovers.find((h) => h.type === "PICKUP" && h.status === "FINALIZED");
   const existing = b.handovers.find((h) => h.type === "RETURN");
 
   if (!existing) {
-    const canStart = stage === "ACTIVE" && !!pickup && b.contract?.status === "SIGNED";
+    const canStart = stage === "ACTIVE" && !!pickup && b.contract?.status === "SIGNED" && !caseClosed;
     // Befehl 20.6: vereinbarte kontaktlose Rückgabe – Kontrolle erst nach Kundenmeldung (oder mit dokumentierter Ausnahme)
     const kd = canStart ? (await keyDropForBooking(tenant.id, b.id)).keyDrop : null;
     if (kd && (kd.status === "AUTHORIZED" || kd.status === "CUSTOMER_CONFIRMED")) {
@@ -78,6 +86,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
             <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
           </PageHeader>
           <Content>
+          {closedNotice}
             {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
             <Card className="p-5 max-w-2xl flex flex-col gap-3">
               <div className="flex flex-wrap items-center gap-2"><Plate>{b.vehicle.plate}</Plate><span className="font-medium">{b.vehicle.make} {b.vehicle.model}</span><span className="text-ink-3">von {customerName(b.customer)}</span></div>
@@ -106,6 +115,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
           <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
         </PageHeader>
         <Content>
+          {closedNotice}
           {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
           <Card className="p-5 max-w-2xl flex flex-col gap-3">
             <div className="flex flex-wrap items-center gap-2"><Plate>{b.vehicle.plate}</Plate><span className="font-medium">{b.vehicle.make} {b.vehicle.model}</span><span className="text-ink-3">von {customerName(b.customer)}</span></div>
@@ -113,10 +123,10 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
               <>
                 <p className="rounded-md bg-info-soft text-info px-3.5 py-2.5 font-medium">Der Rückgabezustand wird mit dem dokumentierten Übergabezustand ({pickup!.number}) verglichen.</p>
                 <p className="rounded-md bg-panel-2 px-3.5 py-2.5 text-sm font-medium">Für die Fahrzeugrückgabe am besten auf dem Tablet weitermachen.</p>
-                <p className="text-sm text-ink-2">Geplante Rückgabe: {fmtDateTime(b.endAt)}. Der Assistent führt durch Kilometer, Tank, Fahrzeugzustand im Vorher-/Nachher-Vergleich, Fotos, Checkliste, Zusatzkosten und Unterschrift. Erst das finalisierte Protokoll setzt die Buchung auf „Zurückgegeben“.</p>
+                <p className="text-sm text-ink-2">{b.rentalType === "ACCIDENT_REPLACEMENT" ? <>Mietende offen (bis zur Rückgabe){b.endAt ? `, geplant ${fmtDateTime(b.endAt)} (nur Disposition)` : ""}.</> : <>Geplante Rückgabe: {fmtDateTime(b.endAt)}.</>} Der Assistent führt durch Kilometer, Tank, Fahrzeugzustand im Vorher-/Nachher-Vergleich, Fotos, Checkliste, Zusatzkosten und Unterschrift. Erst das finalisierte Protokoll setzt die Buchung auf „Zurückgegeben“.</p>
                 <form action={startReturnAction.bind(null, b.id)}><button className="btn btn-primary !py-2.5 !px-5">Rückgabe starten</button></form>
               </>
-            ) : stage === "ACTIVE" ? (
+            ) : caseClosed ? null : stage === "ACTIVE" ? (
               <p role="alert" className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 font-medium">Zu dieser Miete gibt es {b.contract?.status !== "SIGNED" ? "keinen abgeschlossenen Mietvertrag" : "kein abgeschlossenes Übergabeprotokoll"}. Ohne dokumentierten Übergabezustand ist keine Rückgabe über den Assistenten möglich.</p>
             ) : (
               <p className="text-sm text-ink-2">Eine Rückgabe ist nur für Fahrzeuge möglich, die unterwegs sind. Diese Buchung steht auf „{stage === "RETURNED" ? "Zurückgegeben" : stage === "CANCELLED" ? "Storniert" : "noch nicht übergeben"}“.</p>
@@ -151,10 +161,20 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
           <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
         </PageHeader>
         <Content>
+          {closedNotice}
           {sp.abgeschlossen === "1" && (
             <div className="rounded-md bg-good-soft text-good px-3.5 py-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
-              <p className="font-medium flex-1">Rückgabe abgeschlossen. Die Rechnung wird anschließend am PC geprüft und finalisiert.</p>
-              {user.role !== "YARD" && <Link href={`/buchungen/${b.id}/rechnung`} className="btn justify-center">Zur Rechnung</Link>}
+              {b.rentalType === "ACCIDENT_REPLACEMENT" ? (
+                <>
+                  <p className="font-medium flex-1">Rückgabe abgeschlossen. Der Unfallersatzfall bleibt offen; abgerechnet wird nach tatsächlicher Mietdauer in der Fallakte.</p>
+                  {user.role !== "YARD" && caseHref && <Link href={`${caseHref}?tab=miete`} className="btn justify-center">Zur Fallakte</Link>}
+                </>
+              ) : (
+                <>
+                  <p className="font-medium flex-1">Rückgabe abgeschlossen. Die Rechnung wird anschließend am PC geprüft und finalisiert.</p>
+                  {user.role !== "YARD" && <Link href={`/buchungen/${b.id}/rechnung`} className="btn justify-center">Zur Rechnung</Link>}
+                </>
+              )}
             </div>
           )}
           {sp.abgeschlossen === "1" && <p className="text-xs text-ink-3">Das Protokoll ist versiegelt. {b.vehicle.plate} ist zurück und die Buchung steht auf „Zurückgegeben“.</p>}
@@ -197,6 +217,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
         <Link href={`/buchungen/${b.id}`} className="btn">Zur Buchung</Link>
       </PageHeader>
       <Content className="max-w-6xl">
+        {closedNotice}
         <WizardProgress bookingId={b.id} current={step} reached={reached} steps={RETURN_STEPS} basePath={base} />
         <h2 className="text-lg font-semibold -mb-1">Schritt {step} von 9: {RETURN_STEPS[step - 1]}</h2>
 
@@ -212,9 +233,13 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
                   <dt className="text-ink-3">Mieter</dt><dd className="font-medium">{customerName(b.customer)}</dd>
                   <dt className="text-ink-3">Fahrer</dt><dd>{primaryDriver ? `${primaryDriver.firstName} ${primaryDriver.lastName}` : "–"}</dd>
                   <dt className="text-ink-3">Abholung tatsächlich</dt><dd className="font-mono tnum">{fmtDateTime(b.actualPickupAt ?? pickup?.finalizedAt)}</dd>
-                  <dt className="text-ink-3">Geplante Rückgabe</dt><dd className="font-mono tnum">{fmtDateTime(b.endAt)}</dd>
+                  {b.rentalType === "ACCIDENT_REPLACEMENT" ? (
+                    <><dt className="text-ink-3">Mietende</dt><dd>offen (bis zur Rückgabe){b.endAt ? <span className="block text-xs text-ink-3">geplant {fmtDateTime(b.endAt)} – nur Disposition</span> : null}</dd></>
+                  ) : (
+                    <><dt className="text-ink-3">Geplante Rückgabe</dt><dd className="font-mono tnum">{fmtDateTime(b.endAt)}</dd></>
+                  )}
                   <dt className="text-ink-3">{isKeyDrop ? "Abgabe laut Kunde" : "Aktuelle Rückgabezeit"}</dt><dd className="font-mono tnum">{fmtDateTime(cmp?.time.actualEnd ?? new Date())}{late && <span className="ml-2 chip bg-amber-soft text-amber">{late} später</span>}</dd>
-                  <dt className="text-ink-3">Kaution</dt><dd className="font-mono tnum">{fmtEur(cmp?.contract.deposit ?? Number(b.contract?.deposit ?? 0))}</dd>
+                  <dt className="text-ink-3">Kaution</dt><dd className="font-mono tnum">{b.rentalType === "ACCIDENT_REPLACEMENT" && !((cmp?.contract.deposit ?? Number(b.contract?.deposit ?? 0)) > 0) ? "keine" : fmtEur(cmp?.contract.deposit ?? Number(b.contract?.deposit ?? 0))}</dd>
                   <dt className="text-ink-3">Selbstbeteiligung</dt><dd className="font-mono tnum">{fmtEur(cmp?.contract.deductible ?? Number(b.contract?.deductible ?? 0))}</dd>
                   <dt className="text-ink-3">Tankregelung</dt><dd>{cmp?.contract.fuelPolicyLabel}{cmp?.contract.fuelPolicy === "OTHER" && cmp.contract.fuelPolicyNote ? `: ${cmp.contract.fuelPolicyNote}` : ""}</dd>
                 </dl>
@@ -281,7 +306,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
                 </div>
                 {cmp && (
                   <div className="card p-3.5 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
-                    <div><div className="label-xs">Geplant</div><div className="font-mono tnum">{fmtDateTime(cmp.time.plannedEnd)}</div></div>
+                    <div><div className="label-xs">Geplant</div><div className="font-mono tnum">{cmp.time.plannedEnd ? fmtDateTime(cmp.time.plannedEnd) : "offen (Unfallersatz)"}</div></div>
                     <div><div className="label-xs">Tatsächlich</div><div className="font-mono tnum">{fmtDateTime(cmp.time.actualEnd)}</div></div>
                     <div><div className="label-xs">Verspätung</div><div className={late ? "text-bad font-semibold" : ""}>{late ?? "keine"}</div></div>
                     <p className="sm:col-span-3 text-xs text-ink-3">Mehrkilometer sind zunächst ein Vorschlag und werden in Schritt 7 bestätigt. Eine Verspätungsgebühr ist im Vertrag nicht geregelt und wird nicht automatisch berechnet.</p>

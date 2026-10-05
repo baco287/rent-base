@@ -221,15 +221,111 @@ test("Control Center: Plattform-Aktionen prüfen requirePlatform mit Berechtigun
   const gated: [string, string][] = [
     ["src/app/(app)/behoerden", "AUTHORITIES"], ["src/app/(app)/schaeden", "DAMAGE_CASES"], ["src/app/(app)/fahrzeuge/wartung", "MAINTENANCE"],
     ["src/app/(app)/auszahlungen", "PAYOUTS"], ["src/app/(app)/einstellungen/e-mail", "TENANT_SMTP"], ["src/app/(app)/kunden/import", "CUSTOMER_IMPORT"],
+    ["src/app/(app)/unfallersatz", "ACCIDENT_REPLACEMENT"],
   ];
   for (const [dir, key] of gated) assert.match(readFileSync(path.join(process.cwd(), dir, "layout.tsx"), "utf8"), new RegExp(`requireFeature\\("${key}"\\)`), `${dir}: Layout ohne requireFeature`);
-  for (const [file, key] of [["src/app/(app)/behoerden/actions.ts", "AUTHORITIES"], ["src/app/(app)/schaeden/[id]/actions.ts", "DAMAGE_CASES"], ["src/app/(app)/fahrzeuge/wartung/actions.ts", "MAINTENANCE"], ["src/app/(app)/auszahlungen/actions.ts", "PAYOUTS"], ["src/app/(app)/einstellungen/e-mail/actions.ts", "TENANT_SMTP"], ["src/app/(app)/buchungen/[id]/key-drop-actions.ts", "KEY_DROP"]] as const) {
+  for (const [file, key] of [["src/app/(app)/behoerden/actions.ts", "AUTHORITIES"], ["src/app/(app)/schaeden/[id]/actions.ts", "DAMAGE_CASES"], ["src/app/(app)/fahrzeuge/wartung/actions.ts", "MAINTENANCE"], ["src/app/(app)/auszahlungen/actions.ts", "PAYOUTS"], ["src/app/(app)/einstellungen/e-mail/actions.ts", "TENANT_SMTP"], ["src/app/(app)/buchungen/[id]/key-drop-actions.ts", "KEY_DROP"], ["src/app/(app)/unfallersatz/neu/actions.ts", "ACCIDENT_REPLACEMENT"], ["src/app/(app)/unfallersatz/[id]/actions.ts", "ACCIDENT_REPLACEMENT"]] as const) {
     const src = readFileSync(path.join(process.cwd(), file), "utf8");
     const roleCalls = (src.match(/^[ \t]+.*await requireRole\(/gm) ?? []).length; // Zeilen, nicht Aufrufe (ctx mit Ternär zählt einmal)
     const featureCalls = (src.match(new RegExp(`await requireFeature\\("${key}"\\)`, "g")) ?? []).length;
     assert.equal(featureCalls, roleCalls, `${file}: jede Rollenprüfung wird von requireFeature("${key}") begleitet`);
   }
-  for (const [file, key] of [["src/app/api/authority-uploads/route.ts", "AUTHORITIES"], ["src/app/api/damage-cases/[id]/documents/route.ts", "DAMAGE_CASES"], ["src/app/api/maintenance/[id]/documents/route.ts", "MAINTENANCE"], ["src/app/api/payouts/[id]/documents/route.ts", "PAYOUTS"], ["src/app/api/kunden/import/commit/route.ts", "CUSTOMER_IMPORT"]] as const) {
+  for (const [file, key] of [["src/app/api/authority-uploads/route.ts", "AUTHORITIES"], ["src/app/api/damage-cases/[id]/documents/route.ts", "DAMAGE_CASES"], ["src/app/api/maintenance/[id]/documents/route.ts", "MAINTENANCE"], ["src/app/api/payouts/[id]/documents/route.ts", "PAYOUTS"], ["src/app/api/kunden/import/commit/route.ts", "CUSTOMER_IMPORT"], ["src/app/api/accident-cases/[id]/documents/route.ts", "ACCIDENT_REPLACEMENT"]] as const) {
     assert.match(readFileSync(path.join(process.cwd(), file), "utf8"), new RegExp(`featureForApi\\(session, "${key}"\\)`), `${file}: API-Route ohne Feature-Prüfung`);
   }
+});
+
+/** Befehl 29 Phase C: Unfallersatz-Wizard – Anlage nur OWNER/DISPO mit freigeschaltetem Modul, jede Aktion serverseitig; Standardbuchung unberührt. */
+test("Phase C: Unfallersatz-Anlage nur Inhaber und Disposition mit Freischaltung, jede Aktion serverseitig, keine technischen Fehler an den Benutzer", () => {
+  const actions = readFileSync(path.join(process.cwd(), "src/app/(app)/unfallersatz/neu/actions.ts"), "utf8");
+  assert.match(actions, /^"use server";/);
+  assert.ok(!/"YARD"/.test(actions), "Unfallersatz-Aktionen dürfen YARD nicht zulassen");
+  const names = (actions.match(/export async function (\w+)/g) ?? []).map((m) => m.replace("export async function ", ""));
+  assert.deepEqual(names.sort(), ["accidentAvailabilityAction", "createAccidentCaseAction"]);
+  for (const fn of names) {
+    const body = new RegExp(`export async function ${fn}[\\s\\S]*?\\n}`).exec(actions)?.[0] ?? "";
+    // Rolle und Freischaltung sind die ersten beiden Anweisungen – vor jedem Lesen der Eingaben
+    assert.match(body, /\{\r?\n  const \{ tenant(, user)? \} = await requireRole\("DISPO"\);\r?\n  await requireFeature\("ACCIDENT_REPLACEMENT"\);/, `${fn}: zuerst Rolle (OWNER/DISPO) und Freischaltung`);
+  }
+  // verbindliche Prüfung auf dem Server; Mandant aus der Sitzung, nie aus dem Formular
+  assert.match(actions, /parseAccidentWizard\(data\)/);
+  assert.match(actions, /createAccidentCase\(tenant\.id, /);
+  assert.ok(!/formData\.get\("tenantId"\)|data\.tenantId/.test(actions), "Mandant nie aus dem Formular");
+  assert.match(actions, /where: \{ tenantId: tenant\.id, status: \{ not: "INACTIVE" \} \}/, "Verfügbarkeit nur eigene Fahrzeuge");
+  // unbekannte Fehler: allgemeine Meldung, im Log nur die Fehlerart (keine Eingaben, keine Meldung)
+  assert.match(actions, /if \(e instanceof DomainError\) return \{ error: e\.message/);
+  assert.match(actions, /return \{ error: "Der Unfallersatzfall konnte nicht angelegt werden\. Bitte erneut versuchen\.", step: 6 \}/);
+  assert.match(actions, /console\.error\("\[unfallersatz\] Anlage fehlgeschlagen", \{ fehler: e instanceof Error \? e\.name : "unbekannt" \}\)/);
+  // Seite: nur OWNER/DISPO; Modul-Layout prüft die Freischaltung; Fachlogik prüft sie zusätzlich in der Transaktion
+  // jede Seite des Moduls prüft die Freischaltung auch selbst (eine Teil-Navigation kann das Layout überspringen)
+  const uePages: string[] = [];
+  const walkUe = (dir: string) => { for (const f of readdirSync(dir)) { const p = path.join(dir, f); if (statSync(p).isDirectory()) walkUe(p); else if (f === "page.tsx") uePages.push(p); } };
+  walkUe(path.join(process.cwd(), "src", "app", "(app)", "unfallersatz"));
+  assert.ok(uePages.length >= 1);
+  for (const p of uePages) assert.match(readFileSync(p, "utf8"), /await requireFeature\("ACCIDENT_REPLACEMENT"\)/, `${path.relative(process.cwd(), p)}: ohne requireFeature`);
+  assert.match(readFileSync(path.join(process.cwd(), "src/app/(app)/unfallersatz/neu/page.tsx"), "utf8"), /const \{ tenant \} = await requireRole\("DISPO"\);\r?\n  await requireFeature\("ACCIDENT_REPLACEMENT"\);/);
+  assert.match(readFileSync(path.join(process.cwd(), "src/lib/accident-replacement.ts"), "utf8"), /await assertFeature\(tenantId, "ACCIDENT_REPLACEMENT", tx\)/);
+  // Formular: POST über die Server-Aktion (auch vor dem Laden des Skripts nie als GET mit Daten in der Adresse)
+  assert.match(readFileSync(path.join(process.cwd(), "src/app/(app)/unfallersatz/neu/wizard.tsx"), "utf8"), /<form ref=\{formRef\} action=\{formAction\}/);
+  // Standardbuchung: Formular und Anlage ohne Unfallersatz-Bezug; Mietart-Auswahl nur bei Freischaltung
+  const bookingActions = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/actions.ts"), "utf8");
+  const createBody = /export async function createBookingAction[\s\S]*?\n}/.exec(bookingActions)?.[0] ?? "";
+  assert.ok(createBody.length > 500 && !/ACCIDENT|accident|Unfallersatz|rentalType/.test(createBody), "Standardbuchung: Anlage unverändert, Mietart bleibt Standard");
+  assert.ok(!/ACCIDENT|accident|Unfallersatz/.test(readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/booking-form.tsx"), "utf8")));
+  const newBooking = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/neu/page.tsx"), "utf8");
+  assert.match(newBooking, /const accidentEnabled = await isFeatureEnabled\(tenant\.id, "ACCIDENT_REPLACEMENT"\);/);
+  assert.match(newBooking, /\{accidentEnabled && <RentalTypeSwitch current="STANDARD"/);
+});
+
+/** Befehl 29 Phase D: Fallakte – Verwaltung nur OWNER/DISPO mit Freischaltung, Hof bekommt serverseitig nur die operative Sicht. */
+test("Phase D: Fallakten-Aktionen nur Inhaber und Disposition, Hofsicht serverseitig reduziert, Adressbuch nur bewusst", () => {
+  const actions = readFileSync(path.join(process.cwd(), "src/app/(app)/unfallersatz/[id]/actions.ts"), "utf8");
+  assert.match(actions, /^"use server";/);
+  assert.ok(!/"YARD"/.test(actions), "Fallakten-Aktionen dürfen YARD nicht zulassen");
+  // ctx: zuerst Rolle (OWNER/DISPO) und Freischaltung, dann der Fall des eigenen Mandanten
+  assert.match(actions, /async function ctx\(caseId: string\) \{\r?\n  const \{ tenant, user \} = await requireRole\("DISPO"\);\r?\n  await requireFeature\("ACCIDENT_REPLACEMENT"\);\r?\n  const c = await db\.accidentReplacementCase\.findFirst\(\{ where: \{ id: caseId, tenantId: tenant\.id \}/);
+  const names = (actions.match(/export async function (\w+)/g) ?? []).map((m) => m.replace("export async function ", ""));
+  assert.ok(names.length >= 13, `Fallakten-Aktionen: ${names.length}`);
+  for (const fn of names) {
+    const body = new RegExp(`export async function ${fn}[\\s\\S]*?\\n}`).exec(actions)?.[0] ?? "";
+    assert.match(body, /\{\r?\n  const x = await ctx\(caseId\);\r?\n  if \(!x\) return/, `${fn}: zuerst ctx (Rolle, Freischaltung, Mandant)`);
+  }
+  // Wiedervorlage gehört zum Fall der Akte (nicht nur zum Mandanten)
+  assert.match(actions, /completeFollowUp\(x\.tenantId, followUpId, x\.actor, .*\{ caseId: x\.c\.id \}\)/);
+  assert.match(actions, /cancelFollowUp\(x\.tenantId, followUpId, x\.actor, .*\{ caseId: x\.c\.id \}\)/);
+  // Seite: Freischaltung, Sicht nach Rolle, fremder/fehlender Fall = 404; kaufmännische Bereiche nur in der Vollsicht
+  const page = readFileSync(path.join(process.cwd(), "src/app/(app)/unfallersatz/[id]/page.tsx"), "utf8");
+  assert.match(page, /const \{ tenant, user \} = await requireFeature\("ACCIDENT_REPLACEMENT"\);/);
+  assert.match(page, /const access = caseFileAccess\(user\.role\);/);
+  assert.match(page, /if \(!h\) notFound\(\);/);
+  assert.match(page, /tab === "schadenfall" && full &&/);
+  assert.match(page, /tab === "abrechnung" && full &&/);
+  const lib = readFileSync(path.join(process.cwd(), "src/lib/accident-case-file.ts"), "utf8");
+  assert.match(lib, /caseFileAccess = \(role: string\): CaseFileAccess => \(roleAllows\(role, \["DISPO"\]\) \? "FULL" : "OPERATIONAL"\)/, "Vollsicht nur OWNER/DISPO; Supportmodus läuft als YARD");
+  assert.match(lib, /const full = access === "FULL"\r?\n    \? await db\.accidentReplacementCase\.findUniqueOrThrow/, "Versicherungsangaben nur in der Vollsicht abfragen");
+  // Adressbuch lernt beim Bearbeiten nur auf ausdrücklichen Wunsch und nur die bearbeitete Art
+  const ar = readFileSync(path.join(process.cwd(), "src/lib/accident-replacement.ts"), "utf8");
+  const learnCalls = ar.match(/await learnPartners\(tx, tenantId, [^)]*\)/g) ?? [];
+  assert.deepEqual(learnCalls.sort(), [
+    'await learnPartners(tx, tenantId, ["INSURER", "WORKSHOP", "LAWYER"], created)',
+    'await learnPartners(tx, tenantId, ["INSURER"], row)',
+    'await learnPartners(tx, tenantId, ["LAWYER"], row)',
+    'await learnPartners(tx, tenantId, ["WORKSHOP"], row)',
+    // reine Adressbuch-Übernahme ohne Änderung am Fall (ebenfalls nur auf Wunsch)
+    'await learnPartners(tx, tenantId, ["INSURER"], c)',
+    'await learnPartners(tx, tenantId, ["WORKSHOP"], c)',
+    'await learnPartners(tx, tenantId, ["LAWYER"], c)',
+  ].sort());
+  for (const kind of ["INSURER", "WORKSHOP", "LAWYER"]) assert.ok(ar.includes(`.addressBook) { await learnPartners(tx, tenantId, ["${kind}"], c);`), `${kind}: Übernahme ohne Änderung nur auf Wunsch`);
+  assert.match(ar, /if \(input\.addressBook\) await learnPartners\(tx, tenantId, \["INSURER"\], row\)/);
+  assert.match(ar, /if \(opts\.addressBook\) await learnPartners\(tx, tenantId, \["WORKSHOP"\], row\)/);
+  assert.match(ar, /if \(opts\.addressBook\) await learnPartners\(tx, tenantId, \["LAWYER"\], row\)/);
+  // Buchungsseite: Unfallersatz ohne Sackgassen (Mietrechnung, Nachtrag-Verlängerung) und mit Link zur Fallakte; Phase E: der
+  // Vertragsassistent ist für Unfallersatz freigegeben, nur ein geschlossener Fall sperrt ihn
+  const booking = readFileSync(path.join(process.cwd(), "src/app/(app)/buchungen/[id]/page.tsx"), "utf8");
+  assert.match(booking, /\{caseHref && <Link href=\{caseHref\} className="btn btn-primary">Unfallersatzfall öffnen<\/Link>\}/);
+  assert.match(booking, /returnDone && !invoice && user\.role !== "YARD" && !accident && <Link href=\{`\/buchungen\/\$\{b\.id\}\/rechnung`\}/);
+  assert.match(booking, /!agreed && !accident && <form action=\{createAmendmentAction/);
+  assert.match(booking, /stage === "CONTRACT_DRAFT" && user\.role !== "YARD" && !caseLocked && <Link/);
+  assert.ok(!booking.includes("Vertragsabschluss für Unfallersatz folgt"), "kein Hinweis „folgt“ mehr");
 });

@@ -17,6 +17,7 @@ import { financialsFor, invoiceFinancials, type InvoiceFinancials } from "@/lib/
 import { domainFromDb } from "@/lib/db-errors";
 import { computeDepositFinancials, balanceOf, securityDepositFinancials, type DepositFinancials } from "@/lib/deposits";
 import { DomainError, contentHash } from "@/lib/integrity";
+import { assertAccidentInvoiceCaseOpen } from "@/lib/accident-replacement-events";
 import { fmtCents, toCents, type Cents } from "@/lib/money";
 import { isUniqueViolation, nextPayoutNumber, withNumberRetry } from "@/lib/numbering";
 import type { PayoutSourceSnapshot } from "@/lib/payout-view";
@@ -251,6 +252,8 @@ export async function previewPayout(tenantId: string, ref: SourceRef, input: Pay
 
 async function lockSource(tx: Tx, tenantId: string, ref: SourceRef): Promise<PayoutSource> {
   if (ref.sourceType === "INVOICE_REFUND") {
+    // Befehl 29 Phase F: Erstattung eines Guthabens aus einer Rechnung eines geschlossenen Unfallersatzfalls gesperrt
+    await assertAccidentInvoiceCaseOpen(tx, tenantId, ref.invoiceId);
     const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Invoice" WHERE "id" = ${ref.invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
     if (locked.length === 0) throw new DomainError("Rechnung nicht gefunden.");
   } else if (ref.sourceType === "RENTAL_PREPAYMENT_REFUND") {

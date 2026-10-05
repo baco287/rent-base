@@ -11,13 +11,13 @@ import { toDateTimeInputValue } from "@/lib/time";
 import { DiscardEmptyReturnDraftButton, KeyDropAuthorizeForm, KeyDropCancelForm, KeyDropRevokeButton, KeyDropSendButton } from "./key-drop-forms";
 import { returnDraftBlockers } from "@/lib/handovers";
 
-type Props = { tenantId: string; booking: { id: string; status: string; endAt: Date; vehicleId: string }; role: string; supportMode: boolean; returnStarted: boolean };
+type Props = { tenantId: string; booking: { id: string; status: string; endAt: Date | null; vehicleId: string }; role: string; supportMode: boolean; returnStarted: boolean; /** Befehl 29 Phase E: geschlossener Unfallersatzfall – keine Aktionen */ locked?: boolean };
 
-export async function KeyDropPanel({ tenantId, booking, role, supportMode, returnStarted }: Props) {
+export async function KeyDropPanel({ tenantId, booking, role, supportMode, returnStarted, locked = false }: Props) {
   const tenant = await db.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { keyDropEnabled: true, keyDropSettings: true } });
   const { keyDrop: kd, mails } = await keyDropForBooking(tenantId, booking.id);
   if (!kd && (!tenant.keyDropEnabled || booking.status !== "ACTIVE")) return null;
-  const canManage = role !== "YARD" && !supportMode;
+  const canManage = role !== "YARD" && !supportMode && !locked;
   const settings = keyDropSettingsOf(kd?.settingsSnapshot ?? tenant.keyDropSettings);
   const activeLink = kd?.accesses.find((a) => !a.revokedAt && a.expiresAt > new Date()) ?? null;
   const linkMails = mails.filter((m) => m.template === "KEY_DROP_LINK");
@@ -40,13 +40,13 @@ export async function KeyDropPanel({ tenantId, booking, role, supportMode, retur
               <div className="rounded-md bg-amber-soft text-amber px-3 py-2 flex flex-col gap-2">
                 <p className="font-medium">Für diese Miete wurde bereits eine persönliche Rückgabe begonnen ({returnDraft.number}, am {fmtDateTime(returnDraft.startedAt)} von {returnDraft.employeeName}). Eine kontaktlose Rückgabe kann nur vereinbart werden, solange keine Rückgabe läuft.</p>
                 {draftBlockers.length === 0 ? (
-                  canManage ? <DiscardEmptyReturnDraftButton bookingId={booking.id} handoverId={returnDraft.id} number={returnDraft.number} /> : <p className="text-xs">Der Entwurf ist noch leer. Verwerfen kann ihn Inhaber oder Disposition.</p>
+                  canManage ? <DiscardEmptyReturnDraftButton bookingId={booking.id} handoverId={returnDraft.id} number={returnDraft.number} /> : <p className="text-xs">{locked ? "Der Entwurf ist noch leer. Unfallersatzfall abgeschlossen – Verwerfen erst nach dem Wiederöffnen." : "Der Entwurf ist noch leer. Verwerfen kann ihn Inhaber oder Disposition."}</p>
                 ) : (
                   <p className="text-xs">Der Entwurf enthält bereits Rückgabedaten ({draftBlockers.join(" ")}) und kann nicht verworfen werden. Bitte die Rückgabe persönlich abschließen.</p>
                 )}
               </div>
             )}
-            {canManage && !returnStarted && <KeyDropAuthorizeForm bookingId={booking.id} defaults={{ expectedReturnAt: toDateTimeInputValue(booking.endAt), instructions: settings.defaultInstructions ?? "", label: settings.label }} />}
+            {canManage && !returnStarted && <KeyDropAuthorizeForm bookingId={booking.id} defaults={{ expectedReturnAt: booking.endAt ? toDateTimeInputValue(booking.endAt) : "", instructions: settings.defaultInstructions ?? "", label: settings.label }} />}
             {canManage && <p className="text-xs text-ink-3">{KEY_DROP_LEGAL_HINT}</p>}
           </>
         )}
@@ -78,12 +78,14 @@ export async function KeyDropPanel({ tenantId, booking, role, supportMode, retur
             <KeyDropCancelForm bookingId={booking.id} keyDropId={kd.id} />
           </div>
         )}
-        {kd?.status === "AUTHORIZED" && !canManage && <p className="text-xs text-ink-3">Rückgabe-Mail und Vereinbarung verwaltet die Disposition.</p>}
+        {/* Link widerrufen ist eine Sicherheitsfunktion (z. B. falscher Empfänger) – auch bei geschlossenem Unfallersatzfall */}
+        {kd?.status === "AUTHORIZED" && locked && role !== "YARD" && !supportMode && activeLink && <div><KeyDropRevokeButton bookingId={booking.id} keyDropId={kd.id} /></div>}
+        {kd?.status === "AUTHORIZED" && !canManage && <p className="text-xs text-ink-3">{locked ? "Unfallersatzfall abgeschlossen – Schlüsselbox-Aktionen erst nach dem Wiederöffnen." : "Rückgabe-Mail und Vereinbarung verwaltet die Disposition."}</p>}
 
         {kd?.status === "CUSTOMER_CONFIRMED" && (
           <div className="flex flex-col gap-2 border-t border-line pt-3">
             <p className="rounded-md bg-amber-soft text-amber px-3 py-2 font-medium">Rückgabe gemeldet – Fahrzeugkontrolle ausstehend. Fahrzeug, Kaution, Rechnung und Zusatzkosten bleiben unverändert, bis die Kontrolle abgeschlossen ist.</p>
-            {!supportMode && <div><Link href={`/buchungen/${booking.id}/rueckgabe`} className="btn btn-primary">{kd.inspection ? "Kontrolle fortsetzen" : "Schlüsselbox-Rückgabe prüfen"}</Link></div>}
+            {!supportMode && !locked && <div><Link href={`/buchungen/${booking.id}/rueckgabe`} className="btn btn-primary">{kd.inspection ? "Kontrolle fortsetzen" : "Schlüsselbox-Rückgabe prüfen"}</Link></div>}
           </div>
         )}
         {next && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3 py-2">Achtung: Das Fahrzeug ist ab {fmtDateTime(next.startAt)} für Buchung <Link href={`/buchungen/${next.id}`} className="underline">{next.number}</Link> eingeplant. Die Rückgabeprüfung steht noch aus.</p>}

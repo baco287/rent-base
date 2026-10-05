@@ -127,8 +127,10 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
                         const left = pct(b.startAt);
                         const overdue = isOverdue(occ, now);
                         // Befehl 28: Hauptbalken bis zum vertraglichen Ende (bzw. überfällig bis jetzt), vereinbarte Verlängerung als eigenes Segment
-                        const extension = agreedEnd && agreedEnd > b.endAt && !overdue ? { from: pct(b.endAt), to: pct(agreedEnd) } : null;
-                        const right = extension ? pct(b.endAt) : pct(occupiedUntil(occ, now));
+                        // Befehl 29: offenes Mietende (Unfallersatz) – der Balken läuft bis zum Ende des Dispo-Fensters
+                        const extension = agreedEnd && b.endAt && agreedEnd > b.endAt && !overdue ? { from: pct(b.endAt), to: pct(agreedEnd) } : null;
+                        const right = extension && b.endAt ? pct(b.endAt) : pct(occupiedUntil(occ, now) ?? to);
+                        const endText = b.endAt ? fmtTime(b.endAt) : "offen";
                         const cls = overdue
                           ? "bg-bad-soft text-bad border-bad/50"
                           : b.status === "ACTIVE"
@@ -148,13 +150,13 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
                           )}
                           <Link
                             href={`/buchungen/${b.id}`}
-                            title={`${b.number} · ${customerName(b.customer)} · ${fmtTime(b.startAt)} bis ${fmtTime(b.endAt)}${overdue ? ` · Rückgabe überfällig (geplant ${fmtDateTime(b.endAt)})` : ""}`}
+                            title={`${b.number} · ${customerName(b.customer)} · ${fmtTime(b.startAt)} bis ${endText}${overdue ? ` · Rückgabe überfällig (geplant ${fmtDateTime(b.endAt)})` : ""}`}
                             className={`absolute top-2 h-8 rounded-md border px-2 flex items-center gap-2 font-medium whitespace-nowrap overflow-hidden text-[12px] ${cls}`}
                             style={{ left: `calc(${left}% + 2px)`, width: `calc(${Math.max(right - left, 1.5)}% - 4px)` }}
                           >
                             {overdue && <b className="font-semibold">Rückgabe überfällig</b>}
                             {customerName(b.customer)}
-                            <small className="opacity-80 font-normal">{overdue ? `geplant ${fmtDateTime(agreedEnd && agreedEnd > b.endAt ? agreedEnd : b.endAt)}` : fmtTime(b.startAt)}</small>
+                            <small className="opacity-80 font-normal">{overdue ? `geplant ${fmtDateTime(agreedEnd && b.endAt && agreedEnd > b.endAt ? agreedEnd : b.endAt)}` : b.endAt ? fmtTime(b.startAt) : `${fmtTime(b.startAt)} · Mietende offen`}</small>
                           </Link>
                           </span>
                         );

@@ -6,7 +6,7 @@
 
 import { zonedDayStart } from "@/lib/time";
 import { bookingLabel, invoiceHref } from "@/lib/invoice-links";
-import { invoiceKindWord } from "@/lib/constants";
+import { invoiceKindWord, recipientRoleOf } from "@/lib/constants";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { financialsFor, type InvoiceFinancials } from "@/lib/counter-documents";
@@ -16,6 +16,8 @@ import { toCents, type Cents } from "@/lib/money";
 import { dunningLevelLabel } from "@/lib/constants";
 import { SIGNED_AMENDMENTS_SELECT, effectiveTotalCents } from "@/lib/amendments";
 import { prepaymentBalances } from "@/lib/rental-payments";
+import { accidentTariffsFor } from "@/lib/accident-case-file";
+import { accidentRentState } from "@/lib/accident-pricing";
 
 /**
  * Befehl 27: Ziel eines Zahlungslinks. Zahlung zu einer Rechnung → deren Seite (Buchungsrechnung oder freie Rechnung);
@@ -48,7 +50,7 @@ export type CustomerHeader = {
 export type CustomerOverview = {
   bookingsTotal: number;
   activeRentals: number;
-  lastRental: { id: string; number: string; endAt: Date; actualReturnAt: Date | null; vehicle: string; plate: string } | null;
+  lastRental: { id: string; number: string; endAt: Date | null; actualReturnAt: Date | null; vehicle: string; plate: string } | null;
   nextBooking: { id: string; number: string; startAt: Date; vehicle: string; plate: string } | null;
   /** offene Forderungen aus abgeschlossenen Rechnungen (financialsFor) */
   openReceivablesCents: Cents;
@@ -114,7 +116,7 @@ export async function customerOverview(tenantId: string, customerId: string, cus
     db.booking.count({ where: { tenantId, customerId, status: "ACTIVE" } }),
     db.booking.findFirst({ where: { tenantId, customerId, status: { in: ["ACTIVE", "RETURNED"] } }, orderBy: [{ actualPickupAt: "desc" }, { startAt: "desc" }], select: { id: true, number: true, endAt: true, actualReturnAt: true, vehicle: { select: vehSel } } }),
     db.booking.findFirst({ where: { tenantId, customerId, status: "RESERVED", startAt: { gte: now } }, orderBy: { startAt: "asc" }, select: { id: true, number: true, startAt: true, vehicle: { select: vehSel } } }),
-    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", documentType: "INVOICE", currentVersionId: { not: null }, OR: [{ booking: { customerId } }, { customerId, bookingId: null }] }, select: { id: true, number: true, kind: true, bookingId: true, currentVersion: { select: { grossTotal: true, paymentDueDate: true } } } }),
+    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", documentType: "INVOICE", currentVersionId: { not: null }, OR: [{ booking: { customerId } }, { customerId, bookingId: null }] }, select: { id: true, number: true, kind: true, bookingId: true, currentVersion: { select: { grossTotal: true, paymentDueDate: true, customerSnapshot: true } } } }).then((rows) => rows.filter((r) => recipientRoleOf(r.currentVersion?.customerSnapshot as { recipientRole?: string } | null) === "RENTER")),
     db.securityDeposit.findMany({ where: { tenantId, booking: { customerId } }, select: { id: true, bookingId: true, expectedAmountCents: true, events: { select: { type: true, amountCents: true, status: true } }, booking: { select: { number: true, status: true } } } }),
     db.damageCase.count({ where: { tenantId, status: { not: "CLOSED" }, booking: { customerId } } }),
     db.authorityCase.findMany({ where: { tenantId, driverCustomerId: customerId }, select: { id: true, caseNumber: true, status: true, responseDeadline: true } }),
@@ -151,7 +153,8 @@ export async function customerOverview(tenantId: string, customerId: string, cus
     if (f.payoutRemainingCents > 0) { depositPayoutsOpen++; depositPayoutOpenCents += f.payoutRemainingCents; tasks.push({ key: `depout-${d.id}`, title: `Kautionsauszahlung zu Buchung ${d.booking.number} offen`, detail: `freigegeben, noch nicht ausgezahlt ${fmt(f.payoutRemainingCents)}`, href: `/buchungen/${d.bookingId}#kaution`, tone: "amber" }); }
     if ((d.booking.status === "RETURNED" || d.booking.status === "CANCELLED") && f.remainingCents > 0) { depositsHeld++; tasks.push({ key: `dephold-${d.id}`, title: `Kaution zu Buchung ${d.booking.number} nach Rückgabe noch nicht entschieden`, detail: `${fmt(f.remainingCents)} weder freigegeben noch einbehalten`, href: `/buchungen/${d.bookingId}#kaution`, tone: "info" }); }
   }
-  for (const b of overdueActive) tasks.push({ key: `overdue-${b.id}`, title: `Rückgabe zu Buchung ${b.number} überfällig`, detail: `sollte am ${dateText(b.endAt)} zurück sein`, href: `/buchungen/${b.id}`, tone: "bad" });
+  // endAt ist durch den Filter (endAt < now) gesetzt; Mieten mit offenem Ende (Unfallersatz) sind nie überfällig
+  for (const b of overdueActive) tasks.push({ key: `overdue-${b.id}`, title: `Rückgabe zu Buchung ${b.number} überfällig`, detail: b.endAt ? `sollte am ${dateText(b.endAt)} zurück sein` : "Mietende offen", href: `/buchungen/${b.id}`, tone: "bad" });
   const openAuthority = authority.filter((a) => !["SUBMITTED", "CLOSED", "CANCELLED"].includes(a.status));
   for (const a of openAuthority) tasks.push({ key: `auth-${a.id}`, title: `Behördenvorgang ${a.caseNumber} offen`, detail: a.responseDeadline ? `Antwortfrist ${dateText(a.responseDeadline)}` : "als Fahrer benannt", href: `/behoerden/${a.id}`, tone: a.responseDeadline && a.responseDeadline < now ? "bad" : "info" });
   if (openDamageCases > 0) tasks.push({ key: "damage", title: `${openDamageCases} offene Schadenakte${openDamageCases === 1 ? "" : "n"} zu Vermietungen dieser Person`, detail: "Haftung ist eine Entscheidung in der Akte – keine automatische Zuordnung", href: `/kunden/${customerId}?tab=schaeden`, tone: "grey" });
@@ -181,10 +184,19 @@ export async function customerBookings(tenantId: string, customerId: string, pag
   const skip = (Math.max(1, page) - 1) * pageSize;
   const [total, rows] = await Promise.all([
     db.booking.count({ where }),
-    db.booking.findMany({ where, orderBy: { startAt: "desc" }, skip, take: pageSize, select: { id: true, number: true, status: true, startAt: true, endAt: true, actualPickupAt: true, actualReturnAt: true, vehicle: { select: vehSel }, contract: { select: { number: true, status: true, totalAmount: true, amendments: SIGNED_AMENDMENTS_SELECT } }, invoices: { where: { kind: "RENTAL", documentType: "INVOICE", status: "FINALIZED" }, select: { id: true, number: true, currentVersion: { select: { grossTotal: true } } }, take: 1 } } }),
+    db.booking.findMany({ where, orderBy: { startAt: "desc" }, skip, take: pageSize, select: { id: true, number: true, status: true, rentalType: true, startAt: true, endAt: true, actualPickupAt: true, actualReturnAt: true, vehicle: { select: vehSel }, contract: { select: { number: true, status: true, totalAmount: true, amendments: SIGNED_AMENDMENTS_SELECT } }, invoices: { where: { kind: "RENTAL", documentType: "INVOICE", status: "FINALIZED" }, select: { id: true, number: true, currentVersion: { select: { grossTotal: true } } }, take: 1 } } }),
   ]);
   // Befehl 27: Vertragsbetrag laut wirksamem Vertragsstand (Vertrag + unterschriebene Nachträge), zentral abgeleitet
-  return { rows: rows.map((r) => ({ ...r, contractTotalCents: r.contract?.status === "SIGNED" ? effectiveTotalCents(r.contract.totalAmount, r.contract.amendments) : null })), total, page: Math.max(1, page), pages: Math.max(1, Math.ceil(total / pageSize)) };
+  // Befehl 29 Phase E: Unfallersatz hat keinen Vertragsbetrag (offenes Ende) – stattdessen der Mietwert-Stand wie Fallakte/Liste
+  // (vor der Übergabe keiner, laufend bis jetzt, nach der Rückgabe Endwert); nie „0,00 €“ aus dem Vertrag
+  const accidentTariffs = await accidentTariffsFor(tenantId, rows.filter((r) => r.rentalType === "ACCIDENT_REPLACEMENT").map((r) => r.id));
+  return {
+    rows: rows.map((r) => {
+      const tariff = accidentTariffs.get(r.id);
+      return { ...r, accidentRent: tariff ? accidentRentState(r, tariff) : null, contractTotalCents: r.contract?.status === "SIGNED" && r.rentalType !== "ACCIDENT_REPLACEMENT" ? effectiveTotalCents(r.contract.totalAmount, r.contract.amendments) : null };
+    }),
+    total, page: Math.max(1, page), pages: Math.max(1, Math.ceil(total / pageSize)),
+  };
 }
 
 /** Verträge, in denen die Person als Fahrer oder Zusatzfahrer steht, ohne selbst Mieter zu sein (ContractDriver-Snapshots). */
@@ -198,7 +210,7 @@ export function customerDriverRoles(tenantId: string, customerId: string) {
 
 export type CustomerFinance = {
   /** eine Zeile je abgeschlossenem Beleg (Rechnung, Gutschrift, Stornobeleg); Gegenbelege tragen ihr Original */
-  documents: { dunning: { level: number; label: string; number: string } | null; id: string; number: string | null; documentType: string; kind: string; issueDate: Date | null; finalizedAt: Date | null; grossCents: Cents; bookingId: string | null; bookingNumber: string | null; original: { id: string; number: string | null } | null; financials: InvoiceFinancials | null; href: string }[];
+  documents: { dunning: { level: number; label: string; number: string } | null; id: string; number: string | null; documentType: string; kind: string; issueDate: Date | null; finalizedAt: Date | null; grossCents: Cents; bookingId: string | null; bookingNumber: string | null; original: { id: string; number: string | null } | null; financials: InvoiceFinancials | null; href: string; /** Befehl 29: Unfallersatz-Rechnung an Versicherung bzw. anderen Empfänger (nicht in den Summen) */ otherRecipient: boolean }[];
   drafts: { id: string; documentType: string; kind: string; bookingId: string | null; bookingNumber: string | null; href: string }[];
   payments: { href: string | null; id: string; paidAt: Date; amountCents: Cents; method: string; status: string; reference: string | null; invoiceNumber: string | null; bookingId: string | null; bookingNumber: string | null; cancellationReason: string | null }[];
   payouts: { id: string; number: string | null; status: string; sourceType: string; amountCents: Cents; method: string; executedAt: Date | null; plannedAt: Date | null; invoiceNumber: string | null; bookingId: string | null; bookingNumber: string | null; ibanMasked: string | null }[];
@@ -218,7 +230,7 @@ export type CustomerFinance = {
 /** Finanzen der Person über alle ihre Buchungen – Stand ausschließlich aus financialsFor; stornierte Zahlungen/Auszahlungen sichtbar, nie summiert. */
 export async function customerFinance(tenantId: string, customerId: string): Promise<CustomerFinance> {
   const [invoices, payments, payouts] = await Promise.all([
-    db.invoice.findMany({ where: { tenantId, status: { in: ["DRAFT", "FINALIZED"] }, OR: [{ booking: { customerId } }, { customerId, bookingId: null }] }, orderBy: [{ finalizedAt: "desc" }, { createdAt: "desc" }], take: 500, select: { id: true, number: true, status: true, documentType: true, kind: true, bookingId: true, finalizedAt: true, booking: { select: { number: true } }, original: { select: { id: true, number: true } }, currentVersion: { select: { grossTotal: true, issueDate: true } } } }),
+    db.invoice.findMany({ where: { tenantId, status: { in: ["DRAFT", "FINALIZED"] }, OR: [{ booking: { customerId } }, { customerId, bookingId: null }] }, orderBy: [{ finalizedAt: "desc" }, { createdAt: "desc" }], take: 500, select: { id: true, number: true, status: true, documentType: true, kind: true, bookingId: true, finalizedAt: true, booking: { select: { number: true } }, original: { select: { id: true, number: true } }, currentVersion: { select: { grossTotal: true, issueDate: true, customerSnapshot: true } } } }),
     db.payment.findMany({ where: { tenantId, OR: [{ booking: { customerId } }, { bookingId: null, invoice: { customerId } }] }, orderBy: { paidAt: "desc" }, take: 500, select: { id: true, paidAt: true, amountCents: true, method: true, status: true, reference: true, cancellationReason: true, bookingId: true, booking: { select: { number: true } }, invoice: { select: { id: true, number: true, bookingId: true, kind: true } } } }),
     db.payout.findMany({ where: { tenantId, OR: [{ customerId }, { booking: { customerId } }] }, orderBy: { createdAt: "desc" }, take: 500, select: { id: true, number: true, status: true, sourceType: true, amountCents: true, method: true, executedAt: true, plannedAt: true, ibanMasked: true, bookingId: true, booking: { select: { number: true } }, invoice: { select: { number: true } } } }),
   ]);
@@ -230,7 +242,10 @@ export async function customerFinance(tenantId: string, customerId: string): Pro
   const notices = openIds.length ? await db.dunningNotice.findMany({ where: { tenantId, invoiceId: { in: openIds } }, orderBy: { level: "asc" }, select: { invoiceId: true, level: true, number: true } }) : [];
   const dunningByInvoice = new Map(notices.map((n) => [n.invoiceId, { level: n.level, label: dunningLevelLabel(n.level), number: n.number }]));
   const sums = { effectiveInvoiceCents: 0, invoiceCents: 0, creditedCents: 0, cancelledCents: 0, effectiveDamageCents: 0, paidCents: 0, openCents: 0, creditCents: 0, refundOpenCents: 0, refundedCents: 0, payoutsCompletedCents: 0, offsetCents: 0 };
+  // Befehl 29 Phase F: Unfallersatz-Rechnungen an Versicherung bzw. anderen Empfänger sind keine Forderung an diese Person
+  const othersRecipient = (i: (typeof finalized)[number]) => recipientRoleOf(i.currentVersion?.customerSnapshot as { recipientRole?: string } | null) !== "RENTER";
   for (const i of originals) {
+    if (othersRecipient(i)) continue;
     const f = fin.get(i.id)!;
     sums.invoiceCents += f.invoiceCents; sums.creditedCents += f.creditedCents; sums.cancelledCents += f.cancelledCents; sums.effectiveInvoiceCents += f.effectiveCents;
     if (i.kind === "DAMAGE") sums.effectiveDamageCents += f.effectiveCents;
@@ -241,7 +256,7 @@ export async function customerFinance(tenantId: string, customerId: string): Pro
   for (const p of prepayments) { sums.creditCents += p.paidCents; sums.refundOpenCents += p.remainingCents; sums.refundedCents += p.refundedCents; }
   sums.payoutsCompletedCents = payouts.filter((p) => p.status === "COMPLETED").reduce((a, p) => a + p.amountCents, 0);
   return {
-    documents: finalized.map((i) => ({ id: i.id, number: i.number, documentType: i.documentType, kind: i.kind, issueDate: i.currentVersion!.issueDate, finalizedAt: i.finalizedAt, grossCents: toCents(i.currentVersion!.grossTotal), bookingId: i.bookingId, bookingNumber: i.booking?.number ?? null, original: i.original, financials: fin.get(i.id) ?? null, href: invoiceHref(i), dunning: dunningByInvoice.get(i.id) ?? null })),
+    documents: finalized.map((i) => ({ id: i.id, number: i.number, documentType: i.documentType, kind: i.kind, issueDate: i.currentVersion!.issueDate, finalizedAt: i.finalizedAt, grossCents: toCents(i.currentVersion!.grossTotal), bookingId: i.bookingId, bookingNumber: i.booking?.number ?? null, original: i.original, financials: fin.get(i.id) ?? null, href: invoiceHref(i), dunning: dunningByInvoice.get(i.id) ?? null, otherRecipient: othersRecipient(i) })),
     drafts: invoices.filter((i) => i.status === "DRAFT").map((i) => ({ id: i.id, documentType: i.documentType, kind: i.kind, bookingId: i.bookingId, bookingNumber: i.booking?.number ?? null, href: invoiceHref(i) })),
     payments: payments.map((p) => ({ id: p.id, paidAt: p.paidAt, amountCents: p.amountCents, method: p.method, status: p.status, reference: p.reference, invoiceNumber: p.invoice?.number ?? null, bookingId: p.bookingId, bookingNumber: p.booking?.number ?? null, cancellationReason: p.cancellationReason, href: paymentHref(p) })),
     payouts: payouts.map((p) => ({ id: p.id, number: p.number, status: p.status, sourceType: p.sourceType, amountCents: p.amountCents, method: p.method, executedAt: p.executedAt, plannedAt: p.plannedAt, invoiceNumber: p.invoice?.number ?? null, bookingId: p.bookingId, bookingNumber: p.booking?.number ?? null, ibanMasked: p.ibanMasked })),
@@ -290,12 +305,14 @@ export type CustomerDocument = { id: string; kind: "BOOKING" | "DAMAGE" | "AUTHO
 export async function customerDocuments(tenantId: string, customerId: string, role: string): Promise<CustomerDocument[]> {
   const canAuthority = role !== "YARD";
   const [docs, damageDocs, authorityDocs] = await Promise.all([
-    db.document.findMany({ where: { tenantId, OR: [{ booking: { customerId } }, { payout: { customerId } }, { bookingId: null, invoice: { customerId } }, { bookingId: null, dunningNotice: { customerId } }] }, orderBy: { createdAt: "desc" }, take: 500, select: { id: true, type: true, fileName: true, contentType: true, sizeBytes: true, createdAt: true, version: true, bookingId: true, booking: { select: { number: true } }, invoice: { select: { number: true } }, payout: { select: { id: true, number: true } } } }),
+    db.document.findMany({ where: { tenantId, OR: [{ booking: { customerId } }, { payout: { customerId } }, { bookingId: null, invoice: { customerId } }, { bookingId: null, dunningNotice: { customerId } }] }, orderBy: { createdAt: "desc" }, take: 500, select: { id: true, type: true, fileName: true, contentType: true, sizeBytes: true, createdAt: true, version: true, bookingId: true, booking: { select: { number: true } }, invoice: { select: { number: true, kind: true, dunningFeeOf: { select: { invoice: { select: { kind: true } } } } } }, dunningNotice: { select: { invoice: { select: { kind: true } } } }, payout: { select: { id: true, number: true } } } }),
     db.damageCaseDocument.findMany({ where: { tenantId, case: { booking: { customerId } } }, orderBy: { createdAt: "desc" }, take: 200, select: { id: true, type: true, fileName: true, contentType: true, sizeBytes: true, createdAt: true, case: { select: { id: true, caseNumber: true } } } }),
     canAuthority ? db.authorityCaseDocument.findMany({ where: { tenantId, case: { driverCustomerId: customerId } }, orderBy: { createdAt: "desc" }, take: 200, select: { id: true, type: true, fileName: true, contentType: true, sizeBytes: true, createdAt: true, case: { select: { id: true, caseNumber: true } } } }) : [],
   ]);
+  // Befehl 29 Phase F: Belege der Unfallersatz-Abrechnung sieht der Hof nicht (auch nicht über die Kundenakte)
+  const accidentBilling = (d: (typeof docs)[number]) => d.invoice?.kind === "ACCIDENT_REPLACEMENT" || d.invoice?.dunningFeeOf?.invoice.kind === "ACCIDENT_REPLACEMENT" || d.dunningNotice?.invoice.kind === "ACCIDENT_REPLACEMENT";
   const out: CustomerDocument[] = [
-    ...docs.map((d) => ({ id: d.id, kind: "BOOKING" as const, type: d.type, fileName: d.fileName, contentType: d.contentType, sizeBytes: d.sizeBytes, createdAt: d.createdAt, href: `/api/documents/${d.id}`, context: d.payout ? `Auszahlung ${d.payout.number ?? ""}` : d.invoice?.number ? `${d.invoice.number} · ${bookingLabel(d.booking?.number)}` : bookingLabel(d.booking?.number), contextHref: d.payout ? `/auszahlungen/${d.payout.id}` : d.bookingId ? `/buchungen/${d.bookingId}` : "/rechnungen" })),
+    ...docs.filter((d) => role !== "YARD" || !accidentBilling(d)).map((d) => ({ id: d.id, kind: "BOOKING" as const, type: d.type, fileName: d.fileName, contentType: d.contentType, sizeBytes: d.sizeBytes, createdAt: d.createdAt, href: `/api/documents/${d.id}`, context: d.payout ? `Auszahlung ${d.payout.number ?? ""}` : d.invoice?.number ? `${d.invoice.number} · ${bookingLabel(d.booking?.number)}` : bookingLabel(d.booking?.number), contextHref: d.payout ? `/auszahlungen/${d.payout.id}` : d.bookingId ? `/buchungen/${d.bookingId}` : "/rechnungen" })),
     ...damageDocs.map((d) => ({ id: d.id, kind: "DAMAGE" as const, type: d.type, fileName: d.fileName, contentType: d.contentType, sizeBytes: d.sizeBytes, createdAt: d.createdAt, href: `/api/damage-documents/${d.id}`, context: `Schadenakte ${d.case.caseNumber}`, contextHref: `/schaeden/${d.case.id}` })),
     ...authorityDocs.map((d) => ({ id: d.id, kind: "AUTHORITY" as const, type: d.type, fileName: d.fileName, contentType: d.contentType, sizeBytes: d.sizeBytes, createdAt: d.createdAt, href: `/api/authority-documents/${d.id}`, context: `Behördenvorgang ${d.case.caseNumber}`, contextHref: `/behoerden/${d.case.id}` })),
   ];
