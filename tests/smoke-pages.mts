@@ -461,6 +461,7 @@ const vehicleDmg = await plain(await fetch(`${base}/fahrzeuge/${v4.id}?tab=schae
 report(vehicleDmg.includes(dc.caseNumber) && vehicleDmg.includes("Kunde verantwortlich (bestätigt)"), "Fahrzeugakte: Schaden mit Aktenbezug und Haftungsstand");
 const todayDmg = await plain(await fetch(base + "/heute", { headers: { cookie } }));
 report(todayDmg.includes("Offene Schadenakten") && todayDmg.includes("wegen Schaden gesperrt") && todayDmg.includes("Haftung ungeklärt") && todayDmg.includes("in Reparatur"), "Dashboard: Schaden-Kennzahlen");
+report(["Finanzen", "Schäden &amp; Wartung", "Behörden"].every((t) => todayDmg.includes(t)) && (todayDmg.match(/aria-expanded=/g) ?? []).length >= 3 && todayDmg.includes("Abholungen heute"), "Startseite: Tageskennzahlen oben, drei aufklappbare Bereiche mit Zusammenfassung");
 const hofOnly = await reportDamage(w.tenantId, w.actor, { vehicleId: v3.id, view: "FRONT", posX: 0.2, posY: 0.4, kind: "CHIP", description: "Steinschlag ohne Miete" });
 const { damageCase: dcHof } = await openDamageCase(w.tenantId, hofOnly.id, w.actor);
 const hofCase = await plain(await fetch(`${base}/schaeden/${dcHof.id}`, { headers: { cookie } }));

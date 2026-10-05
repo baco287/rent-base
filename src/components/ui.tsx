@@ -99,11 +99,13 @@ export function FormError({ error }: { error?: string }) {
   );
 }
 
-export function KPI({ label, value, detail, hot }: { label: string; value: ReactNode; detail?: ReactNode; hot?: boolean }) {
+/** `quiet`: dezente, kleinere Darstellung (z. B. Kennzahl 0 in einem Startseitenbereich), damit Wichtiges hervorsticht. */
+export function KPI({ label, value, detail, hot, quiet }: { label: string; value: ReactNode; detail?: ReactNode; hot?: boolean; quiet?: boolean }) {
+  const dim = quiet && !hot;
   return (
-    <div className={`rounded-lg px-3.5 py-3 flex flex-col gap-0.5 ${hot ? "bg-amber-soft" : "bg-panel-2"}`}>
+    <div className={`rounded-lg px-3.5 flex flex-col gap-0.5 ${dim ? "py-2 bg-panel-2/50 text-ink-3" : "py-3"} ${hot ? "bg-amber-soft" : dim ? "" : "bg-panel-2"}`}>
       <span className="label-xs">{label}</span>
-      <span className={`font-display text-3xl font-semibold leading-tight tnum ${hot ? "text-amber" : ""}`}>{value}</span>
+      <span className={`font-display font-semibold leading-tight tnum ${dim ? "text-xl" : "text-3xl"} ${hot ? "text-amber" : ""}`}>{value}</span>
       {detail && <span className="text-xs text-ink-2">{detail}</span>}
     </div>
   );

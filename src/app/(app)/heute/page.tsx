@@ -10,6 +10,7 @@ import { HORIZONS, loadDashboard, TASK_AREAS, TASK_GROUPS, type DashboardTask, t
 import type { AccidentDashboard } from "@/lib/accident-replacement";
 import { zonedDayStartPlus } from "@/lib/time";
 import { OpenSearchButton } from "./quick-search";
+import { DashboardSection } from "./dashboard-section";
 
 export const metadata = { title: "Heute" };
 
@@ -70,6 +71,12 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
     return Math.ceil(((x.getTime() - y0.getTime()) / 86400000 + 1) / 7);
   })();
   const attention = d.groups.OVERDUE.length + d.groups.TODAY.length;
+  // Aufklappbare Bereiche: „dringend“ = überfällig oder ein konkretes Problem; dann öffnet sich der Bereich von selbst
+  const dunningCount = d.receivables.reminder + d.receivables.first + d.receivables.second;
+  const authorityWork = c.authorityReceived + c.authorityAssignment + c.authorityReview + c.authorityReady;
+  const financeUrgent = d.receivables.overdue > 0 || c.overdueInvoices > 0 || d.receivables.further > 0;
+  const damageUrgent = damage.blocked > 0 || c.maintenanceOverdue > 0;
+  const systemUrgent = c.authorityOverdue > 0 || c.emailsFailed > 0 || (d.accident?.followUpsDue ?? 0) > 0;
   const visibleGroups = TASK_GROUPS.filter((g) => g.key !== "SOON" || horizon !== "heute");
 
   return (
@@ -90,40 +97,85 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
           <KPI label="Aktive Mieten" value={c.activeRentals} detail={`Auslastung 7 Tage ${utilization} % · ${vehicles.length} Fahrzeuge`} />
           <KPI label="Flotte" value={vehicles.length} detail={`${c.vehiclesInWorkshop} in Werkstatt`} />
         </div>
-        {/* Praxistest: Unfallersatz (nur mit freigeschaltetem Modul) – offene Fälle (Fallstatus, nicht Buchungen) mit Unterkennzahlen aus
-            denselben Daten wie die Fallakte; der Hof sieht nur Fallzahl und laufende Mieten */}
-        {d.accident && (
+        {/* Startseite aufgeräumt: oben immer der Tagesbetrieb; alles Weitere in drei aufklappbaren Bereichen mit Zusammenfassung.
+            Zugeklappt ist der Standard, ein Bereich mit Überfälligem/Dringendem öffnet sich selbst (siehe DashboardSection). */}
+        <DashboardSection
+          id="finanzen"
+          title="Finanzen"
+          urgent={financeUrgent}
+          summary={
+            <>
+              {d.receivables.overdue > 0 && <Chip tone="bad">{d.receivables.overdue} überfällig</Chip>}
+              <span>{fmtCents(d.receivables.openCents)} offen</span>
+              {c.refundsOpen + c.depositPayoutsOpen > 0 && <span>· {c.refundsOpen + c.depositPayoutsOpen} Auszahlungen offen</span>}
+              {c.depositsHeld > 0 && <span>· {c.depositsHeld} Kautionen zu entscheiden</span>}
+            </>
+          }
+        >
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <div className="col-span-2">
-              <KPI label="Unfallersatz" value={d.accident.open} detail={<AccidentKpiDetail a={d.accident} />} hot={(d.accident.toInvoice ?? 0) + (d.accident.followUpsDue ?? 0) > 0} />
-            </div>
+            <KPI quiet={c.openInvoices === 0} label="Offene Rechnungen" value={c.openInvoices} detail={<Link href="/rechnungen?filter=offen" className="underline">{fmtCents(c.openInvoiceCents)} offen</Link>} hot={c.openInvoices > 0} />
+            <KPI quiet={c.overdueInvoices === 0} label="Überfällige Rechnungen" value={c.overdueInvoices} detail={`${fmtCents(c.overdueInvoiceCents)} · Fälligkeit überschritten`} hot={c.overdueInvoices > 0} />
+            <KPI quiet={c.refundsOpen === 0} label="Rechnungserstattungen offen" value={c.refundsOpen} detail={<Link href="/auszahlungen?filter=offen&quelle=rechnung" className="underline">{fmtCents(c.refundsOpenCents)} noch auszuzahlen</Link>} hot={c.refundsOpen > 0} />
+            <KPI quiet={c.depositPayoutsOpen === 0} label="Kautionsauszahlungen offen" value={c.depositPayoutsOpen} detail={<Link href="/auszahlungen?filter=offen&quelle=kaution" className="underline">{fmtCents(c.depositPayoutsOpenCents)} freigegeben, noch nicht ausgezahlt</Link>} hot={c.depositPayoutsOpen > 0} />
+            {/* Befehl 23: Forderungen und Mahnstufen – dieselbe Ableitung wie die Forderungsübersicht, keine eigene Rechnung */}
+            <KPI quiet={d.receivables.open === 0} label="Offene Forderungen" value={fmtCents(d.receivables.openCents)} detail={<Link href="/forderungen" className="underline">{d.receivables.open} {d.receivables.open === 1 ? "Rechnung" : "Rechnungen"} · davon überfällig {fmtCents(d.receivables.overdueCents)}</Link>} hot={d.receivables.overdueCents > 0} />
+            <KPI quiet={d.receivables.overdue === 0} label="Überfällige Forderungen" value={d.receivables.overdue} detail={<Link href="/forderungen?filter=ueberfaellig" className="underline">{d.receivables.actionable.length > 0 ? `${d.receivables.actionable.length} mit möglichem Mahnschritt` : "kein Mahnschritt offen"}</Link>} hot={d.receivables.actionable.length > 0} />
+            <KPI quiet={dunningCount === 0} label="In Mahnung" value={dunningCount} detail={<Link href="/forderungen?filter=erinnerung" className="underline">{d.receivables.reminder} Zahlungserinnerung · {d.receivables.first} 1. Mahnung · {d.receivables.second} 2. Mahnung</Link>} />
+            <KPI quiet={d.receivables.further === 0} label="Weitere Bearbeitung" value={d.receivables.further} detail={<Link href="/forderungen?filter=weitere" className="underline">{d.receivables.further > 0 ? "alle Mahnstufen ausgeschöpft" : "keine"}{d.receivables.noDueDate > 0 ? ` · ${d.receivables.noDueDate} ohne Fälligkeit` : ""}</Link>} hot={d.receivables.further > 0} />
+            <KPI quiet={c.depositsHeld === 0 && c.depositsExpected === 0} label="Offene Kautionen" value={c.depositsHeld} detail={`nach Rückgabe noch nicht entschieden · ${c.depositsExpected} unterwegs ohne Eingang`} hot={c.depositsHeld > 0} />
           </div>
-        )}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <KPI label="Offene Rechnungen" value={c.openInvoices} detail={<Link href="/rechnungen?filter=offen" className="underline">{fmtCents(c.openInvoiceCents)} offen</Link>} hot={c.openInvoices > 0} />
-          <KPI label="Überfällige Rechnungen" value={c.overdueInvoices} detail={`${fmtCents(c.overdueInvoiceCents)} · Fälligkeit überschritten`} hot={c.overdueInvoices > 0} />
-          <KPI label="Rechnungserstattungen offen" value={c.refundsOpen} detail={<Link href="/auszahlungen?filter=offen&quelle=rechnung" className="underline">{fmtCents(c.refundsOpenCents)} noch auszuzahlen</Link>} hot={c.refundsOpen > 0} />
-          <KPI label="Kautionsauszahlungen offen" value={c.depositPayoutsOpen} detail={<Link href="/auszahlungen?filter=offen&quelle=kaution" className="underline">{fmtCents(c.depositPayoutsOpenCents)} freigegeben, noch nicht ausgezahlt</Link>} hot={c.depositPayoutsOpen > 0} />
-        </div>
-        {/* Befehl 23: Forderungen und Mahnstufen – dieselbe Ableitung wie die Forderungsübersicht, keine eigene Rechnung */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <KPI label="Offene Forderungen" value={fmtCents(d.receivables.openCents)} detail={<Link href="/forderungen" className="underline">{d.receivables.open} {d.receivables.open === 1 ? "Rechnung" : "Rechnungen"} · davon überfällig {fmtCents(d.receivables.overdueCents)}</Link>} hot={d.receivables.overdueCents > 0} />
-          <KPI label="Überfällige Forderungen" value={d.receivables.overdue} detail={<Link href="/forderungen?filter=ueberfaellig" className="underline">{d.receivables.actionable.length > 0 ? `${d.receivables.actionable.length} mit möglichem Mahnschritt` : "kein Mahnschritt offen"}</Link>} hot={d.receivables.actionable.length > 0} />
-          <KPI label="In Mahnung" value={d.receivables.reminder + d.receivables.first + d.receivables.second} detail={<Link href="/forderungen?filter=erinnerung" className="underline">{d.receivables.reminder} Zahlungserinnerung · {d.receivables.first} 1. Mahnung · {d.receivables.second} 2. Mahnung</Link>} />
-          <KPI label="Weitere Bearbeitung" value={d.receivables.further} detail={<Link href="/forderungen?filter=weitere" className="underline">{d.receivables.further > 0 ? "alle Mahnstufen ausgeschöpft" : "keine"}{d.receivables.noDueDate > 0 ? ` · ${d.receivables.noDueDate} ohne Fälligkeit` : ""}</Link>} hot={d.receivables.further > 0} />
-        </div>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <KPI label="Offene Kautionen" value={c.depositsHeld} detail={`nach Rückgabe noch nicht entschieden · ${c.depositsExpected} unterwegs ohne Eingang`} hot={c.depositsHeld > 0} />
-          <KPI label="Offene Schadenakten" value={c.damagesOpen} detail={<Link href="/schaeden?filter=offen" className="underline">{c.damagesUnderReview} in Prüfung · {c.damagesInRepair} in Reparatur · {damage.blocked} wegen Schaden gesperrt</Link>} hot={c.damagesOpen > 0 || damage.blocked > 0} />
-          <KPI label="Haftung ungeklärt" value={c.damagesLiabilityUnclear} detail={<Link href="/schaeden?filter=haftung_ungeklaert" className="underline">offene Akten ohne Bewertung</Link>} hot={c.damagesLiabilityUnclear > 0} />
-          <KPI label="Wartung" value={c.maintenanceOverdue} detail={<Link href="/fahrzeuge/wartung?filter=ueberfaellig" className="underline">fällig/überfällig · {c.maintenanceSoon} bald · {c.maintenanceAppointmentsToday} Termine heute</Link>} hot={c.maintenanceOverdue > 0} />
-        </div>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <KPI label="Behördenfristen" value={c.authorityOverdue + c.authorityDueSoon} detail={<Link href="/behoerden?frist=bald" className="underline">{c.authorityOverdue} überfällig · {c.authorityDueSoon} heute oder ≤ 3 Tage</Link>} hot={c.authorityOverdue > 0} />
-          <KPI label="Behörden: Bearbeitung" value={c.authorityReceived + c.authorityAssignment + c.authorityReview + c.authorityReady} detail={<Link href="/behoerden" className="underline">{c.authorityReceived} neu · {c.authorityAssignment} Zuordnung · {c.authorityReview} Prüfung · {c.authorityReady} versandbereit</Link>} hot={c.authorityAssignment + c.authorityReady > 0} />
-          <KPI label="E-Mail-Probleme" value={c.emailsFailed} detail={c.emailsFailed > 0 ? "fehlgeschlagene Sendungen, erneut senden auf der Buchung" : "keine fehlgeschlagenen Sendungen"} hot={c.emailsFailed > 0} />
-          <KPI label="Fehlende Dokumente" value={c.documentsMissing} detail={c.documentsMissing > 0 ? "PDF noch nicht erzeugt" : "alle vorgesehenen PDFs vorhanden"} hot={c.documentsMissing > 0} />
-        </div>
+        </DashboardSection>
+
+        <DashboardSection
+          id="schaeden-wartung"
+          title="Schäden & Wartung"
+          urgent={damageUrgent}
+          summary={
+            <>
+              {damage.blocked > 0 && <Chip tone="bad">{damage.blocked} Fahrzeug gesperrt</Chip>}
+              {c.maintenanceOverdue > 0 && <Chip tone="bad">{c.maintenanceOverdue} Wartung fällig</Chip>}
+              <span>{c.damagesOpen} offene {c.damagesOpen === 1 ? "Akte" : "Akten"}</span>
+              {c.damagesLiabilityUnclear > 0 && <span>· {c.damagesLiabilityUnclear} Haftung ungeklärt</span>}
+              {c.maintenanceAppointmentsToday > 0 && <span>· {c.maintenanceAppointmentsToday} Werkstatttermine heute</span>}
+            </>
+          }
+        >
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <KPI quiet={c.damagesOpen === 0} label="Offene Schadenakten" value={c.damagesOpen} detail={<Link href="/schaeden?filter=offen" className="underline">{c.damagesUnderReview} in Prüfung · {c.damagesInRepair} in Reparatur · {damage.blocked} wegen Schaden gesperrt</Link>} hot={c.damagesOpen > 0 || damage.blocked > 0} />
+            <KPI quiet={c.damagesLiabilityUnclear === 0} label="Haftung ungeklärt" value={c.damagesLiabilityUnclear} detail={<Link href="/schaeden?filter=haftung_ungeklaert" className="underline">offene Akten ohne Bewertung</Link>} hot={c.damagesLiabilityUnclear > 0} />
+            <KPI quiet={c.maintenanceOverdue === 0} label="Wartung" value={c.maintenanceOverdue} detail={<Link href="/fahrzeuge/wartung?filter=ueberfaellig" className="underline">fällig/überfällig · {c.maintenanceSoon} bald · {c.maintenanceAppointmentsToday} Termine heute</Link>} hot={c.maintenanceOverdue > 0} />
+          </div>
+        </DashboardSection>
+
+        <DashboardSection
+          id="behoerden-system"
+          title={d.accident ? "Behörden, Unfallersatz & System" : "Behörden & System"}
+          urgent={systemUrgent}
+          summary={
+            <>
+              {c.authorityOverdue > 0 && <Chip tone="bad">{c.authorityOverdue} Behördenfrist überschritten</Chip>}
+              {c.emailsFailed > 0 && <Chip tone="bad">{c.emailsFailed} E-Mail fehlgeschlagen</Chip>}
+              {(d.accident?.followUpsDue ?? 0) > 0 && <Chip tone="amber">{d.accident!.followUpsDue} Wiedervorlagen fällig</Chip>}
+              <span>{authorityWork} Behördenvorgänge in Bearbeitung</span>
+              {d.accident && <span>· {d.accident.open} Unfallersatz-{d.accident.open === 1 ? "Fall" : "Fälle"}</span>}
+              {c.documentsMissing > 0 && <span>· {c.documentsMissing} Dokumente fehlen</span>}
+            </>
+          }
+        >
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            {/* Praxistest: Unfallersatz (nur mit freigeschaltetem Modul) – offene Fälle (Fallstatus, nicht Buchungen) mit Unterkennzahlen aus
+                denselben Daten wie die Fallakte; der Hof sieht nur Fallzahl und laufende Mieten */}
+            {d.accident && (
+              <div className="col-span-2">
+                <KPI quiet={d.accident.open === 0} label="Unfallersatz" value={d.accident.open} detail={<AccidentKpiDetail a={d.accident} />} hot={(d.accident.toInvoice ?? 0) + (d.accident.followUpsDue ?? 0) > 0} />
+              </div>
+            )}
+            <KPI quiet={c.authorityOverdue + c.authorityDueSoon === 0} label="Behördenfristen" value={c.authorityOverdue + c.authorityDueSoon} detail={<Link href="/behoerden?frist=bald" className="underline">{c.authorityOverdue} überfällig · {c.authorityDueSoon} heute oder ≤ 3 Tage</Link>} hot={c.authorityOverdue > 0} />
+            <KPI quiet={authorityWork === 0} label="Behörden: Bearbeitung" value={authorityWork} detail={<Link href="/behoerden" className="underline">{c.authorityReceived} neu · {c.authorityAssignment} Zuordnung · {c.authorityReview} Prüfung · {c.authorityReady} versandbereit</Link>} hot={c.authorityAssignment + c.authorityReady > 0} />
+            <KPI quiet={c.emailsFailed === 0} label="E-Mail-Probleme" value={c.emailsFailed} detail={c.emailsFailed > 0 ? "fehlgeschlagene Sendungen, erneut senden auf der Buchung" : "keine fehlgeschlagenen Sendungen"} hot={c.emailsFailed > 0} />
+            <KPI quiet={c.documentsMissing === 0} label="Fehlende Dokumente" value={c.documentsMissing} detail={c.documentsMissing > 0 ? "PDF noch nicht erzeugt" : "alle vorgesehenen PDFs vorhanden"} hot={c.documentsMissing > 0} />
+          </div>
+        </DashboardSection>
 
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-base font-semibold mr-2">Was braucht Aufmerksamkeit?</h2>
