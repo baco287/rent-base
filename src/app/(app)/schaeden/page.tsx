@@ -29,8 +29,10 @@ export default async function DamageCasesPage({ searchParams }: PageProps<"/scha
   // Vorschlag 4: Entscheidungen (Haftung, Belastung, Abschluss) trifft die Disposition – Hofmitarbeiter und Supportmodus sehen nur „Öffnen“
   const canDecide = !supportSession && roleAllows(user.role, ["DISPO"]);
   // Dringendste offene Akte über alle offenen Akten des Mandanten, nicht nur über die aktuelle Seite/den aktuellen Filter
-  const openCases = filter === "offen" && !q && list.pages === 1 ? list.items : (await listCases(tenant.id, { filter: "offen", pageSize: 100 })).items;
-  const urgent = canDecide ? mostUrgentCase(openCases) : null;
+  // Bei aktiver Suche kein Hinweis: der Nutzer sucht etwas Bestimmtes, eine fremde Akte würde das Suchergebnis verfälschen
+  const showUrgent = canDecide && !q;
+  const openCases = !showUrgent ? [] : filter === "offen" && list.pages === 1 ? list.items : (await listCases(tenant.id, { filter: "offen", pageSize: 100 })).items;
+  const urgent = showUrgent ? mostUrgentCase(openCases) : null;
   const waitingDays = urgent ? zonedDaysBetween(urgent.item.reportedAt, new Date()) : 0;
   const rowAction = (c: (typeof list.items)[number]) => {
     const step = canDecide ? nextCaseStep(c) : null;
@@ -101,12 +103,12 @@ export default async function DamageCasesPage({ searchParams }: PageProps<"/scha
                   <tbody>
                     {list.items.map((c) => (
                       <tr key={c.id} className="group border-b border-line-soft last:border-0 hover:bg-panel-2/60">
-                        <td className="px-3 py-2.5 font-mono tnum"><Link href={`/schaeden/${c.id}`} className="hover:underline font-medium">{c.caseNumber}</Link>{c.priority === "HIGH" && <Chip tone="bad">hoch</Chip>}</td>
-                        <td className="px-3 py-2.5"><div className="flex items-center gap-2"><Plate>{c.vehicle.plate}</Plate><span>{c.vehicle.make} {c.vehicle.model}</span>{c.vehicle.status === "BLOCKED" && <Chip tone="bad">gesperrt</Chip>}</div></td>
+                        <td className="px-3 py-2.5 font-mono tnum whitespace-nowrap"><Link href={`/schaeden/${c.id}`} className="hover:underline font-medium">{c.caseNumber}</Link>{c.priority === "HIGH" && <Chip tone="bad">hoch</Chip>}</td>
+                        <td className="px-3 py-2.5"><div className="flex items-center gap-2 whitespace-nowrap"><Plate>{c.vehicle.plate}</Plate><span>{c.vehicle.make} {c.vehicle.model}</span>{c.vehicle.status === "BLOCKED" && <Chip tone="bad">gesperrt</Chip>}</div></td>
                         <td className="px-3 py-2.5 max-w-[280px]"><div className="truncate" title={c.damage.description}>{DAMAGE_KINDS[c.damage.kind as DamageKind] ?? c.damage.kind}: {c.damage.description}</div><div className="text-xs text-ink-3">{c.damage.discoveredIn ? `${c.damage.discoveredIn.type === "RETURN" ? "Rückgabe" : "Übergabe"} ${c.damage.discoveredIn.number}` : "Hof"}{c.booking ? ` · ${c.booking.number}` : ""}</div></td>
-                        <td className="px-3 py-2.5 font-mono tnum">{fmtDate(c.reportedAt)}</td>
-                        <td className="px-3 py-2.5"><CaseStatusChip status={c.status} /></td>
-                        <td className="px-3 py-2.5"><LiabilityChip status={c.liabilityStatus} /></td>
+                        <td className="px-3 py-2.5 font-mono tnum whitespace-nowrap">{fmtDate(c.reportedAt)}</td>
+                        <td className="px-3 py-2.5 whitespace-nowrap"><CaseStatusChip status={c.status} /></td>
+                        <td className="px-3 py-2.5 whitespace-nowrap"><LiabilityChip status={c.liabilityStatus} /></td>
                         <td className="px-3 py-2.5 text-right font-mono tnum">{c.actualCostCents != null ? fmtCents(c.actualCostCents) : c.estimatedCostCents != null ? <span className="text-ink-3">~{fmtCents(c.estimatedCostCents)}</span> : "–"}</td>
                         <td className="px-3 py-2.5 text-xs">{c.invoice ? <span className="flex flex-wrap items-center gap-1.5"><span className="font-mono tnum">{c.invoice.number ?? "Entwurf"}</span>{c.payment ? <PaymentStatusChip status={c.payment.status} /> : <Chip tone="amber">Entwurf</Chip>}</span> : c.customerChargeCents != null ? "Belastung festgelegt" : "–"}</td>
                         {/* Vorschlag 4: direkte Aktion, sichtbar beim Überfahren und bei Tastaturfokus */}

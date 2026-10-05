@@ -409,6 +409,13 @@ const hofDamage = await reportDamage(w.tenantId, w.actor, { vehicleId: v4.id, vi
 const { damageCase: dc } = await openDamageCase(w.tenantId, hofDamage.id, w.actor);
 const casesList = await plain(await fetch(base + "/schaeden", { headers: { cookie } }));
 report(casesList.includes(dc.caseNumber) && casesList.includes("Noch nicht bewertet") && casesList.includes("HB-RT 400"), "Schäden: Liste mit Akte, Haftung und Fahrzeug");
+// Vorschlag 4: Seitenleiste mit Schnellaktionen und Zählern, „Nächster Schritt“ und direkte Zeilenaktion
+const navAside = /<aside[\s\S]*?<\/aside>/.exec(casesList)?.[0] ?? "";
+report(navAside.includes('href="/buchungen/neu"') && navAside.includes("+ Buchung") && navAside.includes('href="/kunden/neu"') && navAside.includes("+ Kunde"), "Seitenleiste: Schnellaktionen + Buchung und + Kunde (Inhaber)");
+report(/href="\/schaeden"[\s\S]{0,400}?offene Schadenakte/.test(navAside), "Seitenleiste: Zähler an „Schäden“ mit Erklärung");
+report(casesList.includes("Nächster Schritt:") && casesList.includes(`href="/schaeden/${dc.id}#haftung"`) && casesList.includes("Haftung bewerten"), "Schäden: Nächster Schritt und Zeilenaktion führen zur Haftungsprüfung");
+const caseAnchors = await plain(await fetch(`${base}/schaeden/${dc.id}`, { headers: { cookie } }));
+report(["haftung", "kosten", "reparatur", "belastung", "abschluss", "fahrzeug"].every((a) => caseAnchors.includes(`id="${a}"`)), "Schadenakte: Sprungziele für die Zeilenaktionen vorhanden");
 const casesSearch = await plain(await fetch(base + "/schaeden?filter=alle&q=gibt-es-nicht", { headers: { cookie } }));
 report(!casesSearch.includes(dc.caseNumber) && casesSearch.includes("Keine Schadenakten"), "Schäden: Suche ohne Treffer");
 const casePage0 = await plain(await fetch(`${base}/schaeden/${dc.id}`, { headers: { cookie } }));
@@ -556,6 +563,10 @@ const yardVehDocs = await plain(await fetch(`${base}/fahrzeuge/${v4.id}?tab=doku
 report(yardVehDocs.includes("Zulassung.pdf") && !yardVehDocs.includes("Archivieren"), "Hofmitarbeiter: Fahrzeugdokumente sehen, nicht archivieren");
 const yardCases = await fetch(base + "/schaeden", { headers: { cookie: `rb_session=${yardSession}` } });
 report(yardCases.status === 200, `${yardCases.status} Hofmitarbeiter: Schadenliste lesbar`);
+const yardCasesHtml = await plain(yardCases);
+const yardAside = /<aside[\s\S]*?<\/aside>/.exec(yardCasesHtml)?.[0] ?? "";
+report(!yardAside.includes('href="/buchungen/neu"') && yardAside.includes('href="/kunden/neu"'), "Hofmitarbeiter: Schnellaktion nur „+ Kunde“, keine Buchung");
+report(!yardCasesHtml.includes("Nächster Schritt:") && !yardCasesHtml.includes("Haftung bewerten") && yardCasesHtml.includes("Öffnen →"), "Hofmitarbeiter: kein Entscheidungshinweis, Zeilenaktion nur Öffnen");
 const yardDmgInvoice = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung?nr=${charge.invoiceId}`, { headers: { cookie: `rb_session=${yardSession}` } }));
 report(yardDmgInvoice.includes(`Schadenabrechnung ${dmgInvoice.number}`) && !yardDmgInvoice.includes("Rechnung bearbeiten"), "Hofmitarbeiter: Schadenabrechnung ansehen, nicht bearbeiten");
 const yardUpload = await (async () => { const fd = new FormData(); fd.set("file", new Blob([jpeg], { type: "image/jpeg" }), "f.jpg"); fd.set("category", "OTHER"); return fetch(`${base}/api/handovers/${pickup.id}/photos`, { method: "POST", body: fd, headers: { cookie: `rb_session=${yardSession}` } }); })();
@@ -906,6 +917,10 @@ const support = await startSupportSession({ id: admin.id, name: admin.name }, w.
 const supportCookies = `${adminCookie}; rb_support=${support.id}`;
 const supportHome = await plain(await fetch(`${base}/heute`, { headers: { cookie: supportCookies } }));
 report(supportHome.includes("SUPPORTMODUS"), "Supportmodus: Banner sichtbar");
+const supportAside = /<aside[\s\S]*?<\/aside>/.exec(supportHome)?.[0] ?? "";
+report(!supportAside.includes("+ Buchung") && !supportAside.includes("+ Kunde"), "Supportmodus: keine Schnellaktionen in der Seitenleiste");
+const supportCases = await plain(await fetch(`${base}/schaeden`, { headers: { cookie: supportCookies } }));
+report(!supportCases.includes("Nächster Schritt:") && !supportCases.includes("Haftung bewerten"), "Supportmodus: Schadenliste ohne Entscheidungsaktionen");
 const supportSettings = await plain(await fetch(`${base}/einstellungen`, { headers: { cookie: supportCookies } }));
 report(!supportSettings.includes("Mitarbeiter einladen"), "Supportmodus: keine Inhaber-Aktionen sichtbar (read-only)");
 // Server Actions sind über requireRole() gesperrt (tests/platform.test.ts); API-Routen über apiSession() –
