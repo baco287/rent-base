@@ -17,9 +17,9 @@ export function Content({ children, className = "" }: { children: ReactNode; cla
   return <div className={`p-5 md:p-6 flex flex-col gap-4 ${className}`}>{children}</div>;
 }
 
-export function Card({ title, right, children, className = "" }: { title?: ReactNode; right?: ReactNode; children: ReactNode; className?: string }) {
+export function Card({ title, right, children, className = "", id }: { title?: ReactNode; right?: ReactNode; children: ReactNode; className?: string; /** Sprungziel (z. B. #haftung), etwas Abstand nach oben beim Anspringen */ id?: string }) {
   return (
-    <section className={`card ${className}`}>
+    <section id={id} className={`card ${id ? "scroll-mt-4" : ""} ${className}`}>
       {title && (
         <header className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 px-3.5 py-3 border-b border-line-soft">
           <h2 className="text-base font-semibold">{title}</h2>

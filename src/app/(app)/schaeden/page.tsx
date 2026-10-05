@@ -7,12 +7,15 @@ import { fmtDate } from "@/lib/format";
 import { fmtCents } from "@/lib/money";
 import { PaymentStatusChip } from "../buchungen/[id]/finanzen/panels";
 import { CaseStatusChip, LiabilityChip } from "./chips";
+import { mostUrgentCase, nextCaseStep } from "@/lib/damage-next-step";
+import { zonedDaysBetween } from "@/lib/time";
+import { roleAllows } from "@/lib/constants";
 
 export const metadata = { title: "Schäden" };
 
 /** Schadenakten: serverseitig gefiltert, gesucht und seitenweise geladen. Eine Akte je Schaden; historische Schäden ohne Akte stehen an der Fahrzeugakte. */
 export default async function DamageCasesPage({ searchParams }: PageProps<"/schaeden">) {
-  const { tenant } = await requireSession();
+  const { tenant, user, supportSession } = await requireSession();
   const sp = await searchParams;
   const filter = (CASE_FILTERS.find((f) => f.key === sp.filter)?.key ?? "offen") as CaseFilter;
   const q = typeof sp.q === "string" ? sp.q.slice(0, 80) : "";
@@ -23,11 +26,27 @@ export default async function DamageCasesPage({ searchParams }: PageProps<"/scha
     return `/schaeden?${u.toString()}`;
   };
   const label = CASE_FILTERS.find((f) => f.key === filter)!.label;
+  // Vorschlag 4: Entscheidungen (Haftung, Belastung, Abschluss) trifft die Disposition – Hofmitarbeiter und Supportmodus sehen nur „Öffnen“
+  const canDecide = !supportSession && roleAllows(user.role, ["DISPO"]);
+  // Dringendste offene Akte über alle offenen Akten des Mandanten, nicht nur über die aktuelle Seite/den aktuellen Filter
+  const openCases = filter === "offen" && !q && list.pages === 1 ? list.items : (await listCases(tenant.id, { filter: "offen", pageSize: 100 })).items;
+  const urgent = canDecide ? mostUrgentCase(openCases) : null;
+  const waitingDays = urgent ? zonedDaysBetween(urgent.item.reportedAt, new Date()) : 0;
+  const rowAction = (c: (typeof list.items)[number]) => {
+    const step = canDecide ? nextCaseStep(c) : null;
+    return step ? { label: step.action, href: step.href } : { label: "Öffnen", href: `/schaeden/${c.id}` };
+  };
 
   return (
     <>
       <PageHeader title="Schäden" sub={`${list.total} ${list.total === 1 ? "Schadenakte" : "Schadenakten"} · ${label}${q ? ` · Suche „${q}“` : ""}`} />
       <Content>
+        {urgent && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg bg-brand-soft text-brand px-4 py-2.5 text-sm" role="status">
+            <span><span className="font-semibold">Nächster Schritt:</span> <Link href={`/schaeden/${urgent.item.id}`} className="font-mono tnum underline-offset-2 hover:underline">{urgent.item.caseNumber}</Link> ({DAMAGE_KINDS[urgent.item.damage.kind as DamageKind] ?? urgent.item.damage.kind}, {urgent.item.vehicle.plate}) wartet {waitingDays === 0 ? "seit heute" : `seit ${waitingDays} ${waitingDays === 1 ? "Tag" : "Tagen"}`} auf {urgent.step.waitingFor}.</span>
+            <Link href={urgent.step.href} className="btn btn-primary !py-1.5 ml-auto">{urgent.step.action}</Link>
+          </div>
+        )}
         <form action="/schaeden" className="flex flex-wrap gap-2 items-center">
           <input type="hidden" name="filter" value={filter} />
           <label className="sr-only" htmlFor="case-q">Suche</label>
@@ -60,6 +79,7 @@ export default async function DamageCasesPage({ searchParams }: PageProps<"/scha
                       <span className="text-ink-3">{fmtDate(c.reportedAt)}{c.booking ? ` · ${c.booking.number}` : ""}</span>
                     </div>
                     {c.invoice && <div className="text-xs flex flex-wrap gap-1.5 items-center"><span>Schadenabrechnung {c.invoice.number ?? "(Entwurf)"}</span>{c.payment ? <PaymentStatusChip status={c.payment.status} /> : <Chip tone="amber">Entwurf</Chip>}</div>}
+                    <div><Link href={rowAction(c).href} className="btn !py-1 text-xs">{rowAction(c).label} →</Link></div>
                   </li>
                 ))}
               </ul>
@@ -75,11 +95,12 @@ export default async function DamageCasesPage({ searchParams }: PageProps<"/scha
                       <th className="label-xs px-3 py-2 border-b border-line">Haftung</th>
                       <th className="label-xs px-3 py-2 border-b border-line text-right">Kosten</th>
                       <th className="label-xs px-3 py-2 border-b border-line">Abrechnung</th>
+                      <th className="px-3 py-2 border-b border-line"><span className="sr-only">Aktion</span></th>
                     </tr>
                   </thead>
                   <tbody>
                     {list.items.map((c) => (
-                      <tr key={c.id} className="border-b border-line-soft last:border-0 hover:bg-panel-2/60">
+                      <tr key={c.id} className="group border-b border-line-soft last:border-0 hover:bg-panel-2/60">
                         <td className="px-3 py-2.5 font-mono tnum"><Link href={`/schaeden/${c.id}`} className="hover:underline font-medium">{c.caseNumber}</Link>{c.priority === "HIGH" && <Chip tone="bad">hoch</Chip>}</td>
                         <td className="px-3 py-2.5"><div className="flex items-center gap-2"><Plate>{c.vehicle.plate}</Plate><span>{c.vehicle.make} {c.vehicle.model}</span>{c.vehicle.status === "BLOCKED" && <Chip tone="bad">gesperrt</Chip>}</div></td>
                         <td className="px-3 py-2.5 max-w-[280px]"><div className="truncate" title={c.damage.description}>{DAMAGE_KINDS[c.damage.kind as DamageKind] ?? c.damage.kind}: {c.damage.description}</div><div className="text-xs text-ink-3">{c.damage.discoveredIn ? `${c.damage.discoveredIn.type === "RETURN" ? "Rückgabe" : "Übergabe"} ${c.damage.discoveredIn.number}` : "Hof"}{c.booking ? ` · ${c.booking.number}` : ""}</div></td>
@@ -88,6 +109,8 @@ export default async function DamageCasesPage({ searchParams }: PageProps<"/scha
                         <td className="px-3 py-2.5"><LiabilityChip status={c.liabilityStatus} /></td>
                         <td className="px-3 py-2.5 text-right font-mono tnum">{c.actualCostCents != null ? fmtCents(c.actualCostCents) : c.estimatedCostCents != null ? <span className="text-ink-3">~{fmtCents(c.estimatedCostCents)}</span> : "–"}</td>
                         <td className="px-3 py-2.5 text-xs">{c.invoice ? <span className="flex flex-wrap items-center gap-1.5"><span className="font-mono tnum">{c.invoice.number ?? "Entwurf"}</span>{c.payment ? <PaymentStatusChip status={c.payment.status} /> : <Chip tone="amber">Entwurf</Chip>}</span> : c.customerChargeCents != null ? "Belastung festgelegt" : "–"}</td>
+                        {/* Vorschlag 4: direkte Aktion, sichtbar beim Überfahren und bei Tastaturfokus */}
+                        <td className="px-3 py-2 text-right whitespace-nowrap"><Link href={rowAction(c).href} className="btn !py-1 text-xs opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity">{rowAction(c).label} →</Link></td>
                       </tr>
                     ))}
                   </tbody>

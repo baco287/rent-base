@@ -4,6 +4,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useRef, useState } from "react";
 import { SearchDialog, useGlobalSearchShortcut } from "@/components/global-search";
+import type { NavBadges } from "@/lib/nav-badges";
+
+// Vorschlag 4: Zähler am Menüpunkt (Ton: offen/Hinweis/dringend), Zahlen über 99 gekürzt
+const BADGE_TONE = { info: "bg-white/20 text-white", warn: "bg-[#f2b36b] text-[#3d2300]", bad: "bg-[#f09a93] text-[#3d0d09]" } as const;
 
 const NAV = [
   { href: "/heute", label: "Heute", icon: "grid" },
@@ -47,6 +51,10 @@ export function Sidebar(props: {
   logoutAction: () => Promise<void>;
   /** Control Center: Pfade gesperrter Features (nur Anzeige – die Sperre selbst ist serverseitig) */
   hiddenPaths?: readonly string[];
+  /** Vorschlag 4: offene Arbeit je Menüpunkt (Schlüssel = href) */
+  badges?: NavBadges;
+  /** Vorschlag 4: Schnellaktionen; „+ Buchung“ nur, wenn die Rolle Buchungen anlegen darf. Im Supportmodus keine. */
+  quickActions?: { booking: boolean; customer: boolean };
 }) {
   const logoSrc = props.logoVersion != null ? `/api/branding/logo?v=${encodeURIComponent(props.logoVersion)}` : null;
   const pathname = usePathname();
@@ -74,7 +82,12 @@ export function Sidebar(props: {
             }`}
           >
             <Icon name={n.icon} />
-            {n.label}
+            <span className="flex-1">{n.label}</span>
+            {props.badges?.[n.href] && (
+              <span title={props.badges[n.href]!.title} aria-label={props.badges[n.href]!.title} className={`ml-auto min-w-5 text-center rounded-full px-1.5 text-[11px] font-semibold leading-[18px] tnum ${BADGE_TONE[props.badges[n.href]!.tone]}`}>
+                {props.badges[n.href]!.count > 99 ? "99+" : props.badges[n.href]!.count}
+              </span>
+            )}
           </Link>
         );
       })}
@@ -110,6 +123,12 @@ export function Sidebar(props: {
           <span className="flex-1 opacity-85">Suchen …</span>
           <kbd className="text-[11px] opacity-60 font-mono">Strg K</kbd>
         </button>
+        {props.quickActions && (props.quickActions.booking || props.quickActions.customer) && (
+          <div className={`grid gap-1.5 mb-2 ${props.quickActions.booking && props.quickActions.customer ? "grid-cols-2" : "grid-cols-1"}`}>
+            {props.quickActions.booking && <Link href="/buchungen/neu" onClick={() => setOpen(false)} className="text-center rounded-md px-2 py-1.5 text-[12.5px] font-semibold bg-white text-brand hover:bg-white/90">+ Buchung</Link>}
+            {props.quickActions.customer && <Link href="/kunden/neu" onClick={() => setOpen(false)} className="text-center rounded-md px-2 py-1.5 text-[12.5px] font-semibold border border-white/25 bg-white/10 hover:bg-white/15">+ Kunde</Link>}
+          </div>
+        )}
         {nav}
         <div className="mt-auto pt-4 px-2.5 text-xs opacity-75 flex items-center justify-between gap-2">
           <span className="truncate">{props.userName} · {props.userRole}</span>

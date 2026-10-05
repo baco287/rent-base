@@ -5,11 +5,15 @@ import { Sidebar } from "@/components/sidebar";
 import { logoutAction } from "@/app/(auth)/actions";
 import { endSupportSessionAction } from "@/app/admin/actions";
 import { hiddenNavPaths, tenantFeatures } from "@/lib/features";
+import { navBadges } from "@/lib/nav-badges";
 
 export default async function AppLayout({ children }: LayoutProps<"/">) {
   const { user, tenant, supportSession } = await requireSession();
   // Control Center: gesperrte Module verschwinden aus der Navigation; die eigentliche Sperre ist requireFeature() serverseitig
   const hiddenPaths = hiddenNavPaths(await tenantFeatures(tenant.id));
+  // Vorschlag 4: offene Arbeit direkt am Menüpunkt; Schnellaktionen nur außerhalb des Supportmodus (read-only)
+  const badges = await navBadges(tenant.id, hiddenPaths);
+  const quickActions = supportSession ? undefined : { booking: user.role !== "YARD", customer: true };
 
   return (
     <div className="flex-1 grid grid-cols-1 md:grid-cols-[220px_1fr] min-h-screen">
@@ -22,6 +26,8 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
         userRole={ROLES[user.role as Role] ?? user.role}
         logoutAction={logoutAction}
         hiddenPaths={hiddenPaths}
+        badges={badges}
+        quickActions={quickActions}
       />
       <main className="min-w-0 flex flex-col">
         {supportSession && (

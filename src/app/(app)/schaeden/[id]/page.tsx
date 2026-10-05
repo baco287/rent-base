@@ -165,7 +165,7 @@ export default async function DamageCasePage({ params, searchParams }: PageProps
           </Card>
 
           {/* Fahrzeug */}
-          <Card title="Fahrzeug" right={<VehicleStatusChip status={c.vehicle.status} />}>
+          <Card id="fahrzeug" title="Fahrzeug" right={<VehicleStatusChip status={c.vehicle.status} />}>
             <div className="p-4 flex flex-col gap-3 text-sm">
               <div><Plate>{c.vehicle.plate}</Plate> {c.vehicle.make} {c.vehicle.model}{c.vehicle.mileage != null ? ` · ${fmtInt(c.vehicle.mileage)} km` : ""} · <Link href={`/fahrzeuge/${c.vehicleId}`} className="underline">Fahrzeugakte</Link></div>
               {canManage && open && c.vehicle.status !== "BLOCKED" && c.vehicle.status !== "INACTIVE" && (
@@ -213,7 +213,7 @@ export default async function DamageCasePage({ params, searchParams }: PageProps
         </Card>
 
         {/* Haftung */}
-        <Card title="Haftungsprüfung" right={<LiabilityChip status={c.liabilityStatus} />}>
+        <Card id="haftung" title="Haftungsprüfung" right={<LiabilityChip status={c.liabilityStatus} />}>
           <div className="p-4 flex flex-col gap-3">
             {c.liabilityNote && <div className="text-sm"><span className="label-xs">Begründung</span><div>{c.liabilityNote}</div></div>}
             {canManage && open ? (
@@ -225,7 +225,7 @@ export default async function DamageCasePage({ params, searchParams }: PageProps
           </div>
         </Card>
 
-        <Card title="Reparatur & Werkstatt" right={<Chip>{c.maintenanceRecords.length}</Chip>}>
+        <Card id="reparatur" title="Reparatur & Werkstatt" right={<Chip>{c.maintenanceRecords.length}</Chip>}>
           <div className="p-4 flex flex-col gap-3 text-sm">
             {c.maintenanceRecords.length === 0 && <p className="text-ink-3">Kein Reparaturvorgang verknüpft.</p>}
             <ul className="divide-y divide-line-soft">
@@ -243,7 +243,7 @@ export default async function DamageCasePage({ params, searchParams }: PageProps
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
           {/* Kosten */}
-          <Card title="Kosten">
+          <Card id="kosten" title="Kosten">
             <div className="p-4 flex flex-col gap-3">
               <div className="grid grid-cols-2 gap-2 text-sm">
                 <div className="rounded-md bg-panel-2 p-3"><div className="label-xs">Kostenschätzung</div><div className="font-mono tnum text-lg font-semibold">{c.estimatedCostCents != null ? fmtCents(c.estimatedCostCents) : "–"}</div></div>
@@ -285,7 +285,7 @@ export default async function DamageCasePage({ params, searchParams }: PageProps
         </Card>
 
         {/* Kundenbelastung und Schadenabrechnung */}
-        <Card title="Kundenbelastung und Schadenabrechnung" right={c.invoice ? (c.invoice.status === "FINALIZED" && c.payment ? <PaymentStatusChip status={c.payment.status} /> : <Chip tone="amber">Entwurf</Chip>) : c.customerChargeCents != null ? <Chip tone="info">festgelegt</Chip> : <Chip>keine</Chip>}>
+        <Card id="belastung" title="Kundenbelastung und Schadenabrechnung" right={c.invoice ? (c.invoice.status === "FINALIZED" && c.payment ? <PaymentStatusChip status={c.payment.status} /> : <Chip tone="amber">Entwurf</Chip>) : c.customerChargeCents != null ? <Chip tone="info">festgelegt</Chip> : <Chip>keine</Chip>}>
           <div className="p-4 flex flex-col gap-3 text-sm">
             {c.customerChargeCents != null ? (
               <dl className="grid grid-cols-[170px_1fr] gap-y-1.5">
@@ -333,7 +333,7 @@ export default async function DamageCasePage({ params, searchParams }: PageProps
         )}
 
         {/* Abschluss */}
-        <Card title="Abschluss">
+        <Card id="abschluss" title="Abschluss">
           <div className="p-4 flex flex-col gap-3 text-sm">
             {canManage && open && (
               <ConfirmReasonForm action={closeCaseAction.bind(null, c.id)} label="Schadenakte schließen" question="Schadenakte schließen? Der Vorgang bleibt vollständig sichtbar; Fahrzeugstatus, Rechnung und Kaution ändern sich dadurch nicht." reasonLabel="Abschlussgrund" submitLabel="Ja, Akte schließen" pendingLabel="Wird geschlossen…" />
