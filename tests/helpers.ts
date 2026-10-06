@@ -95,6 +95,15 @@ export async function purgeTenants(tenantIds: string[]) {
         await tx.keyDropReturn.deleteMany(w);
         await tx.booking.deleteMany(w);
         await tx.customer.deleteMany(w);
+        // Befehl 29: Miettarife (Fahrzeugabweichungen, Standardtarif, Revisionen mit Gruppenpreisen und Stufen)
+        await tx.vehicleRateOverrideTier.deleteMany(w);
+        await tx.vehicleRateOverride.deleteMany(w);
+        await tx.vehicleGroup.updateMany({ where: { tenantId: t }, data: { defaultRatePlanId: null } });
+        await tx.ratePlan.updateMany({ where: { tenantId: t }, data: { currentRevisionId: null, active: false } });
+        await tx.ratePlanPriceTier.deleteMany(w);
+        await tx.ratePlanGroupPrice.deleteMany(w);
+        await tx.ratePlanRevision.deleteMany(w);
+        await tx.ratePlan.deleteMany(w);
         await tx.vehicle.deleteMany(w);
         await tx.vehicleGroup.deleteMany(w);
         await tx.vehicleSketch.deleteMany(w);

@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { vehicleIdsByPlate } from "@/lib/search";
 import { requireSession } from "@/lib/auth";
+import { defaultTariffsForVehicles } from "@/lib/tariffs";
+import { fmtCents } from "@/lib/money";
 import { db } from "@/lib/db";
 import { FUELS, type Fuel } from "@/lib/constants";
-import { fmtEur, fmtInt } from "@/lib/format";
+import { fmtInt } from "@/lib/format";
 import { Card, Content, Empty, PageHeader, Plate, VehicleStatusChip } from "@/components/ui";
 
 export const metadata = { title: "Fahrzeuge" };
@@ -36,6 +38,9 @@ export default async function VehiclesPage({ searchParams }: PageProps<"/fahrzeu
     }),
   ]);
 
+  // Befehl 29: Preise aus dem Standardtarif der Fahrzeuggruppe (mit Fahrzeugpreis), nicht aus den Altfeldern des Fahrzeugs
+  const defaultTariffs = await defaultTariffsForVehicles(tenant.id, vehicles.map((v) => ({ id: v.id, groupId: v.groupId, group: groups.find((g) => g.id === v.groupId) ?? null })));
+  const tierCents = (vid: string, days: number) => defaultTariffs.get(vid)?.tiers.find((t) => t.days === days)?.cents ?? null;
   const active = vehicles.filter((v) => v.status !== "INACTIVE").length;
   const sections = [
     ...groups.map((g) => ({ id: g.id, name: g.name, description: g.description, items: vehicles.filter((v) => v.groupId === g.id) })),
@@ -88,9 +93,9 @@ export default async function VehiclesPage({ searchParams }: PageProps<"/fahrzeu
                         <th className="label-xs px-3 py-2 border-b border-line text-right">km-Stand</th>
                         <th className="label-xs px-3 py-2 border-b border-line">HU</th>
                         <th className="label-xs px-3 py-2 border-b border-line">Status</th>
+                        <th className="label-xs px-3 py-2 border-b border-line">Standardtarif</th>
                         <th className="label-xs px-3 py-2 border-b border-line text-right">Tag</th>
-                        <th className="label-xs px-3 py-2 border-b border-line text-right">Woche 5 T / KW 7 T</th>
-                        <th className="label-xs px-3 py-2 border-b border-line text-right">Monat</th>
+                        <th className="label-xs px-3 py-2 border-b border-line text-right">7 Tage</th>
                         <th className="label-xs px-3 py-2 border-b border-line text-right">Kaution</th>
                       </tr>
                     </thead>
@@ -107,10 +112,10 @@ export default async function VehiclesPage({ searchParams }: PageProps<"/fahrzeu
                             {v.huDate ? v.huDate.toLocaleDateString("de-DE", { month: "2-digit", year: "numeric" }) : "–"}
                           </td>
                           <td className="px-3 py-2.5"><VehicleStatusChip status={v.status} /></td>
-                          <td className="px-3 py-2.5 text-right font-mono tnum">{fmtEur(v.dailyRate)}</td>
-                          <td className="px-3 py-2.5 text-right font-mono tnum">{v.workWeekRate ? fmtEur(v.workWeekRate) : "–"} / {v.weeklyRate ? fmtEur(v.weeklyRate) : "–"}</td>
-                          <td className="px-3 py-2.5 text-right font-mono tnum">{v.monthlyRate ? fmtEur(v.monthlyRate) : "–"}</td>
-                          <td className="px-3 py-2.5 text-right font-mono tnum">{fmtEur(v.deposit)}</td>
+                          <td className="px-3 py-2.5 text-sm">{defaultTariffs.get(v.id)?.ratePlanName ?? <span className="text-ink-3">–</span>}{defaultTariffs.get(v.id)?.vehicleTierDays.length ? <span className="block text-[11px] text-info">Fahrzeugpreis</span> : null}</td>
+                          <td className="px-3 py-2.5 text-right font-mono tnum">{tierCents(v.id, 1) != null ? fmtCents(tierCents(v.id, 1)!) : "–"}</td>
+                          <td className="px-3 py-2.5 text-right font-mono tnum">{tierCents(v.id, 7) != null ? fmtCents(tierCents(v.id, 7)!) : "–"}</td>
+                          <td className="px-3 py-2.5 text-right font-mono tnum">{defaultTariffs.get(v.id) ? fmtCents(defaultTariffs.get(v.id)!.depositCents) : "–"}</td>
                         </tr>
                       ))}
                     </tbody>

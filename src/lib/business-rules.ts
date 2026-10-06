@@ -251,6 +251,7 @@ export function sourceText(source: RuleSource, ctx: { groupName?: string | null;
     case "VEHICLE": return `Fahrzeug${ctx.vehiclePlate ? ` „${ctx.vehiclePlate}“` : ""}`;
     case "TENANT": return "Standard des Vermieters";
     case "BOOKING": return "Buchung";
+    case "TARIFF": return "Miettarif";
     case "CONTRACT": return "Individuell angepasst";
     default: return "Systemvorgabe";
   }

@@ -33,12 +33,12 @@ export type ReturnedWorld = World & { contractId: string; pickupId: string; retu
 export type PickedUpWorld = World & { contractId: string; pickupId: string };
 
 /** Befehl 20.6: Miete bis zur abgeschlossenen Übergabe (läuft, Rückgabe offen) – z. B. für die kontaktlose Rückgabe. */
-export async function pickedUpWorld(label: string, opts: { tenant?: Record<string, unknown>; customer?: Record<string, unknown>; within?: World; conditions?: Record<string, unknown>; vehicle?: Record<string, unknown> } = {}): Promise<PickedUpWorld> {
+export async function pickedUpWorld(label: string, opts: { tenant?: Record<string, unknown>; customer?: Record<string, unknown>; within?: World; conditions?: Record<string, unknown>; vehicle?: Record<string, unknown>; beforeContract?: (w: World) => Promise<void> } = {}): Promise<PickedUpWorld> {
   return (await returnedWorld(label, { ...opts, stopAfterPickup: true })) as unknown as PickedUpWorld;
 }
 
 /** opts.conditions (Befehl 27): zusätzliche Vertragskonditionen, z. B. { rules: { kmPolicy: "UNLIMITED" } } */
-export async function returnedWorld(label: string, opts: { damageCharge?: boolean; tenant?: Record<string, unknown>; customer?: Record<string, unknown>; within?: World; stopAfterPickup?: boolean; conditions?: Record<string, unknown>; vehicle?: Record<string, unknown> } = {}): Promise<ReturnedWorld> {
+export async function returnedWorld(label: string, opts: { damageCharge?: boolean; tenant?: Record<string, unknown>; customer?: Record<string, unknown>; within?: World; stopAfterPickup?: boolean; conditions?: Record<string, unknown>; vehicle?: Record<string, unknown>; beforeContract?: (w: World) => Promise<void> } = {}): Promise<ReturnedWorld> {
   let w: World;
   if (opts.within) {
     // zweite Miete im bestehenden Mandanten: eigenes Fahrzeug, gleicher Kunde
@@ -52,9 +52,12 @@ export async function returnedWorld(label: string, opts: { damageCharge?: boolea
     await db.tenant.update({ where: { id: w.tenantId }, data: { defaultTaxRate: 19, pricesIncludeTax: true, taxNumber: "60/123/45678", paymentTermDays: 14, legalForm: "GmbH", ...(opts.tenant ?? {}) } });
     await db.vehicle.update({ where: { id: w.vehicleId }, data: { mileage: 45_000, ...(opts.vehicle ?? {}) } });
   }
+  if (opts.beforeContract) await opts.beforeContract(w);
   const c = await ensureContractDraft(w.tenantId, w.bookingId, w.actor);
   const bk = await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } });
-  await saveConditions(w.tenantId, c.id, { startAt: bk.startAt, endAt: bk.endAt, deposit: 500, kmIncludedPerDay: 200, extraKmRate: 0.25, deductible: 1000, fuelPolicy: "FULL_TO_FULL", fuelPolicyNote: null, fuelPricePerLiter: 1.8, agreedTotal: null, agreedTotalNote: null, pickupLocation: "Hof", returnLocation: "Hof", ...(opts.conditions ?? {}) });
+  // Befehl 29: Tarifbuchung – Preis, Kaution und Kilometer kommen aus der Buchung (im Vertrag nicht abweichend)
+  const tariff = bk.ratePlanId ? { deposit: Number(bk.deposit), kmIncludedPerDay: bk.kmIncludedPerDay ?? 0, extraKmRate: Number(bk.extraKmRate ?? 0), agreedTotal: bk.agreedPriceCents != null ? bk.agreedPriceCents / 100 : null, agreedTotalNote: bk.priceOverrideReason } : null;
+  await saveConditions(w.tenantId, c.id, { startAt: bk.startAt, endAt: bk.endAt, deposit: 500, kmIncludedPerDay: 200, extraKmRate: 0.25, deductible: 1000, fuelPolicy: "FULL_TO_FULL", fuelPolicyNote: null, fuelPricePerLiter: 1.8, agreedTotal: null, agreedTotalNote: null, pickupLocation: "Hof", returnLocation: "Hof", ...(tariff ?? {}), ...(opts.conditions ?? {}) });
   await saveContractSignature(w.tenantId, w.actor, c.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getContractContentHash(w.tenantId, c.id) });
   await finalizeContract(w.tenantId, c.id);
 

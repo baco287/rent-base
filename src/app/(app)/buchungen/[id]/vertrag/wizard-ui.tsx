@@ -166,7 +166,7 @@ export type RuleFieldValues = {
  * Geschäftsregeln im Schritt Konditionen: jedes Feld zeigt seine Herkunft (Text vom Server); abhängige Felder erscheinen nur bei Bedarf.
  * driverFeeNote (Befehl 29 Phase E, Unfallersatz): statt Zusatzfahrer-Preisregel nur ein Hinweis – die Gebühr aus den Regeln gilt dort nicht.
  */
-export function RuleFields({ v, sources, driverFeeNote }: { v: RuleFieldValues; sources: Record<string, string>; driverFeeNote?: string }) {
+export function RuleFields({ v, sources, driverFeeNote, kmLocked = false }: { v: RuleFieldValues; sources: Record<string, string>; driverFeeNote?: string; /** Befehl 29: Tarifbuchung – Kilometerregel aus der Buchung */ kmLocked?: boolean }) {
   const source = (key: string): ReactNode => (sources[key] ? <span className="text-[11px] text-ink-3">Quelle: {sources[key]}</span> : null);
   const [kmPolicy, setKmPolicy] = useState(v.kmPolicy);
   const [fuelPolicy, setFuelPolicy] = useState(v.fuelPolicy);
@@ -176,7 +176,8 @@ export function RuleFields({ v, sources, driverFeeNote }: { v: RuleFieldValues; 
     <>
       <input type="hidden" name="rulesPresent" value="1" />
       <Field label="Kilometerregel" htmlFor="kmPolicy" hint={undefined}>
-        <select id="kmPolicy" name="kmPolicy" value={kmPolicy} onChange={(e) => setKmPolicy(e.target.value)} className="input">{Object.entries(KM_POLICIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+        <select id="kmPolicy" name={kmLocked ? undefined : "kmPolicy"} value={kmPolicy} onChange={(e) => setKmPolicy(e.target.value)} disabled={kmLocked} className="input">{Object.entries(KM_POLICIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+        {kmLocked && <input type="hidden" name="kmPolicy" value={kmPolicy} />}
         {source("kmPolicy")}
       </Field>
       {kmPolicy === "INDIVIDUAL" && <Field label="Beschreibung der individuellen Kilometerregel" htmlFor="kmPolicyNote"><input id="kmPolicyNote" name="kmPolicyNote" defaultValue={v.kmPolicyNote} className="input" maxLength={300} /></Field>}

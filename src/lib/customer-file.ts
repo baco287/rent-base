@@ -358,6 +358,7 @@ export async function bookingTimeline(tenantId: string, bookingId: string, limit
 }
 
 type TimelineScope = { customerId: string } | { bookingId: string };
+const TARIFF_TIMELINE_ACTIONS = ["BOOKING_TARIFF_CHANGED", "BOOKING_PRICE_OVERRIDDEN", "BOOKING_PRICE_OVERRIDE_REMOVED", "BOOKING_KM_OVERRIDDEN", "BOOKING_DEPOSIT_OVERRIDDEN"];
 
 /** Zeitleiste aus gespeicherten Zeitstempeln (Buchung, Vertrag, Protokolle, Belege, Zahlungen, Kaution, Auszahlungen, Nachträge, Storno, Mails). */
 async function timelineFor(tenantId: string, scope: TimelineScope, limit: number, view: AccidentBillingView = {}): Promise<TimelineEntry[]> {
@@ -382,7 +383,7 @@ async function timelineFor(tenantId: string, scope: TimelineScope, limit: number
   ]);
   // Befehl 28: Zeitraumänderungen vor dem Vertrag und bewusst stehen gelassenes Guthaben stehen nur im Audit (keine Doppelhaltung)
   const bookingIds = bookings.map((b) => b.id);
-  const audits = bookingIds.length ? await db.auditLog.findMany({ where: { tenantId, bookingId: { in: bookingIds }, action: { in: ["BOOKING_PERIOD_CHANGED", "RENTAL_PAYMENT_TO_CREDIT"] } }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, action: true, bookingId: true, amountCents: true, createdAt: true, details: true } }) : [];
+  const audits = bookingIds.length ? await db.auditLog.findMany({ where: { tenantId, bookingId: { in: bookingIds }, action: { in: ["BOOKING_PERIOD_CHANGED", "RENTAL_PAYMENT_TO_CREDIT", ...TARIFF_TIMELINE_ACTIONS] } }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, action: true, bookingId: true, amountCents: true, createdAt: true, details: true } }) : [];
   const bookingNo = new Map(bookings.map((b) => [b.id, b.number]));
   const e: TimelineEntry[] = [];
   if (customer) e.push({ key: "created", at: customer.createdAt, kind: "Kunde", title: "Kunde angelegt", detail: null, href: null });
@@ -397,6 +398,14 @@ async function timelineFor(tenantId: string, scope: TimelineScope, limit: number
     const href = `/buchungen/${a.bookingId}`;
     if (a.action === "BOOKING_PERIOD_CHANGED") e.push({ key: `bp-${a.id}`, at: a.createdAt, kind: "Buchung", title: `Zeitraum geändert · Buchung ${bookingNo.get(a.bookingId!) ?? ""}`, detail: `${d.startBefore ? dateTimeText(new Date(d.startBefore)) : "–"} – ${d.endBefore ? dateTimeText(new Date(d.endBefore)) : "–"} → ${d.startAfter ? dateTimeText(new Date(d.startAfter)) : "–"} – ${d.endAfter ? dateTimeText(new Date(d.endAfter)) : "–"}${d.reason ? ` · ${d.reason}` : ""}`, href });
     if (a.action === "RENTAL_PAYMENT_TO_CREDIT") e.push({ key: `bg-${a.id}`, at: a.createdAt, kind: "Guthaben", title: `Mietvorauszahlung als Kundenguthaben belassen ${fmt(a.amountCents ?? 0)}`, detail: `Buchung ${bookingNo.get(a.bookingId!) ?? ""} storniert`, href: `${href}#storno` });
+    // Befehl 29: Tarif und vereinbarte Abweichungen (intern; der Tarifpreis bleibt neben dem vereinbarten Preis sichtbar)
+    const t = (a.details ?? {}) as { ratePlan?: string; revision?: number; regularCents?: number; agreedCents?: number; differenceCents?: number; differencePercent?: string | null; reason?: string; tariff?: string; agreed?: string; tariffCents?: number; previousAgreedCents?: number; context?: string };
+    const no = `Buchung ${bookingNo.get(a.bookingId!) ?? ""}${t.context ? ` · ${t.context}` : ""}`;
+    if (a.action === "BOOKING_TARIFF_CHANGED") e.push({ key: `bt-${a.id}`, at: a.createdAt, kind: "Buchung", title: `Miettarif ${t.ratePlan ?? ""}${t.revision ? ` (Revision ${t.revision})` : ""} · regulär ${fmt(t.regularCents ?? 0)}`, detail: no, href });
+    if (a.action === "BOOKING_PRICE_OVERRIDDEN") e.push({ key: `bpo-${a.id}`, at: a.createdAt, kind: "Buchung", title: `Individueller Mietpreis ${fmt(t.agreedCents ?? 0)} statt ${fmt(t.regularCents ?? 0)} (${(t.differenceCents ?? 0) > 0 ? "+" : "−"}${fmt(Math.abs(t.differenceCents ?? 0))}${t.differencePercent ? `, ${t.differencePercent.replace("-", "−").replace(".", ",")}` : ""})`, detail: `${no}${t.reason ? ` · Grund: ${t.reason}` : ""}`, href });
+    if (a.action === "BOOKING_PRICE_OVERRIDE_REMOVED") e.push({ key: `bpr-${a.id}`, at: a.createdAt, kind: "Buchung", title: `Individueller Mietpreis aufgehoben – Tarifpreis ${fmt(t.regularCents ?? 0)}`, detail: no, href });
+    if (a.action === "BOOKING_KM_OVERRIDDEN") e.push({ key: `bko-${a.id}`, at: a.createdAt, kind: "Buchung", title: `Kilometer: ${t.agreed ?? ""} (Tarif: ${t.tariff ?? ""})`, detail: `${no}${t.reason ? ` · Grund: ${t.reason}` : ""}`, href });
+    if (a.action === "BOOKING_DEPOSIT_OVERRIDDEN") e.push({ key: `bdo-${a.id}`, at: a.createdAt, kind: "Kaution", title: `Kaution ${fmt(t.agreedCents ?? 0)} vereinbart (Tarif: ${fmt(t.tariffCents ?? 0)})`, detail: `${no}${t.reason ? ` · Grund: ${t.reason}` : ""}`, href });
   }
   for (const a of amendments) {
     const href = `/buchungen/${a.bookingId}/nachtrag/${a.id}`;

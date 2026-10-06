@@ -460,6 +460,22 @@ export const AUDIT_ACTIONS = {
   DEPOSIT_RELEASED_ON_CANCELLATION: "Kaution beim Storno freigegeben",
   AMENDMENT_AGREED: "Vertragsänderung vereinbart (Unterschrift ausstehend)",
   BOOKING_CANCELLATION_SENT: "Stornobestätigung versendet",
+  // Befehl 29: Miettarife (Tarifverwaltung durch den Inhaber, Abweichungen je Buchung mit Grund)
+  RATE_PLAN_CREATED: "Miettarif angelegt",
+  RATE_PLAN_UPDATED: "Miettarif-Stammdaten geändert",
+  RATE_PLAN_REVISED: "Miettarif geändert (neue Revision)",
+  RATE_PLAN_ACTIVATED: "Miettarif aktiviert",
+  RATE_PLAN_DEACTIVATED: "Miettarif deaktiviert",
+  RATE_PLAN_GROUP_ASSIGNED: "Fahrzeuggruppe einem Miettarif zugeordnet",
+  RATE_PLAN_GROUP_REMOVED: "Fahrzeuggruppe aus einem Miettarif entfernt",
+  RATE_PLAN_DEFAULT_SET: "Standardtarif einer Fahrzeuggruppe geändert",
+  VEHICLE_RATE_OVERRIDE_SET: "Fahrzeugpreis im Miettarif gesetzt/geändert",
+  VEHICLE_RATE_OVERRIDE_REMOVED: "Fahrzeugpreis im Miettarif entfernt",
+  BOOKING_TARIFF_CHANGED: "Miettarif der Buchung gewählt/geändert",
+  BOOKING_PRICE_OVERRIDDEN: "Individueller Mietpreis vereinbart",
+  BOOKING_PRICE_OVERRIDE_REMOVED: "Individueller Mietpreis aufgehoben (Tarifpreis gilt)",
+  BOOKING_KM_OVERRIDDEN: "Individuelle Kilometervereinbarung",
+  BOOKING_DEPOSIT_OVERRIDDEN: "Individuelle Kaution vereinbart",
   VEHICLE_STATUS_CHANGED: "Fahrzeugstatus manuell geändert",
   VEHICLE_MILEAGE_CORRECTED: "Kilometerstand korrigiert",
   DAMAGE_REPORTED: "Schaden ohne Protokoll erfasst",
@@ -1031,6 +1047,9 @@ export const TERMS_STATUS = { DRAFT: "Entwurf", PUBLISHED: "Veröffentlicht", AR
 export type TermsStatus = keyof typeof TERMS_STATUS;
 export const KM_POLICIES = { UNLIMITED: "Unbegrenzte Kilometer", FREE_KILOMETERS: "Freikilometer je Tag, Mehrkilometer nach Preis", INDIVIDUAL: "Individuelle Kilometerregel" } as const;
 export type KmPolicy = keyof typeof KM_POLICIES;
+/** Befehl 29: Kilometerregeln eines Miettarifs (INDIVIDUAL gibt es nur als bewusste Vertragsregel mit Beschreibung). */
+export const TARIFF_KM_POLICIES = { FREE_KILOMETERS: "Freikilometer je Miettag", UNLIMITED: "Unbegrenzte Kilometer" } as const;
+export type TariffKmPolicy = keyof typeof TARIFF_KM_POLICIES;
 export const PETS_POLICIES = { ALLOWED: "Erlaubt", NOT_ALLOWED: "Nicht erlaubt", BY_APPROVAL: "Nur nach Absprache" } as const;
 export type PetsPolicy = keyof typeof PETS_POLICIES;
 export const LATE_RETURN_RULES = { MANUAL: "Manuelle Bearbeitung durch Mitarbeiter", ADDITIONAL_RENTAL_TIME: "Zusätzliche Mietzeit nach Vertragspreis (manuell bestätigt)", CONFIGURED_FEE: "Hinterlegter Richtwert (manuell bestätigt)", INDIVIDUAL: "Individuelle Regelung" } as const;
@@ -1039,7 +1058,7 @@ export const OUT_OF_HOURS_RETURN = { ALLOWED: "Erlaubt", NOT_ALLOWED: "Nicht erl
 export type OutOfHoursReturn = keyof typeof OUT_OF_HOURS_RETURN;
 export const ADDITIONAL_DRIVER_FEE_TYPES = { FREE: "Kostenlos", FLAT: "Pauschal je Zusatzfahrer", PER_DAY: "Je Zusatzfahrer und Miettag" } as const;
 export type AdditionalDriverFeeType = keyof typeof ADDITIONAL_DRIVER_FEE_TYPES;
-export const RULE_SOURCES = { DEFAULT: "Systemvorgabe", TENANT: "Standard des Vermieters", GROUP: "Fahrzeuggruppe", VEHICLE: "Fahrzeug", BOOKING: "Buchung", CONTRACT: "Individuell angepasst" } as const;
+export const RULE_SOURCES = { DEFAULT: "Systemvorgabe", TENANT: "Standard des Vermieters", GROUP: "Fahrzeuggruppe", VEHICLE: "Fahrzeug", BOOKING: "Buchung", TARIFF: "Miettarif", CONTRACT: "Individuell angepasst" } as const;
 export type RuleSource = keyof typeof RULE_SOURCES;
 /** Pflichtformulierung der Kenntnisnahme; {version} wird durch die Fassung ersetzt. */
 export const TERMS_ACKNOWLEDGEMENT_TEXT = "Die Mietbedingungen Version {version} wurden zur Kenntnisnahme bereitgestellt und sind Bestandteil dieses Mietvertrags.";

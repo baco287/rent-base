@@ -38,6 +38,7 @@ import { createDunningNotice, previewDunning } from "../src/lib/dunning";
 import { ensureDunningDocument } from "../src/lib/documents";
 import { returnedWorld } from "./rental-flow";
 import { setTenantFeature } from "../src/lib/features";
+import { createRatePlan } from "../src/lib/tariff-admin";
 import { upsertSubscription } from "../src/lib/subscriptions";
 import { setMailTransport, type MailMessage, type MailTransport } from "../src/lib/mail";
 import { saveMailSettings } from "../src/lib/tenant-mail";
@@ -160,7 +161,8 @@ const pages: [string, string][] = [
   ["/heute", "Abholungen heute"],
   ["/dispo", "Dispo-Kalender"],
   ["/fahrzeuge", "HB-RT 200"],
-  ["/fahrzeuge/gruppen", "Kalenderwoche"],
+  ["/fahrzeuge/gruppen", "kein Tarif – Buchungen erst nach Zuordnung möglich"],
+  ["/einstellungen/tarife", "Miettarife"],
   ["/fahrzeuge/neu", "Fahrzeuggruppe"],
   [`/fahrzeuge/${w.vehicleId}`, "Crafter"],
   ["/kunden", "Muster"],
@@ -1342,6 +1344,7 @@ const foreignMail = await plain(await fetch(`${base}/einstellungen/e-mail`, { he
 report(!foreignMail.includes("smtp.smoke-vermieter.test") && foreignMail.includes("Nicht eingerichtet"), "E-Mail-Versand: fremder Mandant sieht nichts von diesem SMTP");
 const setupPage = await plain(await fetch(`${base}/einrichtung`, { headers: { cookie } }));
 report(setupPage.includes("E-Mail-Versand") && setupPage.includes("Eigener E-Mail-Versand empfohlen"), "Einrichtung: E-Mail-Versand als Empfehlung");
+report(setupPage.includes("Miettarif für jede Fahrzeuggruppe mit Fahrzeugen") && setupPage.includes("/einstellungen/tarife"), "Einrichtung: Miettarif als Voraussetzung für Buchungen");
 // ---------------------------------------------------------------------------
 // Befehl 20.6: kontaktlose Rückgabe – Buchungsbereich, Rollen, öffentliche Seite mit Token, Supportmodus
 // ---------------------------------------------------------------------------
@@ -1485,13 +1488,13 @@ const ueAccidentBookings = () => db.booking.count({ where: { tenantId: ue.tenant
 
 // standardmäßig gesperrt: keine Mietart-Auswahl, der Wizard leitet um, das Standardformular ist unverändert
 const ueOffNew = await plain(await fetch(`${base}/buchungen/neu`, { headers: { cookie: ueOwner } }));
-report(!ueOffNew.includes('aria-label="Mietart"') && ueOffNew.includes("Preis und Kaution werden aus dem Fahrzeug"), "Unfallersatz gesperrt: Neue Buchung ohne Mietart-Auswahl, Standardformular wie bisher");
+report(!ueOffNew.includes('aria-label="Mietart"') && ueOffNew.includes("Preis, Kilometer und Kaution kommen aus dem Miettarif"), "Unfallersatz gesperrt: Neue Buchung ohne Mietart-Auswahl, Standardformular (mit Tarifauswahl, Befehl 29)");
 const ueOffWizard = await fetch(`${base}/unfallersatz/neu`, { headers: { cookie: ueOwner }, redirect: "manual" });
 report(ueOffWizard.status === 307 && (ueOffWizard.headers.get("location") ?? "").includes("fehler=funktion"), `${ueOffWizard.status} Unfallersatz gesperrt: Wizard leitet mit Hinweis um`);
 
 await setTenantFeature({ id: admin.id, name: admin.name }, ue.tenantId, "ACCIDENT_REPLACEMENT", true, "Smoke Phase C");
 const ueOnNew = await plain(await fetch(`${base}/buchungen/neu?fahrzeug=${ueV3.id}`, { headers: { cookie: ueOwner } }));
-report(ueOnNew.includes('aria-label="Mietart"') && ueOnNew.includes("Standardvermietung") && ueOnNew.includes(`href="/unfallersatz/neu?fahrzeug=${ueV3.id}"`) && ueOnNew.includes("Preis und Kaution werden aus dem Fahrzeug"), "Neue Buchung: Mietart Standard/Unfallersatz, Vorbelegung bleibt, Standardformular unverändert");
+report(ueOnNew.includes('aria-label="Mietart"') && ueOnNew.includes("Standardvermietung") && ueOnNew.includes(`href="/unfallersatz/neu?fahrzeug=${ueV3.id}"`) && ueOnNew.includes("Preis, Kilometer und Kaution kommen aus dem Miettarif"), "Neue Buchung: Mietart Standard/Unfallersatz, Vorbelegung bleibt, Standardformular (mit Tarifauswahl)");
 const ueWizardAs = async (c: string) => { const r = await fetch(`${base}/unfallersatz/neu`, { headers: { cookie: c }, redirect: "manual" }); return { status: r.status, location: r.headers.get("location") ?? "", html: r.status === 200 ? await plain(r) : "" }; };
 const ueOwnerWizard = await ueWizardAs(ueOwner);
 const ueFormTag = /<form[^>]*aria-label="Unfallersatz anlegen"[^>]*>/.exec(ueOwnerWizard.html)?.[0] ?? "";
@@ -1549,21 +1552,68 @@ report(!ueStdPage.includes("Unfallersatz UE-") && !ueStdPage.includes("Kein Miet
 // Standardbuchung über dieselbe direkte Aufrufart: Mietart bleibt Standard, Ende bleibt Pflicht
 // mit action={formAction} am Buchungsformular ist die Aktion ans Formular gebunden, ohne (älterer Stand) nur im RSC-Payload
 const stdCreateId = actionIdOf(ueOnNew, "createBookingAction", "bound") || actionIdOf(ueOnNew, "createBookingAction", "other");
+/** ID einer gebundenen Aktion (Entwicklungsserver nennt sie „bound <Name>“). */
+const boundIdOf = (html: string, name: string) => [...html.matchAll(/([0-9a-f]{42})\\?",\\?"bound\\?":\\?"\$@[0-9a-f]+\\?",\\?"name\\?":\\?"bound (\w+)/g)].find((m) => m[2] === name)?.[1] ?? "";
 const stdStart = new Date(ueStart.getTime() + 20 * 86400_000);
-const stdForm = { customerMode: "existing", customerId: ue.customerId, vehicleId: ueV3.id, startAt: toDateTimeInput(stdStart), endAt: toDateTimeInput(new Date(stdStart.getTime() + 2 * 86400_000)), dailyRate: "65", deposit: "0", kmIncludedPerDay: "200", extraKmRate: "0,25", payIntent: "NONE" };
-const stdNoEnd = actionState((await callAction("/buchungen/neu", stdCreateId, ueDispo, { form: { ...stdForm, endAt: "" } })).text);
+// Befehl 29: Standardbuchungen rechnen über einen Miettarif der Fahrzeuggruppe (ohne Tarif keine neue Buchung)
+const stdForm = { customerMode: "existing", customerId: ue.customerId, vehicleId: ueV3.id, startAt: toDateTimeInput(stdStart), endAt: toDateTimeInput(new Date(stdStart.getTime() + 2 * 86400_000)), payIntent: "NONE" };
+const stdNoTariff = actionState((await callAction("/buchungen/neu", stdCreateId, ueDispo, { form: stdForm })).text);
+report(stdNoTariff?.error === "Bitte einen Miettarif wählen." && (await db.booking.count({ where: { tenantId: ue.tenantId, vehicleId: ueV3.id, startAt: stdStart } })) === 0, "Standardbuchung ohne Miettarif: verständlich abgelehnt, nichts angelegt");
+const uePlan = await createRatePlan(ue.tenantId, ue.actor, { meta: { name: "SMOKE PLUS", code: null, description: null, sortOrder: 0 }, content: { km: { policy: "FREE_KILOMETERS", kmIncludedPerDay: 200, extraKmRateCents: 25 }, depositCents: 0, groups: [{ groupId: ue.groupId, tiers: [{ days: 1, cents: 6500 }, { days: 7, cents: 39900 }], depositCents: null, km: null }] }, active: true, createKey: `smoke-tarif-${Date.now()}` });
+const stdTariffForm = { ...stdForm, ratePlanId: uePlan.id, priceMode: "TARIFF", kmMode: "TARIFF", depositMode: "TARIFF" };
+const stdNoEnd = actionState((await callAction("/buchungen/neu", stdCreateId, ueDispo, { form: { ...stdTariffForm, endAt: "" } })).text);
 report(stdNoEnd?.error === "Bitte Rückgabe mit Datum und Uhrzeit angeben.", "Standardbuchung: Rückgabe bleibt Pflicht");
-const stdCall = await callAction("/buchungen/neu", stdCreateId, ueDispo, { form: stdForm });
+const stdStale = actionState((await callAction("/buchungen/neu", stdCreateId, ueDispo, { form: { ...stdTariffForm, seenRegularCents: "100" } })).text);
+report(!!stdStale?.error && /geändert/.test(stdStale.error) && (await db.booking.count({ where: { tenantId: ue.tenantId, vehicleId: ueV3.id, startAt: stdStart } })) === 0, "Standardbuchung mit veraltetem Tarifpreis aus der Vorschau: abgelehnt, keine versteckte Preisänderung");
+const stdNoReason = actionState((await callAction("/buchungen/neu", stdCreateId, ueDispo, { form: { ...stdTariffForm, priceMode: "INDIVIDUAL", agreedPrice: "0", priceReason: "" } })).text);
+report(!!stdNoReason?.error && /Grund/.test(stdNoReason.error), "Individueller Preis ohne Grund: abgelehnt");
+const stdCall = await callAction("/buchungen/neu", stdCreateId, ueDispo, { form: stdTariffForm });
 const stdBooking = await db.booking.findFirst({ where: { tenantId: ue.tenantId, vehicleId: ueV3.id, startAt: stdStart } });
-report(stdBooking?.rentalType === "STANDARD" && stdBooking.endAt !== null && Number(stdBooking.dailyRate) === 65 && stdCall.redirectTo.includes(`/buchungen/${stdBooking.id}`), `${stdCall.status} Standardbuchung bei freigeschaltetem Unfallersatz: unverändert als Standardmiete angelegt`);
+report(stdBooking?.rentalType === "STANDARD" && stdBooking.endAt !== null && Number(stdBooking.dailyRate) === 65 && stdBooking.ratePlanId === uePlan.id && stdBooking.regularPriceCents === 11_700 && stdCall.redirectTo.includes(`/buchungen/${stdBooking.id}`), `${stdCall.status} Standardbuchung bei freigeschaltetem Unfallersatz: als Standardmiete mit Miettarif angelegt (2 Tage = 130 € − 10 % Kundenrabatt = 117 €; gespeichert ${stdBooking?.regularPriceCents})`);
+// Befehl 29: Tarifseiten, Rechte (serverseitig) und Anzeige
+{
+  const tg = async (c: string, p: string) => { const r = await fetch(`${base}${p}`, { headers: { cookie: c }, redirect: "manual" }); return { status: r.status, location: r.headers.get("location") ?? "", html: r.status === 200 ? await plain(r) : "" }; };
+  const tOwner = await tg(ueOwner, "/einstellungen/tarife");
+  report(tOwner.status === 200 && tOwner.html.includes("SMOKE PLUS") && tOwner.html.includes("Tarif anlegen"), `${tOwner.status} Miettarife (Inhaber): Übersicht mit Anlegen`);
+  const tDispo = await tg(ueDispo, "/einstellungen/tarife");
+  report(tDispo.status === 200 && tDispo.html.includes("SMOKE PLUS") && !tDispo.html.includes("Tarif anlegen"), `${tDispo.status} Miettarife (Disposition): nur lesend`);
+  const tNewDispo = await tg(ueDispo, "/einstellungen/tarife/neu");
+  report(tNewDispo.status === 307 && decodeURIComponent(tNewDispo.location).includes("fehler=rechte"), `${tNewDispo.status} Tarif anlegen (Disposition): verweigert`);
+  const tEdit = await tg(ueOwner, `/einstellungen/tarife/${uePlan.id}`);
+  report(tEdit.status === 200 && tEdit.html.includes("SMOKE PLUS") && tEdit.html.includes("Revision") && tEdit.html.includes("Fahrzeugpreise") && tEdit.html.includes("Änderungen speichern"), `${tEdit.status} Tarif bearbeiten (Inhaber): Editor, Revisionen, Fahrzeugpreise`);
+  const tYard = await tg(ueYard, `/einstellungen/tarife/${uePlan.id}`);
+  report(tYard.status === 200 && tYard.html.includes("SMOKE PLUS") && !tYard.html.includes("Änderungen speichern") && !tYard.html.includes("Duplizieren"), `${tYard.status} Tarif (Hof): nur Ansicht, keine Bearbeitung`);
+  const tForeign = await tg(ueOwner, `/einstellungen/tarife/${(await db.ratePlan.findFirst({ where: { tenantId: { not: ue.tenantId } } }))?.id ?? "fremd"}`);
+  report(tForeign.status === 404 || (tForeign.status === 200 && !tForeign.html.includes("Revision")), `${tForeign.status} fremder Tarif: nicht auffindbar`);
+  // direkter Aufruf der Tarif-Aktionen ohne Inhaberrolle
+  const createId = actionIdOf((await tg(ueOwner, "/einstellungen/tarife/neu")).html, "createRatePlanAction", "bound");
+  const plansBefore = await db.ratePlan.count({ where: { tenantId: ue.tenantId } });
+  const dispoCreate = await callAction("/einstellungen/tarife/neu", createId, ueDispo, { form: { name: "HACK", content: "{}", createKey: `k-${Date.now()}` } });
+  report(/^[0-9a-f]{42}$/.test(createId) && dispoCreate.redirectTo.includes("fehler=rechte") && (await db.ratePlan.count({ where: { tenantId: ue.tenantId } })) === plansBefore, `${dispoCreate.status} Tarif anlegen per Direktaufruf (Disposition): verweigert, nichts angelegt`);
+  const vOwner = await tg(ueOwner, `/fahrzeuge/${ueV3.id}`);
+  const rateId = boundIdOf(vOwner.html, "setVehicleRateOverrideAction") || actionIdOf(vOwner.html, "setVehicleRateOverrideAction", "bound");
+  report(vOwner.status === 200 && vOwner.html.includes("Tarifpreise") && vOwner.html.includes("Preis aus Fahrzeuggruppe") && vOwner.html.includes("Fahrzeugpreis bearbeiten"), `${vOwner.status} Fahrzeugakte (Inhaber): Tarifpreise mit Bearbeiten`);
+  const vDispo = await tg(ueDispo, `/fahrzeuge/${ueV3.id}`);
+  report(vDispo.status === 200 && vDispo.html.includes("Tarifpreise") && !vDispo.html.includes("Fahrzeugpreis bearbeiten"), `${vDispo.status} Fahrzeugakte (Disposition): Tarifpreise nur lesend`);
+  if (rateId) {
+    const dispoRate = await callAction(`/fahrzeuge/${ueV3.id}`, rateId, ueDispo, { form: { tier_1: "1" }, bound: [ueV3.id, uePlan.id] });
+    report(dispoRate.redirectTo.includes("fehler=rechte") && (await db.vehicleRateOverride.count({ where: { tenantId: ue.tenantId } })) === 0, `${dispoRate.status} Fahrzeugpreis per Direktaufruf (Disposition): verweigert`);
+  } else report(false, "Fahrzeugpreis-Aktion in der Fahrzeugakte nicht gefunden");
+  const vList = await tg(ueDispo, "/fahrzeuge");
+  report(vList.status === 200 && vList.html.includes("Standardtarif") && vList.html.includes("SMOKE PLUS"), `${vList.status} Fahrzeugliste: Standardtarif je Fahrzeug`);
+  const bNew = await tg(ueDispo, "/buchungen/neu");
+  report(bNew.status === 200 && bNew.html.includes("Miettarif"), `${bNew.status} Neue Buchung: Tarifauswahl`);
+  const bStd = await tg(ueDispo, `/buchungen/${stdBooking?.id}`);
+  report(bStd.status === 200 && bStd.html.includes("SMOKE PLUS") && !bStd.html.includes(uePlan.id + "\""), `${bStd.status} Buchung: Tarif angezeigt`);
+  const groupsPage = await tg(ueOwner, "/fahrzeuge/gruppen");
+  report(groupsPage.status === 200 && groupsPage.html.includes("SMOKE PLUS"), `${groupsPage.status} Fahrzeuggruppen: Tarife je Gruppe`);
+}
 
 // Befehl 29 Phase D: Fallakte /unfallersatz/[id] – Inhaber/Disposition vollständig, Hof nur operativ (serverseitig, auch im
 // RSC-Payload), Freischaltung, Mandantentrennung, direkte Aufrufe der Fallakten-Aktionen mit beliebiger Fall-ID
 const ueCaseId = ueCase!.id;
 const caseUrl = `/unfallersatz/${ueCaseId}`;
 const caseAs = async (c: string, q = "") => { const r = await fetch(`${base}${caseUrl}${q}`, { headers: { cookie: c }, redirect: "manual" }); return { status: r.status, location: r.headers.get("location") ?? "", html: r.status === 200 ? await plain(r) : "" }; };
-/** ID einer gebundenen Aktion (Entwicklungsserver nennt sie „bound <Name>“). */
-const boundIdOf = (html: string, name: string) => [...html.matchAll(/([0-9a-f]{42})\\?",\\?"bound\\?":\\?"\$@[0-9a-f]+\\?",\\?"name\\?":\\?"bound (\w+)/g)].find((m) => m[2] === name)?.[1] ?? "";
 const ownerCase = await caseAs(ueOwner, "?angelegt=1");
 report(ownerCase.status === 200 && ownerCase.html.includes(ueCase!.caseNumber) && ownerCase.html.includes("ist angelegt") && ownerCase.html.includes("Nächste Schritte") && ownerCase.html.includes("Schadennummer der Versicherung fehlt") && ownerCase.html.includes("Smoke Versicherung AG") && ownerCase.html.includes("Mietende offen"), `${ownerCase.status} Fallakte (Inhaber): Kopf, Erfolgshinweis, nächste Schritte, offenes Mietende`);
 report(ownerCase.html.includes("Wiedervorlagen") && ownerCase.html.includes("Fall abschließen") && ownerCase.html.includes("Noch nicht abgerechnet"), "Fallakte (Inhaber): Wiedervorlagen, Abschluss, Rechnungsstatus");

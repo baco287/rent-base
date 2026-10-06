@@ -20,7 +20,7 @@ import { findConflicts } from "@/lib/bookings";
 import { additionalDriverFee, adoptDefaults, applyContractOverrides, contractRuleIssues, depositSourceOf, initialContractRules, readContractRules, resolveDeposit, resolveRules, rulesFingerprint, type BusinessRules, type ContractRuleKey, type ContractRules, type ResolvedDeposit, type ResolvedRules } from "@/lib/business-rules";
 import { depositAgreedAmountConflict, linkDepositToContract } from "@/lib/deposits";
 import { checkCustomer, checkDriver, errorsOf, type Issue } from "@/lib/contract-checks";
-import { driveClassOf } from "@/lib/constants";
+import { driveClassOf, type RuleSource } from "@/lib/constants";
 import { DomainError, assertContractDraft, contentHash, sha256 } from "@/lib/integrity";
 import { landlordFromTenant } from "@/lib/contract-view";
 import { isUniqueViolation, nextContractNumber, withNumberRetry } from "@/lib/numbering";
@@ -29,6 +29,7 @@ import { activeTermsVersion, termsFeatureActive, type TermsRow } from "@/lib/ren
 import { buildStorageKey } from "@/lib/storage";
 import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed, assertAccidentCaseOpen } from "@/lib/accident-replacement-events";
 import { freezeTariff, type ContractAccidentTariff, type ContractTariffItem } from "@/lib/accident-pricing";
+import { readTariffSnapshot, type KmRule, type TariffSnapshot } from "@/lib/tariffs";
 
 type Tx = Prisma.TransactionClient;
 const TX = { timeout: 20_000, maxWait: 10_000 };
@@ -95,7 +96,13 @@ export type PriceExtra = { key: "ADDITIONAL_DRIVER"; label: string; quantity: nu
  * Positionen und Summen sind 0; die Abrechnung entsteht erst aus der tatsächlichen Mietdauer (lib/accident-replacement).
  * accidentTariff (Phase E): die Tarifpositionen des Falls (je Miettag / einmalig), mit dem Vertrag unterschrieben und eingefroren.
  */
-export type ContractPriceSnapshot = PriceBreakdown & { agreedTotal: number | null; agreedTotalNote: string | null; extras?: PriceExtra[]; extrasTotal?: number; finalTotal: number; openEnd?: true; accidentTariff?: ContractAccidentTariff };
+/**
+ * Befehl 29: eingefrorener Miettarif im Vertrag (aus dem Tarif-Snapshot der Buchung). Intern vollständig nachvollziehbar
+ * (Revision, Stufen, Herkunft, regulärer Preis, Abweichungen mit Grund) – das Kundendokument zeigt davon nur Tarifname und
+ * die tatsächlich vereinbarten Werte, nie IDs oder interne Gründe.
+ */
+export type ContractTariff = TariffSnapshot & { regularCents: number };
+export type ContractPriceSnapshot = PriceBreakdown & { agreedTotal: number | null; agreedTotalNote: string | null; extras?: PriceExtra[]; extrasTotal?: number; finalTotal: number; openEnd?: true; accidentTariff?: ContractAccidentTariff; tariff?: ContractTariff };
 
 /**
  * Die eine Stelle, an der der Vertragspreis entsteht: zentrale Preisfunktion plus optional abweichend
@@ -104,7 +111,7 @@ export type ContractPriceSnapshot = PriceBreakdown & { agreedTotal: number | nul
  * Befehl 29: Ein Vertrag mit offenem Ende (Unfallersatz, endAt null) bekommt einen Schnappschuss ohne Gesamtpreis.
  */
 export function contractPrice(
-  booking: { startAt: Date; endAt: Date | null; dailyRate: unknown; workWeekRate?: unknown; weeklyRate?: unknown; monthlyRate?: unknown },
+  booking: { startAt: Date; endAt: Date | null; dailyRate: unknown; workWeekRate?: unknown; weeklyRate?: unknown; monthlyRate?: unknown; tariffSnapshot?: unknown },
   discountPercent: number,
   agreedTotal: number | null,
   agreedTotalNote: string | null,
@@ -117,7 +124,9 @@ export function contractPrice(
     // Zusatzfahrer-Gebühr aus den Geschäftsregeln gilt beim Unfallersatz nicht – Kosten nur über den Tarif (eigene Position)
     return { ...empty, agreedTotal: null, agreedTotalNote: null, finalTotal: 0, openEnd: true, ...(accidentTariff ? { accidentTariff: freezeTariff(accidentTariff) } : {}) };
   }
-  const price = calculateRentalPrice({ start: booking.startAt, end: booking.endAt, rates: rateCardFrom(booking), discountPercent });
+  // Befehl 29: Tarifbuchung → Stufen aus dem eingefrorenen Tarif-Snapshot der Buchung (nie aus dem Live-Tarif); sonst Altfelder
+  const tariff = readTariffSnapshot(booking.tariffSnapshot);
+  const price = tariff ? calculateRentalPrice({ start: booking.startAt, end: booking.endAt, tiers: tariff.tiers, discountPercent }) : calculateRentalPrice({ start: booking.startAt, end: booking.endAt, rates: rateCardFrom(booking), discountPercent });
   const extras: PriceExtra[] = [];
   if (extrasInput?.rules) {
     const fee = additionalDriverFee(extrasInput.rules, extrasInput.additionalDrivers, price.days);
@@ -125,7 +134,29 @@ export function contractPrice(
   }
   const extrasTotal = Math.round(extras.reduce((a, e) => a + e.amount * 100, 0)) / 100;
   const base = agreedTotal ?? price.total;
-  return { ...price, agreedTotal, agreedTotalNote: agreedTotal != null ? agreedTotalNote : null, ...(extras.length ? { extras, extrasTotal } : {}), finalTotal: Math.round((base + extrasTotal) * 100) / 100 };
+  const frozenTariff: ContractTariff | undefined = tariff ? { ...tariff, regularCents: price.totalCents ?? Math.round(price.total * 100) } : undefined;
+  return { ...price, agreedTotal, agreedTotalNote: agreedTotal != null ? agreedTotalNote : null, ...(extras.length ? { extras, extrasTotal } : {}), finalTotal: Math.round((base + extrasTotal) * 100) / 100, ...(frozenTariff ? { tariff: frozenTariff } : {}) };
+}
+
+/**
+ * Befehl 29: Bei Tarifbuchungen ist die Buchung bis zur Unterschrift die führende Quelle für Preis, Kaution und Kilometer
+ * (Abweichungen nur dort, mit Grund und Audit). Der Vertragsentwurf übernimmt diese Werte; im Vertrag selbst weichen sie
+ * nicht still davon ab.
+ */
+function tariffTermsOf(booking: { ratePlanId: string | null; agreedPriceCents: number | null; priceOverrideReason: string | null; kmPolicy: string | null; kmOverrideReason: string | null; tariffSnapshot: unknown }) {
+  if (!booking.ratePlanId) return null;
+  const snap = readTariffSnapshot(booking.tariffSnapshot);
+  return {
+    agreedTotal: booking.agreedPriceCents != null ? booking.agreedPriceCents / 100 : null,
+    agreedTotalNote: booking.agreedPriceCents != null ? booking.priceOverrideReason : null,
+    kmPolicy: (booking.kmPolicy ?? snap?.km.policy ?? "FREE_KILOMETERS") as KmRule["policy"],
+    kmSource: (booking.kmOverrideReason ? "BOOKING" : "TARIFF") as RuleSource,
+  };
+}
+/** Tarif-Kilometerregel in die Vertragsregeln (außer der Vertrag hat bewusst eine individuelle Regel mit Beschreibung). */
+function withTariffKmPolicy(rules: ContractRules, terms: ReturnType<typeof tariffTermsOf>): ContractRules {
+  if (!terms || rules.sources.kmPolicy === "CONTRACT") return rules;
+  return { ...rules, values: { ...rules.values, kmPolicy: terms.kmPolicy, kmPolicyNote: null }, sources: { ...rules.sources, kmPolicy: terms.kmSource } };
 }
 
 /** Eingefrorene Mietbedingungen für einen neuen Entwurf: aktive Fassung, sonst (Altbestand) der Mandantentext. */
@@ -164,7 +195,7 @@ function depositFor(booking: BookingWithContext): ResolvedDeposit {
  * legt der Wizard die Kaution ausdrücklich fest – 0 heißt dort „keine Kaution“, nicht „Vorgabe“.
  */
 const initialDeposit = (booking: BookingWithContext, resolved: ResolvedDeposit) =>
-  booking.rentalType === "ACCIDENT_REPLACEMENT" || Math.round(Number(booking.deposit) * 100) > 0 ? Number(booking.deposit) : resolved.cents / 100;
+  booking.rentalType === "ACCIDENT_REPLACEMENT" || booking.ratePlanId || Math.round(Number(booking.deposit) * 100) > 0 ? Number(booking.deposit) : resolved.cents / 100;
 /** Befehl 29: Unfallersatz rechnet ohne Kundenrabatt ab – auch der Vertrag weist keinen Rabatt aus. */
 const contractDiscount = (booking: BookingWithContext) => (booking.rentalType === "ACCIDENT_REPLACEMENT" ? 0 : booking.customer.discountPercent);
 /**
@@ -208,10 +239,11 @@ export async function ensureContractDraft(tenantId: string, bookingId: string, a
         if (booking.status !== "RESERVED") throw new DomainError("Ein Mietvertrag wird nur für reservierte Buchungen angelegt.");
         const resolved = resolveFor(booking);
         const depositRule = depositFor(booking);
-        const rules = standardKmPolicy(initialContractRules(resolved, new Date(), depositRule), booking);
+        const tariffTerms = tariffTermsOf(booking);
+        const rules = withTariffKmPolicy(standardKmPolicy(initialContractRules(resolved, new Date(), depositRule), booking), tariffTerms);
         // Befehl 29: Unfallersatz-Vertrag immer mit offenem Ende („bis zur Rückgabe“); das geplante Ende bleibt Dispositionswert der Buchung
         const contractEnd = contractEndOf(booking);
-        const price = contractPrice({ ...booking, endAt: contractEnd }, contractDiscount(booking), null, null, { additionalDrivers: 0, rules: feeRules(rules) }, await accidentTariffFor(tx, tenantId, booking));
+        const price = contractPrice({ ...booking, endAt: contractEnd }, contractDiscount(booking), tariffTerms?.agreedTotal ?? null, tariffTerms?.agreedTotalNote ?? null, { additionalDrivers: 0, rules: feeRules(rules) }, await accidentTariffFor(tx, tenantId, booking));
         const terms = termsForNewDraft(booking.tenant, await activeTermsVersion(tx, tenantId));
         const number = await nextContractNumber(tx, tenantId, booking.startAt);
         const contract = await tx.rentalContract.create({
@@ -229,6 +261,7 @@ export async function ensureContractDraft(tenantId: string, bookingId: string, a
             totalAmount: price.finalTotal,
             discountPercent: price.discountPercent,
             deposit: initialDeposit(booking, depositRule),
+            ...(tariffTerms ? { agreedTotal: tariffTerms.agreedTotal, agreedTotalNote: tariffTerms.agreedTotalNote } : {}),
             pickupLocation: defaultPickupLocation(booking.tenant),
             // Befehl 20.7: Kilometervereinbarung der Buchung (sonst Fahrzeugwert) – eine Quelle bis zur Rückgabe
             kmIncludedPerDay: booking.kmIncludedPerDay ?? booking.vehicle.kmIncludedPerDay,
@@ -302,11 +335,16 @@ export async function refreshContractDraft(tx: Tx, tenantId: string, contractId:
   const depositRule = depositFor(booking);
   if (!rules || vehicleChanged) rules = initialContractRules(resolveFor(booking), new Date(), depositRule);
   rules = standardKmPolicy(rules, booking);
+  const tariffTerms = tariffTermsOf(booking);
+  rules = withTariffKmPolicy(rules, tariffTerms);
   const additionalDrivers = await tx.contractDriver.count({ where: { tenantId, contractId, role: "ADDITIONAL_DRIVER" } });
   const contractEnd = contractEndOf(booking);
   // Phase E: Unfallersatz – kein abweichender Gesamtpreis; Tarifpositionen der Fallakte werden im Entwurf laufend übernommen
   const accident = booking.rentalType === "ACCIDENT_REPLACEMENT";
-  const price = contractPrice({ ...booking, endAt: contractEnd }, contractDiscount(booking), accident ? null : toNumber(contract.agreedTotal), accident ? null : contract.agreedTotalNote, { additionalDrivers, rules: feeRules(rules) }, await accidentTariffFor(tx, tenantId, booking));
+  // Befehl 29: Tarifbuchung → vereinbarter Preis aus der Buchung (führende Quelle bis zur Unterschrift)
+  const agreedTotal = accident ? null : tariffTerms ? tariffTerms.agreedTotal : toNumber(contract.agreedTotal);
+  const agreedTotalNote = accident ? null : tariffTerms ? tariffTerms.agreedTotalNote : contract.agreedTotalNote;
+  const price = contractPrice({ ...booking, endAt: contractEnd }, contractDiscount(booking), agreedTotal, agreedTotalNote, { additionalDrivers, rules: feeRules(rules) }, await accidentTariffFor(tx, tenantId, booking));
   // Mietbedingungen: ein versionierter Entwurf wechselt nie von selbst. Ohne Fassung (Altbestand, noch nicht bestätigt)
   // wird die aktive Fassung übernommen; ohne veröffentlichte Fassung gilt weiter der bisherige Mandantentext.
   const featureActive = await termsFeatureActive(tx, tenantId);
@@ -337,7 +375,9 @@ export async function refreshContractDraft(tx: Tx, tenantId: string, contractId:
       ...(booking.kmIncludedPerDay != null ? { kmIncludedPerDay: booking.kmIncludedPerDay } : vehicleChanged ? { kmIncludedPerDay: booking.vehicle.kmIncludedPerDay } : {}),
       ...(booking.extraKmRate != null ? { extraKmRate: booking.extraKmRate } : vehicleChanged ? { extraKmRate: booking.vehicle.extraKmRate } : {}),
       // Unfallersatz: die Kaution legt der Fall fest (0 = keine) – kein Rückfall auf die Vorgabe
-      ...(vehicleChanged ? { deductible: (rules.values.deductibleCents ?? 0) / 100, fuelPolicy: rules.values.fuelRule, ...(accident ? {} : { deposit: depositRule.cents / 100 }) } : {}),
+      ...(vehicleChanged ? { deductible: (rules.values.deductibleCents ?? 0) / 100, fuelPolicy: rules.values.fuelRule, ...(accident || tariffTerms ? {} : { deposit: depositRule.cents / 100 }) } : {}),
+      // Befehl 29: Tarifbuchung – Kaution und vereinbarter Preis stehen in der Buchung (Abweichungen nur dort mit Grund)
+      ...(tariffTerms ? { deposit: booking.deposit, agreedTotal: tariffTerms.agreedTotal, agreedTotalNote: tariffTerms.agreedTotalNote } : {}),
       // Befehl 21: Entwurf ohne Abholort übernimmt die Anschrift des Vermieters (kein falscher Hinweis „Kein Abholort“)
       ...(contract.pickupLocation == null && defaultPickupLocation(booking.tenant) ? { pickupLocation: defaultPickupLocation(booking.tenant) } : {}),
       conditions: rules as unknown as Prisma.InputJsonValue,
@@ -627,6 +667,19 @@ export async function saveConditions(tenantId: string, contractId: string, input
       const conflicts = await findConflicts(tx, tenantId, booking.vehicleId, input.startAt, nextEnd, booking.id);
       if (conflicts.length > 0) throw new DomainError(`Der neue Zeitraum überschneidet sich mit Buchung ${conflicts[0].number}. ${booking.vehicle.plate} ist dann bereits vergeben.`);
     }
+    // Befehl 29: Tarifbuchung – Mietpreis, Kaution und Kilometer weichen nur in der Buchung (mit Grund und Audit) vom Tarif ab,
+    // nicht still im Vertrag. Ein Zeitraum mit individuell vereinbartem Preis wird über „Zeitraum ändern“ angepasst (Preisentscheidung).
+    if (booking.ratePlanId) {
+      const differs = (a: unknown, b: unknown) => Math.round(Number(a ?? 0) * 100) !== Math.round(Number(b ?? 0) * 100);
+      const agreedNow = booking.agreedPriceCents != null ? booking.agreedPriceCents / 100 : null;
+      if ((input.agreedTotal ?? null) !== agreedNow && !(input.agreedTotal != null && agreedNow != null && !differs(input.agreedTotal, agreedNow)))
+        throw new DomainError("Der Mietpreis dieser Tarifbuchung wird in der Buchung festgelegt (Tarifpreis oder individueller Preis mit Grund). Bitte dort ändern.");
+      if (differs(input.deposit, booking.deposit)) throw new DomainError("Die Kaution dieser Tarifbuchung wird in der Buchung festgelegt (Tarifkaution oder abweichend mit Grund). Bitte dort ändern.");
+      if (Math.round(input.kmIncludedPerDay) !== (booking.kmIncludedPerDay ?? 0) || differs(input.extraKmRate, booking.extraKmRate))
+        throw new DomainError("Die Kilometervereinbarung dieser Tarifbuchung wird in der Buchung festgelegt (Tarifregel oder abweichend mit Grund). Bitte dort ändern.");
+      if (input.rules?.kmPolicy && input.rules.kmPolicy !== booking.kmPolicy) throw new DomainError("Die Kilometerregel dieser Tarifbuchung wird in der Buchung festgelegt. Bitte dort ändern.");
+      if (booking.agreedPriceCents != null && periodChanged) throw new DomainError("Für diese Buchung ist ein individueller Mietpreis vereinbart. Den Zeitraum bitte über „Zeitraum ändern“ anpassen – dort wird über den Preis bewusst entschieden.");
+    }
     // Befehl 20.9: wurde die Kaution schon bei der Buchung als erhalten dokumentiert, ist der vereinbarte Betrag fest
     const depositConflict = await depositAgreedAmountConflict(tx, tenantId, booking.id, Math.round(input.deposit * 100));
     if (depositConflict) throw new DomainError(depositConflict);
@@ -658,8 +711,7 @@ export async function saveConditions(tenantId: string, contractId: string, input
         fuelPolicy: input.fuelPolicy,
         fuelPolicyNote: input.fuelPolicy === "OTHER" ? input.fuelPolicyNote!.trim() : null,
         fuelPricePerLiter: input.fuelPricePerLiter ?? null,
-        agreedTotal: input.agreedTotal ?? null,
-        agreedTotalNote: input.agreedTotal != null ? input.agreedTotalNote!.trim() : null,
+        ...(booking.ratePlanId ? {} : { agreedTotal: input.agreedTotal ?? null, agreedTotalNote: input.agreedTotal != null ? input.agreedTotalNote!.trim() : null }),
         pickupLocation: input.pickupLocation?.trim() || null,
         returnLocation: input.returnLocation?.trim() || null,
         internalNote: input.internalNote?.trim() || null,

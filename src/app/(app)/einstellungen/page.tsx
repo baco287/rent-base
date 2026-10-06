@@ -57,6 +57,7 @@ export default async function SettingsPage({ searchParams }: PageProps<"/einstel
               <div className="flex flex-wrap gap-2">
                 <Link href="/einstellungen/mietbedingungen" className="btn btn-primary">Mietbedingungen und Fassungen</Link>
                 <Link href="/einstellungen/geschaeftsregeln" className="btn">Geschäftsregeln</Link>
+                <Link href="/einstellungen/tarife" className="btn">Miettarife</Link>
               </div>
               <p className="text-xs text-ink-3">Mietbedingungen sind der juristische Text (versioniert, unveränderlich nach Veröffentlichung). Geschäftsregeln sind operative Standardwerte wie Kaution, Kilometer, Tanken, Ausland – sie ersetzen den Text nicht.</p>
             </div>

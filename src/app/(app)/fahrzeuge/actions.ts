@@ -39,13 +39,7 @@ const vehicleSchema = z.object({
   mileageCorrectionReason: optStr,
   huDate: optDate,
   requiredLicenseClass: optStr,
-  dailyRate: num("Tagespreis muss eine Zahl sein.").pipe(z.number().min(0)),
-  workWeekRate: z.preprocess((v) => (v === "" ? undefined : v), num("Wochenpreis (5 Tage) muss eine Zahl sein.").optional()),
-  weeklyRate: z.preprocess((v) => (v === "" ? undefined : v), num("Kalenderwochenpreis muss eine Zahl sein.").optional()),
-  monthlyRate: z.preprocess((v) => (v === "" ? undefined : v), num("Monatspreis muss eine Zahl sein.").optional()),
-  kmIncludedPerDay: num("Freikilometer müssen eine Zahl sein.").pipe(z.number().int().min(0)),
-  extraKmRate: num("Mehrkilometer-Preis muss eine Zahl sein.").pipe(z.number().min(0)),
-  deposit: num("Kaution muss eine Zahl sein.").pipe(z.number().min(0)),
+  // Befehl 29: Preise, Kilometer und Kaution kommen aus den Miettarifen; die Altfelder am Fahrzeug werden nicht mehr gepflegt
   notes: optStr,
 });
 
@@ -60,9 +54,6 @@ function toData(raw: z.infer<typeof vehicleSchema>) {
     year: d.year ?? null,
     huDate: d.huDate ?? null,
     requiredLicenseClass: d.requiredLicenseClass ?? null,
-    workWeekRate: d.workWeekRate ?? null,
-    weeklyRate: d.weeklyRate ?? null,
-    monthlyRate: d.monthlyRate ?? null,
     notes: d.notes ?? null,
   };
 }

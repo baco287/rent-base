@@ -10,18 +10,24 @@ import { customerName, fmtDateTime } from "@/lib/format";
 import { customerFieldsFromForm, customerSchema, customerToData } from "@/lib/customer-schema";
 import { nextCustomerNumber, withNumberRetry } from "@/lib/numbering";
 import { changeBookingStatus } from "@/lib/booking-status";
-import { changeBookingPeriod, previewBookingPeriodChange } from "@/lib/booking-period";
+import { changeBookingPeriod, previewBookingPeriodChange, type PeriodPriceDecision } from "@/lib/booking-period";
 import { cancelBooking, previewCancellation, type CancellationInput } from "@/lib/cancellation";
 import { sendCancellationConfirmation } from "@/lib/cancellation-mail";
 import { ensureCancellationDocument } from "@/lib/documents";
 import { runCancellationFollowUp } from "@/lib/followup";
-import { fmtCents } from "@/lib/money";
+import { fmtCents, toCents } from "@/lib/money";
 import { DomainError } from "@/lib/integrity";
 import { getStorage } from "@/lib/storage";
 import { parseLocalDateTime } from "@/lib/time";
 import { PAYMENT_METHODS, RENTAL_PAYMENT_INTENTS, type RentalPaymentIntent } from "@/lib/constants";
 import { insertRentalPayment, parseRentalAmount, type RentalPaymentInput } from "@/lib/rental-payments";
-import { checkReceiveInput, insertDepositReceived, type ReceiveInput } from "@/lib/deposits";
+import { checkReceiveInput, depositAgreedAmountConflict, insertDepositReceived, type ReceiveInput } from "@/lib/deposits";
+import { recordAudit } from "@/lib/audit";
+import { refreshContractDraft } from "@/lib/contracts";
+import { describePrice } from "@/lib/pricing";
+import { bookingQuote } from "@/lib/booking-price";
+import { bookingTariffFor, choicesOf, keepBookingTariff, kmRuleText, priceSourceText, quoteTariff, readTariffSnapshot, vehicleTariffs, type BookingTariffResult, type TariffChoices } from "@/lib/tariffs";
+import { tariffChoicesFromForm, tariffSelectionFromForm } from "./tariff-form-data";
 
 export type FormState = { error?: string } | undefined;
 
@@ -74,20 +80,15 @@ function initialPaymentFromForm(formData: FormData): { intent: RentalPaymentInte
   return { intent, input: { amount, method, paidAt, reference: text("payReference", 120), note: text("payNote", 500), idempotencyKey: nonce } };
 }
 
-const num = z.preprocess((v) => (typeof v === "string" ? v.replace(",", ".").trim() : v), z.coerce.number().min(0));
 const optStr = z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.string().trim().optional());
 
+// Befehl 29: Mietpreis, Kaution und Kilometer kommen aus dem gewählten Miettarif (Abweichungen nur mit Grund, siehe tariff-form-data)
 const bookingSchema = z
   .object({
     vehicleId: z.string().min(1, "Bitte ein Fahrzeug wählen."),
     customerId: z.string().optional(),
     startAt: z.preprocess(parseLocalDateTime, z.date({ message: "Bitte Abholung mit Datum und Uhrzeit angeben." })),
     endAt: z.preprocess(parseLocalDateTime, z.date({ message: "Bitte Rückgabe mit Datum und Uhrzeit angeben." })),
-    dailyRate: num,
-    deposit: num,
-    // Befehl 20.7: Kilometervereinbarung der Buchung (Vorschlag aus dem Fahrzeug, hier änderbar)
-    kmIncludedPerDay: z.preprocess((v) => (typeof v === "string" ? v.replace(/\./g, "").trim() : v), z.coerce.number({ message: "Freikilometer: bitte eine Zahl ab 0 eingeben." }).int("Freikilometer: bitte eine ganze Zahl eingeben.").min(0, "Freikilometer: bitte einen Wert ab 0 eingeben.")),
-    extraKmRate: z.preprocess((v) => (typeof v === "string" ? v.replace(",", ".").trim() : v), z.coerce.number({ message: "Mehrkilometerpreis: bitte eine Zahl ab 0 eingeben." }).min(0, "Mehrkilometerpreis: bitte einen Wert ab 0 eingeben.")),
     notes: optStr,
   })
   .refine((d) => d.endAt > d.startAt, { message: "Die Rückgabe muss nach der Abholung liegen.", path: ["endAt"] });
@@ -128,7 +129,11 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
   if ("error" in pay) return pay;
   const dep = initialDepositFromForm(formData);
   if ("error" in dep) return dep;
-  if (dep.input && Math.round(d.deposit * 100) <= 0) return { error: "Kaution: Ohne vereinbarte Kaution (Betrag 0) kann kein Eingang dokumentiert werden." };
+  const selection = tariffSelectionFromForm(formData);
+  if ("error" in selection) return selection;
+  if (selection.mode !== "PLAN") return { error: "Bitte einen Miettarif wählen." };
+  const choices = tariffChoicesFromForm(formData);
+  if ("error" in choices) return choices;
 
   // Kunde direkt in der Buchung anlegen: Kundendaten kommen mit Präfix "c_"
   const newCustomer = formData.get("customerMode") === "new";
@@ -152,17 +157,18 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
       return { error: `Doppelbelegung: ${refs.vehicle.plate} ist von ${fmtDateTime(c.startAt)} bis ${occupiedUntilText({ ...c, agreedEndAt: agreedEndOf(c) })} an ${customerName(c.customer)} vergeben (Nr. ${c.number})${agreedEndOf(c) ? " – Verlängerung vereinbart, Unterschrift ausstehend" : ""}.` };
     }
     // Erst nach bestandener Konfliktprüfung den Kunden anlegen, damit bei Ablehnung kein Kunde übrig bleibt.
+    // Befehl 29: Tarif unter Sperre auflösen; hat er sich seit der Vorschau geändert, wird nichts gespeichert (keine versteckte Preisänderung)
+    const actor = { id: user.id, name: user.name };
+    const discount = customerData ? customerData.discountPercent ?? 0 : refs.customer?.discountPercent ?? 0;
+    const tariff = await bookingTariffFor(tx, tenant.id, actor, { vehicleId: d.vehicleId, ratePlanId: selection.ratePlanId, startAt: d.startAt, endAt: d.endAt, discountPercent: discount, choices, previous: null, seenRevisionId: selection.seenRevisionId, seenRegularCents: selection.seenRegularCents });
+    if (dep.input && tariff.data.deposit <= 0) return { error: "Kaution: Ohne vereinbarte Kaution (Betrag 0) kann kein Eingang dokumentiert werden." };
     const customerId = customerData ? (await tx.customer.create({ data: { tenantId: tenant.id, number: await nextCustomerNumber(tx, tenant.id), ...customerData } })).id : d.customerId!;
     const number = await nextBookingNumber(tx, tenant.id, d.startAt);
     const b = await tx.booking.create({
-      data: {
-        tenantId: tenant.id, number, vehicleId: d.vehicleId, customerId, startAt: d.startAt, endAt: d.endAt, dailyRate: d.dailyRate, deposit: d.deposit, notes: d.notes ?? null,
-        kmIncludedPerDay: d.kmIncludedPerDay, extraKmRate: d.extraKmRate,
-        // Preisstufen des Fahrzeugs zum Buchungszeitpunkt festhalten
-        workWeekRate: refs.vehicle.workWeekRate, weeklyRate: refs.vehicle.weeklyRate, monthlyRate: refs.vehicle.monthlyRate,
-      },
+      data: { tenantId: tenant.id, number, vehicleId: d.vehicleId, customerId, startAt: d.startAt, endAt: d.endAt, notes: d.notes ?? null, ...tariff.data },
     });
     id = b.id;
+    for (const a of tariff.audits) await recordAudit(tx, tenant.id, actor, { ...a, bookingId: b.id });
     // Erste Mietzahlung in derselben Transaktion: wird sie abgelehnt (z. B. Überzahlung), entsteht auch keine Buchung
     if (pay.input) await insertRentalPayment(tx, tenant.id, { id: user.id, name: user.name }, b.id, pay.input, { expectFull: pay.intent === "FULL" });
     // Befehl 20.9: Kautionseingang in derselben Transaktion über die bestehende Kautionserfassung – vereinbart ist die Kaution der
@@ -178,10 +184,14 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
 }
 
 export async function updateBookingAction(id: string, _prev: FormState, formData: FormData): Promise<FormState> {
-  const { tenant } = await requireRole("DISPO");
+  const { tenant, user } = await requireRole("DISPO");
   const parsed = bookingSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   const d = parsed.data;
+  const selection = tariffSelectionFromForm(formData);
+  if ("error" in selection) return selection;
+  const choices = tariffChoicesFromForm(formData);
+  if ("error" in choices) return choices;
 
   const existing = await db.booking.findFirst({ where: { id, tenantId: tenant.id } });
   if (!existing) return { error: "Buchung nicht gefunden." };
@@ -206,16 +216,35 @@ export async function updateBookingAction(id: string, _prev: FormState, formData
       const c = conflicts[0];
       return { error: `Doppelbelegung: ${refs.vehicle.plate} ist von ${fmtDateTime(c.startAt)} bis ${occupiedUntilText({ ...c, agreedEndAt: agreedEndOf(c) })} an ${customerName(c.customer)} vergeben (Nr. ${c.number})${agreedEndOf(c) ? " – Verlängerung vereinbart, Unterschrift ausstehend" : ""}.` };
     }
-    await tx.booking.update({
-      where: { id },
-      data: {
-        vehicleId: d.vehicleId, customerId: d.customerId!, dailyRate: d.dailyRate, deposit: d.deposit, notes: d.notes ?? null,
-        // Kilometervereinbarung: immer der eingegebene Wert (auch bei Fahrzeugwechsel – das Formular schlägt die Fahrzeugwerte nur vor)
-        kmIncludedPerDay: d.kmIncludedPerDay, extraKmRate: d.extraKmRate,
-        // Nur bei Fahrzeugwechsel die Stufen des neuen Fahrzeugs übernehmen, sonst bleibt der Snapshot der Buchung
-        ...(existing.vehicleId !== d.vehicleId ? { workWeekRate: refs.vehicle.workWeekRate, weeklyRate: refs.vehicle.weeklyRate, monthlyRate: refs.vehicle.monthlyRate } : {}),
-      },
-    });
+    // Befehl 29: Tarif der Buchung. „KEEP“ = eingefrorenen Tarif behalten (nur Abweichungen ändern), „LEGACY“ = Buchung ohne Tarif
+    // unverändert lassen, sonst bewusst (neuen) Tarif übernehmen. Ein Fahrzeugwechsel braucht immer eine neue Tarifauflösung.
+    const actor = { id: user.id, name: user.name };
+    const vehicleChanged = existing.vehicleId !== d.vehicleId;
+    const previous = readTariffSnapshot(existing.tariffSnapshot);
+    const discount = refs.customer?.discountPercent ?? 0;
+    let tariff: BookingTariffResult | null = null;
+    if (selection.mode === "LEGACY") {
+      if (existing.ratePlanId || vehicleChanged) return { error: "Bitte einen Miettarif wählen." };
+    } else if (selection.mode === "KEEP") {
+      if (!previous || vehicleChanged) return { error: "Bitte einen Miettarif wählen." };
+      tariff = keepBookingTariff(previous, { startAt: existing.startAt, endAt: existingEnd, discountPercent: discount, choices, actor });
+    } else {
+      // bewusste Entscheidung über einen vereinbarten Sonderpreis bei Tarif- oder Fahrzeugwechsel (nie still übernehmen)
+      if (previous?.agreed.price && choices.price.mode === "INDIVIDUAL" && formData.get("priceConfirm") !== "KEEP") return { error: "Für diese Buchung wurde ein individueller Preis vereinbart. Bitte bestätigen: individuellen Preis beibehalten oder neuen Tarifpreis übernehmen." };
+      tariff = await bookingTariffFor(tx, tenant.id, actor, { vehicleId: d.vehicleId, ratePlanId: selection.ratePlanId, startAt: existing.startAt, endAt: existingEnd, discountPercent: discount, choices, previous, seenRevisionId: selection.seenRevisionId, seenRegularCents: selection.seenRegularCents });
+    }
+    if (tariff) {
+      // Befehl 20.9: eine bei der Buchung als erhalten dokumentierte Kaution legt den vereinbarten Betrag fest
+      const conflict = await depositAgreedAmountConflict(tx, tenant.id, id, Math.round(tariff.data.deposit * 100));
+      if (conflict) return { error: conflict };
+    }
+    await tx.booking.update({ where: { id }, data: { vehicleId: d.vehicleId, customerId: d.customerId!, notes: d.notes ?? null, ...(tariff?.data ?? {}) } });
+    for (const a of tariff?.audits ?? []) await recordAudit(tx, tenant.id, actor, { ...a, bookingId: id });
+    // ein Vertragsentwurf übernimmt Preis, Kaution und Kilometer der Buchung (führende Quelle bis zur Unterschrift)
+    if (contract?.status === "DRAFT") {
+      const c = await tx.rentalContract.findFirst({ where: { bookingId: id, tenantId: tenant.id }, select: { id: true } });
+      if (c) await refreshContractDraft(tx, tenant.id, c.id);
+    }
     return undefined;
   }).catch((e) => (e instanceof DomainError ? { error: e.message } : Promise.reject(e)));
   if (result?.error) return result;
@@ -342,7 +371,7 @@ export async function sendCancellationAction(id: string, _prev: CancelState, for
   }
 }
 
-export type PeriodPreviewResult = { error: string | null; before: { range: string; days: number; price: string }; after: { range: string; days: number; price: string; diff: string } | null; paid: string; overpaid: boolean };
+export type PeriodPreviewResult = { error: string | null; before: { range: string; days: number; price: string }; after: { range: string; days: number; price: string; diff: string } | null; paid: string; overpaid: boolean; /** Befehl 29: individuell vereinbarter Preis → Entscheidung Pflicht */ agreed: { price: string; reason: string } | null; tariffName: string | null };
 
 /** Befehl 28: Zeitraum vor der Vertragsunterschrift – Vorschau (alt/neu, Preis, Verfügbarkeit). */
 export async function previewPeriodChangeAction(id: string, formData: FormData): Promise<PeriodPreviewResult> {
@@ -354,7 +383,9 @@ export async function previewPeriodChangeAction(id: string, formData: FormData):
     before: { range: range(p.before.startAt, p.before.endAt), days: p.before.days, price: fmtCents(p.before.priceCents) },
     after: p.after ? { range: range(p.after.startAt, p.after.endAt), days: p.after.days, price: fmtCents(p.after.priceCents), diff: `${p.after.priceCents - p.before.priceCents >= 0 ? "+" : "−"}${fmtCents(Math.abs(p.after.priceCents - p.before.priceCents))}` } : null,
     paid: fmtCents(p.paidCents),
-    overpaid: !!p.after && p.paidCents > p.after.priceCents,
+    overpaid: !!p.after && p.paidCents > (p.agreed ? p.agreed.cents : p.after.priceCents),
+    agreed: p.agreed ? { price: fmtCents(p.agreed.cents), reason: p.agreed.reason } : null,
+    tariffName: p.tariffName,
   };
 }
 
@@ -364,7 +395,16 @@ export async function changePeriodAction(id: string, _prev: CancelState, formDat
   const endAt = parseLocalDateTime(str(formData, "endAt"));
   if (!startAt || !endAt) return { error: "Bitte Abholung und Rückgabe mit Datum und Uhrzeit angeben." };
   try {
-    await changeBookingPeriod(tenant.id, { id: user.id, name: user.name }, id, { startAt, endAt, reason: str(formData, "reason") });
+    // Befehl 29: Preisentscheidung bei individuell vereinbartem Preis (behalten / Tarifpreis / neuer Preis mit Grund)
+    const mode = str(formData, "priceDecision");
+    let priceDecision: PeriodPriceDecision | null = null;
+    if (mode === "KEEP" || mode === "TARIFF") priceDecision = { mode };
+    else if (mode === "INDIVIDUAL") {
+      const c = (() => { try { return toCents(str(formData, "newPrice")); } catch { return null; } })();
+      if (c == null || c < 0) return { error: "Neuer Mietpreis: bitte einen Betrag ab 0,00 € angeben." };
+      priceDecision = { mode: "INDIVIDUAL", cents: c, reason: str(formData, "newPriceReason") };
+    }
+    await changeBookingPeriod(tenant.id, { id: user.id, name: user.name }, id, { startAt, endAt, reason: str(formData, "reason"), priceDecision });
   } catch (e) {
     if (e instanceof DomainError) return { error: e.message };
     throw e;
@@ -372,4 +412,79 @@ export async function changePeriodAction(id: string, _prev: CancelState, formDat
   revalidate(id);
   revalidatePath("/dispo");
   redirect(`/buchungen/${id}?zeitraum=1`);
+}
+
+/** Befehl 29: ein Tarifangebot für die Buchungsmaske (serverseitig berechnet – dieselbe Engine wie beim Speichern). */
+export type TariffOffer = {
+  ratePlanId: string;
+  revisionId: string;
+  revision: number;
+  name: string;
+  code: string | null;
+  regularCents: number;
+  priceText: string;
+  days: number;
+  kmPolicy: "FREE_KILOMETERS" | "UNLIMITED";
+  kmText: string;
+  includedKm: number | null;
+  extraKmRateCents: number | null;
+  depositCents: number;
+  isDefault: boolean;
+  priceSource: string;
+};
+export type TariffQuoteResult = {
+  offers: TariffOffer[];
+  defaultRatePlanId: string | null;
+  days: number;
+  discountPercent: number;
+  problem: string | null;
+  /** bestehende Tarifbuchung: eingefrorener Tarif für den Zeitraum der Buchung */
+  current: (Omit<TariffOffer, "isDefault" | "priceSource"> & { stale: boolean; agreedCents: number | null; agreedReason: string | null; kmAgreed: string | null; kmReason: string | null; depositAgreedCents: number | null; depositReason: string | null }) | null;
+};
+
+/** Preisvorschau aller aktiven Tarife eines Fahrzeugs für einen Zeitraum (OWNER/DISPO). Nichts wird gespeichert. */
+export async function quoteTariffsAction(input: { vehicleId: string; startAt: string; endAt: string; customerId?: string | null; bookingId?: string | null }): Promise<TariffQuoteResult> {
+  const { tenant } = await requireRole("DISPO");
+  const empty = (problem: string | null): TariffQuoteResult => ({ offers: [], defaultRatePlanId: null, days: 0, discountPercent: 0, problem, current: null });
+  const startAt = parseLocalDateTime(input.startAt);
+  const endAt = parseLocalDateTime(input.endAt);
+  if (!input.vehicleId) return empty("Bitte zuerst ein Fahrzeug wählen.");
+  if (!startAt || !endAt || !(endAt > startAt)) return empty("Bitte Abholung und Rückgabe angeben (Rückgabe nach der Abholung).");
+  const customer = input.customerId ? await db.customer.findFirst({ where: { id: input.customerId, tenantId: tenant.id }, select: { discountPercent: true } }) : null;
+  const discountPercent = customer?.discountPercent ?? 0;
+  let vt;
+  try {
+    vt = await vehicleTariffs(tenant.id, input.vehicleId);
+  } catch (e) {
+    if (e instanceof DomainError) return empty(e.message);
+    throw e;
+  }
+  const offers: TariffOffer[] = vt.bases.map((b) => {
+    const q = quoteTariff(b, startAt, endAt, discountPercent);
+    return { ratePlanId: b.ratePlanId, revisionId: b.revisionId, revision: b.revision, name: b.ratePlanName, code: b.ratePlanCode, regularCents: q.regularCents, priceText: describePrice(q.breakdown), days: q.days, kmPolicy: b.km.policy, kmText: kmRuleText(b.km), includedKm: q.includedKm, extraKmRateCents: b.km.extraKmRateCents, depositCents: b.depositCents, isDefault: b.ratePlanId === vt.defaultRatePlanId, priceSource: priceSourceText(b) };
+  });
+  let current: TariffQuoteResult["current"] = null;
+  if (input.bookingId) {
+    const bk = await db.booking.findFirst({ where: { id: input.bookingId, tenantId: tenant.id } });
+    const snap = bk ? readTariffSnapshot(bk.tariffSnapshot) : null;
+    if (bk && snap && bk.vehicleId === input.vehicleId && bk.endAt) {
+      const q = bookingQuote(bk, bk.startAt, bk.endAt, discountPercent);
+      const live = vt.bases.find((b) => b.ratePlanId === snap.ratePlanId);
+      current = {
+        ratePlanId: snap.ratePlanId, revisionId: snap.revisionId, revision: snap.revision, name: snap.ratePlanName, code: snap.ratePlanCode, regularCents: q.regularCents, priceText: describePrice(q.breakdown), days: q.days,
+        kmPolicy: snap.km.policy, kmText: kmRuleText(snap.km), includedKm: snap.km.policy === "UNLIMITED" ? null : q.days * (snap.km.kmIncludedPerDay ?? 0), extraKmRateCents: snap.km.extraKmRateCents, depositCents: snap.deposit.cents,
+        stale: !live || live.revisionId !== snap.revisionId || JSON.stringify(live.tiers) !== JSON.stringify(snap.tiers),
+        agreedCents: snap.agreed.price?.cents ?? null, agreedReason: snap.agreed.price?.reason ?? null,
+        kmAgreed: snap.agreed.km ? kmRuleText(snap.agreed.km) : null, kmReason: snap.agreed.km?.reason ?? null,
+        depositAgreedCents: snap.agreed.deposit?.cents ?? null, depositReason: snap.agreed.deposit?.reason ?? null,
+      };
+    }
+  }
+  return { offers, defaultRatePlanId: vt.defaultRatePlanId, days: offers[0]?.days ?? 0, discountPercent, problem: vt.problem, current };
+}
+
+/** Für das Formular einer bestehenden Buchung: bisherige Abweichungen als Vorbelegung. */
+export async function bookingChoicesFor(tenantId: string, bookingId: string): Promise<TariffChoices> {
+  const bk = await db.booking.findFirst({ where: { id: bookingId, tenantId }, select: { tariffSnapshot: true } });
+  return choicesOf(readTariffSnapshot(bk?.tariffSnapshot));
 }

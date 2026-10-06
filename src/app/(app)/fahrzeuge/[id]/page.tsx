@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireSession } from "@/lib/auth";
+import { VehicleRates } from "./vehicle-rates";
 import { db } from "@/lib/db";
 import { customerName, fmtDateTime, fmtInt, toDateInput } from "@/lib/format";
 import { BookingStatusChip, Card, Chip, Content, PageHeader, Plate, VehicleStatusChip } from "@/components/ui";
@@ -94,6 +95,7 @@ export default async function VehiclePage({ params, searchParams }: PageProps<"/
                 <ul className="divide-y divide-line-soft text-sm">{overview.open.slice(0, 5).map((r) => <li key={r.id} className="px-4 py-2 flex flex-wrap items-center gap-2"><Link href={`/fahrzeuge/wartung/${r.id}`} className="font-medium hover:underline">{r.title}</Link><span className="text-xs text-ink-3">{r.scheduledAt ? fmtDateTime(r.scheduledAt) : r.maintenanceNumber}</span></li>)}</ul>
               )}
             </Card>
+            <VehicleRates tenantId={tenant.id} vehicleId={vehicle.id} canEdit={user.role === "OWNER" && !supportSession} />
             <Card title="Letzte Buchungen" right={<Link href={href("vermietungen")} className="text-xs underline">alle</Link>}>
               {vehicle.bookings.length === 0 ? <p className="p-4 text-ink-3 text-sm">Noch keine Buchungen.</p> : (
                 <ul className="divide-y divide-line-soft">{vehicle.bookings.map((b) => <li key={b.id} className="px-4 py-2.5 flex items-center gap-3"><div className="flex-1 min-w-0"><Link href={`/buchungen/${b.id}`} className="font-medium hover:underline">{customerName(b.customer)}</Link><div className="text-xs text-ink-3 font-mono tnum">{fmtDateTime(b.startAt)} bis {fmtDateTime(b.endAt)}</div></div><BookingStatusChip status={b.status} /></li>)}</ul>

@@ -6,6 +6,7 @@ import { resolveRules } from "@/lib/business-rules";
 import { overrideValues } from "@/lib/business-rules-form";
 import { deleteGroupAction, updateGroupRulesAction } from "./actions";
 import { GroupForm } from "./forms";
+import { groupRatePlans } from "@/lib/tariff-admin";
 import { OverrideForm } from "../../einstellungen/geschaeftsregeln/rules-forms";
 
 export const metadata = { title: "Fahrzeuggruppen" };
@@ -19,6 +20,7 @@ export default async function GroupsPage({ searchParams }: PageProps<"/fahrzeuge
     include: { _count: { select: { vehicles: true } } },
   });
   const canEdit = user.role === "OWNER" || user.role === "DISPO";
+  const tariffsByGroup = await groupRatePlans(tenant.id);
   const inherited = resolveRules(tenant.businessRules, null, null).values;
   const dec = (v: { toString(): string } | null) => (v === null ? "" : v.toString().replace(".", ","));
 
@@ -29,8 +31,9 @@ export default async function GroupsPage({ searchParams }: PageProps<"/fahrzeuge
       </PageHeader>
       <Content>
         {sp.fehler === "belegt" && <Chip tone="bad">Die Gruppe enthält noch Fahrzeuge und kann deshalb nicht gelöscht werden.</Chip>}
+        {sp.fehler === "tarife" && <Chip tone="bad">Die Gruppe ist in Miettarifen (auch früheren Revisionen) enthalten und bleibt deshalb erhalten.</Chip>}
         <p className="text-sm text-ink-2 max-w-[70ch]">
-          Gruppen ordnen die Flotte, zum Beispiel Transporter 3,5 t, Kompaktklasse, Kombi. Die Preise der Gruppe werden beim Anlegen eines Fahrzeugs vorgeschlagen und können je Fahrzeug abweichen. Die Reihenfolge bestimmt die Sortierung in Liste und Kalender.
+          Gruppen ordnen die Flotte, zum Beispiel Transporter 3,5 t, Kompaktklasse, Kombi. Preise, Kilometer und Kaution kommen aus den Miettarifen der Gruppe (Einstellungen → Miettarife); ein abweichender Fahrzeugpreis wird in der Fahrzeugakte gepflegt. Die Reihenfolge bestimmt die Sortierung in Liste und Kalender.
         </p>
 
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
@@ -47,6 +50,11 @@ export default async function GroupsPage({ searchParams }: PageProps<"/fahrzeuge
                 </>
               }
             >
+              <div className="px-4 pt-3 flex flex-wrap items-center gap-1.5 text-sm" aria-label="Miettarife der Gruppe">
+                <span className="label-xs">Miettarife</span>
+                {(tariffsByGroup.get(g.id) ?? []).length === 0 ? <span className="text-amber text-xs">kein Tarif – Buchungen erst nach Zuordnung möglich</span> : (tariffsByGroup.get(g.id) ?? []).map((t) => <Chip key={t.id} tone={t.id === g.defaultRatePlanId ? "info" : t.active ? "grey" : "grey"}>{t.name}{t.id === g.defaultRatePlanId ? " · Standard" : ""}{t.active ? "" : " (deaktiviert)"}</Chip>)}
+                <Link href="/einstellungen/tarife" className="text-xs underline ml-1">verwalten</Link>
+              </div>
               {canEdit ? (
                 <GroupForm
                   id={g.id}

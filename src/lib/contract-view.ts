@@ -156,6 +156,11 @@ export function buildContractDocument(contract: ContractWithDrivers, tenant: Ten
   const tariffView = tariff?.kind === "OPEN_END" ? tariff : null;
   const noDeposit = openEnd && !(Number(contract.deposit) > 0);
   const rules = readContractRules(contract.conditions);
+  // Befehl 29: Tarifvertrag – Tarifname und tatsächlich vereinbarter Preis; bei individuellem Preis keine Listenpreisrechnung und
+  // keine internen Gründe im Kundendokument (regulärer Preis und Grund bleiben intern im Preis-Snapshot)
+  const tariffName = p?.tariff?.ratePlanName ?? null;
+  const tariffAgreed = !!p?.tariff && p.agreedTotal != null;
+  const unlimitedKm = rules?.values.kmPolicy === "UNLIMITED";
   const termsFormat = contract.termsText ? ((contract.termsFormat === "MARKDOWN" ? "MARKDOWN" : "PLAIN") as "MARKDOWN" | "PLAIN") : null;
 
   const sections: DocSection[] = [
@@ -209,9 +214,10 @@ export function buildContractDocument(contract: ContractWithDrivers, tenant: Ten
       key: "conditions",
       title: "Konditionen",
       rows: [
+        ...(tariffName ? [row("Miettarif", tariffName)] : []),
         row("Kaution", noDeposit ? "keine Kaution vereinbart" : eur(contract.deposit)),
-        row("Freikilometer", openEnd ? `${contract.kmIncludedPerDay.toLocaleString("de-DE")} km je Miettag (gesamt: Freikilometer × tatsächliche Miettage)` : `${contract.kmIncludedPerDay.toLocaleString("de-DE")} km je Tag, gesamt ${(contract.kmIncludedPerDay * days).toLocaleString("de-DE")} km`),
-        row("Mehrkilometer", `${eur(contract.extraKmRate)} je km`),
+        ...(unlimitedKm ? [row("Kilometer", "unbegrenzt – keine Mehrkilometer")] : [row("Freikilometer", openEnd ? `${contract.kmIncludedPerDay.toLocaleString("de-DE")} km je Miettag (gesamt: Freikilometer × tatsächliche Miettage)` : `${contract.kmIncludedPerDay.toLocaleString("de-DE")} km je Tag, gesamt ${(contract.kmIncludedPerDay * days).toLocaleString("de-DE")} km`),
+        row("Mehrkilometer", `${eur(contract.extraKmRate)} je km`)]),
         row("Selbstbeteiligung", eur(contract.deductible)),
         row("Tankregelung", contract.fuelPolicy === "OTHER" ? `${label(FUEL_POLICIES, contract.fuelPolicy)}: ${contract.fuelPolicyNote ?? ""}` : label(FUEL_POLICIES, contract.fuelPolicy)),
         ...(contract.fuelPricePerLiter ? [row("Preis je fehlendem Liter", eur(contract.fuelPricePerLiter))] : []),
@@ -238,14 +244,16 @@ export function buildContractDocument(contract: ContractWithDrivers, tenant: Ten
       days,
       openEnd,
       durationText: openEnd ? "Mietende offen – Abrechnung nach tatsächlichen Miettagen" : `Mietdauer ${days} ${days === 1 ? "Tag" : "Tage"}`,
-      lines: tariffView
+      lines: tariffAgreed
+        ? [{ text: `Vereinbarter Mietpreis${tariffName ? ` (Tarif ${tariffName})` : ""}`, amount: eur(p.agreedTotal) }]
+        : tariffView
         ? tariffView.perDayLines.map((l, i) => ({ text: i === 0 ? "Mietpreis je Miettag (Tagessatz)" : `${l.label} je Miettag`, amount: cents(l.cents)! }))
         : (p?.lines ?? []).map((l) => ({ text: `${l.quantity} × ${l.label} zu ${eur(l.unitPrice)}`, amount: eur(l.amount) })),
       subtotalLabel: tariffView ? "Summe je Miettag" : "Zwischensumme",
-      subtotal: tariffView ? cents(tariffView.perDayCents)! : eur(p?.subtotal),
-      discount: p && p.discountPercent > 0 ? { text: `Rabatt ${p.discountPercent} %`, amount: `−${eur(p.discountAmount)}` } : null,
-      calculated: tariffView ? "nach tatsächlicher Mietdauer" : eur(p?.total),
-      agreed: p?.agreedTotal != null ? { text: `Abweichend vereinbart${p.agreedTotalNote ? `: ${p.agreedTotalNote}` : ""}`, amount: eur(p.agreedTotal) } : null,
+      subtotal: tariffAgreed ? eur(p.agreedTotal) : tariffView ? cents(tariffView.perDayCents)! : eur(p?.subtotal),
+      discount: !tariffAgreed && p && p.discountPercent > 0 ? { text: `Rabatt ${p.discountPercent} %`, amount: `−${eur(p.discountAmount)}` } : null,
+      calculated: tariffAgreed ? eur(p.agreedTotal) : tariffView ? "nach tatsächlicher Mietdauer" : eur(p?.total),
+      agreed: !tariffAgreed && p?.agreedTotal != null ? { text: `Abweichend vereinbart${p.agreedTotalNote ? `: ${p.agreedTotalNote}` : ""}`, amount: eur(p.agreedTotal) } : null,
       extras: tariffView
         ? tariffView.oneOffLines.map((l) => ({ text: `${l.label} (${l.detail})`, amount: cents(l.cents)! }))
         : (p?.extras ?? []).map((e) => ({ text: `${e.quantity} × ${e.label} zu ${eur(e.unitPrice)}`, amount: eur(e.amount) })),

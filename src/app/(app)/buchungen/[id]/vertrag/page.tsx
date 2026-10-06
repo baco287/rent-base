@@ -10,6 +10,7 @@ import { pickupAction } from "@/lib/booking-status";
 import { startPickupAction } from "../uebergabe/actions";
 import { DRIVER_ROLES, FUELS, RULE_SOURCES, VEHICLE_STATUS, driveClassOf, type Fuel, type VehicleStatus } from "@/lib/constants";
 import { sourceText, type RuleKey } from "@/lib/business-rules";
+import { readTariffSnapshot } from "@/lib/tariffs";
 import { ContractTermsText } from "@/components/terms-view";
 import { customerName, fmtDate, fmtDateTime, fmtEur, fmtInt, toDateInput, toDateTimeInput } from "@/lib/format";
 import { Card, Chip, Content, Field, PageHeader, Plate } from "@/components/ui";
@@ -88,6 +89,11 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
   const sourceOf = (key: RuleKey) => snap?.sources[key] ?? rules.resolved.sources[key];
   const sourceLabel = (key: string) => sourceText(sourceOf(key as RuleKey), { groupName: rules.resolved.groupName, vehiclePlate: rules.resolved.vehiclePlate });
   const badge = (key: string) => <span className="text-[11px] text-ink-3">Quelle: {sourceLabel(key)}</span>;
+  // Befehl 29: Tarifbuchung – Preis, Kaution und Kilometer stehen in der Buchung (Abweichung dort mit Grund), hier nur Anzeige
+  const tariffLocked = Boolean(booking.ratePlanId);
+  const tariffName = tariffLocked ? readTariffSnapshot(booking.tariffSnapshot)?.ratePlanName ?? null : null;
+  /** Quelle bei Tarifbuchungen: Miettarif oder – mit Grund in der Buchung – individuell vereinbart */
+  const tariffSource = (overridden: boolean) => (overridden ? "Buchung (individuell vereinbart)" : `Miettarif${tariffName ? ` ${tariffName}` : ""}`);
   const ruleSources = Object.fromEntries(["kmPolicy", "fuelRule", "petsPolicy", "smokingAllowed", "abroadAllowed", "additionalDriverFeeType", "additionalDriverFeeCents"].map((k) => [k, sourceLabel(k)]));
   const depositSource = rules.depositSource;
   const termsHint = terms.newerAvailable && terms.active && contract.status === "DRAFT" ? (step: number) => (
@@ -332,10 +338,10 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
                     )}
                     <Field label="Abholort" htmlFor="pickupLocation"><input id="pickupLocation" name="pickupLocation" defaultValue={contract.pickupLocation ?? [tenant.street, tenant.city].filter(Boolean).join(", ")} className="input" /></Field>
                     <Field label="Rückgabeort" htmlFor="returnLocation" hint="Leer bedeutet: wie Abholort"><input id="returnLocation" name="returnLocation" defaultValue={contract.returnLocation ?? ""} className="input" /></Field>
-                    <Field label="Kaution €" htmlFor="deposit"><input id="deposit" name="deposit" inputMode="decimal" defaultValue={dec(contract.deposit)} required className="input tnum" /><span className="text-[11px] text-ink-3">{accident ? "laut Fallakte; 0 = keine Kaution" : <>Quelle: {sourceText(depositSource, { groupName: rules.resolved.groupName, vehiclePlate: rules.resolved.vehiclePlate })}</>}</span></Field>
+                    <Field label="Kaution €" htmlFor="deposit"><input id="deposit" name="deposit" inputMode="decimal" defaultValue={dec(contract.deposit)} required readOnly={tariffLocked} className={`input tnum ${tariffLocked ? "bg-panel-2" : ""}`} />{tariffLocked && <span className="block text-[11px] text-ink-3">laut Buchung (Miettarif) – Änderung in der Buchung mit Grund</span>}<span className="text-[11px] text-ink-3">{accident ? "laut Fallakte; 0 = keine Kaution" : tariffLocked ? <>Quelle: {tariffSource(!!booking.depositOverrideReason)}</> : <>Quelle: {sourceText(depositSource, { groupName: rules.resolved.groupName, vehiclePlate: rules.resolved.vehiclePlate })}</>}</span></Field>
                     <Field label="Selbstbeteiligung €" htmlFor="deductible"><input id="deductible" name="deductible" inputMode="decimal" defaultValue={dec(contract.deductible)} required className="input tnum" />{badge("deductibleCents")}</Field>
-                    <Field label="Freikilometer pro Tag" htmlFor="kmIncludedPerDay"><input id="kmIncludedPerDay" name="kmIncludedPerDay" inputMode="numeric" defaultValue={contract.kmIncludedPerDay} required className="input tnum" /><span className="text-[11px] text-ink-3">Quelle: {Number(booking.vehicle.kmIncludedPerDay) === contract.kmIncludedPerDay ? sourceText("VEHICLE", { vehiclePlate: rules.resolved.vehiclePlate }) : booking.kmIncludedPerDay === contract.kmIncludedPerDay ? "Buchung" : RULE_SOURCES.CONTRACT}</span></Field>
-                    <Field label="Mehrkilometer € je km" htmlFor="extraKmRate"><input id="extraKmRate" name="extraKmRate" inputMode="decimal" defaultValue={dec(contract.extraKmRate)} required className="input tnum" /><span className="text-[11px] text-ink-3">Quelle: {Number(booking.vehicle.extraKmRate) === Number(contract.extraKmRate) ? sourceText("VEHICLE", { vehiclePlate: rules.resolved.vehiclePlate }) : Number(booking.extraKmRate ?? NaN) === Number(contract.extraKmRate) ? "Buchung" : RULE_SOURCES.CONTRACT}</span></Field>
+                    <Field label="Freikilometer pro Tag" htmlFor="kmIncludedPerDay"><input id="kmIncludedPerDay" name="kmIncludedPerDay" inputMode="numeric" defaultValue={contract.kmIncludedPerDay} required readOnly={tariffLocked} className={`input tnum ${tariffLocked ? "bg-panel-2" : ""}`} />{tariffLocked && <span className="block text-[11px] text-ink-3">laut Buchung (Miettarif) – Änderung in der Buchung mit Grund</span>}<span className="text-[11px] text-ink-3">Quelle: {tariffLocked ? tariffSource(!!booking.kmOverrideReason) : Number(booking.vehicle.kmIncludedPerDay) === contract.kmIncludedPerDay ? sourceText("VEHICLE", { vehiclePlate: rules.resolved.vehiclePlate }) : booking.kmIncludedPerDay === contract.kmIncludedPerDay ? "Buchung" : RULE_SOURCES.CONTRACT}</span></Field>
+                    <Field label="Mehrkilometer € je km" htmlFor="extraKmRate"><input id="extraKmRate" name="extraKmRate" inputMode="decimal" defaultValue={dec(contract.extraKmRate)} required readOnly={tariffLocked} className={`input tnum ${tariffLocked ? "bg-panel-2" : ""}`} />{tariffLocked && <span className="block text-[11px] text-ink-3">laut Buchung (Miettarif) – Änderung in der Buchung mit Grund</span>}<span className="text-[11px] text-ink-3">Quelle: {tariffLocked ? tariffSource(!!booking.kmOverrideReason) : Number(booking.vehicle.extraKmRate) === Number(contract.extraKmRate) ? sourceText("VEHICLE", { vehiclePlate: rules.resolved.vehiclePlate }) : Number(booking.extraKmRate ?? NaN) === Number(contract.extraKmRate) ? "Buchung" : RULE_SOURCES.CONTRACT}</span></Field>
                     <RuleFields
                       sources={ruleSources}
                       v={{
@@ -346,13 +352,21 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
                         additionalDriversAllowed: snap?.values.additionalDriversAllowed ?? true, additionalDriverFeeType: snap?.values.additionalDriverFeeType ?? "FREE", additionalDriverFee: snap ? (snap.values.additionalDriverFeeCents / 100).toFixed(2).replace(".", ",") : "",
                         driveClass: driveClassOf(v.fuel),
                       }}
+                      kmLocked={tariffLocked}
                       driverFeeNote={accident ? "Beim Unfallersatz gilt keine Zusatzfahrer-Gebühr aus den Geschäftsregeln. Kosten für Zusatzfahrer nur als Position im Tarif der Fallakte." : undefined}
                     />
                     <Field label="Preis je fehlendem Liter € (optional)" htmlFor="fuelPricePerLiter"><input id="fuelPricePerLiter" name="fuelPricePerLiter" inputMode="decimal" defaultValue={dec(contract.fuelPricePerLiter)} className="input tnum" /></Field>
                     <Field label="Beschreibung bei individueller Tankregelung" htmlFor="fuelPolicyNote" full><input id="fuelPolicyNote" name="fuelPolicyNote" defaultValue={contract.fuelPolicyNote ?? ""} className="input" placeholder="Nur bei „Individuelle Regelung“ nötig" /></Field>
                     <Field label="Individuelle Vereinbarungen (Teil des Vertrags)" htmlFor="individualAgreements" full hint="Wird dem Mieter vor der Unterschrift angezeigt und mit dem Vertrag eingefroren."><textarea id="individualAgreements" name="individualAgreements" defaultValue={contract.individualAgreements ?? ""} rows={3} maxLength={6000} className="input" placeholder="z. B. Kindersitz inklusive, Rückgabe am Sonntag nach Absprache" /></Field>
-                    {!accident && <Field label="Abweichend vereinbarter Gesamtmietpreis € (optional)" htmlFor="agreedTotal" hint="Leer lassen, dann gilt die Berechnung rechts"><input id="agreedTotal" name="agreedTotal" inputMode="decimal" defaultValue={dec(contract.agreedTotal)} className="input tnum" /></Field>}
-                    {!accident && <Field label="Begründung für den abweichenden Preis" htmlFor="agreedTotalNote"><input id="agreedTotalNote" name="agreedTotalNote" defaultValue={contract.agreedTotalNote ?? ""} className="input" placeholder="z. B. Sonderpreis Stammkunde" /></Field>}
+                    {!accident && tariffLocked && (
+                      <div className="md:col-span-2 rounded-md bg-panel-2 px-3 py-2 text-sm">
+                        <b>Mietpreis:</b> {booking.agreedPriceCents != null ? `individuell vereinbart ${(booking.agreedPriceCents / 100).toFixed(2).replace(".", ",")} €` : "Tarifpreis"} laut Buchung. Ein abweichender Preis wird in der Buchung mit Grund festgelegt.
+                        <input type="hidden" name="agreedTotal" value={booking.agreedPriceCents != null ? (booking.agreedPriceCents / 100).toFixed(2).replace(".", ",") : ""} />
+                        <input type="hidden" name="agreedTotalNote" value={booking.priceOverrideReason ?? ""} />
+                      </div>
+                    )}
+                    {!accident && !tariffLocked && <Field label="Abweichend vereinbarter Gesamtmietpreis € (optional)" htmlFor="agreedTotal" hint="Leer lassen, dann gilt die Berechnung rechts"><input id="agreedTotal" name="agreedTotal" inputMode="decimal" defaultValue={dec(contract.agreedTotal)} className="input tnum" /></Field>}
+                    {!accident && !tariffLocked && <Field label="Begründung für den abweichenden Preis" htmlFor="agreedTotalNote"><input id="agreedTotalNote" name="agreedTotalNote" defaultValue={contract.agreedTotalNote ?? ""} className="input" placeholder="z. B. Sonderpreis Stammkunde" /></Field>}
                     <Field label="Interne Notiz (erscheint nicht im Vertrag)" htmlFor="internalNote" full><textarea id="internalNote" name="internalNote" defaultValue={contract.internalNote ?? ""} rows={2} className="input" /></Field>
                   </div>
                 </StepForm>

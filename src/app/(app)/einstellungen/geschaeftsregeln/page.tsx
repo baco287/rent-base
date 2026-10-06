@@ -38,6 +38,7 @@ export default async function BusinessRulesPage() {
       <Content>
         <div className="rounded-md bg-panel-2 px-3.5 py-2.5 text-sm text-ink-2 flex flex-wrap gap-x-4 gap-y-1 items-center">
           <span>Priorität: Standard des Vermieters → Fahrzeuggruppe → Fahrzeug → Mietvertrag. Der konkreteste Wert gewinnt; im Vertrag ist die Herkunft sichtbar.</span>
+          <span>Für Buchungen mit Miettarif gelten Kilometerregel und Kaution aus dem <Link href="/einstellungen/tarife" className="underline">Miettarif</Link>; die Werte hier gelten für ältere Buchungen ohne Tarif.</span>
           <Chip>{set} von {RULE_KEYS.length} Werten gesetzt</Chip>
         </div>
         {problems.length > 0 && <div role="alert" className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm"><div className="font-medium">Widersprüche in den Regeln</div><ul className="list-disc pl-5">{problems.map((p) => <li key={p}>{p}</li>)}</ul></div>}

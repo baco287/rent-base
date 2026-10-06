@@ -17,7 +17,8 @@ import { PAYMENT_METHODS, type InvoicePaymentStatus, type PaymentMethod } from "
 import { DomainError } from "@/lib/integrity";
 import { fmtCents, toCents, type Cents } from "@/lib/money";
 import { isUniqueViolation } from "@/lib/numbering";
-import { calculateRentalPrice, rateCardFrom } from "@/lib/pricing";
+import { calculateRentalPrice } from "@/lib/pricing";
+import { bookingQuote } from "@/lib/booking-price";
 import { pricingEnd } from "@/lib/bookings";
 import { SIGNED_AMENDMENTS_SELECT, effectiveTotalCents } from "@/lib/amendments";
 import { invoicePaymentSummary, paymentStatusOf, recordInvoicePayment, summarizePayment, type PaymentPreview, type PaymentRow, type PaymentSummary } from "@/lib/payments";
@@ -38,7 +39,7 @@ export type RentalPaymentSummary = PaymentSummary & {
   blockedReason: string | null;
 };
 
-const bookingSelect = { id: true, tenantId: true, status: true, rentalType: true, startAt: true, endAt: true, actualPickupAt: true, actualReturnAt: true, dailyRate: true, workWeekRate: true, weeklyRate: true, monthlyRate: true, customer: { select: { discountPercent: true } }, contract: { select: { status: true, totalAmount: true, amendments: SIGNED_AMENDMENTS_SELECT } } } as const;
+const bookingSelect = { id: true, tenantId: true, status: true, rentalType: true, startAt: true, endAt: true, actualPickupAt: true, actualReturnAt: true, dailyRate: true, workWeekRate: true, weeklyRate: true, monthlyRate: true, tariffSnapshot: true, agreedPriceCents: true, customer: { select: { discountPercent: true } }, contract: { select: { status: true, totalAmount: true, amendments: SIGNED_AMENDMENTS_SELECT } } } as const;
 type BookingForTotal = Prisma.BookingGetPayload<{ select: typeof bookingSelect }>;
 
 /**
@@ -46,7 +47,7 @@ type BookingForTotal = Prisma.BookingGetPayload<{ select: typeof bookingSelect }
  * Befehl 29: Unfallersatz hat keinen Vertragsgesamtpreis (offenes Ende) – der Wert ist immer eine Schätzung: Tagessatz × Miettage
  * bis zum geplanten Ende, bei offenem Ende bis zur Rückgabe bzw. bis jetzt (bisheriger Mietwert).
  */
-export function expectedRentalCents(b: Pick<BookingForTotal, "rentalType" | "status" | "startAt" | "endAt" | "actualPickupAt" | "actualReturnAt" | "dailyRate" | "workWeekRate" | "weeklyRate" | "monthlyRate" | "customer" | "contract">): { cents: Cents; source: "CONTRACT" | "ESTIMATE" } {
+export function expectedRentalCents(b: Pick<BookingForTotal, "rentalType" | "status" | "startAt" | "endAt" | "actualPickupAt" | "actualReturnAt" | "dailyRate" | "workWeekRate" | "weeklyRate" | "monthlyRate" | "tariffSnapshot" | "agreedPriceCents" | "customer" | "contract">): { cents: Cents; source: "CONTRACT" | "ESTIMATE" } {
   if (b.rentalType === "ACCIDENT_REPLACEMENT") {
     // der Tagessatz ist der im Fall vereinbarte Unfallersatz-Satz; ein Kundenrabatt gilt dafür nicht (wie in der Unfallersatz-Rechnung)
     const price = calculateRentalPrice({ start: b.actualPickupAt ?? b.startAt, end: pricingEnd(b), rates: { dailyRate: Number(b.dailyRate) }, strategy: "DAILY_ONLY" });
@@ -54,8 +55,8 @@ export function expectedRentalCents(b: Pick<BookingForTotal, "rentalType" | "sta
   }
   // Befehl 25: Gesamtpreis laut wirksamem Vertragsstand (Vertrag + unterschriebene Nachträge)
   if (b.contract?.status === "SIGNED") return { cents: effectiveTotalCents(b.contract.totalAmount, b.contract.amendments), source: "CONTRACT" };
-  const price = calculateRentalPrice({ start: b.startAt, end: pricingEnd(b), rates: rateCardFrom(b), discountPercent: b.customer.discountPercent });
-  return { cents: toCents(price.total.toFixed(2)), source: "ESTIMATE" };
+  // Befehl 29: Tarif-Snapshot bzw. Altfelder über die zentrale Buchungspreisfunktion; ein vereinbarter Sonderpreis gilt
+  return { cents: bookingQuote(b, b.startAt, pricingEnd(b), b.customer.discountPercent).totalCents, source: "ESTIMATE" };
 }
 
 function finalizedRentalInvoice(client: Tx | typeof db, tenantId: string, bookingId: string) {

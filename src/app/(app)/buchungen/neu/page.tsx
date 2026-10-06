@@ -22,7 +22,6 @@ export default async function NewBookingPage({ searchParams }: PageProps<"/buchu
   const vehicleId = typeof sp.fahrzeug === "string" ? sp.fahrzeug : "";
   const customerId = typeof sp.kunde === "string" ? sp.kunde : "";
   const initialCustomer = await loadCustomerOption(tenant.id, customerId);
-  const v = vehicles.find((x) => x.id === vehicleId);
 
   // Vorschlag: morgen 09:00 bis übermorgen 09:00, oder der Tag aus dem Kalender
   const start = new Date();
@@ -49,10 +48,6 @@ export default async function NewBookingPage({ searchParams }: PageProps<"/buchu
               customerId,
               startAt: toDateTimeInput(start),
               endAt: toDateTimeInput(end),
-              dailyRate: v?.dailyRate ?? "",
-              deposit: v?.deposit ?? "",
-              kmIncludedPerDay: v?.kmIncludedPerDay ?? "",
-              extraKmRate: v?.extraKmRate ?? "",
               notes: "",
             }}
             vehicles={vehicles}

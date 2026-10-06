@@ -27,7 +27,7 @@ import { DomainError, ImmutableError, contentHash, sha256 } from "@/lib/integrit
 import { companySnapshotOf, customerSnapshotFromContract, type CompanySnapshot, type InvoiceCustomerSnapshot } from "@/lib/invoices";
 import { fmtCents, toCents, type Cents } from "@/lib/money";
 import { isUniqueViolation, nextAmendmentNumber, withNumberRetry } from "@/lib/numbering";
-import { calculateRentalPrice, rentalDays, toNumber, type PriceBreakdown } from "@/lib/pricing";
+import { calculateRentalPrice, rentalDays, toNumber, totalCentsOf, type PriceBreakdown } from "@/lib/pricing";
 import { buildStorageKey } from "@/lib/storage";
 import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed, assertAccidentCaseOpen } from "@/lib/accident-replacement-events";
 
@@ -255,6 +255,12 @@ const cleanText = (v: string | null | undefined, max: number) => {
  */
 export function extensionPriceProposal(contract: Prisma.RentalContractGetPayload<object>, currentEndAt: Date, newEndAt: Date, currentStartAt: Date = contract.startAt, newStartAt: Date = currentStartAt): Cents | null {
   const snap = contract.priceSnapshot as Partial<PriceBreakdown> | null;
+  // Befehl 29: Tarifvertrag (version 2) → die im Vertrag eingefrorenen Tarifstufen, nie die aktuelle Tarifrevision
+  if (Array.isArray(snap?.tiers) && snap.tiers.length > 0) {
+    const tiers = snap.tiers;
+    const cents = (start: Date, end: Date) => totalCentsOf(calculateRentalPrice({ start, end, tiers, discountPercent: contract.discountPercent, strategy: snap.strategy }));
+    return cents(newStartAt, newEndAt) - cents(currentStartAt, currentEndAt);
+  }
   const rates = snap?.rates;
   if (!rates || typeof rates.dailyRate !== "number") return null;
   const price = (start: Date, end: Date) => calculateRentalPrice({ start, end, rates: { dailyRate: rates.dailyRate ?? 0, workWeekRate: rates.workWeekRate ?? null, weeklyRate: rates.weeklyRate ?? null, monthlyRate: rates.monthlyRate ?? null }, discountPercent: contract.discountPercent, strategy: snap?.strategy }).total;

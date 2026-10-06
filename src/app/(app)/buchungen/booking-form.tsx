@@ -1,13 +1,14 @@
 "use client";
 
-import { useActionState, useMemo, useState } from "react";
+import { useActionState, useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { Field, FormError } from "@/components/ui";
 import { submitWithoutReset } from "@/components/submit-without-reset";
-import type { FormState } from "./actions";
+import { quoteTariffsAction, type FormState } from "./actions";
+import { TariffPicker, type TariffTotals } from "./tariff-picker";
+import type { TariffChoices } from "@/lib/tariffs";
 import { CustomerFields, emptyCustomer } from "../kunden/customer-fields";
 import { CustomerPicker } from "./customer-picker";
-import { calculateRentalPrice, describePrice, toNumber } from "@/lib/pricing";
 import { PAYMENT_METHODS, RENTAL_PAYMENT_INTENTS, type RentalPaymentIntent } from "@/lib/constants";
 import { fmtCents, toCents } from "@/lib/money";
 
@@ -130,14 +131,12 @@ export type BookingFormValues = {
   customerId: string;
   startAt: string;
   endAt: string;
-  dailyRate: string;
-  deposit: string;
-  /** Befehl 20.7: Kilometervereinbarung der Buchung (leer = Vorschlag aus dem Fahrzeug) */
-  kmIncludedPerDay: string;
-  extraKmRate: string;
   notes: string;
-  /** Bei bestehender Buchung: die dort eingefrorenen Stufen, solange das Fahrzeug gleich bleibt. */
-  tiers?: TierRates;
+  /** Befehl 29: bestehende Buchung – ihre ID (eingefrorener Tarif) und bisherige Abweichungen (Preis, Kilometer, Kaution) */
+  bookingId?: string;
+  choices?: TariffChoices;
+  /** Buchung ohne Tarif (Altbestand): bisherige Preisvereinbarung */
+  legacy?: { totalCents: number; text: string; depositCents: number } | null;
 };
 
 export function BookingForm({
@@ -174,37 +173,20 @@ export function BookingForm({
   const [customerMode, setCustomerMode] = useState<"existing" | "new">("existing");
   const [startAt, setStartAt] = useState(values.startAt);
   const [endAt, setEndAt] = useState(values.endAt);
-  const [dailyRate, setDailyRate] = useState(values.dailyRate);
-  const [deposit, setDeposit] = useState(values.deposit);
-  const [kmIncludedPerDay, setKmIncludedPerDay] = useState(values.kmIncludedPerDay);
-  const [extraKmRate, setExtraKmRate] = useState(values.extraKmRate);
+  // Befehl 29: Mietpreis und Kaution kommen aus dem gewählten Miettarif (Abweichungen mit Grund in der Tarifauswahl)
+  const [totals, setTotals] = useState<TariffTotals>({ totalCents: 0, depositCents: 0, ready: false });
+  const onTotals = useCallback((t: TariffTotals) => setTotals((p) => (p.totalCents === t.totalCents && p.depositCents === t.depositCents && p.ready === t.ready ? p : t)), []);
 
   const vehicle = useMemo(() => vehicles.find((v) => v.id === vehicleId), [vehicles, vehicleId]);
-  const discount = customerMode === "new" ? 0 : customer?.discountPercent ?? 0;
-  // Stufen: bei unverändertem Fahrzeug die der Buchung, sonst die des gewählten Fahrzeugs
-  const tiers: TierRates | undefined = values.tiers && vehicleId === values.vehicleId ? values.tiers : vehicle;
-  const price = calculateRentalPrice({
-    start: new Date(startAt),
-    end: new Date(endAt),
-    rates: { dailyRate: toNumber(dailyRate) ?? 0, workWeekRate: toNumber(tiers?.workWeekRate), weeklyRate: toNumber(tiers?.weeklyRate), monthlyRate: toNumber(tiers?.monthlyRate) },
-    discountPercent: discount,
-  });
-  const eur = (x: number) => x.toLocaleString("de-DE", { style: "currency", currency: "EUR" });
+  const eur = (c: number) => (c / 100).toLocaleString("de-DE", { style: "currency", currency: "EUR" });
 
   function pickVehicle(id: string) {
     setVehicleId(id);
-    const v = vehicles.find((x) => x.id === id);
-    if (v) {
-      setDailyRate(v.dailyRate);
-      setDeposit(v.deposit);
-      setKmIncludedPerDay(v.kmIncludedPerDay);
-      setExtraKmRate(v.extraKmRate);
-    }
   }
 
   return (
     <form onSubmit={submitWithoutReset(formAction)} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5">
-      <Field label="Fahrzeug" htmlFor="vehicleId" hint="Preis und Kaution werden aus dem Fahrzeug übernommen und können angepasst werden">
+      <Field label="Fahrzeug" htmlFor="vehicleId" hint="Preis, Kilometer und Kaution kommen aus dem Miettarif der Fahrzeuggruppe">
         <select id="vehicleId" name="vehicleId" value={vehicleId} onChange={(e) => pickVehicle(e.target.value)} required className="input">
           <option value="">Bitte wählen…</option>
           {Array.from(new Set(vehicles.map((v) => v.group))).map((g) => (
@@ -239,18 +221,18 @@ export function BookingForm({
         <input id="endAt" name="endAt" type="datetime-local" value={endAt} onChange={(e) => setEndAt(e.target.value)} required readOnly={periodLocked} aria-describedby={periodLocked ? "period-locked-hint" : undefined} className={`input tnum ${periodLocked ? "bg-panel-2 text-ink-2" : ""}`} min={startAt || undefined} />
       </Field>
       {periodLocked && <p id="period-locked-hint" className="text-xs text-ink-3 sm:col-span-2 -mt-1">{periodChangeable ? "Der Zeitraum wird über „Zeitraum ändern“ geändert – mit Grund, Preisvorschlag und Verfügbarkeitsprüfung." : "Der Zeitraum kann hier nicht geändert werden."}</p>}
-      <Field label="Tagespreis € (brutto)" htmlFor="dailyRate">
-        <input id="dailyRate" name="dailyRate" inputMode="decimal" value={dailyRate} onChange={(e) => setDailyRate(e.target.value)} required className="input tnum" />
-      </Field>
-      <Field label="Kaution €" htmlFor="deposit">
-        <input id="deposit" name="deposit" inputMode="decimal" value={deposit} onChange={(e) => setDeposit(e.target.value)} required className="input tnum" />
-      </Field>
-      <Field label="Freikilometer pro Tag" htmlFor="kmIncludedPerDay" hint="Vereinbarung dieser Buchung; wird in den Mietvertrag übernommen und bei der Rückgabe zugrunde gelegt">
-        <input id="kmIncludedPerDay" name="kmIncludedPerDay" inputMode="numeric" value={kmIncludedPerDay} onChange={(e) => setKmIncludedPerDay(e.target.value)} required className="input tnum" />
-      </Field>
-      <Field label="Preis je Mehrkilometer €" htmlFor="extraKmRate" hint="Der tatsächliche Kilometerstand wird erst bei der Übergabe erfasst">
-        <input id="extraKmRate" name="extraKmRate" inputMode="decimal" value={extraKmRate} onChange={(e) => setExtraKmRate(e.target.value)} required className="input tnum" />
-      </Field>
+      <TariffPicker
+        quote={quoteTariffsAction}
+        vehicleId={vehicleId}
+        startAt={startAt}
+        endAt={endAt}
+        customerId={customerMode === "new" ? null : customer?.id ?? null}
+        bookingId={values.bookingId}
+        bookingVehicleId={values.bookingId ? values.vehicleId : undefined}
+        legacy={values.legacy ?? null}
+        initial={values.choices}
+        onTotals={onTotals}
+      />
       <Field label="Notizen" htmlFor="notes" full>
         <textarea id="notes" name="notes" defaultValue={values.notes} rows={2} className="input" placeholder="z. B. Abholung am Nebeneingang, Zusatzfahrer folgt" />
       </Field>
@@ -262,15 +244,12 @@ export function BookingForm({
       )}
 
       <div className="md:col-span-2 rounded-lg bg-panel-2 px-4 py-3 text-sm flex flex-wrap gap-x-6 gap-y-1 tnum">
-        <span>Miettage: <b>{price.days || "–"}</b></span>
-        <span>{describePrice(price)} = <b>{eur(price.subtotal)}</b></span>
-        {discount > 0 && <span>Rabatt {discount} %: <b>−{eur(price.discountAmount)}</b></span>}
-        <span>Voraussichtlich: <b>{eur(price.total)}</b></span>
-        <span className="text-ink-3">zzgl. Kaution {eur(parseFloat(deposit.replace(",", ".")) || 0)}</span>
+        <span>Mietpreis: <b>{totals.ready ? eur(totals.totalCents) : "–"}</b></span>
+        <span className="text-ink-3">zzgl. Kaution {totals.ready ? eur(totals.depositCents) : "–"}</span>
         {vehicle && <span className="text-ink-3">Fahrzeug {vehicle.plate}</span>}
       </div>
 
-      {initialPayment && <PaymentSection totalCents={Math.round(price.total * 100)} depositCents={Math.round((parseFloat(deposit.replace(",", ".")) || 0) * 100)} config={initialPayment} />}
+      {initialPayment && <PaymentSection totalCents={totals.totalCents} depositCents={totals.depositCents} config={initialPayment} />}
 
       <FormError error={state?.error} />
       <div className="md:col-span-2 flex items-center gap-2 mt-1">

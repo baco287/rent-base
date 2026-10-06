@@ -6,7 +6,10 @@ import { isFeatureEnabled } from "@/lib/features";
 import { KeyDropPanel } from "./key-drop-panel";
 import { db } from "@/lib/db";
 import { customerName, fmtDateTime, fmtEur, toDateTimeInput } from "@/lib/format";
-import { calculateRentalPrice, rateCardFrom } from "@/lib/pricing";
+import { describePrice } from "@/lib/pricing";
+import { bookingQuote } from "@/lib/booking-price";
+import { choicesOf, readTariffSnapshot } from "@/lib/tariffs";
+import { TariffInfo } from "./tariff-info";
 import { BookingStageChip, Card, Chip, Content, PageHeader, Plate } from "@/components/ui";
 import { AMENDMENT_AGREED_CHANNELS, CANCELLATION_FEE_TAX_TREATMENTS, EXTRA_CHARGE_TYPES, LATE_RETURN_RULES, PAYOUT_METHODS, type ExtraChargeType, type LateReturnRule } from "@/lib/constants";
 import { bookingStage, canCancel, pickupAction, returnAction } from "@/lib/booking-status";
@@ -61,7 +64,10 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const accidentPerDayCents = accidentTariff ? accidentTariff.dailyRateCents + accidentTariff.items.filter((i) => i.perDay && i.unitPriceCents > 0).reduce((sum, i) => sum + i.unitPriceCents, 0) : 0;
   // Phase E: geschlossener Unfallersatzfall – Vertrag, Übergabe, Rückgabe und Storno sind serverseitig gesperrt; keine Knöpfe in die Sperre
   const caseLocked = accidentCase?.status === "CLOSED";
-  const price = calculateRentalPrice({ start: b.startAt, end: b.endAt ?? b.startAt, rates: rateCardFrom(b), discountPercent: b.customer.discountPercent });
+  // Befehl 29: eine zentrale Buchungspreisfunktion (Tarif-Snapshot bzw. Altfelder, vereinbarter Sonderpreis)
+  const quote = bookingQuote(b, b.startAt, b.endAt ?? b.startAt, b.customer.discountPercent);
+  const price = quote.breakdown;
+  const tariffSnap = readTariffSnapshot(b.tariffSnapshot);
   // Befehl 28: vereinbarte, noch nicht unterschriebene Vertragsänderung (reserviert operativ, wirkt vertraglich erst mit Unterschrift)
   const agreed = await agreedAmendmentOf(tenant.id, b.id);
   const overdue = isOverdue({ status: b.status, endAt: b.endAt, agreedEndAt: agreed?.newEndAt ?? null });
@@ -271,12 +277,11 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                   customerId: b.customerId,
                   startAt: toDateTimeInput(b.startAt),
                   endAt: toDateTimeInput(b.endAt),
-                  dailyRate: b.dailyRate.toString().replace(".", ","),
-                  deposit: b.deposit.toString().replace(".", ","),
-                  kmIncludedPerDay: String(b.kmIncludedPerDay ?? b.vehicle.kmIncludedPerDay),
-                  extraKmRate: (b.extraKmRate ?? b.vehicle.extraKmRate).toString().replace(".", ","),
                   notes: b.notes ?? "",
-                  tiers: { workWeekRate: b.workWeekRate?.toString() ?? null, weeklyRate: b.weeklyRate?.toString() ?? null, monthlyRate: b.monthlyRate?.toString() ?? null },
+                  // Befehl 29: eingefrorener Tarif und bisherige Abweichungen; Buchungen ohne Tarif behalten ihre Altpreise
+                  bookingId: b.id,
+                  choices: choicesOf(readTariffSnapshot(b.tariffSnapshot)),
+                  legacy: b.ratePlanId || !b.endAt ? null : (() => { const q = bookingQuote(b, b.startAt, b.endAt!, b.customer.discountPercent); return { totalCents: q.totalCents, text: describePrice(q.breakdown), depositCents: Math.round(Number(b.deposit) * 100) }; })(),
                 }}
                 vehicles={vehicles}
                 initialCustomer={initialCustomer}
@@ -357,11 +362,13 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                 {price.discountPercent > 0 && (
                   <div className="flex justify-between py-1.5 border-b border-line-soft"><span>Rabatt {price.discountPercent} %</span><span className="font-mono tnum">−{fmtEur(price.discountAmount)}</span></div>
                 )}
-                <div className="flex justify-between py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>Voraussichtlich</span><span className="font-mono tnum">{fmtEur(price.total)}</span></div>
+                {quote.agreedCents != null && <div className="flex justify-between py-1.5 border-b border-line-soft"><span>Regulärer Tarifpreis</span><span className="font-mono tnum">{fmtCents(quote.regularCents)}</span></div>}
+                <div className="flex justify-between py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>{quote.agreedCents != null ? "Vereinbarter Mietpreis" : "Voraussichtlich"}</span><span className="font-mono tnum">{fmtCents(quote.totalCents)}</span></div>
                 <div className="flex justify-between py-1.5 text-ink-3"><span>zzgl. Kaution</span><span className="font-mono tnum">{fmtEur(b.deposit)}</span></div>
                 <p className="text-xs text-ink-3 mt-2">Mehrkilometer, Tank und weitere Positionen werden bei der Rückgabe geprüft und erscheinen dann als Zusatzkosten.</p>
               </div>
               )}
+              {tariffSnap && b.status !== "CANCELLED" && <TariffInfo snapshot={tariffSnap} regularCents={quote.regularCents} />}
             </Card>
             {/* Befehl 28: Änderungshistorie aus gespeicherten Zeitstempeln und Audit (dieselbe Ableitung wie die Kundenakte) */}
             <Card title="Verlauf" right={<span className="text-xs text-ink-3">{history.length} Einträge</span>}>

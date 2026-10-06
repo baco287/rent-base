@@ -68,29 +68,17 @@ export function VehicleForm({
   const [mileage, setMileage] = useState(values.mileage);
   // Befehl 27: Korrektur nach unten nur mit Grund (Prüfung im Server; hier nur das passende Feld einblenden)
   const lowering = values.mileage !== "" && mileage !== "" && Number(mileage) < Number(values.mileage);
-  const [prices, setPrices] = useState({
-    dailyRate: values.dailyRate,
-    workWeekRate: values.workWeekRate,
-    weeklyRate: values.weeklyRate,
-    monthlyRate: values.monthlyRate,
-    kmIncludedPerDay: values.kmIncludedPerDay,
-    extraKmRate: values.extraKmRate,
-    deposit: values.deposit,
-  });
   const v = values;
   const group = groups.find((g) => g.id === groupId);
 
   function pickGroup(id: string) {
     setGroupId(id);
-    const g = groups.find((x) => x.id === id);
-    if (g) setPrices({ dailyRate: g.dailyRate, workWeekRate: g.workWeekRate, weeklyRate: g.weeklyRate, monthlyRate: g.monthlyRate, kmIncludedPerDay: g.kmIncludedPerDay, extraKmRate: g.extraKmRate, deposit: g.deposit });
   }
-  const set = (k: keyof typeof prices) => (e: React.ChangeEvent<HTMLInputElement>) => setPrices((p) => ({ ...p, [k]: e.target.value }));
 
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5">
       <h2 className="md:col-span-2 text-base font-semibold mt-1">Fahrzeug</h2>
-      <Field label="Fahrzeuggruppe" htmlFor="groupId" hint={groups.length === 0 ? "Noch keine Gruppe vorhanden. Erst unter „Gruppen verwalten“ anlegen." : "Preise werden aus der Gruppe vorgeschlagen"}>
+      <Field label="Fahrzeuggruppe" htmlFor="groupId" hint={groups.length === 0 ? "Noch keine Gruppe vorhanden. Erst unter „Gruppen verwalten“ anlegen." : "Bestimmt die Miettarife (Preise, Kilometer, Kaution) des Fahrzeugs"}>
         <select id="groupId" name="groupId" value={groupId} onChange={(e) => pickGroup(e.target.value)} required className="input">
           <option value="">Bitte wählen…</option>
           {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
@@ -147,30 +135,10 @@ export function VehicleForm({
         </select>
       </Field>
 
-      <h2 className="md:col-span-2 text-base font-semibold mt-2">
-        Preise {group && <span className="text-ink-3 font-normal text-sm">· Vorgabe aus Gruppe {group.name}, hier je Fahrzeug anpassbar</span>}
-      </h2>
-      <Field label="Tagespreis € (brutto)" htmlFor="dailyRate">
-        <input id="dailyRate" name="dailyRate" inputMode="decimal" value={prices.dailyRate} onChange={set("dailyRate")} required className="input tnum" placeholder="89" />
-      </Field>
-      <Field label="Kaution €" htmlFor="deposit">
-        <input id="deposit" name="deposit" inputMode="decimal" value={prices.deposit} onChange={set("deposit")} required className="input tnum" placeholder="500" />
-      </Field>
-      <Field label="Woche € (5 Tage, optional)" htmlFor="workWeekRate">
-        <input id="workWeekRate" name="workWeekRate" inputMode="decimal" value={prices.workWeekRate} onChange={set("workWeekRate")} className="input tnum" />
-      </Field>
-      <Field label="Kalenderwoche € (7 Tage, optional)" htmlFor="weeklyRate">
-        <input id="weeklyRate" name="weeklyRate" inputMode="decimal" value={prices.weeklyRate} onChange={set("weeklyRate")} className="input tnum" />
-      </Field>
-      <Field label="Monatspreis € (optional)" htmlFor="monthlyRate">
-        <input id="monthlyRate" name="monthlyRate" inputMode="decimal" value={prices.monthlyRate} onChange={set("monthlyRate")} className="input tnum" />
-      </Field>
-      <Field label="Freikilometer pro Tag" htmlFor="kmIncludedPerDay">
-        <input id="kmIncludedPerDay" name="kmIncludedPerDay" type="number" min={0} value={prices.kmIncludedPerDay} onChange={set("kmIncludedPerDay")} required className="input tnum" />
-      </Field>
-      <Field label="Mehrkilometer € je km" htmlFor="extraKmRate">
-        <input id="extraKmRate" name="extraKmRate" inputMode="decimal" value={prices.extraKmRate} onChange={set("extraKmRate")} required className="input tnum" />
-      </Field>
+      {/* Befehl 29: Preise, Kilometer und Kaution kommen aus den Miettarifen der Fahrzeuggruppe; fahrzeugspezifische Preise in der Fahrzeugakte */}
+      <div className="md:col-span-2 rounded-md bg-panel-2 px-3.5 py-2.5 text-sm text-ink-2">
+        <b>Preise, Kilometer und Kaution</b> kommen aus den Miettarifen{group ? <> der Fahrzeuggruppe „{group.name}“</> : " der Fahrzeuggruppe"} (Einstellungen → Miettarife). Ein abweichender Preis nur für dieses Fahrzeug wird in der Fahrzeugakte unter „Tarifpreise“ gepflegt.
+      </div>
 
       <Field label="Notizen" htmlFor="notes" full>
         <textarea id="notes" name="notes" defaultValue={v.notes} rows={3} className="input" />
