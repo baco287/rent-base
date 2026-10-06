@@ -389,6 +389,8 @@ test("Haftungsquote nur 0–100 und nur beim Status Haftungsquote; Datenbank pr�
 test("Wiedervorlagen: anlegen, erledigen, verwerfen; erledigte bleiben unverändert und werden nie gelöscht", async () => {
   const w = await world("ue-followup");
   const res = await createAccidentCase(w.tenantId, w.actor, caseInput(w));
+  // Phase H: zuständig sind nur Inhaber und Disposition (wie die Auswahl der Fallakte) – Testbenutzer als Disposition
+  await db.user.update({ where: { id: w.userId }, data: { role: "DISPO" } });
   const f1 = await createFollowUp(w.tenantId, res.case.id, w.actor, { title: "HUK wegen Haftungsbestätigung kontaktieren", dueAt: plus(new Date(), 2 * DAY), assigneeUserId: w.userId });
   assert.equal(f1.assigneeName, "Test Mitarbeiter");
   const f2 = await createFollowUp(w.tenantId, res.case.id, w.actor, { title: "Werkstatt anrufen", dueAt: plus(new Date(), DAY) });

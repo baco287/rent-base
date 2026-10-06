@@ -6,7 +6,7 @@
 // Sicht gar nicht abgefragt.
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { caseFinancialsMany, followUpDue, nextSteps, type CaseFinancials, type NextStep } from "@/lib/accident-replacement";
+import { caseFinancialsMany, followUpDue, followUpTiming, nextSteps, type CaseFinancials, type FollowUpTiming, type NextStep } from "@/lib/accident-replacement";
 import { caseMainStatus, operationalNextSteps, type CaseFileAccess, type MainStatus } from "@/lib/accident-case-file";
 import { depositFinancialsFor, type DepositFinancials } from "@/lib/deposits";
 import { ACCIDENT_LIABILITY_STATUS, type AccidentLiabilityStatus } from "@/lib/constants";
@@ -152,7 +152,64 @@ export type AccidentCenter = {
   truncated: boolean;
   /** Mandant hat überhaupt Unfallersatzfälle (Leerzustand) */
   anyCases: boolean;
+  /** Phase H: Wiedervorlagen-Arbeitsliste – nur Vollsicht (für Hof und Supportmodus nicht geladen: null) */
+  tasks: CenterTasks | null;
 };
+
+// ---------------------------------------------------------------------------
+// Phase H: Wiedervorlagen als Arbeitsliste (nur Vollsicht) – dieselben CaseFollowUp-Daten wie in der Fallakte, keine eigene
+// Aufgabentabelle. Nur offene Wiedervorlagen offener Fälle; erledigte und verworfene erscheinen nicht.
+// ---------------------------------------------------------------------------
+
+/** Eigene kleine Filter der Arbeitsliste (Adresse: aufgaben=…), getrennt von den Fallfiltern */
+export const TASK_VIEWS = { faellig: "Fällig", ueberfaellig: "Überfällig", heute: "Heute", demnaechst: "Demnächst", meine: "Meine" } as const;
+export type TaskViewKey = keyof typeof TASK_VIEWS;
+/** null = kompakte Übersicht (überfällig, heute, nächste 7 Tage; begrenzt), "alle" = dieselbe Übersicht vollständig */
+export type TaskView = TaskViewKey | "alle";
+export function resolveTaskView(raw: unknown): TaskView | null {
+  return typeof raw === "string" && (Object.hasOwn(TASK_VIEWS, raw) || raw === "alle") ? (raw as TaskView) : null;
+}
+export const TASK_GROUP_LABELS: Record<FollowUpTiming["group"], string> = { OVERDUE: "Überfällig", TODAY: "Heute", SOON: "Demnächst (7 Tage)", LATER: "Später" };
+/** Einträge der kompakten Übersicht; mehr über „Weitere Wiedervorlagen anzeigen“ */
+export const TASK_PREVIEW_LIMIT = 6;
+/** Obergrenze einer vollständigen Liste (Rest über die Fallakten) */
+export const TASK_LIST_LIMIT = 200;
+
+export type CenterTask = {
+  id: string; caseId: string; caseNumber: string; customerName: string;
+  title: string; note: string | null; dueAt: Date; group: FollowUpTiming["group"]; dueText: string;
+  assigneeName: string | null; mine: boolean;
+};
+export type CenterTasks = {
+  view: TaskView | null;
+  items: CenterTask[];
+  counts: Record<TaskViewKey | "uebersicht", number>;
+  /** nicht angezeigte Einträge der gewählten Liste (Vorschau bzw. Obergrenze) */
+  more: number;
+  /** offene Wiedervorlagen nach dem Vorschauzeitraum (nur Übersicht; erreichbar über die Fallakte bzw. „Meine“) */
+  later: number;
+};
+
+function buildTasks(open: LoadedCase[], view: TaskView | null, userId: string | null, now: Date): CenterTasks {
+  const all: CenterTask[] = [];
+  for (const c of open) {
+    for (const f of c.followUps ?? []) {
+      const t = followUpTiming(f.dueAt, now);
+      all.push({ id: f.id, caseId: c.id, caseNumber: c.caseNumber, customerName: customerName(c.booking.customer), title: f.title, note: f.note, dueAt: f.dueAt, group: t.group, dueText: t.text, assigneeName: f.assigneeName, mine: !!userId && f.assigneeUserId === userId });
+    }
+  }
+  all.sort((a, b) => a.dueAt.getTime() - b.dueAt.getTime() || a.caseNumber.localeCompare(b.caseNumber) || a.id.localeCompare(b.id));
+  const n = (g: CenterTask["group"]) => all.filter((t) => t.group === g).length;
+  const counts = { uebersicht: all.filter((t) => t.group !== "LATER").length, faellig: n("OVERDUE") + n("TODAY"), ueberfaellig: n("OVERDUE"), heute: n("TODAY"), demnaechst: n("SOON"), meine: all.filter((t) => t.mine).length };
+  const list = view === "faellig" ? all.filter((t) => t.group === "OVERDUE" || t.group === "TODAY")
+    : view === "ueberfaellig" ? all.filter((t) => t.group === "OVERDUE")
+    : view === "heute" ? all.filter((t) => t.group === "TODAY")
+    : view === "demnaechst" ? all.filter((t) => t.group === "SOON")
+    : view === "meine" ? all.filter((t) => t.mine)
+    : all.filter((t) => t.group !== "LATER");
+  const limit = view === null ? TASK_PREVIEW_LIMIT : TASK_LIST_LIMIT;
+  return { view, items: list.slice(0, limit), counts, more: Math.max(0, list.length - limit), later: view === null || view === "alle" ? n("LATER") : 0 };
+}
 
 export const CENTER_PAGE_SIZE = 25;
 /** Obergrenze offener Fälle, die für Priorisierung und Kennzahlen gemeinsam geladen werden */
@@ -167,12 +224,13 @@ const BOOKING_SELECT = {
 } as const;
 const FULL_BOOKING_SELECT = { ...BOOKING_SELECT, securityDeposit: { select: { id: true, expectedAmountCents: true, events: { select: { type: true, amountCents: true, status: true } } } } } as const;
 const FULL_CASE_FIELDS = { damagedPlate: true, insurerName: true, insurerClaimNumber: true, liabilityStatus: true, liabilityQuotaPercent: true } as const;
-const FOLLOW_UPS = { where: { status: "OPEN" }, orderBy: { dueAt: "asc" }, select: { id: true, dueAt: true } } as const;
+// Phase H: offene Wiedervorlagen mit Aufgabe, Notiz und Zuständigkeit – Grundlage für Rangfolge und Arbeitsliste (eine Abfrage)
+const FOLLOW_UPS = { where: { status: "OPEN" }, orderBy: { dueAt: "asc" }, select: { id: true, dueAt: true, title: true, note: true, assigneeUserId: true, assigneeName: true } } as const;
 
 type LoadedCase = {
   id: string; caseNumber: string; status: string; createdAt: Date; closedAt: Date | null;
   damagedPlate?: string; insurerName?: string | null; insurerClaimNumber?: string | null; liabilityStatus?: string; liabilityQuotaPercent?: number | null;
-  followUps?: { id: string; dueAt: Date }[];
+  followUps?: { id: string; dueAt: Date; title: string; note: string | null; assigneeUserId: string | null; assigneeName: string | null }[];
   booking: {
     id: string; number: string; status: string; startAt: Date; endAt: Date | null; actualPickupAt: Date | null; actualReturnAt: Date | null;
     contract: { status: string } | null; handovers: { type: string; status: string }[];
@@ -281,7 +339,7 @@ function urgencyAt(r: CenterRow, followUpFirst: Date | null): number {
  * Kennzahlen gelten für alle offenen Fälle. Abgeschlossene Fälle werden in der Datenbank geblättert. Feste Zahl an Abfragen,
  * unabhängig von der Zahl der Fälle (kein Nachladen je Zeile).
  */
-export async function accidentCenter(tenantId: string, opts: { access: CaseFileAccess; filter?: unknown; q?: string | null; page?: number; pageSize?: number; now?: Date; client?: Client }): Promise<AccidentCenter> {
+export async function accidentCenter(tenantId: string, opts: { access: CaseFileAccess; filter?: unknown; q?: string | null; page?: number; pageSize?: number; now?: Date; client?: Client; /** Phase H */ tasks?: unknown; userId?: string | null }): Promise<AccidentCenter> {
   const client = opts.client ?? db;
   const now = opts.now ?? new Date();
   const access = opts.access;
@@ -328,6 +386,8 @@ export async function accidentCenter(tenantId: string, opts: { access: CaseFileA
   const searched = hitIds ? openRows.filter((r) => hitIds.has(r.id)) : openRows;
   const counts: Partial<Record<CenterFilter, number>> = {};
   for (const f of centerFilters(access)) counts[f] = f === "abgeschlossen" ? closedTotal : searched.filter((r) => matches(r, f)).length;
+  // Phase H: Arbeitsliste aus den bereits geladenen offenen Wiedervorlagen (keine weitere Abfrage); unabhängig von Fallfilter und Suche
+  const tasks = full ? buildTasks(open, resolveTaskView(opts.tasks), opts.userId ?? null, now) : null;
 
   if (filter === "abgeschlossen") {
     const total = closedTotal;
@@ -336,7 +396,7 @@ export async function accidentCenter(tenantId: string, opts: { access: CaseFileA
     const closed = (await client.accidentReplacementCase.findMany({ where: closedWhere, orderBy: [{ closedAt: "desc" }, { createdAt: "desc" }], skip: (page - 1) * pageSize, take: pageSize, select: { ...select, ...(full ? { followUps: false } : {}) } })) as unknown as LoadedCase[];
     // abgeschlossen: ruhige Darstellung ohne Finanz-/Hinweislogik (kein Nachladen je Zeile)
     const rows = closed.map((c) => toRow({ ...c, followUps: [] }, access, null, null, now));
-    return { access, filter, q, kpis, counts, rows, total, page, pages, pageSize, truncated, anyCases: !!anyCase };
+    return { access, filter, q, kpis, counts, rows, total, page, pages, pageSize, truncated, anyCases: !!anyCase, tasks };
   }
 
   const firstFollowUp = new Map(open.map((c) => [c.id, c.followUps?.[0]?.dueAt ?? null]));
@@ -345,7 +405,7 @@ export async function accidentCenter(tenantId: string, opts: { access: CaseFileA
   const total = list.length;
   const pages = Math.max(1, Math.ceil(total / pageSize));
   const page = Math.min(Math.max(1, opts.page ?? 1), pages);
-  return { access, filter, q, kpis, counts, rows: list.slice((page - 1) * pageSize, page * pageSize), total, page, pages, pageSize, truncated, anyCases: !!anyCase };
+  return { access, filter, q, kpis, counts, rows: list.slice((page - 1) * pageSize, page * pageSize), total, page, pages, pageSize, truncated, anyCases: !!anyCase, tasks };
 }
 
 /** Schnellfilter auf einer (offenen) Zeile – nur aus den abgeleiteten Zuständen */

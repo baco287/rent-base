@@ -260,6 +260,8 @@ test("Wiedervorlagen: anlegen, überfällig/heute erkannt, erledigen, verwerfen 
   const w = await world("cf-follow");
   const res = await createAccidentCase(w.tenantId, w.actor, caseInput(w));
   const other = await createAccidentCase(w.tenantId, w.actor, caseInput(w, { vehicleId: w.vehicleId, startAt: plus(new Date(), 30 * DAY), plannedEndAt: plus(new Date(), 32 * DAY) }));
+  // Phase H: zuständig sind nur Inhaber und Disposition (wie die Auswahl der Fallakte) – Testbenutzer als Disposition
+  await db.user.update({ where: { id: w.userId }, data: { role: "DISPO" } });
   const f1 = await createFollowUp(w.tenantId, res.case.id, w.actor, { title: "Schadennummer nachfragen", dueAt: new Date(), assigneeUserId: w.userId, note: "bei Frau Merk" });
   const f2 = await createFollowUp(w.tenantId, res.case.id, w.actor, { title: "Gutachten anfordern", dueAt: plus(new Date(), 5 * DAY) });
   // überfällig (Datenbank erlaubt die Fälligkeit in der Vergangenheit – die Aktion verhindert sie nur bei der Anlage)

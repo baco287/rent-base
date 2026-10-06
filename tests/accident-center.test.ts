@@ -262,10 +262,10 @@ test("32: Seiten bleiben gefiltert (serverseitig, kein Nachladen aller Fälle im
   assert.equal((await accidentCenter(w.tenantId, { access: "FULL", filter: "uebergabe", pageSize: 10, page: 9 })).page, 2);
   // reservierte Fälle in naher Zukunft zuerst (Datumsreihenfolge innerhalb gleicher Priorität)
   assert.ok(p1.rows.every((r, i) => i === 0 || p1.rows[i - 1].booking.startAt <= r.booking.startAt));
-  // URL-Zustand in der Seite: filter, q, seite
+  // URL-Zustand in der Seite: filter, q, seite (Phase H: zusätzlich aufgaben für die Wiedervorlagen-Arbeitsliste)
   const page = await src("src/app/(app)/unfallersatz/page.tsx");
-  assert.match(page, /const merged: Record<string, string \| number \| null> = \{ filter: c\.filter === "offen" \? null : c\.filter, q: c\.q \|\| null, seite: null, \.\.\.over \};/);
-  assert.match(page, /accidentCenter\(tenant\.id, \{ access, filter: one\(sp\.filter\), q: one\(sp\.q\), page \}\)/);
+  assert.match(page, /const merged: Record<string, string \| number \| null> = \{ filter: c\.filter === "offen" \? null : c\.filter, q: c\.q \|\| null, seite: null, aufgaben: c\.tasks\?\.view \?\? null, \.\.\.over \};/);
+  assert.match(page, /accidentCenter\(tenant\.id, \{ access, filter: one\(sp\.filter\), q: one\(sp\.q\), page, tasks: one\(sp\.aufgaben\), userId: user\.id \}\)/);
 });
 
 // ---------------------------------------------------------------------------

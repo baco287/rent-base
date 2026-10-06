@@ -40,6 +40,8 @@ function refresh(c: { id: string; bookingId: string }) {
   revalidatePath(`/unfallersatz/${c.id}`);
   revalidatePath(`/buchungen/${c.bookingId}`);
   revalidatePath("/heute");
+  // Phase H: Zentrale (Kennzahlen, Arbeitsliste) – Wiedervorlagen werden auch von dort erledigt
+  revalidatePath("/unfallersatz");
 }
 
 /** Fachliche Meldung anzeigen; Unbekanntes nur allgemein (im Log nur die Fehlerart, keine Eingaben). */

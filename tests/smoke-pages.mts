@@ -5,7 +5,7 @@
 import { randomBytes } from "node:crypto";
 import { db } from "../src/lib/db";
 import { ensureContractDraft, finalizeContract, getContractContentHash, saveConditions, saveContractSignature } from "../src/lib/contracts";
-import { createAccidentCase } from "../src/lib/accident-replacement";
+import { createAccidentCase, createFollowUp } from "../src/lib/accident-replacement";
 import { answerChecklist, finalizeHandover, getHandoverContentHash, registerPhoto, saveHandoverSignature, startHandover, updateHandoverDraft, addNewDamage } from "../src/lib/handovers";
 import { buildStorageKey } from "../src/lib/storage";
 import { sha256 } from "../src/lib/integrity";
@@ -33,7 +33,7 @@ import { hashPassword } from "../src/lib/password";
 import { createTenantByPlatform, suspendTenant, reactivateTenant } from "../src/lib/platform-tenants";
 import { acceptInvitation } from "../src/lib/invitations";
 import { requestPasswordReset } from "../src/lib/password-reset";
-import { startSupportSession } from "../src/lib/support-sessions";
+import { endSupportSession, startSupportSession } from "../src/lib/support-sessions";
 import { createDunningNotice, previewDunning } from "../src/lib/dunning";
 import { ensureDunningDocument } from "../src/lib/documents";
 import { returnedWorld } from "./rental-flow";
@@ -1939,6 +1939,56 @@ await setTenantFeature({ id: admin.id, name: admin.name }, ue.tenantId, "ACCIDEN
   const sucheG = await get(ueDispo, `/suche?q=${encodeURIComponent(gOpen.caseNumber)}`);
   const sucheStd = await get(cookie, `/suche?q=${encodeURIComponent(gOpen.caseNumber)}`);
   report(sucheG.html.includes(`Unfallersatz ${gOpen.caseNumber}`) && sucheG.html.includes(`href="/unfallersatz/${gOpen.id}"`) && !sucheStd.html.includes(`Unfallersatz ${gOpen.caseNumber}`) && !sucheStd.html.includes(`href="/unfallersatz/${gOpen.id}"`), "Globale Suche: Unfallersatzfall gefunden (mit Modul; ohne Modul kein Treffer – der Suchbegriff selbst steht dort nur im Kopf)");
+}
+
+// Befehl 29 Phase H: Wiedervorlagen-Arbeitsliste in der Zentrale – nur Vollsicht; Erledigen über dieselbe Server-Aktion wie die
+// Fallakte (serverseitig geprüft: Hof, Supportmodus, fremder Mandant, manipulierte Fall-ID); Aktionsspalte; Heute → Wiedervorlagen.
+{
+  const get = async (c: string, p: string) => { const r = await fetch(`${base}${p}`, { headers: { cookie: c }, redirect: "manual" }); return { status: r.status, location: r.headers.get("location") ?? "", html: r.status === 200 ? await plain(r) : "" }; };
+  const hOpen = (await db.accidentReplacementCase.findFirst({ where: { tenantId: ue.tenantId, status: "OPEN" }, orderBy: { createdAt: "asc" }, select: { id: true, caseNumber: true } }))!;
+  const hOther = (await db.accidentReplacementCase.findFirst({ where: { tenantId: ue.tenantId, id: { not: hOpen.id } }, select: { id: true } }))!;
+  const hDispo = (await db.user.findFirst({ where: { tenantId: ue.tenantId, role: "DISPO", active: true }, orderBy: { createdAt: "asc" }, select: { id: true } }))!;
+  const hTitle = `Smoke-H Wiedervorlage ${Date.now()}`;
+  const hFu = await createFollowUp(ue.tenantId, hOpen.id, ue.actor, { title: hTitle, dueAt: new Date(), assigneeUserId: hDispo.id });
+  const hBoard = await get(ueDispo, "/unfallersatz");
+  report(hBoard.status === 200 && hBoard.html.includes('id="wiedervorlagen"') && hBoard.html.includes(hTitle) && hBoard.html.includes(">Aktionen<") && hBoard.html.includes("Erledigen") && hBoard.html.includes("+ Wiedervorlage"), `${hBoard.status} Zentrale: Wiedervorlagen-Arbeitsliste mit fälliger Wiedervorlage, Aktionsspalte, „+ Wiedervorlage“`);
+  const hMine = await get(ueDispo, "/unfallersatz?aufgaben=meine");
+  report(hMine.html.includes(hTitle) && hMine.html.includes("(Sie)") && hMine.html.includes('aria-current="page"'), "Zentrale: „Meine Wiedervorlagen“ zeigt die eigene Zuweisung (aufgaben=meine)");
+  const hYard = await get(ueYard, "/unfallersatz?aufgaben=meine");
+  report(hYard.status === 200 && !hYard.html.includes('id="wiedervorlagen"') && !hYard.html.includes(hTitle) && !hYard.html.includes("+ Wiedervorlage") && !hYard.html.includes("completeFollowUpAction"), "Hof: keine Wiedervorlagen (auch nicht im Seiten-Payload), kein „+ Wiedervorlage“");
+  const hDoneId = boundIdOf(hBoard.html, "completeFollowUpAction");
+  report(!!hDoneId, "Zentrale: Erledigen ist die gebundene Server-Aktion der Fallakte (completeFollowUpAction)");
+  const hYardDone = await callAction("/unfallersatz", hDoneId, ueYard, { bound: [hOpen.id, hFu.id], form: { note: "Hof" } });
+  report(hYardDone.redirectTo.includes("fehler=rechte"), "Hof: Erledigen per direktem Aufruf abgewiesen");
+  const hSupport = await startSupportSession({ id: admin.id, name: admin.name }, ue.tenantId, "Smoke-Test Phase H Wiedervorlagen");
+  const hSupportCookie = `${adminCookie}; rb_support=${hSupport.id}`;
+  const hSupBoard = await get(hSupportCookie, "/unfallersatz");
+  report(hSupBoard.status === 200 && !hSupBoard.html.includes(hTitle) && !hSupBoard.html.includes('id="wiedervorlagen"'), `${hSupBoard.status} Supportmodus: operative Sicht ohne Wiedervorlagen`);
+  const hSupDone = await callAction("/unfallersatz", hDoneId, hSupportCookie, { bound: [hOpen.id, hFu.id], form: { note: "Support" } });
+  report(hSupDone.redirectTo.includes("fehler=support"), "Supportmodus: Erledigen gesperrt");
+  await endSupportSession({ id: admin.id, name: admin.name }, hSupport.id);
+  // fremder Mandant mit Modul und vollen Rechten (Inhaber): scheitert an der Mandantentrennung, nicht an Rolle oder Freischaltung
+  await setTenantFeature({ id: admin.id, name: admin.name }, foreign.tenantId, "ACCIDENT_REPLACEMENT", true, "Smoke Phase H");
+  const hForeign = await callAction("/unfallersatz", hDoneId, `rb_session=${foreignSession}`, { bound: [hOpen.id, hFu.id], form: { note: "fremd" } });
+  await setTenantFeature({ id: admin.id, name: admin.name }, foreign.tenantId, "ACCIDENT_REPLACEMENT", false, "Smoke Phase H");
+  report(actionState(hForeign.text)?.error === "Unfallersatzfall nicht gefunden.", "Fremder Mandant (Inhaber, Modul an): fremde Wiedervorlage nicht erledigbar");
+  const hWrong = await callAction("/unfallersatz", hDoneId, ueDispo, { bound: [hOther.id, hFu.id], form: { note: "falscher Fall" } });
+  report(actionState(hWrong.text)?.error === "Wiedervorlage nicht gefunden.", "Manipulierte Fall-ID: Wiedervorlage nicht über einen anderen Fall erledigbar");
+  report((await db.caseFollowUp.findUniqueOrThrow({ where: { id: hFu.id } })).status === "OPEN", "Wiedervorlage nach abgewiesenen Aufrufen unverändert offen");
+  const hOk = await callAction("/unfallersatz", hDoneId, ueDispo, { bound: [hOpen.id, hFu.id], form: { note: "Smoke erledigt" } });
+  const hAfter = await db.caseFollowUp.findUniqueOrThrow({ where: { id: hFu.id } });
+  report(hOk.status === 200 && !actionState(hOk.text)?.error && hAfter.status === "DONE" && hAfter.doneNote === "Smoke erledigt" && hAfter.doneById === hDispo.id, "Disposition: Wiedervorlage aus der Zentrale erledigt (Benutzer und Ergebnis gespeichert)");
+  const hBoardAfter = await get(ueDispo, "/unfallersatz");
+  report(hBoardAfter.status === 200 && !hBoardAfter.html.includes(hTitle), "Zentrale: erledigte Wiedervorlage verschwindet aus der Arbeitsliste");
+  const hHist = await get(ueDispo, `/unfallersatz/${hOpen.id}?tab=verlauf`);
+  report(hHist.html.includes("Wiedervorlage erledigt") && hHist.html.includes("Smoke erledigt"), "Verlauf: Erledigen aus der Zentrale mit Ergebnis festgehalten");
+  await createFollowUp(ue.tenantId, hOpen.id, ue.actor, { title: `${hTitle} zwei`, dueAt: new Date() });
+  const hHeute = await get(ueDispo, "/heute");
+  report(hHeute.html.includes(`href="/unfallersatz/${hOpen.id}#wiedervorlagen"`), "Heute: fällige Wiedervorlage führt in die Fallakte zu den Wiedervorlagen");
+  const hNew = await get(ueDispo, `/unfallersatz/${hOpen.id}?wv=neu`);
+  report(hNew.html.includes('id="wiedervorlagen"') && hNew.html.includes('aria-label="Wiedervorlage anlegen"'), "Fallakte: „+ Wiedervorlage“ (?wv=neu) öffnet das Anlegeformular am Fall");
+  const hTodayEmpty = await get(ueDispo, "/unfallersatz?aufgaben=ueberfaellig");
+  report(hTodayEmpty.html.includes('id="wiedervorlagen"') && (hTodayEmpty.html.includes("Keine überfälligen Wiedervorlagen.") || hTodayEmpty.html.includes("Tag überfällig") || hTodayEmpty.html.includes("Tage überfällig")), "Zentrale: Filter „Überfällig“ mit Liste oder Leerzustand");
 }
 
 const health = await fetch(`${base}/api/health`);

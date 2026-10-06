@@ -13,7 +13,7 @@
 import { db } from "@/lib/db";
 import { accidentRentState, contractDailyRateCents, contractTariffItems, rentValue, type RentState, type RentValue } from "@/lib/accident-pricing";
 import { loadEffectiveContract } from "@/lib/amendments";
-import { caseFinancials, closeWarnings, financeWarnings, finalInvoiceMissing, followUpDue, nextSteps, type CaseFinancials, type CloseWarning, type NextStep } from "@/lib/accident-replacement";
+import { caseFinancials, closeWarnings, financeWarnings, finalInvoiceMissing, FOLLOW_UP_ASSIGNEE_ROLES, followUpDue, nextSteps, type CaseFinancials, type CloseWarning, type NextStep } from "@/lib/accident-replacement";
 import { securityDepositFinancials } from "@/lib/deposits";
 import { accidentInvoiceChain, previewAccidentInvoice, type AccidentInvoicePreview } from "@/lib/invoices";
 import { DomainError } from "@/lib/integrity";
@@ -184,7 +184,7 @@ export async function caseFileOverview(tenantId: string, h: Header, access: Case
       db.caseFollowUp.findMany({ where: { tenantId, caseId: h.id, status: { not: "OPEN" } }, orderBy: { doneAt: "desc" }, take: 50 }),
     ]).then(([openRows, doneRows]) => [...openRows, ...doneRows]),
     db.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { pricesIncludeTax: true } }),
-    db.user.findMany({ where: { tenantId, active: true, role: { in: ["OWNER", "DISPO"] } }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    db.user.findMany({ where: { tenantId, active: true, role: { in: [...FOLLOW_UP_ASSIGNEE_ROLES] } }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
     // Praxistest: Kaution des Mieters aus der bestehenden Kautionsrechnung (Hinweise „Kaution prüfen“ / „Kautionsauszahlung offen“)
     securityDepositFinancials(tenantId, b.id),
   ]);

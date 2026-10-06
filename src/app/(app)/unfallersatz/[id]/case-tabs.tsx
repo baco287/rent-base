@@ -10,6 +10,7 @@ import {
   caseFileBilling, caseFileDamage, caseFileDocuments, caseFileHistory, caseFileOverview, caseFileRental, type CaseDocumentView, type CaseFileAccess, type CaseFileHeader, type FollowUpView,
 } from "@/lib/accident-case-file";
 import { ACCIDENT_DAMAGE_KINDS, ACCIDENT_LIABILITY_STATUS, ACCIDENT_TARIFF_KINDS, BOOKING_STATUS, INVOICE_CHAIN_STATUS, PAYMENT_METHODS, type AccidentLiabilityStatus, type AccidentTariffKind, type BookingStatus } from "@/lib/constants";
+import { followUpTiming } from "@/lib/accident-replacement";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import { invoiceHref } from "@/lib/invoice-links";
 import { fmtCents } from "@/lib/money";
@@ -50,7 +51,7 @@ const dash = (v: string | null | undefined) => (v && v.trim() ? v : null);
 // Übersicht
 // ---------------------------------------------------------------------------
 
-export async function OverviewTab({ tenantId, h, access }: { tenantId: string; h: Header; access: CaseFileAccess }) {
+export async function OverviewTab({ tenantId, h, access, newFollowUp = false }: { tenantId: string; h: Header; access: CaseFileAccess; /** Phase H: ?wv=neu öffnet das Anlegeformular */ newFollowUp?: boolean }) {
   const o = await caseFileOverview(tenantId, h, access);
   const full = access === "FULL";
   const open = h.status === "OPEN";
@@ -99,7 +100,7 @@ export async function OverviewTab({ tenantId, h, access }: { tenantId: string; h
       </div>
 
       {full && (
-        <Card title="Wiedervorlagen" right={openFollowUps.length > 0 ? <Chip tone={!open ? "grey" : openFollowUps.some((f) => f.due === "OVERDUE") ? "bad" : openFollowUps.some((f) => f.due === "TODAY") ? "amber" : "grey"}>{openFollowUps.length} offen</Chip> : undefined}>
+        <Card id="wiedervorlagen" title="Wiedervorlagen" right={openFollowUps.length > 0 ? <Chip tone={!open ? "grey" : openFollowUps.some((f) => f.due === "OVERDUE") ? "bad" : openFollowUps.some((f) => f.due === "TODAY") ? "amber" : "grey"}>{openFollowUps.length} offen</Chip> : undefined}>
           <div className="p-4 flex flex-col gap-3">
             {openFollowUps.length === 0 && <p className="text-sm text-ink-3">Keine offenen Wiedervorlagen.</p>}
             {openFollowUps.length > 0 && (
@@ -107,7 +108,7 @@ export async function OverviewTab({ tenantId, h, access }: { tenantId: string; h
                 {openFollowUps.map((f) => <FollowUpItem key={f.id} f={f} caseId={h.id} canAct={open} />)}
               </ul>
             )}
-            {open && <FollowUpCreateForm action={createFollowUpAction.bind(null, h.id)} assignees={o.assignees} minDate={toDateInputValue(new Date())} />}
+            {open && <FollowUpCreateForm action={createFollowUpAction.bind(null, h.id)} assignees={o.assignees} minDate={toDateInputValue(new Date())} initialOpen={newFollowUp} />}
             {doneFollowUps.length > 0 && (
               <details className="text-sm">
                 <summary className="cursor-pointer text-ink-2">Erledigte und verworfene ({doneFollowUps.length})</summary>
@@ -155,7 +156,8 @@ function FollowUpItem({ f, caseId, canAct }: { f: FollowUpView; caseId: string; 
       <div className="flex-1 min-w-0 text-sm">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium break-words">{f.title}</span>
-          {!canAct ? <Chip tone="grey">beim Abschluss offen · fällig war {fmtDate(f.dueAt)}</Chip> : f.due === "OVERDUE" ? <Chip tone="bad">überfällig seit {fmtDate(f.dueAt)}</Chip> : f.due === "TODAY" ? <Chip tone="amber">heute fällig</Chip> : <span className="text-xs text-ink-3">fällig am {fmtDate(f.dueAt)}</span>}
+          {/* Phase H: Fälligkeit als eindeutiger Text wie in der Zentrale („2 Tage überfällig“, „heute fällig“, „morgen fällig“) */}
+          {!canAct ? <Chip tone="grey">beim Abschluss offen · fällig war {fmtDate(f.dueAt)}</Chip> : f.due === "OVERDUE" ? <Chip tone="bad">{followUpTiming(f.dueAt).text} · fällig war {fmtDate(f.dueAt)}</Chip> : f.due === "TODAY" ? <Chip tone="amber">heute fällig</Chip> : <span className="text-xs text-ink-3">{followUpTiming(f.dueAt).days === 1 ? "morgen fällig" : `fällig am ${fmtDate(f.dueAt)}`}</span>}
         </div>
         <div className="text-xs text-ink-3">{f.assigneeName ? `Zuständig: ${f.assigneeName}` : "ohne Zuständigen"}{f.createdByName ? ` · angelegt von ${f.createdByName}` : ""}</div>
         {f.note && <p className="text-xs text-ink-2 mt-0.5 break-words">{f.note}</p>}

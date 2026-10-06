@@ -1,10 +1,12 @@
 import Link from "next/link";
 import { requireFeature } from "@/lib/auth";
 import { caseFileAccess } from "@/lib/accident-case-file";
-import { accidentCenter, CENTER_FILTERS, centerFilters, type CenterRow } from "@/lib/accident-center";
+import { accidentCenter, CENTER_FILTERS, centerFilters, TASK_GROUP_LABELS, TASK_VIEWS, type CenterRow, type CenterTask, type CenterTasks, type TaskViewKey } from "@/lib/accident-center";
 import { Card, Chip, Content, Empty, PageHeader, Plate } from "@/components/ui";
 import { fmtDate } from "@/lib/format";
 import { fmtCents } from "@/lib/money";
+import { completeFollowUpAction } from "./[id]/actions";
+import { FollowUpDoneAction } from "./[id]/case-forms";
 
 export const metadata = { title: "Unfallersatz" };
 
@@ -13,6 +15,8 @@ export const metadata = { title: "Unfallersatz" };
  * Inhaber und Disposition: vollständige Sicht mit Versicherung, Abrechnung und Wiedervorlagen. Hof und Supportmodus: operative Sicht –
  * Versicherungs-, Finanz- und Wiedervorlagendaten werden serverseitig gar nicht geladen (accidentCenter). Suche, Filter und Seite
  * stehen in der Adresse (filter, q, seite). Bearbeitet wird in der Fallakte; aus der Liste gibt es nur sichere Links.
+ * Phase H: Wiedervorlagen als Arbeitsliste (eigene kleine Filter, Adresse aufgaben=…) mit „Erledigen“ über dieselbe Server-Aktion
+ * wie in der Fallakte; nur Vollsicht.
  */
 export default async function AccidentCenterPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const { tenant, user, supportSession } = await requireFeature("ACCIDENT_REPLACEMENT");
@@ -22,10 +26,10 @@ export default async function AccidentCenterPage({ searchParams }: { searchParam
   const full = access === "FULL";
   const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
   const page = Math.max(1, parseInt(one(sp.seite) ?? "1", 10) || 1);
-  const c = await accidentCenter(tenant.id, { access, filter: one(sp.filter), q: one(sp.q), page });
+  const c = await accidentCenter(tenant.id, { access, filter: one(sp.filter), q: one(sp.q), page, tasks: one(sp.aufgaben), userId: user.id });
   const qs = (over: Record<string, string | number | null>) => {
     const p = new URLSearchParams();
-    const merged: Record<string, string | number | null> = { filter: c.filter === "offen" ? null : c.filter, q: c.q || null, seite: null, ...over };
+    const merged: Record<string, string | number | null> = { filter: c.filter === "offen" ? null : c.filter, q: c.q || null, seite: null, aufgaben: c.tasks?.view ?? null, ...over };
     for (const [k, v] of Object.entries(merged)) if (v != null && v !== "" && !(k === "filter" && v === "offen") && !(k === "seite" && v === 1)) p.set(k, String(v));
     const s = p.toString();
     return s ? `/unfallersatz?${s}` : "/unfallersatz";
@@ -46,11 +50,15 @@ export default async function AccidentCenterPage({ searchParams }: { searchParam
           {!full && <KpiTile href={qs({ filter: "uebergabe", q: null })} label="Reserviert / Übergabe offen" value={String(k.reserved)} detail="noch nicht übergeben" />}
           {full && <KpiTile href={qs({ filter: "abzurechnen", q: null })} label="Abzurechnen" value={String(k.toInvoice ?? 0)} detail="zurückgegeben, Schlussrechnung fehlt" tone={(k.toInvoice ?? 0) > 0 ? "amber" : undefined} />}
           {full && <KpiTile href={qs({ filter: "rechnung_offen", q: null })} label="Offene Forderungen" value={fmtCents(k.receivablesCents ?? 0)} detail={`${k.receivablesCases ?? 0} ${k.receivablesCases === 1 ? "Fall" : "Fälle"} · Kürzungen mindern nicht`} tone={(k.receivablesCents ?? 0) > 0 ? "amber" : undefined} />}
-          {full && <KpiTile href={qs({ filter: "wiedervorlage", q: null })} label="Fällige Wiedervorlagen" value={String(k.followUpsDue ?? 0)} detail="heute und überfällig" tone={(k.followUpsDue ?? 0) > 0 ? "bad" : undefined} />}
+          {full && <KpiTile href={`${qs({ aufgaben: "faellig" })}#wiedervorlagen`} label="Fällige Wiedervorlagen" value={String(k.followUpsDue ?? 0)} detail="heute und überfällig" tone={(k.followUpsDue ?? 0) > 0 ? "bad" : undefined} />}
         </section>
+
+        {/* Phase H: Arbeitsliste der Wiedervorlagen – nur Vollsicht, nur wenn es offene Fälle gibt */}
+        {c.tasks && k.open > 0 && <TaskBoard t={c.tasks} qs={qs} />}
 
         <form action="/unfallersatz" role="search" className="flex flex-col sm:flex-row gap-2">
           {c.filter !== "offen" && <input type="hidden" name="filter" value={c.filter} />}
+          {c.tasks?.view && <input type="hidden" name="aufgaben" value={c.tasks.view} />}
           <label className="sr-only" htmlFor="ue-q">Unfallersatzfälle durchsuchen</label>
           <input id="ue-q" name="q" defaultValue={c.q} maxLength={80} placeholder={full ? "Fallnummer, Kunde, Kennzeichen, Versicherung, Schadennummer" : "Fallnummer, Kunde, Kennzeichen"} className="input flex-1 min-w-0" />
           <div className="flex gap-2">
@@ -83,12 +91,13 @@ export default async function AccidentCenterPage({ searchParams }: { searchParam
                 <table className="w-full text-[13.5px] table-fixed">
                   <thead>
                     <tr className="text-left">
-                      <th className="label-xs px-3 py-2 border-b border-line w-[20%]">Fall · Kunde</th>
-                      <th className="label-xs px-3 py-2 border-b border-line w-[13%]">Fahrzeug</th>
-                      {full && <th className="label-xs px-3 py-2 border-b border-line w-[17%]">Versicherung</th>}
-                      <th className="label-xs px-3 py-2 border-b border-line w-[15%]">Zeitraum</th>
+                      <th className="label-xs px-3 py-2 border-b border-line w-[19%]">Fall · Kunde</th>
+                      <th className="label-xs px-3 py-2 border-b border-line w-[12%]">Fahrzeug</th>
+                      {full && <th className="label-xs px-3 py-2 border-b border-line w-[16%]">Versicherung</th>}
+                      <th className="label-xs px-3 py-2 border-b border-line w-[14%]">Zeitraum</th>
                       <th className="label-xs px-3 py-2 border-b border-line">Stand · Nächster Schritt</th>
-                      <th className="label-xs px-3 py-2 border-b border-line w-[108px]"><span className="sr-only">Aktionen</span></th>
+                      {/* Phase H: eigene, feste Aktionsspalte – Primäraktion oben, darunter „Fall öffnen“ */}
+                      <th className="label-xs px-3 py-2 border-b border-line w-[164px]">Aktionen</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -106,7 +115,7 @@ export default async function AccidentCenterPage({ searchParams }: { searchParam
                         {full && <td className="px-3 py-2.5 min-w-0"><InsuranceFacts r={r} /></td>}
                         <td className="px-3 py-2.5"><PeriodText r={r} stacked /></td>
                         <td className="px-3 py-2.5 min-w-0"><div className="flex flex-col gap-1.5"><StatusFacts r={r} /><NextStepFacts r={r} /></div></td>
-                        <td className="px-3 py-2"><RowActions r={r} stacked /></td>
+                        <td className="px-3 py-2.5"><RowActions r={r} full={full} layout="column" /></td>
                       </tr>
                     ))}
                   </tbody>
@@ -211,12 +220,92 @@ function NextStepFacts({ r }: { r: CenterRow }) {
   );
 }
 
-function RowActions({ r, stacked = false }: { r: CenterRow; stacked?: boolean }) {
+const ACTION_BTN = "btn !py-1.5 text-[13px] justify-center text-center w-full";
+
+/**
+ * Phase H: Aktionsfläche je Fall. Operative Primäraktion (Übergabe, Rückgabe, Abrechnung – aus actionOf, für den Hof ohne
+ * Abrechnung) dunkel oben, darunter „Fall öffnen“; gleiche Breite und Höhe. Ohne Primäraktion nur „Fall öffnen“ – kein Platzhalter.
+ * Desktop: Spalte; Handy/Tablet: volle Breite unter der Karte. „+ Wiedervorlage“ nur Vollsicht bei offenem Fall (fallbezogen).
+ */
+function RowActions({ r, full, layout }: { r: CenterRow; full: boolean; layout: "column" | "bar" }) {
+  const followUp = full && r.status === "OPEN";
   return (
-    <div className={stacked ? "flex flex-col gap-1.5 items-stretch" : "flex flex-wrap gap-1.5 justify-end"}>
-      {r.action && <Link href={r.action.href} className="btn btn-primary !py-1 text-xs">{r.action.label}</Link>}
-      <Link href={`/unfallersatz/${r.id}`} className="btn !py-1 text-xs">Fall öffnen</Link>
+    <div className={layout === "column" ? "flex flex-col gap-1.5" : `grid gap-2 ${r.action ? "grid-cols-2" : "grid-cols-1"}`}>
+      {r.action && <Link href={r.action.href} className={`${ACTION_BTN} btn-primary`}>{r.action.label}</Link>}
+      <Link href={`/unfallersatz/${r.id}`} className={ACTION_BTN}>Fall öffnen</Link>
+      {followUp && <Link href={`/unfallersatz/${r.id}?wv=neu#wiedervorlagen`} className={`text-xs text-ink-2 underline text-center ${layout === "bar" && r.action ? "col-span-2" : ""}`}>+ Wiedervorlage</Link>}
     </div>
+  );
+}
+
+/** Phase H: Wiedervorlagen-Arbeitsliste – überfällig, heute, demnächst (7 Tage); eigene Filter, unabhängig von Fallfilter und Suche */
+function TaskBoard({ t, qs }: { t: CenterTasks; qs: (over: Record<string, string | number | null>) => string }) {
+  const link = (view: string | null) => `${qs({ aufgaben: view })}#wiedervorlagen`;
+  const active = (view: string | null) => t.view === view || (view === null && t.view === "alle");
+  const groups = (["OVERDUE", "TODAY", "SOON", "LATER"] as const).map((g) => ({ g, items: t.items.filter((x) => x.group === g) })).filter((x) => x.items.length > 0);
+  const empty = t.view === "heute" ? "Heute ist im Unfallersatz nichts nachzufassen."
+    : t.view === "ueberfaellig" ? "Keine überfälligen Wiedervorlagen."
+    : t.view === "demnaechst" ? "In den nächsten 7 Tagen steht nichts an."
+    : t.view === "meine" ? "Ihnen sind keine offenen Wiedervorlagen zugewiesen."
+    : "Keine fälligen Wiedervorlagen.";
+  const summary = [t.counts.ueberfaellig > 0 ? `${t.counts.ueberfaellig} überfällig` : null, t.counts.heute > 0 ? `${t.counts.heute} heute` : null, t.counts.demnaechst > 0 ? `${t.counts.demnaechst} demnächst` : null].filter(Boolean).join(" · ");
+  return (
+    <Card id="wiedervorlagen" title="Wiedervorlagen" right={summary ? <span className={`text-xs ${t.counts.ueberfaellig > 0 ? "text-bad font-medium" : "text-ink-2"}`}>{summary}</span> : <span className="text-xs text-ink-3">nichts fällig</span>}>
+      <nav aria-label="Wiedervorlagen filtern" className="px-3.5 pt-3 flex gap-1.5 flex-wrap">
+        <Link href={link(null)} aria-current={active(null) ? "page" : undefined} className={`btn !py-1 text-xs ${active(null) ? "!bg-brand !text-brand-ink !border-brand" : ""}`}>Übersicht<span className="ml-1.5 tnum opacity-75">{t.counts.uebersicht}</span></Link>
+        {(Object.keys(TASK_VIEWS) as TaskViewKey[]).map((v) => (
+          <Link key={v} href={link(v)} aria-current={t.view === v ? "page" : undefined} className={`btn !py-1 text-xs ${t.view === v ? "!bg-brand !text-brand-ink !border-brand" : ""}`}>
+            {TASK_VIEWS[v]}<span className="ml-1.5 tnum opacity-75">{t.counts[v]}</span>
+          </Link>
+        ))}
+      </nav>
+      {t.items.length === 0 ? (
+        <p className="px-4 py-4 text-sm text-ink-3">
+          {empty}
+          {(t.view === "heute" || t.view === "demnaechst") && t.counts.ueberfaellig > 0 && <> Offen bleiben <Link href={link("ueberfaellig")} className="underline text-bad">{t.counts.ueberfaellig} überfällige</Link>.</>}
+        </p>
+      ) : (
+        <div className="pt-2">
+          {groups.map(({ g, items }) => (
+            <section key={g} aria-label={TASK_GROUP_LABELS[g]}>
+              <h3 className={`px-4 pt-2 pb-1 label-xs ${g === "OVERDUE" ? "!text-bad" : g === "TODAY" ? "!text-amber" : ""}`}>{TASK_GROUP_LABELS[g]} · {items.length}</h3>
+              <ul className="divide-y divide-line-soft">{items.map((x) => <TaskItem key={x.id} x={x} />)}</ul>
+            </section>
+          ))}
+        </div>
+      )}
+      {(t.more > 0 || t.view === "alle" || t.later > 0) && (
+        <div className="px-4 py-3 border-t border-line-soft flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+          {t.more > 0 && (t.view === null ? <Link href={link("alle")} className="underline">Weitere Wiedervorlagen anzeigen ({t.more})</Link> : <span className="text-ink-3">{t.more} weitere – bitte über die Filter eingrenzen.</span>)}
+          {t.view === "alle" && <Link href={link(null)} className="underline">Weniger anzeigen</Link>}
+          {t.later > 0 && <span className="text-xs text-ink-3">{t.later} später fällig – in der jeweiligen Fallakte.</span>}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/** Eine Wiedervorlage: Fälligkeit (Text, nicht nur Farbe), Fall, Kunde, Aufgabe, Notiz, Zuständigkeit; Erledigen und Fall öffnen */
+function TaskItem({ x }: { x: CenterTask }) {
+  const bar = x.group === "OVERDUE" ? "border-l-bad" : x.group === "TODAY" ? "border-l-amber" : "border-l-transparent";
+  return (
+    <li className={`px-4 py-3 border-l-4 ${bar} flex flex-col sm:flex-row sm:items-start gap-3`}>
+      <div className="flex-1 min-w-0 flex flex-col gap-1">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+          <Chip tone={x.group === "OVERDUE" ? "bad" : x.group === "TODAY" ? "amber" : "grey"}>{x.dueText}</Chip>
+          <Link href={`/unfallersatz/${x.caseId}`} className="font-mono tnum font-semibold hover:underline whitespace-nowrap">{x.caseNumber}</Link>
+          <span className="min-w-0 truncate basis-full sm:basis-auto" title={x.customerName}><span className="hidden sm:inline">· </span>{x.customerName}</span>
+        </div>
+        <p className="font-medium break-words">„{x.title}“</p>
+        {x.note && <p className="text-xs text-ink-2 truncate" title={x.note}>{x.note}</p>}
+        <p className="text-xs text-ink-3">Zuständig: {x.assigneeName ? <span className={x.mine ? "font-medium text-ink-2" : ""}>{x.assigneeName}{x.mine ? " (Sie)" : ""}</span> : "niemand Bestimmtes"}</p>
+      </div>
+      {/* Handy: nebeneinander (geöffnetes Erledigen-Formular in voller Breite); ab sm: feste Spalte untereinander */}
+      <div className="grid grid-cols-2 has-[form]:grid-cols-1 gap-2 sm:flex sm:flex-col sm:gap-1.5 sm:w-[180px] shrink-0">
+        <FollowUpDoneAction done={completeFollowUpAction.bind(null, x.caseId, x.id)} />
+        <Link href={`/unfallersatz/${x.caseId}#wiedervorlagen`} className={ACTION_BTN}>Fall öffnen</Link>
+      </div>
+    </li>
   );
 }
 
@@ -243,10 +332,9 @@ function CaseCard({ r, full }: { r: CenterRow; full: boolean }) {
       )}
       <BillingLine r={r} />
       {r.status === "CLOSED" && r.closedAt && <span className="text-xs text-ink-3">abgeschlossen am {fmtDate(r.closedAt)}</span>}
-      <div className="flex flex-wrap items-end justify-between gap-2">
-        <NextStepFacts r={r} />
-        <RowActions r={r} />
-      </div>
+      <NextStepFacts r={r} />
+      {/* Phase H: Aktionen unter der Karte in voller Breite */}
+      <RowActions r={r} full={full} layout="bar" />
     </li>
   );
 }

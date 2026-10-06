@@ -295,8 +295,8 @@ function PlannedEndDialog({ action, preview, currentEnd, minEnd, close }: Planne
 // Wiedervorlagen
 // ---------------------------------------------------------------------------
 
-export function FollowUpCreateForm({ action, assignees, minDate }: { action: Action; assignees: { id: string; name: string }[]; minDate: string }) {
-  const [open, setOpen] = useState(false);
+export function FollowUpCreateForm({ action, assignees, minDate, initialOpen = false }: { action: Action; assignees: { id: string; name: string }[]; minDate: string; /** Phase H: aus der Zentrale „+ Wiedervorlage“ direkt geöffnet */ initialOpen?: boolean }) {
+  const [open, setOpen] = useState(initialOpen);
   const { state, formAction, pending } = useCaseAction(action, () => setOpen(false));
   if (!open) return <div className="flex flex-col gap-2"><div><button type="button" className="btn !py-1.5" onClick={() => setOpen(true)}>Wiedervorlage anlegen</button></div><Feedback state={state} /></div>;
   return (
@@ -337,6 +337,30 @@ export function FollowUpActions({ done, cancel }: { done: Action; cancel: Action
         <button type="submit" disabled={a.pending} className="btn btn-primary !py-1 text-xs">{a.pending ? "Wird gespeichert…" : mode === "done" ? "Als erledigt markieren" : "Verwerfen"}</button>
         <button type="button" className="btn !py-1 text-xs" onClick={() => setMode("none")}>Abbrechen</button>
       </div>
+    </form>
+  );
+}
+
+/**
+ * Phase H: „Erledigen“ aus der Arbeitsliste der Zentrale – dieselbe Server-Aktion wie in der Fallakte (completeFollowUpAction),
+ * Ergebnis optional. Verwerfen bleibt der Fallakte vorbehalten (dort mit Pflichtgrund).
+ */
+export function FollowUpDoneAction({ done }: { done: Action }) {
+  const [open, setOpen] = useState(false);
+  const a = useCaseAction(done, () => setOpen(false));
+  if (!open) return (
+    <div className="flex flex-col gap-1.5">
+      <button type="button" className="btn btn-primary !py-1.5 text-[13px] justify-center w-full" onClick={() => setOpen(true)}>Erledigen</button>
+      <Feedback state={a.state} />
+    </div>
+  );
+  return (
+    <form action={a.formAction} onSubmit={submitWithoutReset(a.formAction)} className="flex flex-col gap-2 text-sm" aria-label="Wiedervorlage erledigen">
+      {/* Fokus ins Ergebnisfeld: das Formular erscheint erst nach Klick auf „Erledigen“ */}
+      <label className="flex flex-col gap-1"><span className="label-xs">Ergebnis (optional)</span><input name="note" maxLength={1000} className="input" autoFocus /></label>
+      <Feedback state={a.state} />
+      <button type="submit" disabled={a.pending} className="btn btn-primary !py-1.5 text-[13px] justify-center w-full">{a.pending ? "Wird gespeichert…" : "Als erledigt markieren"}</button>
+      <button type="button" className="btn !py-1.5 text-[13px] justify-center w-full" onClick={() => setOpen(false)}>Abbrechen</button>
     </form>
   );
 }

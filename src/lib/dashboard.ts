@@ -314,7 +314,7 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
     for (const f of accident.followUps) {
       const group: TaskGroup = f.due === "OVERDUE" ? "OVERDUE" : f.due === "TODAY" ? "TODAY" : "SOON";
       if (group === "SOON" && days === 0) continue;
-      add({ area: "ACCIDENT", href: `/unfallersatz/${f.caseId}`, plate: f.plate, key: `accident-followup-${f.id}`, group, title: `Wiedervorlage · ${f.title}`, detail: `${f.caseNumber} · ${f.customerName}${f.assigneeName ? ` · ${f.assigneeName}` : ""} · fällig ${fmtDate(f.dueAt)}`, at: f.dueAt, status: group === "OVERDUE" ? "Überfällig" : group === "TODAY" ? "Heute fällig" : "Bald fällig" });
+      add({ area: "ACCIDENT", href: `/unfallersatz/${f.caseId}#wiedervorlagen`, plate: f.plate, key: `accident-followup-${f.id}`, group, title: `Wiedervorlage · ${f.title}`, detail: `${f.caseNumber} · ${f.customerName}${f.assigneeName ? ` · ${f.assigneeName}` : ""} · fällig ${fmtDate(f.dueAt)}`, at: f.dueAt, status: group === "OVERDUE" ? "Überfällig" : group === "TODAY" ? "Heute fällig" : "Bald fällig" });
     }
     for (const c of accident.cases) {
       add({ area: "ACCIDENT", href: c.href, plate: c.plate, key: `accident-case-${c.caseId}`, group: "NOTE", title: `${c.caseNumber} · ${c.customerName}`, detail: c.steps.map((s) => s.text).join(" · "), at: c.returnedAt, status: c.status });

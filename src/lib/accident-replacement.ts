@@ -18,7 +18,7 @@ import {
 import { ensureContractDraft, refreshContractDraft } from "@/lib/contracts";
 import { financialsFor, type InvoiceFinancials } from "@/lib/counter-documents";
 import { customerToData, type CustomerInput } from "@/lib/customer-schema";
-import { customerName, fmtDateTime } from "@/lib/format";
+import { customerName, fmtDate, fmtDateTime } from "@/lib/format";
 import { DomainError } from "@/lib/integrity";
 import { reductionsFor } from "@/lib/invoice-adjustments";
 import { isValidEmail } from "@/lib/mail";
@@ -29,7 +29,7 @@ import { calculateRentalPrice, rentalDays } from "@/lib/pricing";
 import { accidentBillingOf, type AccidentBillingType } from "@/lib/constants";
 import { MAX_DOCUMENT_BYTES, assertKeyBelongsToTenant } from "@/lib/storage";
 import { rentValue } from "@/lib/accident-pricing";
-import { toDateInputValue } from "@/lib/time";
+import { toDateInputValue, zonedDaysBetween } from "@/lib/time";
 import { securityDepositFinancials, type DepositFinancials } from "@/lib/deposits";
 
 type Tx = Prisma.TransactionClient;
@@ -501,6 +501,9 @@ export async function updatePlannedEnd(tenantId: string, caseId: string, actor: 
 // Wiedervorlagen (klein: Titel, Fälligkeit, Status, optional Zuständiger und Notiz)
 // ---------------------------------------------------------------------------
 
+/** Rollen, die als zuständig für eine Wiedervorlage wählbar sind (Auswahl der Fallakte und Prüfung beim Anlegen) */
+export const FOLLOW_UP_ASSIGNEE_ROLES = ["OWNER", "DISPO"] as const;
+
 export async function createFollowUp(tenantId: string, caseId: string, actor: Actor, input: { title: string; dueAt: Date; assigneeUserId?: string | null; note?: string | null }): Promise<FollowUpRow> {
   const title = clean(input.title, 200);
   if (!title) throw new DomainError("Bitte einen Titel für die Wiedervorlage angeben.");
@@ -509,7 +512,8 @@ export async function createFollowUp(tenantId: string, caseId: string, actor: Ac
     const c = await lockCase(tx, tenantId, caseId); assertOpen(c);
     let assignee: { id: string; name: string } | null = null;
     if (input.assigneeUserId) {
-      assignee = await tx.user.findFirst({ where: { id: input.assigneeUserId, tenantId, active: true }, select: { id: true, name: true } });
+      // Phase H: zuständig sind – wie in der Auswahl der Fallakte – nur aktive Inhaber und Disposition des eigenen Mandanten
+      assignee = await tx.user.findFirst({ where: { id: input.assigneeUserId, tenantId, active: true, role: { in: [...FOLLOW_UP_ASSIGNEE_ROLES] } }, select: { id: true, name: true } });
       if (!assignee) throw new DomainError("Der Zuständige wurde nicht gefunden.");
     }
     const row = await tx.caseFollowUp.create({ data: { tenantId, caseId: c.id, title, dueAt: input.dueAt, assigneeUserId: assignee?.id ?? null, assigneeName: assignee?.name ?? null, note: cleanMulti(input.note, 1000), createdById: actor.id, createdByName: actor.name } });
@@ -858,6 +862,21 @@ export function financeWarnings(fin: CaseFinancials): { code: string; text: stri
 export function followUpDue(dueAt: Date, now = new Date()): "OVERDUE" | "TODAY" | "LATER" {
   const due = toDateInputValue(dueAt), today = toDateInputValue(now);
   return due < today ? "OVERDUE" : due === today ? "TODAY" : "LATER";
+}
+
+/** Vorschauzeitraum „demnächst“ der Wiedervorlagen (Kalendertage nach heute) */
+export const FOLLOW_UP_SOON_DAYS = 7;
+export type FollowUpTiming = { group: "OVERDUE" | "TODAY" | "SOON" | "LATER"; days: number; text: string };
+
+/**
+ * Phase H: Fälligkeit einer Wiedervorlage als Gruppe und eindeutiger Text (nicht nur Farbe) – nach Kalendertag in der
+ * Anwendungszeitzone, deckungsgleich mit followUpDue: „2 Tage überfällig“, „Heute“, „Morgen“, sonst das Datum.
+ */
+export function followUpTiming(dueAt: Date, now = new Date()): FollowUpTiming {
+  const days = zonedDaysBetween(now, dueAt);
+  if (days < 0) return { group: "OVERDUE", days, text: `${-days} ${days === -1 ? "Tag" : "Tage"} überfällig` };
+  if (days === 0) return { group: "TODAY", days, text: "Heute" };
+  return { group: days <= FOLLOW_UP_SOON_DAYS ? "SOON" : "LATER", days, text: days === 1 ? "Morgen" : fmtDate(dueAt) };
 }
 
 /**

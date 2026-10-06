@@ -76,7 +76,7 @@ export default async function AccidentCasePage({ params, searchParams }: { param
           ))}
         </nav>
 
-        {tab === "uebersicht" && <OverviewTab tenantId={tenant.id} h={h} access={access} />}
+        {tab === "uebersicht" && <OverviewTab tenantId={tenant.id} h={h} access={access} newFollowUp={sp.wv === "neu"} />}
         {tab === "schadenfall" && full && <DamageTab tenantId={tenant.id} h={h} />}
         {tab === "miete" && <RentalTab tenantId={tenant.id} h={h} access={access} role={user.role} />}
         {tab === "dokumente" && <DocumentsTab tenantId={tenant.id} h={h} access={access} />}
