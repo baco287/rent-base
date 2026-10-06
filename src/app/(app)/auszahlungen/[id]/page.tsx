@@ -11,6 +11,7 @@ import { buildPayoutDocument } from "@/lib/payout-view";
 import { getPayout, verifyPayout } from "@/lib/payouts";
 import { toDateTimeInputValue } from "@/lib/time";
 import { db } from "@/lib/db";
+import { accidentInvoiceOf } from "@/lib/accident-replacement-events";
 import { cancelPayoutAction, completePayoutAction, generatePayoutPdfAction, previewPayoutAction, sendPayoutReceiptAction, updatePayoutDraftAction } from "../actions";
 import { AttachmentUploader, CancelPayoutForm, CompleteDraftForm, PayoutActionButton, PayoutForm, SendReceiptForm } from "../payout-forms";
 import { PayoutStatusChip } from "../payout-panel";
@@ -25,6 +26,8 @@ export default async function PayoutPage({ params }: PageProps<"/auszahlungen/[i
   const { id } = await params;
   const p = await getPayout(tenant.id, id);
   if (!p) notFound();
+  // Befehl 30 Phase I: Erstattung aus der Unfallersatz-Abrechnung sehen nur Inhaber und Disposition (Hof, auch Supportmodus: nicht vorhanden)
+  if (user.role === "YARD" && (await accidentInvoiceOf(db, tenant.id, p.invoiceId))) notFound();
   const canManage = user.role !== "YARD";
   const tenantRow = await db.tenant.findUniqueOrThrow({ where: { id: tenant.id }, select: { name: true, legalForm: true, street: true, zip: true, city: true, phone: true, email: true } });
   const doc = buildPayoutDocument(p, tenantRow);

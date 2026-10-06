@@ -103,8 +103,8 @@ export async function BookingsTab({ tenantId, customerId, page, now }: { tenantI
 
 // ---------------------------------------------------------------------------
 
-export async function FinanceTab({ tenantId, customerId }: { tenantId: string; customerId: string }) {
-  const f = await customerFinance(tenantId, customerId);
+export async function FinanceTab({ tenantId, customerId, hideAccidentBilling = false }: { tenantId: string; customerId: string; hideAccidentBilling?: boolean }) {
+  const f = await customerFinance(tenantId, customerId, { hideAccidentBilling });
   const s = f.sums;
   return (
     <>
@@ -309,8 +309,8 @@ export async function DocumentsTab({ tenantId, customerId, role }: { tenantId: s
 
 // ---------------------------------------------------------------------------
 
-export async function CommunicationTab({ tenantId, customerId }: { tenantId: string; customerId: string }) {
-  const rows = await customerEmails(tenantId, customerId);
+export async function CommunicationTab({ tenantId, customerId, hideAccidentBilling = false }: { tenantId: string; customerId: string; hideAccidentBilling?: boolean }) {
+  const rows = await customerEmails(tenantId, customerId, { hideAccidentBilling });
   return (
     <Card title="E-Mail-Verlauf" right={<Chip>{rows.length}</Chip>}>
       {rows.length === 0 ? <Empty>Noch keine E-Mails versendet.</Empty> : (
@@ -353,8 +353,8 @@ async function NoAuthorityHint({ tenantId, customerId }: { tenantId: string; cus
 
 // ---------------------------------------------------------------------------
 
-export async function HistoryTab({ tenantId, customerId }: { tenantId: string; customerId: string }) {
-  const rows = await customerTimeline(tenantId, customerId);
+export async function HistoryTab({ tenantId, customerId, hideAccidentBilling = false }: { tenantId: string; customerId: string; hideAccidentBilling?: boolean }) {
+  const rows = await customerTimeline(tenantId, customerId, 200, { hideAccidentBilling });
   return (
     <Card title="Historie" right={<Chip>{rows.length}</Chip>}>
       {rows.length === 0 ? <Empty>Noch keine Ereignisse.</Empty> : (

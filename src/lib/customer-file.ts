@@ -18,6 +18,19 @@ import { SIGNED_AMENDMENTS_SELECT, effectiveTotalCents } from "@/lib/amendments"
 import { prepaymentBalances } from "@/lib/rental-payments";
 import { accidentTariffsFor } from "@/lib/accident-case-file";
 import { accidentRentState } from "@/lib/accident-pricing";
+import { ACCIDENT_BILLING_WHERE } from "@/lib/accident-replacement-events";
+
+/**
+ * Befehl 30 Phase I: Hof-Sicht (YARD, auch Supportmodus) ohne Unfallersatz-Abrechnung – wie Phase F in /rechnungen, /forderungen,
+ * /heute und bei Dokumenten: keine Unfallersatz-Rechnungen und Gegenbelege, keine Zahlungen und Auszahlungen dazu, keine Mails dazu
+ * (Betreff mit Schadennummer, Versicherer als Empfänger). Standardmiete bleibt unverändert sichtbar.
+ */
+export type AccidentBillingView = { hideAccidentBilling?: boolean };
+const hideInvoices = (v: AccidentBillingView): Prisma.InvoiceWhereInput => (v.hideAccidentBilling ? { NOT: ACCIDENT_BILLING_WHERE } : {});
+const hideViaInvoice = (v: AccidentBillingView) => (v.hideAccidentBilling ? { NOT: { invoice: { is: ACCIDENT_BILLING_WHERE } } } : {});
+const hideMails = (v: AccidentBillingView): Prisma.EmailLogWhereInput => (v.hideAccidentBilling
+  ? { NOT: [{ invoiceVersion: { is: { invoice: { is: ACCIDENT_BILLING_WHERE } } } }, { dunningNotice: { is: { invoice: { is: ACCIDENT_BILLING_WHERE } } } }, { payout: { is: { invoice: { is: ACCIDENT_BILLING_WHERE } } } }] }
+  : {});
 
 /**
  * Befehl 27: Ziel eines Zahlungslinks. Zahlung zu einer Rechnung → deren Seite (Buchungsrechnung oder freie Rechnung);
@@ -110,13 +123,13 @@ async function lastActivity(tenantId: string, customerId: string, customer: Cust
 }
 
 /** Übersichtskennzahlen und abgeleitete offene Punkte – keine Lebenszeit-Umsätze, nur handlungsrelevante Größen. */
-export async function customerOverview(tenantId: string, customerId: string, customer: CustomerRow, now = new Date()): Promise<CustomerOverview> {
+export async function customerOverview(tenantId: string, customerId: string, customer: CustomerRow, now = new Date(), view: AccidentBillingView = {}): Promise<CustomerOverview> {
   const [bookingsTotal, activeRentals, lastRental, nextBooking, invoices, deposits, openDamageCases, authority, driverOnlyContracts, overdueActive] = await Promise.all([
     db.booking.count({ where: { tenantId, customerId } }),
     db.booking.count({ where: { tenantId, customerId, status: "ACTIVE" } }),
     db.booking.findFirst({ where: { tenantId, customerId, status: { in: ["ACTIVE", "RETURNED"] } }, orderBy: [{ actualPickupAt: "desc" }, { startAt: "desc" }], select: { id: true, number: true, endAt: true, actualReturnAt: true, vehicle: { select: vehSel } } }),
     db.booking.findFirst({ where: { tenantId, customerId, status: "RESERVED", startAt: { gte: now } }, orderBy: { startAt: "asc" }, select: { id: true, number: true, startAt: true, vehicle: { select: vehSel } } }),
-    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", documentType: "INVOICE", currentVersionId: { not: null }, OR: [{ booking: { customerId } }, { customerId, bookingId: null }] }, select: { id: true, number: true, kind: true, bookingId: true, currentVersion: { select: { grossTotal: true, paymentDueDate: true, customerSnapshot: true } } } }).then((rows) => rows.filter((r) => recipientRoleOf(r.currentVersion?.customerSnapshot as { recipientRole?: string } | null) === "RENTER")),
+    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", documentType: "INVOICE", currentVersionId: { not: null }, OR: [{ booking: { customerId } }, { customerId, bookingId: null }], ...hideInvoices(view) }, select: { id: true, number: true, kind: true, bookingId: true, currentVersion: { select: { grossTotal: true, paymentDueDate: true, customerSnapshot: true } } } }).then((rows) => rows.filter((r) => recipientRoleOf(r.currentVersion?.customerSnapshot as { recipientRole?: string } | null) === "RENTER")),
     db.securityDeposit.findMany({ where: { tenantId, booking: { customerId } }, select: { id: true, bookingId: true, expectedAmountCents: true, events: { select: { type: true, amountCents: true, status: true } }, booking: { select: { number: true, status: true } } } }),
     db.damageCase.count({ where: { tenantId, status: { not: "CLOSED" }, booking: { customerId } } }),
     db.authorityCase.findMany({ where: { tenantId, driverCustomerId: customerId }, select: { id: true, caseNumber: true, status: true, responseDeadline: true } }),
@@ -228,11 +241,11 @@ export type CustomerFinance = {
 };
 
 /** Finanzen der Person über alle ihre Buchungen – Stand ausschließlich aus financialsFor; stornierte Zahlungen/Auszahlungen sichtbar, nie summiert. */
-export async function customerFinance(tenantId: string, customerId: string): Promise<CustomerFinance> {
+export async function customerFinance(tenantId: string, customerId: string, view: AccidentBillingView = {}): Promise<CustomerFinance> {
   const [invoices, payments, payouts] = await Promise.all([
-    db.invoice.findMany({ where: { tenantId, status: { in: ["DRAFT", "FINALIZED"] }, OR: [{ booking: { customerId } }, { customerId, bookingId: null }] }, orderBy: [{ finalizedAt: "desc" }, { createdAt: "desc" }], take: 500, select: { id: true, number: true, status: true, documentType: true, kind: true, bookingId: true, finalizedAt: true, booking: { select: { number: true } }, original: { select: { id: true, number: true } }, currentVersion: { select: { grossTotal: true, issueDate: true, customerSnapshot: true } } } }),
-    db.payment.findMany({ where: { tenantId, OR: [{ booking: { customerId } }, { bookingId: null, invoice: { customerId } }] }, orderBy: { paidAt: "desc" }, take: 500, select: { id: true, paidAt: true, amountCents: true, method: true, status: true, reference: true, cancellationReason: true, bookingId: true, booking: { select: { number: true } }, invoice: { select: { id: true, number: true, bookingId: true, kind: true } } } }),
-    db.payout.findMany({ where: { tenantId, OR: [{ customerId }, { booking: { customerId } }] }, orderBy: { createdAt: "desc" }, take: 500, select: { id: true, number: true, status: true, sourceType: true, amountCents: true, method: true, executedAt: true, plannedAt: true, ibanMasked: true, bookingId: true, booking: { select: { number: true } }, invoice: { select: { number: true } } } }),
+    db.invoice.findMany({ where: { tenantId, status: { in: ["DRAFT", "FINALIZED"] }, OR: [{ booking: { customerId } }, { customerId, bookingId: null }], ...hideInvoices(view) }, orderBy: [{ finalizedAt: "desc" }, { createdAt: "desc" }], take: 500, select: { id: true, number: true, status: true, documentType: true, kind: true, bookingId: true, finalizedAt: true, booking: { select: { number: true } }, original: { select: { id: true, number: true } }, currentVersion: { select: { grossTotal: true, issueDate: true, customerSnapshot: true } } } }),
+    db.payment.findMany({ where: { tenantId, OR: [{ booking: { customerId } }, { bookingId: null, invoice: { customerId } }], ...hideViaInvoice(view) }, orderBy: { paidAt: "desc" }, take: 500, select: { id: true, paidAt: true, amountCents: true, method: true, status: true, reference: true, cancellationReason: true, bookingId: true, booking: { select: { number: true } }, invoice: { select: { id: true, number: true, bookingId: true, kind: true } } } }),
+    db.payout.findMany({ where: { tenantId, OR: [{ customerId }, { booking: { customerId } }], ...hideViaInvoice(view) }, orderBy: { createdAt: "desc" }, take: 500, select: { id: true, number: true, status: true, sourceType: true, amountCents: true, method: true, executedAt: true, plannedAt: true, ibanMasked: true, bookingId: true, booking: { select: { number: true } }, invoice: { select: { number: true } } } }),
   ]);
   const finalized = invoices.filter((i) => i.status === "FINALIZED" && i.currentVersion);
   const originals = finalized.filter((i) => i.documentType === "INVOICE");
@@ -305,7 +318,7 @@ export type CustomerDocument = { id: string; kind: "BOOKING" | "DAMAGE" | "AUTHO
 export async function customerDocuments(tenantId: string, customerId: string, role: string): Promise<CustomerDocument[]> {
   const canAuthority = role !== "YARD";
   const [docs, damageDocs, authorityDocs] = await Promise.all([
-    db.document.findMany({ where: { tenantId, OR: [{ booking: { customerId } }, { payout: { customerId } }, { bookingId: null, invoice: { customerId } }, { bookingId: null, dunningNotice: { customerId } }] }, orderBy: { createdAt: "desc" }, take: 500, select: { id: true, type: true, fileName: true, contentType: true, sizeBytes: true, createdAt: true, version: true, bookingId: true, booking: { select: { number: true } }, invoice: { select: { number: true, kind: true, dunningFeeOf: { select: { invoice: { select: { kind: true } } } } } }, dunningNotice: { select: { invoice: { select: { kind: true } } } }, payout: { select: { id: true, number: true } } } }),
+    db.document.findMany({ where: { tenantId, OR: [{ booking: { customerId } }, { payout: { customerId } }, { bookingId: null, invoice: { customerId } }, { bookingId: null, dunningNotice: { customerId } }], ...(role === "YARD" ? { NOT: { payout: { is: { invoice: { is: ACCIDENT_BILLING_WHERE } } } } } : {}) }, orderBy: { createdAt: "desc" }, take: 500, select: { id: true, type: true, fileName: true, contentType: true, sizeBytes: true, createdAt: true, version: true, bookingId: true, booking: { select: { number: true } }, invoice: { select: { number: true, kind: true, dunningFeeOf: { select: { invoice: { select: { kind: true } } } } } }, dunningNotice: { select: { invoice: { select: { kind: true } } } }, payout: { select: { id: true, number: true } } } }),
     db.damageCaseDocument.findMany({ where: { tenantId, case: { booking: { customerId } } }, orderBy: { createdAt: "desc" }, take: 200, select: { id: true, type: true, fileName: true, contentType: true, sizeBytes: true, createdAt: true, case: { select: { id: true, caseNumber: true } } } }),
     canAuthority ? db.authorityCaseDocument.findMany({ where: { tenantId, case: { driverCustomerId: customerId } }, orderBy: { createdAt: "desc" }, take: 200, select: { id: true, type: true, fileName: true, contentType: true, sizeBytes: true, createdAt: true, case: { select: { id: true, caseNumber: true } } } }) : [],
   ]);
@@ -323,8 +336,8 @@ export async function customerDocuments(tenantId: string, customerId: string, ro
 // Kommunikation – Versandprotokoll (EmailLog); der Inhalt einer Mail wird nicht gespeichert, nur Betreff, Vorlage, Stand
 // ---------------------------------------------------------------------------
 
-export function customerEmails(tenantId: string, customerId: string) {
-  return db.emailLog.findMany({ where: { tenantId, OR: [{ booking: { customerId } }, { payout: { customerId } }, { bookingId: null, invoiceVersion: { invoice: { customerId } } }, { bookingId: null, dunningNotice: { customerId } }] }, orderBy: { createdAt: "desc" }, take: 300, select: { id: true, createdAt: true, sentAt: true, lastAttemptAt: true, recipient: true, template: true, subject: true, status: true, error: true, trigger: true, attemptNo: true, bookingId: true, payoutId: true, booking: { select: { number: true } }, invoiceVersion: { select: { invoice: { select: { number: true } } } } } });
+export function customerEmails(tenantId: string, customerId: string, view: AccidentBillingView = {}) {
+  return db.emailLog.findMany({ where: { tenantId, OR: [{ booking: { customerId } }, { payout: { customerId } }, { bookingId: null, invoiceVersion: { invoice: { customerId } } }, { bookingId: null, dunningNotice: { customerId } }], ...hideMails(view) }, orderBy: { createdAt: "desc" }, take: 300, select: { id: true, createdAt: true, sentAt: true, lastAttemptAt: true, recipient: true, template: true, subject: true, status: true, error: true, trigger: true, attemptNo: true, bookingId: true, payoutId: true, booking: { select: { number: true } }, invoiceVersion: { select: { invoice: { select: { number: true } } } } } });
 }
 
 
@@ -335,19 +348,19 @@ export function customerEmails(tenantId: string, customerId: string) {
 
 export type TimelineEntry = { key: string; at: Date; kind: string; title: string; detail: string | null; href: string | null };
 
-export async function customerTimeline(tenantId: string, customerId: string, limit = 200): Promise<TimelineEntry[]> {
-  return timelineFor(tenantId, { customerId }, limit);
+export async function customerTimeline(tenantId: string, customerId: string, limit = 200, view: AccidentBillingView = {}): Promise<TimelineEntry[]> {
+  return timelineFor(tenantId, { customerId }, limit, view);
 }
 
 /** Befehl 28: chronologische Historie einer Buchung – dieselbe Ableitung wie die Kundenakte (gespeicherte Zeitstempel und Audit), keine eigene Ereignistabelle. */
-export async function bookingTimeline(tenantId: string, bookingId: string, limit = 200): Promise<TimelineEntry[]> {
-  return timelineFor(tenantId, { bookingId }, limit);
+export async function bookingTimeline(tenantId: string, bookingId: string, limit = 200, view: AccidentBillingView = {}): Promise<TimelineEntry[]> {
+  return timelineFor(tenantId, { bookingId }, limit, view);
 }
 
 type TimelineScope = { customerId: string } | { bookingId: string };
 
 /** Zeitleiste aus gespeicherten Zeitstempeln (Buchung, Vertrag, Protokolle, Belege, Zahlungen, Kaution, Auszahlungen, Nachträge, Storno, Mails). */
-async function timelineFor(tenantId: string, scope: TimelineScope, limit: number): Promise<TimelineEntry[]> {
+async function timelineFor(tenantId: string, scope: TimelineScope, limit: number, view: AccidentBillingView = {}): Promise<TimelineEntry[]> {
   const byCustomer = "customerId" in scope;
   const customerId = byCustomer ? scope.customerId : null;
   const bookingId = byCustomer ? null : scope.bookingId;
@@ -357,13 +370,13 @@ async function timelineFor(tenantId: string, scope: TimelineScope, limit: number
     db.booking.findMany({ where: { tenantId, ...(byCustomer ? { customerId: customerId! } : { id: bookingId! }) }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, number: true, status: true, createdAt: true, updatedAt: true, cancelledAt: true, cancellationReason: true, cancelledByName: true, vehicle: { select: { plate: true } } } }),
     db.rentalContract.findMany({ where: { tenantId, status: { not: "DRAFT" }, ...(byCustomer ? { customerId: customerId! } : { bookingId: bookingId! }) }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, number: true, status: true, signedAt: true, createdAt: true, bookingId: true } }),
     db.handover.findMany({ where: { tenantId, status: "FINALIZED", ...viaBooking }, orderBy: { finalizedAt: "desc" }, take: limit, select: { id: true, number: true, type: true, finalizedAt: true, bookingId: true, mileage: true } }),
-    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", ...(byCustomer ? { OR: [{ booking: { customerId: customerId! } }, { customerId: customerId!, bookingId: null }] } : { bookingId: bookingId! }) }, orderBy: { finalizedAt: "desc" }, take: limit, select: { id: true, number: true, documentType: true, kind: true, finalizedAt: true, bookingId: true, currentVersion: { select: { grossTotal: true } } } }),
-    db.payment.findMany({ where: { tenantId, ...(byCustomer ? { OR: [{ booking: { customerId: customerId! } }, { bookingId: null, invoice: { customerId: customerId! } }] } : { bookingId: bookingId! }) }, orderBy: { paidAt: "desc" }, take: limit, select: { id: true, paidAt: true, amountCents: true, status: true, cancelledAt: true, bookingId: true, invoice: { select: { id: true, bookingId: true, kind: true, number: true } } } }),
+    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", ...(byCustomer ? { OR: [{ booking: { customerId: customerId! } }, { customerId: customerId!, bookingId: null }] } : { bookingId: bookingId! }), ...hideInvoices(view) }, orderBy: { finalizedAt: "desc" }, take: limit, select: { id: true, number: true, documentType: true, kind: true, finalizedAt: true, bookingId: true, currentVersion: { select: { grossTotal: true } } } }),
+    db.payment.findMany({ where: { tenantId, ...(byCustomer ? { OR: [{ booking: { customerId: customerId! } }, { bookingId: null, invoice: { customerId: customerId! } }] } : { bookingId: bookingId! }), ...hideViaInvoice(view) }, orderBy: { paidAt: "desc" }, take: limit, select: { id: true, paidAt: true, amountCents: true, status: true, cancelledAt: true, bookingId: true, invoice: { select: { id: true, bookingId: true, kind: true, number: true } } } }),
     db.securityDepositEvent.findMany({ where: { tenantId, deposit: byCustomer ? { booking: { customerId: customerId! } } : { bookingId: bookingId! } }, orderBy: { occurredAt: "desc" }, take: limit, select: { id: true, type: true, amountCents: true, status: true, occurredAt: true, cancelledAt: true, deposit: { select: { bookingId: true, booking: { select: { number: true } } } } } }),
-    db.payout.findMany({ where: { tenantId, ...(byCustomer ? { OR: [{ customerId: customerId! }, { booking: { customerId: customerId! } }] } : { bookingId: bookingId! }) }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, number: true, status: true, sourceType: true, amountCents: true, completedAt: true, executedAt: true, cancelledAt: true, createdAt: true } }),
+    db.payout.findMany({ where: { tenantId, ...(byCustomer ? { OR: [{ customerId: customerId! }, { booking: { customerId: customerId! } }] } : { bookingId: bookingId! }), ...hideViaInvoice(view) }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, number: true, status: true, sourceType: true, amountCents: true, completedAt: true, executedAt: true, cancelledAt: true, createdAt: true } }),
     db.damageCase.findMany({ where: { tenantId, ...viaBooking }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, caseNumber: true, createdAt: true, closedAt: true, description: true } }),
     db.authorityCase.findMany({ where: { tenantId, ...(byCustomer ? { driverCustomerId: customerId! } : { bookingId: bookingId! }) }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, caseNumber: true, createdAt: true, authorityName: true } }),
-    db.emailLog.findMany({ where: { tenantId, status: "SENT", ...(byCustomer ? { OR: [{ booking: { customerId: customerId! } }, { payout: { customerId: customerId! } }, { bookingId: null, invoiceVersion: { invoice: { customerId: customerId! } } }, { bookingId: null, dunningNotice: { customerId: customerId! } }] } : { bookingId: bookingId! }) }, orderBy: { sentAt: "desc" }, take: limit, select: { id: true, sentAt: true, createdAt: true, subject: true, bookingId: true, payoutId: true } }),
+    db.emailLog.findMany({ where: { tenantId, status: "SENT", ...(byCustomer ? { OR: [{ booking: { customerId: customerId! } }, { payout: { customerId: customerId! } }, { bookingId: null, invoiceVersion: { invoice: { customerId: customerId! } } }, { bookingId: null, dunningNotice: { customerId: customerId! } }] } : { bookingId: bookingId! }), ...hideMails(view) }, orderBy: { sentAt: "desc" }, take: limit, select: { id: true, sentAt: true, createdAt: true, subject: true, bookingId: true, payoutId: true } }),
     // Befehl 28: Nachträge mit Vereinbarung, Unterschrift und Zurücknahme
     db.contractAmendment.findMany({ where: { tenantId, status: { in: ["AGREED", "SIGNED", "DISCARDED"] }, ...viaBooking }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, bookingId: true, number: true, status: true, newEndAt: true, newStartAt: true, agreedAt: true, agreedChannel: true, signedAt: true, discardedAt: true, discardReason: true, booking: { select: { number: true } } } }),
   ]);

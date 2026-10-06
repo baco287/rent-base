@@ -111,7 +111,8 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   // Befehl 28: vertragliche Verspätungsregel (eingefroren im Vertrag) – nur Anzeige; ein Betrag entsteht erst bei der Rückgabe als Vorschlag
   const lateRule = overdue && contractSigned ? (readContractRules((await db.rentalContract.findFirst({ where: { tenantId: tenant.id, bookingId: b.id }, select: { conditions: true } }))?.conditions)?.values as { lateReturnRule?: LateReturnRule; lateReturnFeeCents?: number | null } | undefined) : undefined;
   const lateRuleText = lateRule?.lateReturnRule && lateRule.lateReturnRule in LATE_RETURN_RULES ? `${LATE_RETURN_RULES[lateRule.lateReturnRule]}${lateRule.lateReturnRule === "CONFIGURED_FEE" && lateRule.lateReturnFeeCents ? ` (Richtwert ${fmtCents(lateRule.lateReturnFeeCents)})` : ""}` : null;
-  const history = await bookingTimeline(tenant.id, b.id, 60);
+  // Befehl 30 Phase I: Verlauf für den Hof (auch Supportmodus) ohne Unfallersatz-Rechnungen, -Zahlungen und -Mails
+  const history = await bookingTimeline(tenant.id, b.id, 60, { hideAccidentBilling: user.role === "YARD" });
   // Befehl 21: „Was ist als Nächstes zu tun?“ – eine deutliche Aktion je Stand, abgeleitet aus denselben Regeln wie die Kopfzeile
   const pickupNext = pickupAction(b, b.contract, b.handovers);
   const returnNext = returnAction(b, b.contract, b.handovers);

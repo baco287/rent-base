@@ -21,9 +21,9 @@ import {
   updateInvoiceDraft, verifyInvoice,
 } from "../src/lib/invoices";
 import { createCancellationDraft, createCreditNoteDraft, discardCounterDocumentDraft, finalizeCounterDocument, invoiceFinancials } from "../src/lib/counter-documents";
-import { createPayout } from "../src/lib/payouts";
+import { createPayout, listPayouts, openPayoutClaims } from "../src/lib/payouts";
 import { authorizeKeyDrop } from "../src/lib/key-drop";
-import { customerDocuments } from "../src/lib/customer-file";
+import { bookingTimeline, customerDocuments, customerEmails, customerFinance, customerOverview, customerTimeline } from "../src/lib/customer-file";
 import { ACCIDENT_BILLING_WHERE, ACCIDENT_CASE_CLOSED_MESSAGE, isAccidentBillingDocument } from "../src/lib/accident-replacement-events";
 import { cancelPayment, invoicePaymentSummary, recordInvoicePayment } from "../src/lib/payments";
 import { adjustmentSummary, cancelInvoiceAdjustment, recordInvoiceAdjustment } from "../src/lib/invoice-adjustments";
@@ -815,4 +815,98 @@ test("Review: Hofmitarbeiter sehen Unfallersatz-Rechnungen auch in globalen List
   assert.match(await src("src/app/(app)/forderungen/page.tsx"), /hideAccidentBilling: user\.role === "YARD"/);
   assert.match(await src("src/app/(app)/heute/page.tsx"), /hideAccidentBilling: user\.role === "YARD"/);
   assert.match(await src("src/app/(app)/buchungen/[id]/page.tsx"), /user\.role === "YARD" \? \{ NOT: ACCIDENT_BILLING_WHERE \}/);
+});
+
+// ---------------------------------------------------------------------------
+// Befehl 30 Phase I (Endabnahme): Regressionen zu den gefundenen Fehlern
+// ---------------------------------------------------------------------------
+
+test("Phase I: Hof-Sicht (auch Supportmodus) ohne Unfallersatz-Abrechnung auch in Kundenakte (Übersicht, Finanzen, Kommunikation, Historie), Buchungsverlauf, Auszahlungen und Belegen; Inhaber/Disposition unverändert", async () => {
+  const w = await world("uf-i-yard");
+  const insurer = { name: "MERKVERSICHERUNG-AG", claimNumber: "SN-GEHEIM-77", contactName: null, phone: null, email: "schaden@merk.test", street: "Merkweg 1", zip: "28195", city: "Bremen" };
+  const r = await runningCase(w, DAY + 5 * HOUR, { insurer });
+  await returnCase(w, r.bookingId);
+  const inv = await invoice(w, r.caseId, "INSURER");
+  const number = (await db.invoice.findUniqueOrThrow({ where: { id: inv.id }, select: { number: true } })).number!;
+  // Rechnungsmail an die Versicherung (Betreff mit Schadennummer)
+  await ensureInvoiceDocument(w.tenantId, inv.version.id, w.actor.id, { storage });
+  const sent = await sendInvoiceDocument(w.tenantId, inv.version.id, { trigger: "MANUAL", nonce: nonce(), actorId: w.actor.id, transport: new FakeTransport(), storage });
+  assert.equal(sent.status, "SENT");
+  // Versicherung zahlt voll, Teilgutschrift → Guthaben zur Erstattung an die Versicherung, Auszahlungsentwurf
+  const gross = toCents(inv.version.grossTotal);
+  await recordInvoicePayment(w.tenantId, w.actor, { invoiceId: inv.id, amount: (gross / 100).toFixed(2).replace(".", ","), method: "BANK_TRANSFER", paidAt: new Date() });
+  const credit = await createCreditNoteDraft(w.tenantId, inv.id, w.actor, [{ sourceItemId: inv.version.items[0].id, mode: "AMOUNT", grossAmount: "10,00" }]);
+  await finalizeCounterDocument(w.tenantId, credit.id, w.actor, { confirmed: true, reason: "Tarif korrigiert" });
+  const { payout } = await createPayout(w.tenantId, w.actor, { sourceType: "INVOICE_REFUND", invoiceId: inv.id }, { amount: "5,00", method: "CASH", recipientName: "MERKVERSICHERUNG-AG" }, { complete: false });
+  // zweiter Fall: Unfallersatz-Rechnung direkt an den Mieter, offen
+  const r2 = await runningCase(w, DAY + 5 * HOUR);
+  await returnCase(w, r2.bookingId);
+  const inv2 = await invoice(w, r2.caseId, "RENTER");
+  const customer = await db.customer.findUniqueOrThrow({ where: { id: w.customerId } });
+  const SECRET = [number, "SN-GEHEIM-77", "MERKVERSICHERUNG-AG", "schaden@merk.test"];
+  const leaks = (x: unknown) => SECRET.filter((s) => JSON.stringify(x).includes(s));
+  const hide = { hideAccidentBilling: true };
+
+  // Inhaber/Disposition: alles wie bisher sichtbar
+  const fullFin = await customerFinance(w.tenantId, w.customerId);
+  assert.ok(fullFin.documents.some((d) => d.id === inv.id) && fullFin.payments.some((p) => p.invoiceNumber === number));
+  assert.ok((await customerEmails(w.tenantId, w.customerId)).some((m) => (m.subject ?? "").includes("SN-GEHEIM-77")));
+  assert.ok((await bookingTimeline(w.tenantId, r.bookingId)).some((e) => e.title.includes(number)));
+  assert.ok((await customerTimeline(w.tenantId, w.customerId)).some((e) => e.title.includes(number)));
+  assert.ok((await customerOverview(w.tenantId, w.customerId, customer)).tasks.some((t) => t.key === `inv-${inv2.id}`));
+  assert.ok((await openPayoutClaims(w.tenantId)).invoices.some((c) => c.invoiceId === inv.id));
+  assert.ok((await listPayouts(w.tenantId, { status: "alle" })).some((p) => p.id === payout.id));
+  assert.ok((await globalSearch(w.tenantId, "DISPO", "MERKVERSICHERUNG")).groups.some((g) => g.type === "payout"));
+
+  // Hof (YARD; der Supportmodus läuft als YARD): keine Unfallersatz-Abrechnung, operative Einträge bleiben
+  const yardFin = await customerFinance(w.tenantId, w.customerId, hide);
+  assert.deepEqual(leaks(yardFin), []);
+  assert.ok(!yardFin.documents.some((d) => d.kind === "ACCIDENT_REPLACEMENT") && yardFin.drafts.length === 0);
+  assert.deepEqual(leaks(await customerEmails(w.tenantId, w.customerId, hide)), []);
+  assert.deepEqual(leaks(await customerTimeline(w.tenantId, w.customerId, 200, hide)), []);
+  const yardBooking = await bookingTimeline(w.tenantId, r.bookingId, 200, hide);
+  assert.deepEqual(leaks(yardBooking), []);
+  assert.ok(yardBooking.some((e) => e.kind === "Übergabe") && yardBooking.some((e) => e.kind === "Rückgabe"), "operativer Verlauf bleibt");
+  const yardOverview = await customerOverview(w.tenantId, w.customerId, customer, new Date(), hide);
+  assert.ok(!yardOverview.tasks.some((t) => t.key === `inv-${inv2.id}`));
+  assert.equal(yardOverview.openReceivablesCents, 0);
+  assert.ok(!(await openPayoutClaims(w.tenantId, hide)).invoices.some((c) => c.invoiceId === inv.id));
+  assert.ok(!(await listPayouts(w.tenantId, { status: "alle", ...hide })).some((p) => p.id === payout.id));
+  assert.ok(!(await globalSearch(w.tenantId, "YARD", "MERKVERSICHERUNG")).groups.some((g) => g.type === "payout"));
+  // Belege einer Erstattung zur Unfallersatz-Rechnung gehören zur Abrechnung (Dokument-Adresse für den Hof gesperrt, nicht gelistet)
+  assert.equal(await isAccidentBillingDocument(db, w.tenantId, { payoutId: payout.id }), true);
+  const proof = await db.document.create({ data: { tenantId: w.tenantId, payoutId: payout.id, type: "PAYOUT_ATTACHMENT", storageKey: `test/${nonce()}.pdf`, fileName: "Ueberweisung_SN-GEHEIM-77.pdf", sizeBytes: 1, checksum: "x" } });
+  assert.ok((await customerDocuments(w.tenantId, w.customerId, "DISPO")).some((d) => d.id === proof.id));
+  assert.ok(!(await customerDocuments(w.tenantId, w.customerId, "YARD")).some((d) => d.id === proof.id));
+  // Seiten reichen die Hof-Sicht durch (Supportmodus = Rolle YARD)
+  const src = async (p: string) => readFile(path.join(process.cwd(), p), "utf8");
+  assert.match(await src("src/app/(app)/kunden/[id]/page.tsx"), /const hideAccidentBilling = user\.role === "YARD";/);
+  assert.match(await src("src/app/(app)/buchungen/[id]/page.tsx"), /bookingTimeline\(tenant\.id, b\.id, 60, \{ hideAccidentBilling: user\.role === "YARD" \}\)/);
+  assert.match(await src("src/app/(app)/auszahlungen/page.tsx"), /const hideAccidentBilling = user\.role === "YARD";/);
+  assert.match(await src("src/app/(app)/auszahlungen/[id]/page.tsx"), /if \(user\.role === "YARD" && \(await accidentInvoiceOf\(db, tenant\.id, p\.invoiceId\)\)\) notFound\(\);/);
+});
+
+test("Phase I: Zwischenrechnungs-Entwurf von vor der Rückgabe – Abschluss nur bis zur tatsächlichen Rückgabe bzw. zur gemeldeten Schlüsselbox-Abgabe (keine Überberechnung)", async () => {
+  const w = await world("uf-i-interim");
+  // a) Rückgabe inzwischen abgeschlossen, tatsächliche Rückgabe früher als der Stichtag des Entwurfs
+  const a = await runningCase(w, 2 * DAY + 5 * HOUR);
+  const { invoice: da } = await createAccidentInvoiceDraft(w.tenantId, w.actor, { caseId: a.caseId, recipientRole: "INSURER", periodEnd: new Date(), nonce: nonce() });
+  assert.equal(daysIn((await versionOf(da.id)).items), 3);
+  await returnCase(w, a.bookingId);
+  await db.booking.update({ where: { id: a.bookingId }, data: { actualReturnAt: new Date(a.pickupAt.getTime() + 40 * HOUR) } });
+  await assert.rejects(() => finalizeInvoice(w.tenantId, da.id, w.actor), /mehr Miettage als bis zur tatsächlichen Rückgabe/);
+  assert.ok((await getInvoiceState(w.tenantId, da.id)).issues.some((i) => i.code === "INTERIM_AFTER_RETURN"));
+  await discardInvoiceDraft(w.tenantId, da.id, w.actor);
+  // b) Entwurf bis vor die Rückgabe: Abschluss bleibt möglich (Schlussrechnung danach für den Rest)
+  const b = await runningCase(w, 3 * DAY + 5 * HOUR);
+  const { invoice: dbDraft } = await createAccidentInvoiceDraft(w.tenantId, w.actor, { caseId: b.caseId, recipientRole: "INSURER", periodEnd: new Date(b.pickupAt.getTime() + 30 * HOUR), nonce: nonce() });
+  await returnCase(w, b.bookingId);
+  await finalizeInvoice(w.tenantId, dbDraft.id, w.actor);
+  // c) Schlüsselbox-Abgabe gemeldet (noch nicht kontrolliert), Abgabe vor dem Stichtag des Entwurfs
+  const c = await runningCase(w, 3 * DAY + 5 * HOUR);
+  const { invoice: dc } = await createAccidentInvoiceDraft(w.tenantId, w.actor, { caseId: c.caseId, recipientRole: "INSURER", periodEnd: new Date(), nonce: nonce() });
+  await db.tenant.update({ where: { id: w.tenantId }, data: { keyDropEnabled: true } });
+  const kd = await authorizeKeyDrop(w.tenantId, w.actor, c.bookingId, { location: "Schlüsselbox Hof", expectedReturnAt: plus(new Date(), DAY), agreedWithCustomer: true });
+  await db.keyDropReturn.update({ where: { id: kd.id }, data: { status: "CUSTOMER_CONFIRMED", customerDropOffAt: new Date(c.pickupAt.getTime() + 40 * HOUR), confirmedAt: new Date(), confirmationText: "Testbestätigung", confirmationHash: "a".repeat(64) } });
+  await assert.rejects(() => finalizeInvoice(w.tenantId, dc.id, w.actor), /Schlüsselbox-Abgabe/);
 });

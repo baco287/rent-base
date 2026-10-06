@@ -71,8 +71,10 @@ export async function accidentInvoiceOf(client: Pick<Tx, "invoice" | "dunningNot
  * Phase F: Gehört ein archiviertes Dokument (Rechnungs-PDF, Gutschrift, Stornobeleg, Mahnschreiben) zur Unfallersatz-Abrechnung?
  * Für die Hof-Sicht: Die Abrechnung sehen nur Inhaber und Disposition – auch nicht über die allgemeine Dokument-Adresse.
  */
-export async function isAccidentBillingDocument(client: Pick<Tx, "invoice" | "dunningNotice" | "invoiceVersion">, tenantId: string, d: { invoiceId?: string | null; invoiceVersionId?: string | null; dunningNoticeId?: string | null }): Promise<boolean> {
+export async function isAccidentBillingDocument(client: Pick<Tx, "invoice" | "dunningNotice" | "invoiceVersion" | "payout">, tenantId: string, d: { invoiceId?: string | null; invoiceVersionId?: string | null; dunningNoticeId?: string | null; payoutId?: string | null }): Promise<boolean> {
   let invoiceId = d.invoiceId ?? null;
+  // Befehl 30 Phase I: Auszahlungsbeleg/-nachweis einer Erstattung zu einer Unfallersatz-Rechnung
+  if (!invoiceId && d.payoutId) invoiceId = (await client.payout.findFirst({ where: { id: d.payoutId, tenantId }, select: { invoiceId: true } }))?.invoiceId ?? null;
   if (!invoiceId && d.invoiceVersionId) invoiceId = (await client.invoiceVersion.findFirst({ where: { id: d.invoiceVersionId, tenantId }, select: { invoiceId: true } }))?.invoiceId ?? null;
   if (!invoiceId && d.dunningNoticeId) invoiceId = (await client.dunningNotice.findFirst({ where: { id: d.dunningNoticeId, tenantId }, select: { invoiceId: true } }))?.invoiceId ?? null;
   return !!(await accidentInvoiceOf(client, tenantId, invoiceId));

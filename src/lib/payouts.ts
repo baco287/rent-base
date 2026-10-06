@@ -17,7 +17,7 @@ import { financialsFor, invoiceFinancials, type InvoiceFinancials } from "@/lib/
 import { domainFromDb } from "@/lib/db-errors";
 import { computeDepositFinancials, balanceOf, securityDepositFinancials, type DepositFinancials } from "@/lib/deposits";
 import { DomainError, contentHash } from "@/lib/integrity";
-import { assertAccidentInvoiceCaseOpen } from "@/lib/accident-replacement-events";
+import { ACCIDENT_BILLING_WHERE, assertAccidentInvoiceCaseOpen } from "@/lib/accident-replacement-events";
 import { fmtCents, toCents, type Cents } from "@/lib/money";
 import { isUniqueViolation, nextPayoutNumber, withNumberRetry } from "@/lib/numbering";
 import type { PayoutSourceSnapshot } from "@/lib/payout-view";
@@ -460,8 +460,8 @@ export async function getPayout(tenantId: string, payoutId: string): Promise<Pay
 
 export type PayoutFilter = { status?: "offen" | "abgeschlossen" | "storniert" | "alle"; source?: "rechnung" | "kaution" | "vorauszahlung" | "alle"; method?: string | null; from?: Date | null; to?: Date | null; q?: string | null; customerId?: string | null };
 
-export async function listPayouts(tenantId: string, f: PayoutFilter = {}) {
-  const where: Prisma.PayoutWhereInput = { tenantId };
+export async function listPayouts(tenantId: string, f: PayoutFilter & { /** Befehl 30 Phase I: Hof-Sicht ohne Unfallersatz-Abrechnung */ hideAccidentBilling?: boolean } = {}) {
+  const where: Prisma.PayoutWhereInput = { tenantId, ...(f.hideAccidentBilling ? { NOT: { invoice: { is: ACCIDENT_BILLING_WHERE } } } : {}) };
   if (f.status === "offen") where.status = "DRAFT";
   else if (f.status === "abgeschlossen") where.status = "COMPLETED";
   else if (f.status === "storniert") where.status = "CANCELLED";
@@ -481,9 +481,9 @@ export async function listPayouts(tenantId: string, f: PayoutFilter = {}) {
 export type OpenClaim = { kind: "INVOICE" | "DEPOSIT" | "PREPAYMENT"; bookingId: string | null; bookingNumber: string | null; invoiceId: string | null; number: string; customerName: string; remainingCents: Cents; draftCents: Cents; href: string };
 
 /** Offene Ansprüche: Rechnungen mit noch auszuzahlendem Guthaben und Kautionen mit auszahlbarem Rest – auch ohne Entwurf. */
-export async function openPayoutClaims(tenantId: string): Promise<{ invoices: OpenClaim[]; deposits: OpenClaim[]; prepayments: OpenClaim[] }> {
+export async function openPayoutClaims(tenantId: string, opts: { /** Befehl 30 Phase I: Hof-Sicht ohne Unfallersatz-Abrechnung */ hideAccidentBilling?: boolean } = {}): Promise<{ invoices: OpenClaim[]; deposits: OpenClaim[]; prepayments: OpenClaim[] }> {
   const [invRows, depRows, drafts] = await Promise.all([
-    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", documentType: "INVOICE", currentVersionId: { not: null }, payments: { some: { status: "CONFIRMED" } } }, select: { id: true, number: true, kind: true, bookingId: true, booking: { select: { number: true } }, currentVersion: { select: { grossTotal: true, customerSnapshot: true } } } }),
+    db.invoice.findMany({ where: { tenantId, status: "FINALIZED", documentType: "INVOICE", currentVersionId: { not: null }, payments: { some: { status: "CONFIRMED" } }, ...(opts.hideAccidentBilling ? { NOT: ACCIDENT_BILLING_WHERE } : {}) }, select: { id: true, number: true, kind: true, bookingId: true, booking: { select: { number: true } }, currentVersion: { select: { grossTotal: true, customerSnapshot: true } } } }),
     db.securityDeposit.findMany({ where: { tenantId, events: { some: { type: "RELEASED", status: "CONFIRMED" } } }, select: { id: true, expectedAmountCents: true, bookingId: true, booking: { select: { number: true, contract: { select: { customerSnapshot: true } } } }, events: { select: { type: true, amountCents: true, status: true } } } }),
     db.payout.groupBy({ by: ["invoiceId", "securityDepositId"], where: { tenantId, status: "DRAFT" }, _sum: { amountCents: true } }),
   ]);

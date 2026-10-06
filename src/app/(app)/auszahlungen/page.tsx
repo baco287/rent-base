@@ -29,7 +29,9 @@ const SOURCES: { key: NonNullable<PayoutFilter["source"]>; label: string }[] = [
  * Nichts hier löst eine Auszahlung aus; Erfassung nur auf der Rechnungs- bzw. Kautionsseite mit Bestätigung.
  */
 export default async function PayoutsPage({ searchParams }: PageProps<"/auszahlungen">) {
-  const { tenant } = await requireSession();
+  const { tenant, user } = await requireSession();
+  // Befehl 30 Phase I: Hof (auch Supportmodus) ohne Erstattungen aus der Unfallersatz-Abrechnung (Versicherer, Beträge)
+  const hideAccidentBilling = user.role === "YARD";
   const sp = await searchParams;
   const status = STATUS.find((s) => s.key === sp.filter)?.key ?? "offen";
   const source = SOURCES.find((s) => s.key === sp.quelle)?.key ?? "alle";
@@ -39,8 +41,8 @@ export default async function PayoutsPage({ searchParams }: PageProps<"/auszahlu
   const q = typeof sp.q === "string" ? sp.q : "";
   const qs = (over: Record<string, string>) => { const u = new URLSearchParams({ filter: status, quelle: source, ...(method ? { weg: method } : {}), ...(typeof sp.von === "string" ? { von: sp.von } : {}), ...(typeof sp.bis === "string" ? { bis: sp.bis } : {}), ...(q ? { q } : {}), ...over }); return `/auszahlungen?${u.toString()}`; };
 
-  const rows = await listPayouts(tenant.id, { status, source, method, from, to: to ? new Date(to.getTime() + 60_000) : null, q });
-  const claims = status === "offen" ? await openPayoutClaims(tenant.id) : { invoices: [], deposits: [], prepayments: [] };
+  const rows = await listPayouts(tenant.id, { status, source, method, from, to: to ? new Date(to.getTime() + 60_000) : null, q, hideAccidentBilling });
+  const claims = status === "offen" ? await openPayoutClaims(tenant.id, { hideAccidentBilling }) : { invoices: [], deposits: [], prepayments: [] };
   const openClaims = [...(source === "alle" || source === "rechnung" ? claims.invoices : []), ...(source === "alle" || source === "kaution" ? claims.deposits : []), ...(source === "alle" || source === "vorauszahlung" ? claims.prepayments : [])].filter((c) => !q || c.number.toLowerCase().includes(q.toLowerCase()) || c.customerName.toLowerCase().includes(q.toLowerCase()) || (c.bookingNumber ?? "").toLowerCase().includes(q.toLowerCase()));
   const totalOpen = openClaims.reduce((a, c) => a + c.remainingCents, 0);
   const totalRows = rows.filter((p) => p.status === "COMPLETED").reduce((a, p) => a + p.amountCents, 0);

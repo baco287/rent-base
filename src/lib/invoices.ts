@@ -970,6 +970,17 @@ async function accidentIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, dra
       if (booking.status !== "RETURNED" || !booking.actualReturnAt) err("FINAL_NOT_RETURNED", "Eine Schlussrechnung gibt es erst nach der Rückgabe.");
       else if (Math.abs(draft.servicePeriodEnd.getTime() - booking.actualReturnAt.getTime()) > 60_000) err("FINAL_PERIOD", "Die Schlussrechnung endet nicht mit der tatsächlichen Rückgabe. Bitte diesen Entwurf verwerfen und neu erstellen.");
     }
+    // Befehl 30 Phase I: beim Abschluss dieselbe Grenze wie beim Anlegen – eine Zwischenrechnung berechnet nie mehr Miettage als bis
+    // zur tatsächlichen Rückgabe bzw. bis zur inzwischen gemeldeten Schlüsselbox-Abgabe (Entwurf von vor der Rückgabe)
+    if (billing?.type === "INTERIM") {
+      let limit: Date | null = null, what = "";
+      if (booking.actualReturnAt) { limit = booking.actualReturnAt; what = `zur tatsächlichen Rückgabe (${dateFmt(booking.actualReturnAt)})`; }
+      else {
+        const dropped = await tx.keyDropReturn.findFirst({ where: { tenantId, bookingId: booking.id, status: "CUSTOMER_CONFIRMED" }, select: { customerDropOffAt: true } });
+        if (dropped) { limit = dropped.customerDropOffAt ?? pickup; what = `zur gemeldeten Schlüsselbox-Abgabe${dropped.customerDropOffAt ? ` (${dateFmt(dropped.customerDropOffAt)})` : ""}`; }
+      }
+      if (limit && rentalDays(pickup, draft.servicePeriodEnd) > rentalDays(pickup, limit)) err("INTERIM_AFTER_RETURN", `Die Zwischenrechnung berechnet mehr Miettage als bis ${what}. Bitte diesen Entwurf verwerfen und die Schlussrechnung über die tatsächliche Mietdauer erstellen.`);
+    }
     if (chain.service.some((i) => i.billing?.type === "FINAL")) err("FINAL_EXISTS", "Zu diesem Fall gibt es bereits eine wirksame Schlussrechnung.");
   }
   // Grundmiete: Miettage laut Leistungszeitraum (Abweichung nur als Hinweis – bewusst geänderte Mengen bleiben möglich)

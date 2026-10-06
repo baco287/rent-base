@@ -35,7 +35,9 @@ export default async function CustomerPage({ params, searchParams }: PageProps<"
   const head = await customerHeader(tenant.id, id);
   if (!head) notFound();
   const c = head.customer;
-  const overview = tab === "uebersicht" ? await customerOverview(tenant.id, c.id, c) : null;
+  // Befehl 30 Phase I: Hof-Sicht (auch Supportmodus) ohne Unfallersatz-Abrechnung – wie Phase F in den übrigen Listen
+  const hideAccidentBilling = user.role === "YARD";
+  const overview = tab === "uebersicht" ? await customerOverview(tenant.id, c.id, c, new Date(), { hideAccidentBilling }) : null;
   const bookingCount = tab === "stammdaten" ? await db.booking.count({ where: { tenantId: tenant.id, customerId: c.id } }) : 0;
   const canManage = user.role !== "YARD";
   const href = (t: Tab) => `/kunden/${c.id}${t === "uebersicht" ? "" : `?tab=${t}`}`;
@@ -81,13 +83,13 @@ export default async function CustomerPage({ params, searchParams }: PageProps<"
 
         {tab === "uebersicht" && overview && <OverviewTab customerId={c.id} o={overview} />}
         {tab === "buchungen" && <BookingsTab tenantId={tenant.id} customerId={c.id} page={page} now={now.getTime()} />}
-        {tab === "finanzen" && <FinanceTab tenantId={tenant.id} customerId={c.id} />}
+        {tab === "finanzen" && <FinanceTab tenantId={tenant.id} customerId={c.id} hideAccidentBilling={hideAccidentBilling} />}
         {tab === "kautionen" && <DepositsTab tenantId={tenant.id} customerId={c.id} />}
         {tab === "schaeden" && <DamagesTab tenantId={tenant.id} customerId={c.id} />}
         {tab === "dokumente" && <DocumentsTab tenantId={tenant.id} customerId={c.id} role={user.role} />}
-        {tab === "kommunikation" && <CommunicationTab tenantId={tenant.id} customerId={c.id} />}
+        {tab === "kommunikation" && <CommunicationTab tenantId={tenant.id} customerId={c.id} hideAccidentBilling={hideAccidentBilling} />}
         {tab === "behoerden" && <AuthorityTab tenantId={tenant.id} customerId={c.id} canManage={canManage} />}
-        {tab === "historie" && <HistoryTab tenantId={tenant.id} customerId={c.id} />}
+        {tab === "historie" && <HistoryTab tenantId={tenant.id} customerId={c.id} hideAccidentBilling={hideAccidentBilling} />}
         {tab === "stammdaten" && (
           <Card className="p-5">
             <CustomerForm action={updateCustomerAction.bind(null, c.id)} values={customerToFormValues(c)} submitLabel="Speichern" cancelHref={`/kunden/${c.id}`} />

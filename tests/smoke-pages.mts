@@ -1991,6 +1991,28 @@ await setTenantFeature({ id: admin.id, name: admin.name }, ue.tenantId, "ACCIDEN
   report(hTodayEmpty.html.includes('id="wiedervorlagen"') && (hTodayEmpty.html.includes("Keine überfälligen Wiedervorlagen.") || hTodayEmpty.html.includes("Tag überfällig") || hTodayEmpty.html.includes("Tage überfällig")), "Zentrale: Filter „Überfällig“ mit Liste oder Leerzustand");
 }
 
+// Befehl 30 Phase I (Endabnahme): Hof-Sicht ohne Unfallersatz-Abrechnung auch in Buchungsverlauf, Kundenakte (Übersicht, Finanzen,
+// Kommunikation, Historie) und Auszahlungen – geprüft im ausgelieferten HTML samt Server-Payload; Disposition sieht sie weiterhin.
+{
+  const get = async (c: string, p: string) => { const r = await fetch(`${base}${p}`, { headers: { cookie: c }, redirect: "manual" }); return { status: r.status, html: r.status === 200 ? await plain(r) : "" }; };
+  const iInvs = await db.invoice.findMany({ where: { tenantId: ue.tenantId, kind: "ACCIDENT_REPLACEMENT", status: "FINALIZED", number: { not: null } }, select: { number: true, bookingId: true, booking: { select: { customerId: true } } } });
+  const iInv = iInvs.find((x) => x.bookingId && x.booking)!;
+  const iSecrets = [...iInvs.map((x) => x.number!), "SN-SMOKE-1", "Smoke Versicherung"];
+  const iLeaks = (html: string) => iSecrets.filter((x) => html.includes(x));
+  const iPages = [`/buchungen/${iInv.bookingId}`, ...["uebersicht", "finanzen", "kommunikation", "historie"].map((t) => `/kunden/${iInv.booking!.customerId}?tab=${t}`), "/auszahlungen?filter=alle"];
+  const iDispo = await get(ueDispo, `/kunden/${iInv.booking!.customerId}?tab=finanzen`);
+  report(iDispo.status === 200 && iDispo.html.includes(iInv.number!), "Disposition: Unfallersatz-Rechnung in der Kundenakte (Finanzen) sichtbar");
+  const iYard = await Promise.all(iPages.map((p) => get(ueYard, p)));
+  const iYardLeaks = [...new Set(iYard.flatMap((x) => iLeaks(x.html)))];
+  report(iYard.every((x) => x.status === 200) && iYardLeaks.length === 0, `Hof: Buchungsverlauf, Kundenakte und Auszahlungen ohne Unfallersatz-Abrechnung (${iYard.map((x) => x.status).join("/")}${iYardLeaks.length ? ` · Leck: ${iYardLeaks.join(", ")}` : ""})`);
+  const iSupport = await startSupportSession({ id: admin.id, name: admin.name }, ue.tenantId, "Smoke-Test Phase I Hof-Sicht");
+  const iSupportCookie = `${adminCookie}; rb_support=${iSupport.id}`;
+  const iSup = await Promise.all(iPages.map((p) => get(iSupportCookie, p)));
+  const iSupLeaks = [...new Set(iSup.flatMap((x) => iLeaks(x.html)))];
+  report(iSup.every((x) => x.status === 200) && iSupLeaks.length === 0, `Supportmodus: dieselben Seiten ohne Unfallersatz-Abrechnung (${iSup.map((x) => x.status).join("/")}${iSupLeaks.length ? ` · Leck: ${iSupLeaks.join(", ")}` : ""})`);
+  await endSupportSession({ id: admin.id, name: admin.name }, iSupport.id);
+}
+
 const health = await fetch(`${base}/api/health`);
 const healthJson = await health.json().catch(() => ({}));
 report(health.status === 200 && healthJson.status === "ok" && healthJson.db === "ok", `${health.status} Healthcheck`);
