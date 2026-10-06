@@ -58,21 +58,31 @@ export function DashboardSection({ id, title, summary, urgent, children }: { id:
     window.dispatchEvent(new Event(EVENT));
   };
 
+  // Gut erkennbar: runder Pfeil-Knopf links, deutliche Schaltfläche „Anzeigen/Ausblenden“ rechts, farbige Leiste bei
+  // dringenden Bereichen, geöffnete Bereiche mit hinterlegter Kopfzeile und Trennlinie zum Inhalt
+  const chevron = (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden className={`transition-transform duration-200 ${open ? "rotate-180" : ""}`}>
+      <path d="M4 6l4 4 4-4" />
+    </svg>
+  );
   return (
-    <section className={`rounded-lg border ${urgent ? "border-amber/40" : "border-line-soft"} bg-panel`} aria-labelledby={`bereich-${id}`}>
+    <section className={`rounded-lg border bg-panel overflow-hidden ${urgent ? "border-amber/50 border-l-4 border-l-amber" : "border-line"} ${open ? "shadow-sm" : ""}`} aria-labelledby={`bereich-${id}`}>
       <button
         type="button"
         onClick={toggle}
         aria-expanded={open}
         aria-controls={`bereich-${id}-inhalt`}
-        className="w-full flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 text-left hover:bg-panel-2/60 rounded-lg"
+        title={open ? "Bereich zuklappen" : "Bereich aufklappen"}
+        className={`group w-full flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3 text-left cursor-pointer transition-colors ${open ? "bg-panel-2 border-b border-line-soft" : "hover:bg-brand-soft/60"}`}
       >
-        <span aria-hidden className={`inline-block w-3 text-ink-3 transition-transform ${open ? "rotate-90" : ""}`}>▸</span>
+        <span className={`shrink-0 grid place-items-center w-7 h-7 rounded-full border transition-colors ${open ? "bg-brand text-brand-ink border-brand" : "bg-brand-soft text-brand border-brand/20 group-hover:bg-brand group-hover:text-brand-ink"}`}>{chevron}</span>
         <h2 id={`bereich-${id}`} className="text-base font-semibold">{title}</h2>
         <span className="flex-1 min-w-0 flex flex-wrap items-center gap-1.5 text-sm text-ink-2">{summary}</span>
-        <span className="text-xs text-ink-3">{open ? "Zuklappen" : "Aufklappen"}</span>
+        <span className={`shrink-0 inline-flex items-center gap-1.5 rounded-md border px-3 py-1 text-[13px] font-medium transition-colors ${open ? "border-line bg-panel text-ink-2 group-hover:bg-panel-2" : "border-brand bg-brand text-brand-ink group-hover:bg-[#16315a]"}`}>
+          {open ? "Ausblenden" : "Anzeigen"} {chevron}
+        </span>
       </button>
-      <div id={`bereich-${id}-inhalt`} hidden={!open} className="px-3 pb-3 pt-1">
+      <div id={`bereich-${id}-inhalt`} hidden={!open} className="px-3 pb-3 pt-3">
         {children}
       </div>
     </section>
