@@ -10,7 +10,7 @@ import { openDamageCase } from "../src/lib/damage-cases";
 import { DomainError, sha256 } from "../src/lib/integrity";
 import { adoptCostsIntoDamageCase, archiveVehicleDocument, blockVehicleForMaintenance, cancelMaintenance, changeMaintenanceStatus, completeMaintenance, createMaintenance, createPlan, documentMileage, fleetDues, linkDamageCase, linkDamageDocument, listMaintenance, maintenanceCounts, maintenanceView, registerVehicleDocument, releaseVehicleAfterMaintenance, setMaintenanceCosts, setPlanActive, updateMaintenance, updatePlan, vehicleMaintenanceOverview } from "../src/lib/maintenance";
 import { buildStorageKey } from "../src/lib/storage";
-import { createWorld, purgeTenants, type World } from "./helpers";
+import { berlinDay, createWorld, purgeTenants, type World } from "./helpers";
 import { returnedWorld } from "./rental-flow";
 
 const tenants: string[] = [];
@@ -21,7 +21,8 @@ async function world(label: string): Promise<World> {
   tenants.push(w.tenantId);
   return w;
 }
-const day = (n: number) => new Date(Date.now() + n * 86_400_000);
+/** Kalendertag (Berlin, 12:00 wie aus dem Formular) – stabil zu jeder Uhrzeit, auch über die Zeitumstellung */
+const day = (n: number) => berlinDay(n);
 
 async function snapshotCore(tenantId: string) {
   const [contracts, handovers, damages, cases, invoices] = await Promise.all([

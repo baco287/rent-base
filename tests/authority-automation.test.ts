@@ -19,7 +19,7 @@ import { finalizeInvoice, getInvoiceState } from "../src/lib/invoices";
 import type { MailMessage, MailTransport } from "../src/lib/mail";
 import { getStorage, type StorageDriver } from "../src/lib/storage";
 import { toDateInputValue, zonedParts } from "../src/lib/time";
-import { createWorld, fakeSignaturePng, purgeTenants } from "./helpers";
+import { berlinDay, createWorld, fakeSignaturePng, purgeTenants } from "./helpers";
 import { returnedWorld } from "./rental-flow";
 import { LETTER_LINES, LETTER_TEXT, letterPdf } from "./fixtures/authority-letter";
 
@@ -47,8 +47,8 @@ class FakeTransport implements MailTransport {
   }
 }
 
-const DAY = 86_400_000;
-const at = (offsetDays: number, hour = 10) => { const d = new Date(Date.now() + offsetDays * DAY); d.setHours(hour, 15, 0, 0); return d; };
+/** Kalendertag in Berlin um hour:15 Ortszeit – unabhängig von Uhrzeit, Sommerzeit und Zeitzone des Rechners */
+const at = (offsetDays: number, hour = 10) => berlinDay(offsetDays, hour, 15);
 const dateTime = (d: Date) => { const p = zonedParts(d); return { offenseDate: toDateInputValue(d), offenseTime: `${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}` }; };
 const input = (plate: string, when: Date, over: Partial<CaseInput> = {}): CaseInput => ({ type: "SPEEDING", authorityName: "Stadtamt Bremen, Bußgeldstelle", authorityReference: `AZ-${Math.random().toString(36).slice(2, 8)}`, authorityAddress: "Stresemannstr. 48\n28207 Bremen", licensePlate: plate, ...dateTime(when), offenseLocation: "A27", ...over });
 const plateOf = async (vehicleId: string) => (await db.vehicle.findUniqueOrThrow({ where: { id: vehicleId } })).plate;

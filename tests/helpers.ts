@@ -1,10 +1,23 @@
 // Gemeinsame Helfer für die Integrationstests gegen die lokale Entwicklungsdatenbank.
 import { db } from "../src/lib/db";
 import { startOrGetVerification, recordIdentityCheck, recordLicenseCheck, confirmVerification } from "../src/lib/driver-verification";
+import { parseLocalDateTime, zonedParts } from "../src/lib/time";
 
 export type World = { tenantId: string; userId: string; groupId: string; vehicleId: string; customerId: string; bookingId: string; actor: { id: string; name: string } };
 
 const DAY = 24 * 3600_000;
+
+/**
+ * Kalendertag in der Anwendungszeitzone (Europe/Berlin): heute + offsetDays um hour:minute Ortszeit – so, wie ein
+ * Datum aus einem Formular ankommt. Unabhängig von der Uhrzeit des Testlaufs und von der Sommer-/Winterzeit:
+ * „jetzt + n × 24 h“ landet zwischen 0 und 1 Uhr über eine Zeitumstellung hinweg einen Kalendertag zu früh.
+ */
+export function berlinDay(offsetDays: number, hour = 12, minute = 0, from: Date = new Date()): Date {
+  const z = zonedParts(from);
+  const d = new Date(Date.UTC(z.year, z.month - 1, z.day + offsetDays));
+  const two = (n: number) => String(n).padStart(2, "0");
+  return parseLocalDateTime(`${d.getUTCFullYear()}-${two(d.getUTCMonth() + 1)}-${two(d.getUTCDate())}T${two(hour)}:${two(minute)}`)!;
+}
 
 /** Ein vollständiger Mandant mit Mitarbeiter, Gruppe, Fahrzeug, vollständigem Kunden und reservierter Buchung über 6 Tage. */
 export async function createWorld(label: string, opts: { customer?: Record<string, unknown>; startInDays?: number } = {}): Promise<World> {

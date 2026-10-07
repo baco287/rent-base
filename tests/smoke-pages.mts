@@ -2,6 +2,8 @@
 // Legt einen Testmandanten mit Sitzung an, ruft jede Seite auf und räumt danach auf.
 // Aufruf: npx tsx tests/smoke-pages.mts [http://localhost:3000] [--keep]
 //   --keep  lässt die Testdaten stehen und gibt Sitzung und Buchung aus (für die Sichtprüfung im Browser)
+// Lokal gegen PGlite: Entwicklungsserver und Rauchtest mit RB_TX_MAX_WAIT_MS=20000 starten (siehe src/lib/db.ts) –
+//   PGlite bedient Verbindungen nacheinander; ohne längere Wartezeit kann ein Transaktionsbeginn mit P2028 abbrechen.
 import { randomBytes } from "node:crypto";
 import { db } from "../src/lib/db";
 import { ensureContractDraft, finalizeContract, getContractContentHash, saveConditions, saveContractSignature } from "../src/lib/contracts";
