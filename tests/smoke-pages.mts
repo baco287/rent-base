@@ -195,7 +195,8 @@ const pages: [string, string][] = [
   ["/heute?zeitraum=30", "30 Tage"],
   ["/buchungen", "Bereit zur Übergabe"],
   ["/buchungen?filter=alle", "ALT-1"],
-  ["/buchungen/neu", "Neuer Kunde"],
+  // Befehl 29.2: der Umschalter im Formular – „+ Neuer Kunde“ steht jetzt auch in der Kopfleiste jeder Seite
+  ["/buchungen/neu", ">Neuer Kunde</button>"],
   ["/buchungen/neu", "Miete &amp; Kaution"],
   ["/buchungen/neu", "Teilweise bezahlt"],
   ["/buchungen/neu", "Kaution jetzt erhalten"],
@@ -411,10 +412,16 @@ const hofDamage = await reportDamage(w.tenantId, w.actor, { vehicleId: v4.id, vi
 const { damageCase: dc } = await openDamageCase(w.tenantId, hofDamage.id, w.actor);
 const casesList = await plain(await fetch(base + "/schaeden", { headers: { cookie } }));
 report(casesList.includes(dc.caseNumber) && casesList.includes("Noch nicht bewertet") && casesList.includes("HB-RT 400"), "Schäden: Liste mit Akte, Haftung und Fahrzeug");
-// Vorschlag 4: Seitenleiste mit Schnellaktionen und Zählern, „Nächster Schritt“ und direkte Zeilenaktion
+// Vorschlag 4 / Befehl 29.2: Schnellaktionen und Suche in der Kopfleiste (nicht mehr doppelt in der Seitenleiste), Zähler und
+// aktive Markierung am Menüpunkt, „Nächster Schritt“ und direkte Zeilenaktion
 const navAside = /<aside[\s\S]*?<\/aside>/.exec(casesList)?.[0] ?? "";
-report(navAside.includes('href="/buchungen/neu"') && navAside.includes("+ Buchung") && navAside.includes('href="/kunden/neu"') && navAside.includes("+ Kunde"), "Seitenleiste: Schnellaktionen + Buchung und + Kunde (Inhaber)");
-report(/href="\/schaeden"[\s\S]{0,400}?offene Schadenakte/.test(navAside), "Seitenleiste: Zähler an „Schäden“ mit Erklärung");
+const appHeader = /<header[\s\S]*?<\/header>/.exec(casesList)?.[0] ?? "";
+const navLink = (aside: string, href: string) => new RegExp(`<a[^>]*href="${href.replace(/\//g, "\\/")}"[^>]*>[\\s\\S]*?</a>`).exec(aside)?.[0] ?? "";
+report(appHeader.includes('href="/buchungen/neu"') && appHeader.includes("+ Neue Buchung") && appHeader.includes('href="/kunden/neu"') && appHeader.includes("+ Neuer Kunde") && appHeader.includes('aria-label="Suchen (Strg+K)"') && appHeader.includes('href="/fahrzeuge"'), "Kopfleiste: Suche, Fahrzeug suchen, + Neuer Kunde und + Neue Buchung (Inhaber)");
+report(!navAside.includes('href="/buchungen/neu"') && !navAside.includes('href="/kunden/neu"') && !navAside.includes("Suchen (Strg+K)") && !navAside.includes("Suche öffnen"), "Seitenleiste: keine doppelten Schnellaktionen, keine zweite Suche");
+report(navLink(navAside, "/schaeden").includes("offene Schadenakte") && navLink(navAside, "/schaeden").includes('aria-current="page"'), "Seitenleiste: Zähler an „Schäden“ mit Erklärung, aktiver Menüpunkt markiert");
+const ownerNav = [...navAside.matchAll(/<a[^>]*href="(\/[^"]*)"/g)].map((m) => m[1]);
+report(["/heute", "/buchungen", "/dispo", "/kunden", "/fahrzeuge", "/fahrzeuge/wartung", "/rechnungen", "/forderungen", "/auszahlungen", "/schaeden", "/behoerden", "/einstellungen"].every((h) => ownerNav.includes(h)) && !ownerNav.includes("/unfallersatz") && navAside.split('aria-current="page"').length === 2, "Seitenleiste: alle freigeschalteten Bereiche (Unfallersatz ohne Modul nicht), genau ein aktiver Eintrag");
 report(casesList.includes("Nächster Schritt:") && casesList.includes(`href="/schaeden/${dc.id}#haftung"`) && casesList.includes("Haftung bewerten"), "Schäden: Nächster Schritt und Zeilenaktion führen zur Haftungsprüfung");
 const caseAnchors = await plain(await fetch(`${base}/schaeden/${dc.id}`, { headers: { cookie } }));
 report(["haftung", "kosten", "reparatur", "belastung", "abschluss", "fahrzeug"].every((a) => caseAnchors.includes(`id="${a}"`)), "Schadenakte: Sprungziele für die Zeilenaktionen vorhanden");
@@ -568,7 +575,8 @@ const yardCases = await fetch(base + "/schaeden", { headers: { cookie: `rb_sessi
 report(yardCases.status === 200, `${yardCases.status} Hofmitarbeiter: Schadenliste lesbar`);
 const yardCasesHtml = await plain(yardCases);
 const yardAside = /<aside[\s\S]*?<\/aside>/.exec(yardCasesHtml)?.[0] ?? "";
-report(!yardAside.includes('href="/buchungen/neu"') && yardAside.includes('href="/kunden/neu"'), "Hofmitarbeiter: Schnellaktion nur „+ Kunde“, keine Buchung");
+const yardHeader = /<header[\s\S]*?<\/header>/.exec(yardCasesHtml)?.[0] ?? "";
+report(!yardHeader.includes('href="/buchungen/neu"') && yardHeader.includes('href="/kunden/neu"') && !yardAside.includes('href="/buchungen/neu"') && !yardAside.includes('href="/kunden/neu"') && !yardCasesHtml.includes('href="/buchungen/neu"'), "Hofmitarbeiter: Schnellaktion nur „+ Neuer Kunde“, keine Buchung (Kopfleiste, Seitenleiste, ganze Seite)");
 report(!yardCasesHtml.includes("Nächster Schritt:") && !yardCasesHtml.includes("Haftung bewerten") && yardCasesHtml.includes("Öffnen →"), "Hofmitarbeiter: kein Entscheidungshinweis, Zeilenaktion nur Öffnen");
 const yardDmgInvoice = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung?nr=${charge.invoiceId}`, { headers: { cookie: `rb_session=${yardSession}` } }));
 report(yardDmgInvoice.includes(`Schadenabrechnung ${dmgInvoice.number}`) && !yardDmgInvoice.includes("Rechnung bearbeiten"), "Hofmitarbeiter: Schadenabrechnung ansehen, nicht bearbeiten");
@@ -818,7 +826,7 @@ await db.user.update({ where: { id: w.userId }, data: { role: "OWNER" } });
 const headRes = await fetch(base + "/heute", { headers: { cookie } });
 report(headRes.headers.get("x-content-type-options") === "nosniff" && (headRes.headers.get("referrer-policy") ?? "").includes("strict-origin") && headRes.headers.get("x-frame-options") === "DENY" && (headRes.headers.get("content-security-policy") ?? "").includes("frame-ancestors 'none'"), "Sicherheitskopfzeilen gesetzt (nosniff, Referrer, Frame, frame-ancestors)");
 const akteUeb = await plain(await fetch(`${base}/kunden/${w.customerId}`, { headers: { cookie } }));
-report(akteUeb.includes("Offene Forderungen") && akteUeb.includes("Guthaben / Erstattung offen") && akteUeb.includes("Kautionen auszuzahlen") && akteUeb.includes("Offene Akten") && akteUeb.includes("Bearbeiten") && akteUeb.includes("+ Neue Buchung"), "Kundenakte: Übersichtskarten und Aktionen");
+report(akteUeb.includes("Offene Forderungen") && akteUeb.includes("Guthaben / Erstattung offen") && akteUeb.includes("Kautionen auszuzahlen") && akteUeb.includes("Offene Akten") && akteUeb.includes("Bearbeiten") && akteUeb.includes(`href="/buchungen/neu?kunde=${w.customerId}"`), "Kundenakte: Übersichtskarten und Aktionen (Buchung für diesen Kunden – nicht die allgemeine Kopfleisten-Aktion)");
 const akteFin = await plain(await fetch(`${base}/kunden/${w.customerId}?tab=finanzen`, { headers: { cookie } }));
 report(akteFin.includes(finalInvoice.number) && akteFin.includes(refund.number!) && akteFin.includes(depPayout.number!) && akteFin.includes("Storniert") && akteFin.includes("Gutschrift"), "Kundenakte Finanzen: Belege, Zahlungen mit Storno, Auszahlungen, Gutschrift");
 const akteKau = await plain(await fetch(`${base}/kunden/${w.customerId}?tab=kautionen`, { headers: { cookie } }));
@@ -921,7 +929,8 @@ const supportCookies = `${adminCookie}; rb_support=${support.id}`;
 const supportHome = await plain(await fetch(`${base}/heute`, { headers: { cookie: supportCookies } }));
 report(supportHome.includes("SUPPORTMODUS"), "Supportmodus: Banner sichtbar");
 const supportAside = /<aside[\s\S]*?<\/aside>/.exec(supportHome)?.[0] ?? "";
-report(!supportAside.includes("+ Buchung") && !supportAside.includes("+ Kunde"), "Supportmodus: keine Schnellaktionen in der Seitenleiste");
+const supportHeader = /<header[\s\S]*?<\/header>/.exec(supportHome)?.[0] ?? "";
+report(supportHeader.includes("Suchen (Strg+K)") && ![supportAside, supportHeader].some((x) => x.includes('href="/buchungen/neu"') || x.includes('href="/kunden/neu"') || x.includes("+ Neue Buchung") || x.includes("+ Neuer Kunde")), "Supportmodus: keine Schnellaktionen in Kopf- und Seitenleiste");
 const supportCases = await plain(await fetch(`${base}/schaeden`, { headers: { cookie: supportCookies } }));
 report(!supportCases.includes("Nächster Schritt:") && !supportCases.includes("Haftung bewerten"), "Supportmodus: Schadenliste ohne Entscheidungsaktionen");
 const supportSettings = await plain(await fetch(`${base}/einstellungen`, { headers: { cookie: supportCookies } }));
@@ -1976,7 +1985,8 @@ await setTenantFeature({ id: admin.id, name: admin.name }, ue.tenantId, "ACCIDEN
   const centerYard = await get(ueYard, "/unfallersatz");
   report(centerYard.status === 200 && centerYard.html.includes(gOpen.caseNumber) && !centerYard.html.includes("+ Unfallersatzfall") && !centerYard.html.includes("Offene Forderungen") && !centerYard.html.includes("Abzurechnen") && !centerYard.html.includes("Smoke Versicherung") && !centerYard.html.includes("Kautionsprobe Versicherung") && !centerYard.html.includes("Schadennummer") && !centerYard.html.includes("Wiedervorlage"), `${centerYard.status} Unfallersatz-Zentrale (Hof): operative Sicht ohne Versicherung, Beträge, Wiedervorlagen, ohne Anlage`);
   const yardFinFilter = await get(ueYard, "/unfallersatz?filter=rechnung_offen");
-  report(yardFinFilter.status === 200 && yardFinFilter.html.includes('aria-current="page"') && !yardFinFilter.html.includes("Rechnung offen"), "Hof: kaufmännischer Filter per Adresse nicht erreichbar (fällt auf „Alle offenen“ zurück)");
+  // aria-current außerhalb der Seitenleiste: die Filter-Tabs der Seite (die Navigation markiert ihren Menüpunkt selbst)
+  report(yardFinFilter.status === 200 && yardFinFilter.html.replace(/<aside[\s\S]*?<\/aside>/, "").includes('aria-current="page"') && !yardFinFilter.html.includes("Rechnung offen"), "Hof: kaufmännischer Filter per Adresse nicht erreichbar (fällt auf „Alle offenen“ zurück)");
   const centerQ = await get(ueDispo, `/unfallersatz?filter=offen&q=${encodeURIComponent(gOpen.caseNumber)}`);
   report(centerQ.status === 200 && centerQ.html.includes(gOpen.caseNumber) && centerQ.html.includes(`Suche „${gOpen.caseNumber}“`) && centerQ.html.includes("Suche löschen"), "Zentrale: Suche über die Fallnummer, Zustand in der Adresse");
   const centerNone = await get(ueDispo, "/unfallersatz?q=keinTrefferXYZ");
@@ -2003,7 +2013,7 @@ await setTenantFeature({ id: admin.id, name: admin.name }, ue.tenantId, "ACCIDEN
   const hBoard = await get(ueDispo, "/unfallersatz");
   report(hBoard.status === 200 && hBoard.html.includes('id="wiedervorlagen"') && hBoard.html.includes(hTitle) && hBoard.html.includes(">Aktionen<") && hBoard.html.includes("Erledigen") && hBoard.html.includes("+ Wiedervorlage"), `${hBoard.status} Zentrale: Wiedervorlagen-Arbeitsliste mit fälliger Wiedervorlage, Aktionsspalte, „+ Wiedervorlage“`);
   const hMine = await get(ueDispo, "/unfallersatz?aufgaben=meine");
-  report(hMine.html.includes(hTitle) && hMine.html.includes("(Sie)") && hMine.html.includes('aria-current="page"'), "Zentrale: „Meine Wiedervorlagen“ zeigt die eigene Zuweisung (aufgaben=meine)");
+  report(hMine.html.includes(hTitle) && hMine.html.includes("(Sie)") && hMine.html.replace(/<aside[\s\S]*?<\/aside>/, "").includes('aria-current="page"'),"Zentrale: „Meine Wiedervorlagen“ zeigt die eigene Zuweisung (aufgaben=meine)");
   const hYard = await get(ueYard, "/unfallersatz?aufgaben=meine");
   report(hYard.status === 200 && !hYard.html.includes('id="wiedervorlagen"') && !hYard.html.includes(hTitle) && !hYard.html.includes("+ Wiedervorlage") && !hYard.html.includes("completeFollowUpAction"), "Hof: keine Wiedervorlagen (auch nicht im Seiten-Payload), kein „+ Wiedervorlage“");
   const hDoneId = boundIdOf(hBoard.html, "completeFollowUpAction");

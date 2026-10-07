@@ -9,7 +9,7 @@ import { caseCounts } from "@/lib/damage-cases";
 import { HORIZONS, loadDashboard, TASK_AREAS, TASK_GROUPS, type DashboardTask, type Horizon, type TaskGroup } from "@/lib/dashboard";
 import type { AccidentDashboard } from "@/lib/accident-replacement";
 import { zonedDayStartPlus } from "@/lib/time";
-import { OpenSearchButton } from "./quick-search";
+import { isoWeekBerlin, todayLabelBerlin } from "@/lib/navigation";
 import { DashboardSection } from "./dashboard-section";
 
 export const metadata = { title: "Heute" };
@@ -63,13 +63,8 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
   const fleet = vehicles.filter((v) => v.status === "AVAILABLE").length || vehicles.length;
   const utilization = fleet ? Math.round((bookedMs / (weekMs * fleet)) * 100) : 0;
 
-  const kw = (() => {
-    const x = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
-    const day = x.getUTCDay() || 7;
-    x.setUTCDate(x.getUTCDate() + 4 - day);
-    const y0 = new Date(Date.UTC(x.getUTCFullYear(), 0, 1));
-    return Math.ceil(((x.getTime() - y0.getTime()) / 86400000 + 1) / 7);
-  })();
+  // Befehl 29.2: Datum und KW stehen in der Kopfleiste (Berliner Datum); hier nur noch mobil, wo die Kopfleiste den Mandanten zeigt
+  const kw = isoWeekBerlin(now);
   const attention = d.groups.OVERDUE.length + d.groups.TODAY.length;
   // Aufklappbare Bereiche: „dringend“ = überfällig oder ein konkretes Problem; dann öffnet sich der Bereich von selbst
   const dunningCount = d.receivables.reminder + d.receivables.first + d.receivables.second;
@@ -81,12 +76,8 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
 
   return (
     <>
-      <PageHeader title={now.toLocaleDateString("de-DE", { weekday: "long", day: "numeric", month: "long", timeZone: "Europe/Berlin" })} sub={`KW ${kw}`}>
-        <OpenSearchButton />
-        <Link href="/fahrzeuge" className="btn">Fahrzeug suchen</Link>
-        <Link href="/kunden/neu" className="btn">+ Neuer Kunde</Link>
-        {user.role !== "YARD" && <Link href="/buchungen/neu" className="btn btn-primary">+ Neue Buchung</Link>}
-      </PageHeader>
+      {/* Befehl 29.2: Suche, „Fahrzeug suchen“, „+ Neuer Kunde“ und „+ Neue Buchung“ stehen in der Kopfleiste der App-Shell */}
+      <PageHeader title="Heute" sub={<span className="md:hidden">{todayLabelBerlin(now)} · KW {kw}</span>} />
       <Content>
         {sp.fehler === "rechte" && <Chip tone="bad">Dafür fehlen deiner Rolle die Rechte.</Chip>}
         {sp.fehler === "funktion" && <Chip tone="amber">Diese Funktion ist für {tenant.name} nicht freigeschaltet. Bitte an RentBase wenden.</Chip>}

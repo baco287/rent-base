@@ -51,7 +51,7 @@ export default async function CustomersPage({ searchParams }: PageProps<"/kunden
           {q && <Link href="/kunden" className="btn">Zurücksetzen</Link>}
         </form>
         {user.role === "OWNER" && <Link href="/kunden/import" className="btn">Importieren</Link>}
-        <Link href="/kunden/neu" className="btn btn-primary">+ Kunde</Link>
+        {/* Befehl 29.2: „+ Neuer Kunde“ steht in der Kopfleiste der App-Shell (keine doppelte Primäraktion) */}
       </PageHeader>
       <Content>
         <Card>

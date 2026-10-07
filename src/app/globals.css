@@ -22,6 +22,16 @@
   --bad-soft: #f6dedb;
   --info: #2f5fb3;
   --info-soft: #dee7f8;
+  /* Befehl 29.2: App-Shell – sehr dunkles Navy aus derselben Farbfamilie wie --brand, Blau als ruhiger Akzent */
+  --shell: #0f1b2d;
+  --shell-line: rgba(255, 255, 255, 0.08);
+  --shell-ink: #e8edf5;
+  --shell-ink-2: #b0bccd;
+  --shell-ink-3: #8696ae;
+  --shell-accent: #8fb3ff;
+  --shell-active: rgba(110, 155, 245, 0.17);
+  --shell-warn: #e9a23b;
+  --shell-bad: #d43f37;
 }
 
 @theme inline {
@@ -44,6 +54,15 @@
   --color-bad-soft: var(--bad-soft);
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
+  --color-shell: var(--shell);
+  --color-shell-line: var(--shell-line);
+  --color-shell-ink: var(--shell-ink);
+  --color-shell-ink-2: var(--shell-ink-2);
+  --color-shell-ink-3: var(--shell-ink-3);
+  --color-shell-accent: var(--shell-accent);
+  --color-shell-active: var(--shell-active);
+  --color-shell-warn: var(--shell-warn);
+  --color-shell-bad: var(--shell-bad);
   --font-sans: var(--font-plex-sans), system-ui, sans-serif;
   --font-display: var(--font-barlow), "Arial Narrow", sans-serif;
   --font-mono: var(--font-plex-mono), Consolas, monospace;

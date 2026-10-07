@@ -67,7 +67,7 @@ export default async function DispoPage({ searchParams }: PageProps<"/dispo">) {
         <Link href={`/dispo?ab=${toDateInput(addDays(from, -7))}`} className="btn">‹ Woche</Link>
         <Link href="/dispo" className="btn">Heute</Link>
         <Link href={`/dispo?ab=${toDateInput(addDays(from, 7))}`} className="btn">Woche ›</Link>
-        <Link href="/buchungen/neu" className="btn btn-primary">+ Neue Buchung</Link>
+        {/* Befehl 29.2: „+ Neue Buchung“ steht in der Kopfleiste der App-Shell; Buchung für einen Tag weiter über die Tageszellen */}
       </PageHeader>
       <Content>
         <div className="flex gap-4 flex-wrap text-xs text-ink-2">

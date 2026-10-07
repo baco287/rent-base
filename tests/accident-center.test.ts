@@ -153,10 +153,12 @@ function setup(): Promise<Fixture> {
 test("1–9: Menüpunkt nur mit Modul (serverseitig ausgeblendet), Direktaufruf gesperrt, Voll- und operative Sicht, fremder Mandant, Supportmodus", async () => {
   const f = await setup();
   const off = await world("ug-off", false);
-  // 1/2: Sidebar-Eintrag existiert und wird ohne Modul über hiddenPaths entfernt (serverseitig gerendert)
-  const sidebar = await src("src/components/sidebar.tsx");
-  assert.match(sidebar, /\{ href: "\/buchungen", label: "Buchungen", icon: "doc" \},[\s\S]{0,200}\{ href: "\/unfallersatz", label: "Unfallersatz", icon: "shield" \},\s*\{ href: "\/rechnungen"/);
-  assert.match(sidebar, /case "shield":/);
+  // 1/2: Sidebar-Eintrag existiert und wird ohne Modul über hiddenPaths entfernt (serverseitig gerendert);
+  // Befehl 29.2: zentrale Navigationskonfiguration, Unfallersatz in der Gruppe „Fälle“ zwischen Schäden und Behörden
+  const nav = await src("src/lib/navigation.ts");
+  assert.match(nav, /\{ href: "\/schaeden", label: "Schäden", icon: "damage" \},[\s\S]{0,200}\{ href: "\/unfallersatz", label: "Unfallersatz", icon: "shield" \},\s*\{ href: "\/behoerden"/);
+  assert.match(await src("src/components/shell-icons.tsx"), /\n {2}shield: </);
+  assert.match(await src("src/components/app-sidebar.tsx"), /visibleNavGroups\(p\.hiddenPaths\)/);
   assert.ok(hiddenNavPaths(await tenantFeatures(off.tenantId)).includes("/unfallersatz"));
   assert.ok(!hiddenNavPaths(await tenantFeatures(f.w.tenantId)).includes("/unfallersatz"));
   // 3: Direktaufruf ohne Modul – Seite und Modul-Layout verlangen requireFeature

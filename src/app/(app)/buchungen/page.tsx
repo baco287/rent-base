@@ -60,7 +60,7 @@ export default async function BookingsPage({ searchParams }: PageProps<"/buchung
           <button className="btn">Suchen</button>
           {q && <Link href={`/buchungen?filter=${filter.key}`} className="btn">Zurücksetzen</Link>}
         </form>
-        <Link href="/buchungen/neu" className="btn btn-primary">+ Neue Buchung</Link>
+        {/* Befehl 29.2: „+ Neue Buchung“ steht in der Kopfleiste der App-Shell (keine doppelte Primäraktion) */}
       </PageHeader>
       <Content>
         <div className="flex gap-1.5 flex-wrap">
