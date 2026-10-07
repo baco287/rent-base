@@ -1,2 +1,12 @@
+# Zeilenenden: im Repository und in jeder Arbeitskopie LF – unabhängig von core.autocrlf (Windows).
+# Quelltext-Prüfungen in den Tests und der Build erwarten LF; Binärdateien erkennt Git selbst.
+* text=auto eol=lf
+*.woff binary
+*.woff2 binary
+*.ico binary
+*.png binary
+*.jpg binary
+*.pdf binary
+*.db binary
 public/sketches/*.svg text eol=lf
 *.sh text eol=lf
