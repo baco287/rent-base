@@ -6,7 +6,7 @@ import { fmtDateTime, fmtTime } from "@/lib/format";
 import { keyDropsToInspect } from "@/lib/key-drop";
 import { Card, Chip, Content, KPI, PageHeader, Plate } from "@/components/ui";
 import { caseCounts } from "@/lib/damage-cases";
-import { HORIZONS, loadDashboard, TASK_AREAS, TASK_GROUPS, type DashboardTask, type Horizon, type TaskGroup } from "@/lib/dashboard";
+import { HORIZONS, loadDashboard, TASK_AREAS, TASK_GROUPS, type DashboardTask, type Horizon, type TaskArea, type TaskGroup } from "@/lib/dashboard";
 import type { AccidentDashboard } from "@/lib/accident-replacement";
 import { zonedDayStartPlus } from "@/lib/time";
 import { isoWeekBerlin, todayLabelBerlin } from "@/lib/navigation";
@@ -73,6 +73,9 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
   const damageUrgent = damage.blocked > 0 || c.maintenanceOverdue > 0;
   const systemUrgent = c.authorityOverdue > 0 || c.emailsFailed > 0 || (d.accident?.followUpsDue ?? 0) > 0;
   const visibleGroups = TASK_GROUPS.filter((g) => g.key !== "SOON" || horizon !== "heute");
+  // Hinweise nach Art zählen (für die Zusammenfassung des zugeklappten Bereichs), häufigste zuerst
+  const notes = d.groups.NOTE;
+  const noteAreas = [...notes.reduce((m, t) => m.set(t.area, (m.get(t.area) ?? 0) + 1), new Map<TaskArea, number>())].sort((a, b) => b[1] - a[1]);
 
   return (
     <>
@@ -177,12 +180,12 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-          {visibleGroups.map((g) => {
+          {visibleGroups.filter((g) => g.key !== "NOTE").map((g) => {
             const rows = d.groups[g.key];
             return (
-              <Card key={g.key} title={g.label} right={<Chip tone={rows.length ? g.tone : "good"}>{rows.length}</Chip>} className={g.key === "NOTE" && rows.length > 12 ? "lg:col-span-2" : ""}>
+              <Card key={g.key} title={g.label} right={<Chip tone={rows.length ? g.tone : "good"}>{rows.length}</Chip>}>
                 {rows.length === 0 ? (
-                  <p className="p-4 text-sm text-ink-3">{g.key === "OVERDUE" ? "Nichts überfällig." : g.key === "TODAY" ? "Heute steht nichts an." : g.key === "SOON" ? `Nichts fällig bis ${HORIZONS.find((h) => h.key === horizon)?.label}.` : "Keine Hinweise."}</p>
+                  <p className="p-4 text-sm text-ink-3">{g.key === "OVERDUE" ? "Nichts überfällig." : g.key === "TODAY" ? "Heute steht nichts an." : `Nichts fällig bis ${HORIZONS.find((h) => h.key === horizon)?.label}.`}</p>
                 ) : (
                   <ul className="divide-y divide-line-soft">{rows.map((t) => <TaskRow key={t.key} t={t} />)}</ul>
                 )}
@@ -190,6 +193,30 @@ export default async function TodayPage({ searchParams }: PageProps<"/heute">) {
             );
           })}
         </div>
+
+        {/* Hinweise (ohne Frist) wie die übrigen Bereiche auf- und zuklappbar; zugeklappt fasst die Kopfzeile sie nach Art
+            zusammen. Alle Einträge werden weiter vollständig vom Server ausgeliefert und nur ausgeblendet. */}
+        <DashboardSection
+          id="hinweise"
+          title="Hinweise"
+          urgent={false}
+          summary={
+            notes.length === 0 ? (
+              <span>keine</span>
+            ) : (
+              <>
+                <Chip>{notes.length}</Chip>
+                <span>{noteAreas.map(([area, n]) => `${n} ${TASK_AREAS[area]}`).join(" · ")}</span>
+              </>
+            )
+          }
+        >
+          {notes.length === 0 ? (
+            <p className="px-1 py-1 text-sm text-ink-3">Keine Hinweise.</p>
+          ) : (
+            <ul className="divide-y divide-line-soft">{notes.map((t) => <TaskRow key={t.key} t={t} />)}</ul>
+          )}
+        </DashboardSection>
 
         {keyDrops.length > 0 && (
           <Card title="Schlüsselbox-Rückgaben zu prüfen" right={<Chip tone="amber">{keyDrops.length}</Chip>}>
