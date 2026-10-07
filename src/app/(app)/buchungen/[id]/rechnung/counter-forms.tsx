@@ -18,7 +18,7 @@ export function FinalizeCounterForm({ action, type, reason, blocking, blockingRe
   const credit = type === "CREDIT_NOTE";
   const locked = blocking || pending || (clicked && !state?.error) || !confirmed || why.trim().length < 3;
   return (
-    <form onSubmit={(e) => { setClicked(true); submitWithoutReset(formAction)(e); }} className="card p-4 flex flex-col gap-3">
+    <form action={formAction} onSubmit={(e) => { setClicked(true); submitWithoutReset(formAction)(e); }} className="card p-4 flex flex-col gap-3">
       <div className="font-semibold">{credit ? "Gutschrift abschließen" : "Rechnung stornieren"}</div>
       <div className="rounded-md border border-line-soft p-3 text-sm flex flex-col gap-1">
         <div className="label-xs">Wirkung auf die Rechnung</div>

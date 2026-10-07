@@ -27,7 +27,7 @@ function Feedback({ state }: { state: TermsState }) {
 export function CreateDraftForm({ action, hasLegacy, proposedLabel }: { action: Action; hasLegacy: boolean; proposedLabel: string }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className="flex flex-col gap-1"><span className="label-xs">Versionsbezeichnung</span><input name="label" defaultValue={proposedLabel} maxLength={40} className="input" /></label>
         <label className="flex flex-col gap-1"><span className="label-xs">Titel</span><input name="title" defaultValue="Allgemeine Mietbedingungen" maxLength={160} className="input" /></label>
@@ -72,7 +72,7 @@ export function DraftEditor({ action, values }: { action: Action; values: DraftV
   const tool = (label: string, title: string, kind: [string, string, boolean]) => <button type="button" className="btn !py-1 !px-2 text-xs" title={title} aria-label={title} onClick={insertAt(kind)}>{label}</button>;
 
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <label className="flex flex-col gap-1"><span className="label-xs">Versionsbezeichnung</span><input name="label" defaultValue={values.label} required maxLength={40} className="input" /></label>
         <label className="flex flex-col gap-1 md:col-span-2"><span className="label-xs">Titel</span><input name="title" defaultValue={values.title} required maxLength={160} className="input" /></label>
@@ -118,7 +118,7 @@ export function ConfirmForm({ action, label, question, hint, submitLabel, pendin
   const [open, setOpen] = useState(false);
   if (!open) return <div className="inline-flex flex-col gap-1"><button type="button" className={`btn ${danger ? "btn-danger" : ""}`} onClick={() => setOpen(true)}>{label}</button><Feedback state={state} /></div>;
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className={`flex flex-col gap-2 rounded-lg border-2 p-4 text-sm ${danger ? "border-bad/40 bg-bad-soft/30" : "border-brand bg-panel"}`}>
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className={`flex flex-col gap-2 rounded-lg border-2 p-4 text-sm ${danger ? "border-bad/40 bg-bad-soft/30" : "border-brand bg-panel"}`}>
       <input type="hidden" name="confirm" value="1" />
       <div className="font-medium">{question}</div>
       {hint && <p className="text-ink-2">{hint}</p>}

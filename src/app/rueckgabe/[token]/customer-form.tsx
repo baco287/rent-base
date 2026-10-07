@@ -52,7 +52,7 @@ export function KeyDropCustomerForm({ token, v }: Props) {
 
   const wanted = new Set(v.requestedPhotos.map((p) => p.category));
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-4">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-4">
       <section className="card p-4 flex flex-col gap-3 text-sm">
         <h2 className="font-semibold">1. Fahrzeug abgestellt</h2>
         <label className="flex flex-col gap-1"><span className="label-xs">Wann haben Sie das Fahrzeug abgestellt?</span><input name="dropOffAt" type="datetime-local" required defaultValue={v.now} className="input" /></label>

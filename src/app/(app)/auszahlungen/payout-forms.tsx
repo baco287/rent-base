@@ -72,7 +72,7 @@ export function PayoutForm({ action, preview, sourceLabel, remaining, remainingC
   const deviates = recipient.trim() !== customerName;
 
   return (
-    <form ref={form} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
+    <form ref={form} action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
       <input type="hidden" name="nonce" value={nonce} />
       <input type="hidden" name="mode" value={mode} />
       <div className="font-medium">{kind === "INVOICE" ? "Erstattung an den Kunden erfassen" : kind === "PREPAYMENT" ? "Erstattung der Mietvorauszahlung erfassen" : "Kautionsrückzahlung erfassen"}</div>
@@ -136,7 +136,7 @@ export function CompleteDraftForm({ action, amount, defaultWhen, hasExecutedAt }
   if (done) return <Feedback state={state} />;
   if (!open) return <button type="button" className="btn btn-primary !py-1.5" onClick={() => setOpen(true)}>Als tatsächlich erfolgt erfassen</button>;
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2 rounded-md border-2 border-brand bg-panel p-3 text-sm">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2 rounded-md border-2 border-brand bg-panel p-3 text-sm">
       <div className="font-medium">Auszahlung über {amount} als tatsächlich erfolgt erfassen?</div>
       <label className="flex flex-col gap-1"><span className="label-xs">Tatsächlicher Zeitpunkt</span><input name="executedAt" type="datetime-local" defaultValue={defaultWhen} required={!hasExecutedAt} className="input" /></label>
       <label className="flex items-start gap-2 rounded-md bg-amber-soft text-amber px-3 py-2"><input type="checkbox" name="confirmed" value="1" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} className="mt-1" /><span>Ich bestätige, dass diese Auszahlung tatsächlich erfolgt ist. Der Rest wird unter Sperre neu geprüft; es wird nie mehr ausgezahlt als verfügbar.</span></label>
@@ -156,7 +156,7 @@ export function CancelPayoutForm({ action, label, question, wasCompleted }: { ac
   if (done) return <Feedback state={state} />;
   if (!open) return <button type="button" className="text-xs underline text-ink-3 hover:text-bad" onClick={() => setOpen(true)}>{label}</button>;
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2 rounded-md bg-bad-soft/40 border border-bad/30 p-3 text-sm">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2 rounded-md bg-bad-soft/40 border border-bad/30 p-3 text-sm">
       <div className="font-medium">{question}</div>
       <label className="flex flex-col gap-1"><span className="label-xs">Grund (Pflicht)</span><input name="reason" required minLength={3} maxLength={500} className="input" placeholder={wasCompleted ? "z. B. versehentlich erfasst, Geld ist nie geflossen" : "z. B. Entwurf nicht mehr benötigt"} /></label>
       <p className="text-xs text-ink-3">{wasCompleted ? "Die Auszahlung bleibt mit Nummer und Beleg sichtbar, zählt aber nicht mehr als erfolgt. Der Betrag steht wieder zur Auszahlung zur Verfügung; danach kann eine korrekte Auszahlung neu erfasst werden." : "Der Entwurf wird aufgehoben und bleibt als storniert sichtbar."}</p>

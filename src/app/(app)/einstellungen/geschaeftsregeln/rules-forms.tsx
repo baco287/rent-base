@@ -41,14 +41,14 @@ export function RulesSectionForm({ action, section, v }: { action: Action; secti
   const cls = "grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5 p-5";
   switch (section) {
     case "fahrer": return (
-      <form onSubmit={submitWithoutReset(formAction)} className={cls}>
+      <form action={formAction} onSubmit={submitWithoutReset(formAction)} className={cls}>
         <Field label="Mindestalter Fahrer (Jahre)" htmlFor="minimumDriverAge" hint="Kalendergenau am Mietbeginn geprüft, für alle Vertragsfahrer. Standard 18."><input id="minimumDriverAge" name="minimumDriverAge" type="number" min={16} max={99} defaultValue={v.minimumDriverAge} className="input tnum" /></Field>
         <Field label="Mindestdauer Führerscheinbesitz (Monate)" htmlFor="minimumLicenseHoldingMonths" hint="0 = keine Mindestdauer (aktuelle Geschäftsentscheidung). Eine gültige Fahrerlaubnis ist immer erforderlich."><input id="minimumLicenseHoldingMonths" name="minimumLicenseHoldingMonths" type="number" min={0} max={600} defaultValue={v.minimumLicenseHoldingMonths} className="input tnum" /></Field>
         <Feedback state={state} /><Submit pending={pending} />
       </form>
     );
     case "zusatzfahrer": return (
-      <form onSubmit={submitWithoutReset(formAction)} className={cls}>
+      <form action={formAction} onSubmit={submitWithoutReset(formAction)} className={cls}>
         <div className="md:col-span-2"><Toggle name="additionalDriversAllowed" label="Zusatzfahrer erlaubt" checked={v.additionalDriversAllowed} /></div>
         <Field label="Preisregel" htmlFor="additionalDriverFeeType"><select id="additionalDriverFeeType" name="additionalDriverFeeType" value={feeType} onChange={(e) => setFeeType(e.target.value as BusinessRules["additionalDriverFeeType"])} className="input">{Object.entries(ADDITIONAL_DRIVER_FEE_TYPES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>
         {feeType !== "FREE" && <Field label="Preis in €" htmlFor="additionalDriverFeeCents" hint="Erscheint im Vertrag als eigene Position, nie im Basispreis."><input id="additionalDriverFeeCents" name="additionalDriverFeeCents" inputMode="decimal" defaultValue={eur(v.additionalDriverFeeCents)} className="input tnum" /></Field>}
@@ -56,20 +56,20 @@ export function RulesSectionForm({ action, section, v }: { action: Action; secti
       </form>
     );
     case "kaution": return (
-      <form onSubmit={submitWithoutReset(formAction)} className={cls}>
+      <form action={formAction} onSubmit={submitWithoutReset(formAction)} className={cls}>
         <Field label="Kaution Standard in € (optional)" htmlFor="depositCents" hint="Vorgabe für neue Buchungen und Verträge, wenn Fahrzeug und Fahrzeuggruppe keine eigene Kaution (über 0) tragen. Reihenfolge: Fahrzeug → Gruppe → dieser Standard. Es entsteht nie eine Kautionsbewegung."><input id="depositCents" name="depositCents" inputMode="decimal" defaultValue={eur(v.depositCents)} className="input tnum" /></Field>
         <Field label="Selbstbeteiligung in € (optional)" htmlFor="deductibleCents" hint="Vertragswert. Erzeugt bei einem Schaden nie automatisch eine Forderung; die Schadenakte entscheidet."><input id="deductibleCents" name="deductibleCents" inputMode="decimal" defaultValue={eur(v.deductibleCents)} className="input tnum" /></Field>
         <Feedback state={state} /><Submit pending={pending} />
       </form>
     );
     case "kilometer": return (
-      <form onSubmit={submitWithoutReset(formAction)} className={cls}>
+      <form action={formAction} onSubmit={submitWithoutReset(formAction)} className={cls}>
         <Field label="Kilometerregel" htmlFor="kmPolicy" hint="Freikilometer je Tag und Mehrkilometerpreis stehen wie bisher an Fahrzeuggruppe und Fahrzeug."><select id="kmPolicy" name="kmPolicy" defaultValue={v.kmPolicy} className="input">{Object.entries(KM_POLICIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>
         <Feedback state={state} /><Submit pending={pending} />
       </form>
     );
     case "tanken": return (
-      <form onSubmit={submitWithoutReset(formAction)} className={cls}>
+      <form action={formAction} onSubmit={submitWithoutReset(formAction)} className={cls}>
         <Field label="Tank-/Laderegel" htmlFor="fuelRule" hint="Verbrenner rechnen in Achteln, Elektro in Prozent, Plug-in-Hybride in beidem (bestehende Energielogik)."><select id="fuelRule" name="fuelRule" value={fuelRule} onChange={(e) => setFuelRule(e.target.value as BusinessRules["fuelRule"])} className="input">{Object.entries(FUEL_POLICIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>
         {fuelRule === "MINIMUM_LEVEL" && <Field label="Mindestfüllstand Tank (Achtel 0–8)" htmlFor="fuelMinimumEighths"><input id="fuelMinimumEighths" name="fuelMinimumEighths" type="number" min={0} max={8} defaultValue={v.fuelMinimumEighths ?? ""} className="input tnum" /></Field>}
         {fuelRule === "MINIMUM_LEVEL" && <Field label="Mindestladestand Batterie (%)" htmlFor="batteryMinimumPercent"><input id="batteryMinimumPercent" name="batteryMinimumPercent" type="number" min={0} max={100} defaultValue={v.batteryMinimumPercent ?? ""} className="input tnum" /></Field>}
@@ -77,7 +77,7 @@ export function RulesSectionForm({ action, section, v }: { action: Action; secti
       </form>
     );
     case "ausland": return (
-      <form onSubmit={submitWithoutReset(formAction)} className={cls}>
+      <form action={formAction} onSubmit={submitWithoutReset(formAction)} className={cls}>
         <div className="md:col-span-2"><label className="flex items-center gap-2 text-sm"><input type="checkbox" name="abroadAllowed" value="1" checked={abroad} onChange={(e) => setAbroad(e.target.checked)} /> Auslandsfahrten erlaubt</label></div>
         {abroad && (
           <div className="md:col-span-2 flex flex-col gap-1">
@@ -90,14 +90,14 @@ export function RulesSectionForm({ action, section, v }: { action: Action; secti
       </form>
     );
     case "rauchen": return (
-      <form onSubmit={submitWithoutReset(formAction)} className={cls}>
+      <form action={formAction} onSubmit={submitWithoutReset(formAction)} className={cls}>
         <div><Toggle name="smokingAllowed" label="Rauchen im Fahrzeug erlaubt" checked={v.smokingAllowed} /></div>
         <Field label="Tiere" htmlFor="petsPolicy"><select id="petsPolicy" name="petsPolicy" defaultValue={v.petsPolicy} className="input">{Object.entries(PETS_POLICIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>
         <Feedback state={state} /><Submit pending={pending} />
       </form>
     );
     case "rueckgabe": return (
-      <form onSubmit={submitWithoutReset(formAction)} className={cls}>
+      <form action={formAction} onSubmit={submitWithoutReset(formAction)} className={cls}>
         <Field label="Verspätete Rückgabe" htmlFor="lateReturnRule" hint="Rent-Base dokumentiert vereinbarte und tatsächliche Rückgabe. Eine Belastung entsteht nie allein aus der Zeitdifferenz, sondern nur über den bestätigten Zusatzkostenprozess."><select id="lateReturnRule" name="lateReturnRule" value={late} onChange={(e) => setLate(e.target.value as BusinessRules["lateReturnRule"])} className="input">{Object.entries(LATE_RETURN_RULES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>
         {late === "CONFIGURED_FEE" && <Field label="Richtwert in €" htmlFor="lateReturnFeeCents" hint="Vorschlag für den Mitarbeiter, keine automatische Berechnung."><input id="lateReturnFeeCents" name="lateReturnFeeCents" inputMode="decimal" defaultValue={eur(v.lateReturnFeeCents)} className="input tnum" /></Field>}
         <Field label="Rückgabe außerhalb der Öffnungszeiten" htmlFor="outOfHoursReturn"><select id="outOfHoursReturn" name="outOfHoursReturn" defaultValue={v.outOfHoursReturn} className="input">{Object.entries(OUT_OF_HOURS_RETURN).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>
@@ -106,7 +106,7 @@ export function RulesSectionForm({ action, section, v }: { action: Action; secti
       </form>
     );
     case "reinigung": return (
-      <form onSubmit={submitWithoutReset(formAction)} className={cls}>
+      <form action={formAction} onSubmit={submitWithoutReset(formAction)} className={cls}>
         <p className="md:col-span-2 text-xs text-ink-3">Richtwerte. Bei der Rückgabe dokumentiert der Mitarbeiter den Sachverhalt, Rent-Base schlägt den Richtwert vor, der Mitarbeiter bestätigt oder ändert – über den bestehenden Zusatzkostenprozess. Keine automatische Belastung.</p>
         <Field label="Außergewöhnliche Verschmutzung in €" htmlFor="cleaningHeavySoilingCents"><input id="cleaningHeavySoilingCents" name="cleaningHeavySoilingCents" inputMode="decimal" defaultValue={eur(v.cleaningHeavySoilingCents)} className="input tnum" /></Field>
         <Field label="Rauchen in €" htmlFor="cleaningSmokingCents"><input id="cleaningSmokingCents" name="cleaningSmokingCents" inputMode="decimal" defaultValue={eur(v.cleaningSmokingCents)} className="input tnum" /></Field>
@@ -118,7 +118,7 @@ export function RulesSectionForm({ action, section, v }: { action: Action; secti
       </form>
     );
     case "behoerden": return (
-      <form onSubmit={submitWithoutReset(formAction)} className={cls}>
+      <form action={formAction} onSubmit={submitWithoutReset(formAction)} className={cls}>
         <p className="md:col-span-2 text-xs text-ink-3">Vorbereitet, standardmäßig deaktiviert. Auch wenn aktiviert: Ein Behördenvorgang verändert nie Rechnung, Zahlung oder Kaution. Eine Weiterbelastung wäre ein späterer, bewusster Zusatzkosten-Schritt.</p>
         <div className="md:col-span-2"><label className="flex items-center gap-2 text-sm"><input type="checkbox" name="authorityHandlingFeeEnabled" value="1" checked={authFee} onChange={(e) => setAuthFee(e.target.checked)} /> Bearbeitungsentgelt für Behördenanfragen als Vertragswert führen</label></div>
         {authFee && <Field label="Bearbeitungsentgelt in €" htmlFor="authorityHandlingFeeCents"><input id="authorityHandlingFeeCents" name="authorityHandlingFeeCents" inputMode="decimal" defaultValue={eur(v.authorityHandlingFeeCents)} className="input tnum" /></Field>}
@@ -126,7 +126,7 @@ export function RulesSectionForm({ action, section, v }: { action: Action; secti
       </form>
     );
     case "nutzung": return (
-      <form onSubmit={submitWithoutReset(formAction)} className={cls}>
+      <form action={formAction} onSubmit={submitWithoutReset(formAction)} className={cls}>
         <p className="md:col-span-2 text-xs text-ink-3">Nicht eingetragene Fahrer, Fahren ohne Fahrerlaubnis, Alkohol/Drogen, Rennen und rechtswidrige Nutzung sind nie gestattet; die Formulierung dazu gehört in den Text der Mietbedingungen. Hier nur die konfigurierbaren Sondernutzungen.</p>
         <div><Toggle name="trailerAllowed" label="Anhängerbetrieb erlaubt" checked={v.trailerAllowed} /></div>
         <div><Toggle name="towingAllowed" label="Abschleppen erlaubt" checked={v.towingAllowed} /></div>
@@ -142,7 +142,7 @@ export function RulesSectionForm({ action, section, v }: { action: Action; secti
 export function PrivacyForm({ action, value }: { action: Action; value: string }) {
   const { state, formAction, pending } = useRules(action);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5 p-5">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5 p-5">
       <Field label="Verweis auf Datenschutzinformationen (optional)" htmlFor="privacyNoticeReference" full hint="Adresse oder kurzer Text. Wird getrennt von den Mietbedingungen geführt und nicht mit ihnen vermischt."><input id="privacyNoticeReference" name="privacyNoticeReference" defaultValue={value} maxLength={500} className="input" placeholder="https://…/datenschutz" /></Field>
       <Feedback state={state} /><Submit pending={pending} />
     </form>
@@ -168,7 +168,7 @@ export function OverrideForm({ action, values, inherited, scopeLabel }: { action
   );
   if (!open) return <div className="p-4 text-sm flex flex-col gap-2"><p className="text-ink-3">Keine Abweichungen: Es gelten die Geschäftsregeln des Vermieters.</p><div><button type="button" className="btn !py-1.5" onClick={() => setOpen(true)}>Abweichende Regeln festlegen</button></div></div>;
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5 p-5">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5 p-5">
       <p className="md:col-span-2 text-xs text-ink-3">Nur gesetzte Werte weichen vom Standard ab ({scopeLabel}). Leer = wie Standard. Abgeschlossene Verträge bleiben unverändert.</p>
       <Field label="Selbstbeteiligung in €" htmlFor="ov-deductible" hint={`Standard: ${inherited.deductibleCents != null ? eur(inherited.deductibleCents) + " €" : "keine"}`}><input id="ov-deductible" name="deductible" inputMode="decimal" defaultValue={values.deductible} className="input tnum" placeholder="wie Standard" /></Field>
       <Field label="Kilometerregel" htmlFor="ov-kmPolicy" hint={`Standard: ${KM_POLICIES[inherited.kmPolicy]}`}><select id="ov-kmPolicy" name="kmPolicy" defaultValue={values.kmPolicy} className="input"><option value="">wie Standard</option>{Object.entries(KM_POLICIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>

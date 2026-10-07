@@ -46,7 +46,7 @@ export function StatusForm({ action, current, allowed }: { action: Action; curre
   const { state, formAction, pending } = useCaseAction(action);
   if (allowed.length === 0) return null;
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2">
       <div className="flex flex-wrap gap-2 items-end">
         <label className="flex flex-col gap-1"><span className="label-xs">Neuer Status</span>
           <select name="to" className="input" defaultValue={allowed[0]}>{allowed.map((s) => <option key={s} value={s}>{DAMAGE_CASE_STATUS[s]}</option>)}</select>
@@ -63,7 +63,7 @@ export function StatusForm({ action, current, allowed }: { action: Action; curre
 export function PriorityForm({ action, current }: { action: Action; current: string }) {
   const { state, formAction, pending } = useCaseAction(action);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-wrap gap-2 items-end">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-wrap gap-2 items-end">
       <label className="flex flex-col gap-1"><span className="label-xs">Priorität</span>
         <select name="priority" className="input" defaultValue={current}>{Object.entries(DAMAGE_CASE_PRIORITY).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
       </label>
@@ -86,7 +86,7 @@ export function LiabilityForm({ action, current, currentNote, locked }: { action
   if (locked) return <p className="text-sm text-ink-3">Die Kundenbelastung ist festgelegt; die Haftungsentscheidung ist damit festgeschrieben. Korrekturen laufen über die Schadenabrechnung (Fassungen).</p>;
   const toConfirm = () => { if (form.current?.reportValidity()) setConfirm(true); };
   return (
-    <form ref={form} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
+    <form ref={form} action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
       <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,260px)_1fr] gap-3">
         <label className="flex flex-col gap-1"><span className="label-xs">Haftung</span>
           <select name="status" className="input" value={status} onChange={(e) => { setStatus(e.target.value); setConfirm(false); }}>
@@ -122,7 +122,7 @@ export function LiabilityForm({ action, current, currentNote, locked }: { action
 export function CostsForm({ action, estimated, actual }: { action: Action; estimated: string; actual: string }) {
   const { state, formAction, pending } = useCaseAction(action);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className="flex flex-col gap-1"><span className="label-xs">Kostenschätzung in €</span><input name="estimated" inputMode="decimal" defaultValue={estimated} placeholder="0,00" className="input tnum" /></label>
         <label className="flex flex-col gap-1"><span className="label-xs">Tatsächliche Reparaturkosten in €</span><input name="actual" inputMode="decimal" defaultValue={actual} placeholder="0,00" className="input tnum" /></label>
@@ -137,7 +137,7 @@ export function CostsForm({ action, estimated, actual }: { action: Action; estim
 export function RepairForm({ action, provider, appointmentAt, completedAt }: { action: Action; provider: string; appointmentAt: string; completedAt: string }) {
   const { state, formAction, pending } = useCaseAction(action);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2">
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <label className="flex flex-col gap-1"><span className="label-xs">Werkstatt / Dienstleister</span><input name="provider" defaultValue={provider} maxLength={200} className="input" /></label>
         <label className="flex flex-col gap-1"><span className="label-xs">Reparaturtermin</span><input name="appointmentAt" type="datetime-local" defaultValue={appointmentAt} className="input" /></label>
@@ -172,7 +172,7 @@ export function NoteForm({ action }: { action: Action }) {
 export function InternalNoteForm({ action, value }: { action: Action; value: string }) {
   const { state, formAction, pending } = useCaseAction(action);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2">
       <label className="flex flex-col gap-1"><span className="label-xs">Interne Notiz (nie auf Kundenunterlagen)</span><textarea name="note" defaultValue={value} maxLength={4000} rows={3} className="input" /></label>
       <div><button type="submit" disabled={pending} className="btn">{pending ? "Wird gespeichert…" : "Interne Notiz speichern"}</button></div>
       <Feedback state={state} />
@@ -189,7 +189,7 @@ export function ConfirmReasonForm({ action, label, question, reasonLabel, reason
   const [open, setOpen] = useState(false);
   if (!open) return <div className="inline-flex flex-col gap-1"><button type="button" className={`btn ${danger ? "btn-danger" : ""}`} onClick={() => setOpen(true)}>{label}</button><Feedback state={state} /></div>;
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className={`flex flex-col gap-2 rounded-lg border-2 p-4 text-sm ${danger ? "border-bad/40 bg-bad-soft/30" : "border-brand bg-panel"}`}>
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className={`flex flex-col gap-2 rounded-lg border-2 p-4 text-sm ${danger ? "border-bad/40 bg-bad-soft/30" : "border-brand bg-panel"}`}>
       <div className="font-medium">{question}</div>
       {warning && <p className="rounded-md bg-amber-soft text-amber px-3 py-2">{warning}</p>}
       <label className="flex flex-col gap-1"><span className="label-xs">{reasonLabel}{reasonRequired ? " (Pflicht)" : " (optional)"}</span><input name={reasonRequired ? "reason" : "note"} required={reasonRequired} minLength={reasonRequired ? 3 : undefined} maxLength={500} className="input" /></label>
@@ -219,7 +219,7 @@ export function ChargeForm({ action, nonce, hints }: { action: Action; nonce: st
     setConfirm({ amount: String(fd.get("amount") ?? ""), basis: String(fd.get("basis") ?? ""), tax: DAMAGE_TAX_TREATMENTS[String(fd.get("taxTreatment")) as keyof typeof DAMAGE_TAX_TREATMENTS] ?? "" });
   };
   return (
-    <form ref={form} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
+    <form ref={form} action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
       <input type="hidden" name="nonce" value={nonce} />
       <div className="font-medium">Schaden dem Kunden berechnen</div>
       {hints.length > 0 && (
@@ -355,7 +355,7 @@ export function CaseDocumentUploader({ caseId }: { caseId: string }) {
     }
   }
   return (
-    <form ref={form} onSubmit={(e) => e.preventDefault()} className="flex flex-col gap-2">
+    <form ref={form} method="post" onSubmit={(e) => e.preventDefault()} className="flex flex-col gap-2">
       <div className="flex flex-wrap gap-2 items-end">
         <label className="flex flex-col gap-1"><span className="label-xs">Dokumenttyp</span>
           <select name="type" className="input" defaultValue="ESTIMATE">{Object.entries(DAMAGE_CASE_DOCUMENT_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>

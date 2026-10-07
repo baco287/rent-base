@@ -73,7 +73,7 @@ export function CaseForm({ action, values, submitLabel, collapsible = false, det
     setFromBook(filled.length ? c.name : null);
   }
   return (
-    <form ref={form} onSubmit={submitWithoutReset(formAction)} className={`flex flex-col gap-4 ${collapsible ? "rounded-lg bg-panel-2 p-4" : ""}`}>
+    <form ref={form} action={formAction} onSubmit={submitWithoutReset(formAction)} className={`flex flex-col gap-4 ${collapsible ? "rounded-lg bg-panel-2 p-4" : ""}`}>
       {uploadId && <input type="hidden" name="uploadId" value={uploadId} />}
       {contacts.length > 0 && <datalist id="authority-contacts">{contacts.map((c) => <option key={c.id} value={c.name} />)}</datalist>}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -222,7 +222,7 @@ export function SimpleButton({ action, label, pendingLabel, danger = false, hidd
 export function SelectForm({ action, name, label, options, current, submitLabel, emptyLabel, hint }: { action: Action; name: string; label: string; options: { id: string; label: string; detail?: string }[]; current: string | null; submitLabel: string; emptyLabel: string; hint?: string }) {
   const { state, formAction, pending } = useAuthAction(action);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2">
       <Field label={label} hint={hint}>
         <select name={name} defaultValue={current ?? ""} className="input">
           <option value="">{emptyLabel}</option>
@@ -246,7 +246,7 @@ export function DriverForm({ action, candidates, current, currentContractDriverI
   const [mode, setMode] = useState<string>(current === "CONTRACT_DRIVER_SELECTED" ? "CONTRACT" : current === "OTHER_DRIVER_ENTERED" ? "OTHER" : current === "NOT_IDENTIFIABLE" ? "NOT_IDENTIFIABLE" : current === "NO_DRIVER_INFORMATION" ? "NO_INFORMATION" : "UNDETERMINED");
   const needsConfirm = mode === "CONTRACT" || mode === "OTHER";
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
       <p role="note" className="rounded-md bg-amber-soft text-amber px-3 py-2 text-sm">{AUTHORITY_DRIVER_NOTICE}</p>
       <fieldset className="flex flex-col gap-2 text-sm">
         <legend className="label-xs mb-1">Fahrerbestimmung</legend>
@@ -316,7 +316,7 @@ export function PrepareResponseForm({ action, allowedTypes, hasEmail, hasPersons
   if (!open) return <div className="inline-flex flex-col gap-1"><button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>Antwort vorbereiten</button><Feedback state={state} /></div>;
   const personal = type === "DRIVER_IDENTIFIED" || type === "MULTIPLE_POSSIBLE_DRIVERS";
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Field label="Antwortart" hint="nur Antwortarten, die zum aktuellen Stand passen">
           <select name="responseType" value={type} onChange={(e) => setType(e.target.value)} className="input">
@@ -353,7 +353,7 @@ export function QuickForm({ action, fingerprint, naming, driverName, method, ema
   const { state, formAction, pending } = useAuthAction(action);
   const label = method === "EMAIL" ? "Freigeben und per E-Mail senden" : method === "MANUAL_PORTAL" ? "Freigeben und PDF fürs Portal erstellen" : "Freigeben und PDF für den Postversand erstellen";
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 text-sm">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 text-sm">
       <input type="hidden" name="fingerprint" value={fingerprint} />
       {hasPersons && (
         <div className="flex flex-wrap gap-x-5 gap-y-1">
@@ -402,7 +402,7 @@ export function SubmitForm({ action, responseId, method, recipientEmail, retryNo
   const label = method === "EMAIL" ? (retry ? "Versand erneut versuchen" : "Jetzt per E-Mail senden") : method === "POST" ? "Als versendet markieren" : method === "MANUAL_PORTAL" ? "Im Behördenportal übermittelt" : "Als übermittelt markieren";
   if (!open) return <div className="inline-flex flex-col gap-1"><button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>{label}</button><Feedback state={state} /></div>;
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="rounded-lg border-2 border-brand bg-panel p-4 flex flex-col gap-3 text-sm">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="rounded-lg border-2 border-brand bg-panel p-4 flex flex-col gap-3 text-sm">
       <input type="hidden" name="responseId" value={responseId} />
       <input type="hidden" name="confirm" value="1" />
       {retryNonce && <input type="hidden" name="nonce" value={retryNonce} />}
@@ -437,7 +437,7 @@ export function ConfirmReasonForm({ action, label, question, reasonLabel = "Grun
   const [open, setOpen] = useState(false);
   if (!open) return <div className="inline-flex flex-col gap-1"><button type="button" className={`btn !py-1.5 ${danger ? "btn-danger" : ""}`} onClick={() => setOpen(true)}>{label}</button><Feedback state={state} /></div>;
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className={`flex flex-col gap-2 rounded-lg border-2 p-4 text-sm ${danger ? "border-bad/40 bg-bad-soft/30" : "border-brand bg-panel"}`}>
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className={`flex flex-col gap-2 rounded-lg border-2 p-4 text-sm ${danger ? "border-bad/40 bg-bad-soft/30" : "border-brand bg-panel"}`}>
       <div className="font-medium">{question}</div>
       {warning && <p className="rounded-md bg-amber-soft text-amber px-3 py-2">{warning}</p>}
       <label className="flex flex-col gap-1"><span className="label-xs">{reasonLabel} (Pflicht)</span><input name="reason" required minLength={3} maxLength={500} className="input" /></label>
@@ -465,7 +465,7 @@ export function NoteForm({ action }: { action: Action }) {
 export function InternalNoteForm({ action, value }: { action: Action; value: string }) {
   const { state, formAction, pending } = useAuthAction(action);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2">
       <Field label="Interne Notiz (erscheint nie in einer Antwort)"><textarea name="internalNote" defaultValue={value} maxLength={4000} rows={3} className="input" /></Field>
       <div><button type="submit" disabled={pending} className="btn">{pending ? "Wird gespeichert…" : "Interne Notiz speichern"}</button></div>
       <Feedback state={state} />
@@ -507,7 +507,7 @@ export function DocumentUploader({ endpoint, defaultType = "INCOMING_NOTICE" }: 
     }
   }
   return (
-    <form ref={form} onSubmit={(e) => e.preventDefault()} className="flex flex-col gap-2">
+    <form ref={form} method="post" onSubmit={(e) => e.preventDefault()} className="flex flex-col gap-2">
       <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,220px)_1fr_auto] gap-2 items-end">
         <Field label="Dokumenttyp"><select name="type" className="input" defaultValue={defaultType}>{entries.map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
         <Field label="Beschreibung (optional)"><input name="description" maxLength={300} className="input" placeholder="z. B. Anhörungsbogen Seite 1–2" /></Field>
@@ -542,7 +542,7 @@ export function ContactEditForm({ save, remove, contact }: { save: Action; remov
     );
   }
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-lg bg-panel-2 p-3">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-lg bg-panel-2 p-3">
       <Field label="Behörde" className="sm:col-span-2"><input name="name" required minLength={2} maxLength={160} defaultValue={contact.name} className="input" /></Field>
       <Field label="Abteilung / Sachgebiet"><input name="department" maxLength={160} defaultValue={contact.department} className="input" /></Field>
       <Field label="E-Mail" hint="nur eine Adresse, die die Behörde als Antwortweg nennt"><input name="email" type="email" maxLength={160} defaultValue={contact.email} className="input" /></Field>
@@ -557,7 +557,7 @@ export function ContactEditForm({ save, remove, contact }: { save: Action; remov
 export function ReminderSettingsForm({ action, days, email, canEdit, fallback }: { action: Action; days: number; email: string; canEdit: boolean; fallback: string }) {
   const { state, formAction, pending } = useAuthAction(action);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Field label="Erinnern bei Fristen innerhalb von" hint="Überfällige und heute fällige Vorgänge sind immer dabei.">
           <select name="days" defaultValue={String(days)} disabled={!canEdit} className="input">

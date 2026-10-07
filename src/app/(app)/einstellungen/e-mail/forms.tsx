@@ -19,7 +19,7 @@ export function SmtpSettingsForm({ v, disabled }: { v: SmtpFormValues; disabled:
   const [security, setSecurity] = useState(v.security || "STARTTLS");
   const [port, setPort] = useState(String(v.port || 587));
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5 p-5" autoComplete="off">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5 p-5" autoComplete="off">
       <Field label="SMTP-Server" htmlFor="host" full hint="Hostname Ihres Mailanbieters, z. B. smtp.ionos.de oder smtp.office365.com – ohne https:// und ohne Port.">
         <input id="host" name="host" defaultValue={v.host} required disabled={disabled} className="input" inputMode="url" autoCapitalize="none" spellCheck={false} />
       </Field>

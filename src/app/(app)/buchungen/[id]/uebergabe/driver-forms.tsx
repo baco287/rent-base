@@ -35,7 +35,7 @@ export function IdentityCheckForm({ action, defaultDocumentType, defaultNameMatc
 }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
       <fieldset disabled={disabled || pending} className="flex flex-col gap-3">
         <div className="flex flex-col gap-1.5">
           <label htmlFor="documentType" className="label-xs">Vorgelegtes Dokument</label>
@@ -135,7 +135,7 @@ function LicenseDataFields({ defaults, requiredClass, idPrefix }: { defaults: Li
 export function LicenseCheckForm({ action, defaults, requiredClass, disabled }: { action: Action; defaults: LicenseDefaults; requiredClass: string | null; disabled: boolean }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
       <fieldset disabled={disabled || pending} className="flex flex-col gap-3">
         <input type="hidden" name="originalSeen" value="1" />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -168,7 +168,7 @@ export function LicenseCheckForm({ action, defaults, requiredClass, disabled }: 
 export function DriverCheckForm({ action, driverName, requiredClass, defaultDocumentType, defaults }: { action: Action; driverName: string; requiredClass: string | null; defaultDocumentType: string | null; defaults: LicenseDefaults }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
       <fieldset disabled={pending} className="flex flex-col gap-3">
         <div className="flex flex-col gap-1.5 max-w-md">
           <label htmlFor="chk-documentType" className="label-xs">Vorgelegter Ausweis</label>

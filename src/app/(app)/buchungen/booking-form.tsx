@@ -185,7 +185,7 @@ export function BookingForm({
   }
 
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5">
       <Field label="Fahrzeug" htmlFor="vehicleId" hint="Preis, Kilometer und Kaution kommen aus dem Miettarif der Fahrzeuggruppe">
         <select id="vehicleId" name="vehicleId" value={vehicleId} onChange={(e) => pickVehicle(e.target.value)} required className="input">
           <option value="">Bitte wählen…</option>

@@ -59,7 +59,7 @@ export function ChangesForm({ action, values: v, current: c, locked }: { action:
   const delta = v.priceDeltaCents ?? v.priceProposalCents ?? null;
   const [sign, setSign] = useState<"+" | "-">(delta != null && delta < 0 ? "-" : "+");
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
       <fieldset disabled={pending || locked} className="flex flex-col gap-3">
         {c.canChangeStart && (
           <Toggle id="changeStart" label="Mietbeginn / Abholung verschieben (vor der Übergabe)" checked={start} onChange={setStart}>

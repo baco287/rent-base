@@ -15,7 +15,7 @@ export function MarkDeliveredForm({ action, versionId, versionNo }: { action: Ac
   if (state?.ok) return <p role="status" className="text-good bg-good-soft rounded-md px-3 py-2 text-sm">{state.ok}</p>;
   if (!open) return <button type="button" className="btn !py-1.5" onClick={() => setOpen(true)}>Als an Kunden übergeben markieren</button>;
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2 rounded-md border border-line-soft bg-panel-2 p-3 text-sm">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2 rounded-md border border-line-soft bg-panel-2 p-3 text-sm">
       <input type="hidden" name="versionId" value={versionId} />
       <div className="font-medium">Bestätigen Sie, dass Fassung {versionNo} dieser Rechnung dem Kunden außerhalb des Rent-Base-E-Mail-Versands übergeben wurde (z. B. ausgedruckt oder persönlich).</div>
       <label className="flex flex-col gap-1"><span className="label-xs">Hinweis (optional)</span><input name="note" maxLength={300} className="input" placeholder="z. B. ausgedruckt bei der Rückgabe mitgegeben" /></label>

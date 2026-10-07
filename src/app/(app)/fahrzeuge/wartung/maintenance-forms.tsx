@@ -51,7 +51,7 @@ export function PlanForm({ action, values, submitLabel, compact = false, onDone 
   const [open, setOpen] = useState(!compact);
   if (compact && !open) return <div className="inline-flex flex-col gap-1"><button type="button" className="btn" onClick={() => setOpen(true)}>{submitLabel}</button><Feedback state={state} /></div>;
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Field label="Wartungsart"><TypeSelect name="type" defaultValue={values?.type ?? "INSPECTION"} /></Field>
         <Field label="Bezeichnung (optional)"><input name="title" defaultValue={values?.title ?? ""} maxLength={120} className="input" placeholder="z. B. Große Inspektion" /></Field>
@@ -97,7 +97,7 @@ export function CreateMaintenanceForm({ action, plans, cases, presetPlanId, pres
   const [type, setType] = useState(presetType ?? (presetCaseId ? "DAMAGE_REPAIR" : "INSPECTION"));
   const [block, setBlock] = useState(false);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-4">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Field label="Art"><select name="type" value={type} onChange={(e) => setType(e.target.value)} className="input">{Object.entries(MAINTENANCE_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
         <Field label="Priorität"><select name="priority" defaultValue="NORMAL" className="input">{Object.entries(MAINTENANCE_PRIORITY).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
@@ -135,7 +135,7 @@ export function EditMaintenanceForm({ action, values, finalized }: { action: Act
   const [open, setOpen] = useState(false);
   if (!open) return <div className="inline-flex flex-col gap-1"><button type="button" className="btn !py-1.5" onClick={() => setOpen(true)}>{finalized ? "Interne Notiz bearbeiten" : "Vorgang bearbeiten"}</button><Feedback state={state} /></div>;
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
       {!finalized && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field label="Art"><TypeSelect name="type" defaultValue={values.type} /></Field>
@@ -177,7 +177,7 @@ export function StatusButtons({ action, current, allowed, canAll }: { action: Ac
 export function CostsForm({ action, estimated, actual }: { action: Action; estimated: string; actual: string }) {
   const { state, formAction, pending } = useMaintAction(action);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-2">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Field label="Kostenschätzung in €"><input name="estimated" defaultValue={estimated} inputMode="decimal" placeholder="0,00" className="input tnum" /></Field>
         <Field label="Tatsächliche Kosten in €"><input name="actual" defaultValue={actual} inputMode="decimal" placeholder="0,00" className="input tnum" /></Field>
@@ -192,7 +192,7 @@ export function CostsForm({ action, estimated, actual }: { action: Action; estim
 export function MileageForm({ action, vehicleMileage }: { action: Action; vehicleMileage: number }) {
   const { state, formAction, pending } = useMaintAction(action);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-wrap gap-2 items-end">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-wrap gap-2 items-end">
       <Field label="Kilometerstand beim Service" hint={`Fahrzeug aktuell ${vehicleMileage.toLocaleString("de-DE")} km – ein höherer Wert schreibt den Fahrzeugstand fort, ein niedrigerer bleibt historisch`}><input name="mileage" required inputMode="numeric" className="input tnum" /></Field>
       <button type="submit" disabled={pending} className="btn">{pending ? "…" : "Kilometer dokumentieren"}</button>
       <div className="basis-full"><Feedback state={state} /></div>
@@ -224,7 +224,7 @@ export function CompleteForm({ action, defaults, proposal, hasPlan, vehicleMilea
   const form = useRef<HTMLFormElement>(null);
   if (!open) return <div className="inline-flex flex-col gap-1"><button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>Als erledigt markieren</button><Feedback state={state} /></div>;
   return (
-    <form ref={form} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
+    <form ref={form} action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
       <div className="font-medium">Vorgang abschließen</div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Field label="Erledigt am"><input name="completedAt" type="datetime-local" required defaultValue={defaults.completedAt} className="input" onChange={() => setConfirm(false)} /></Field>
@@ -258,7 +258,7 @@ export function ConfirmReasonForm({ action, label, question, reasonLabel, reason
   const [open, setOpen] = useState(false);
   if (!open) return <div className="inline-flex flex-col gap-1"><button type="button" className={`btn !py-1.5 ${danger ? "btn-danger" : ""}`} onClick={() => setOpen(true)}>{label}</button><Feedback state={state} /></div>;
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className={`flex flex-col gap-2 rounded-lg border-2 p-4 text-sm ${danger ? "border-bad/40 bg-bad-soft/30" : "border-brand bg-panel"}`}>
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className={`flex flex-col gap-2 rounded-lg border-2 p-4 text-sm ${danger ? "border-bad/40 bg-bad-soft/30" : "border-brand bg-panel"}`}>
       {hidden && Object.entries(hidden).map(([k, v]) => <input key={k} type="hidden" name={k} value={v} />)}
       <div className="font-medium">{question}</div>
       {warning && <p className="rounded-md bg-amber-soft text-amber px-3 py-2">{warning}</p>}
@@ -275,7 +275,7 @@ export function ConfirmReasonForm({ action, label, question, reasonLabel, reason
 export function LinkCaseForm({ action, cases, current }: { action: Action; cases: { id: string; caseNumber: string; description: string }[]; current: string | null }) {
   const { state, formAction, pending } = useMaintAction(action);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-wrap gap-2 items-end">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-wrap gap-2 items-end">
       <Field label="Schadenakte dieses Fahrzeugs"><select name="damageCaseId" defaultValue={current ?? ""} className="input"><option value="">– keine –</option>{cases.map((c) => <option key={c.id} value={c.id}>{c.caseNumber} · {c.description.slice(0, 60)}</option>)}</select></Field>
       <button type="submit" disabled={pending} className="btn">{pending ? "…" : "Verknüpfung speichern"}</button>
       <div className="basis-full"><Feedback state={state} /></div>
@@ -322,7 +322,7 @@ export function DocumentUploader({ endpoint, defaultType = "WORKSHOP_INVOICE", t
     }
   }
   return (
-    <form ref={form} onSubmit={(e) => e.preventDefault()} className="flex flex-col gap-2">
+    <form ref={form} method="post" onSubmit={(e) => e.preventDefault()} className="flex flex-col gap-2">
       <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,200px)_minmax(0,160px)_1fr_auto] gap-2 items-end">
         <Field label="Dokumenttyp"><select name="type" className="input" defaultValue={defaultType}>{entries.map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
         <Field label="Dokumentdatum"><input name="documentDate" type="date" className="input" /></Field>

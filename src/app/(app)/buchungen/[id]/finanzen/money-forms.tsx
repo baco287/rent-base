@@ -68,7 +68,7 @@ export function PaymentForm({ action, preview, targetId, targetField = "invoiceI
   if (!open) return <div><button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>Zahlung erfassen</button></div>;
 
   return (
-    <form ref={setForm} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
+    <form ref={setForm} action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
       {targetField && <input type="hidden" name={targetField} value={targetId} />}
       <input type="hidden" name="nonce" value={nonce} />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -127,7 +127,7 @@ export function ReasonForm({ action, id, label, question, variant = "link", expl
     return <button type="button" className="text-xs underline text-ink-3 hover:text-bad" onClick={() => setOpen(true)}>{label}</button>;
   }
   const form = (
-    <form onSubmit={submitWithoutReset(formAction)} className={`flex flex-col gap-3 text-sm ${variant === "button" ? "" : "rounded-md bg-bad-soft/40 border border-bad/30 p-3"}`}>
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className={`flex flex-col gap-3 text-sm ${variant === "button" ? "" : "rounded-md bg-bad-soft/40 border border-bad/30 p-3"}`}>
       <input type="hidden" name="id" value={id} />
       <div className={variant === "button" ? "text-base font-semibold" : "font-medium"}>{question}</div>
       <p className="text-xs text-ink-2">{explanation ?? "Der Eintrag bleibt sichtbar und wird als storniert gekennzeichnet. Summen werden neu berechnet."}</p>
@@ -166,7 +166,7 @@ export function DepositReceiveForm({ action, nonce, defaultAmount, defaultWhen }
     setConfirm({ amount: String(fd.get("amount") ?? ""), method: PAYMENT_METHODS[String(fd.get("method")) as keyof typeof PAYMENT_METHODS] ?? "" });
   };
   return (
-    <form ref={setForm} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
+    <form ref={setForm} action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
       <input type="hidden" name="nonce" value={nonce} />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className="flex flex-col gap-1"><span className="label-xs">Erhaltener Betrag in €</span><input name="amount" inputMode="decimal" defaultValue={defaultAmount} required className="input text-xl tnum" onChange={() => setConfirm(null)} /></label>
@@ -222,7 +222,7 @@ export function DepositOffsetForm({ action, preview, bookingId, nonce, invoices,
   const pvError = pv?.error ?? null;
   const full = pv && "availableCents" in pv && !pv.error ? pv : null;
   return (
-    <form ref={setForm} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
+    <form ref={setForm} action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
       <input type="hidden" name="nonce" value={nonce} />
       <div className="font-medium">Offene Forderung aus der Kaution begleichen</div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -293,7 +293,7 @@ export function OffsetReturnForm({ action, preview, nonce, defaultWhen, maxCents
   };
   const full = pv && "maxCents" in pv && !pv.error ? pv : null;
   return (
-    <form ref={setForm} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
+    <form ref={setForm} action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
       <input type="hidden" name="nonce" value={nonce} />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className="flex flex-col gap-1"><span className="label-xs">Betrag in €</span><input name="amount" inputMode="decimal" defaultValue={eur(maxCents)} required className="input text-xl tnum" onChange={() => setPv(null)} /><span className="text-[11px] text-ink-3">höchstens {fmtCents(maxCents)} (verfügbares Guthaben und noch rückführbarer Teil der Verrechnung). Teilbetrag möglich.</span></label>
@@ -361,7 +361,7 @@ export function DepositSettleForm({ action, preview, bookingId, nonce, remaining
   const full = pv && "remainingCents" in pv && !pv.error ? pv : null;
   const title = mode === "RELEASE" ? "Kaution vollständig freigeben" : mode === "PARTIAL" ? "Kaution teilweise freigeben" : "Kaution einbehalten";
   return (
-    <form ref={setForm} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
+    <form ref={setForm} action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3 rounded-lg bg-panel-2 p-4">
       <input type="hidden" name="nonce" value={nonce} />
       <div className="font-medium">{title}</div>
       <div className="text-sm text-ink-2">Noch nicht zugeordnete Kaution: <span className="font-mono tnum font-semibold">{fmtCents(remainingCents)}</span></div>

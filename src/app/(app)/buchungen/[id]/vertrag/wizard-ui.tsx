@@ -64,7 +64,7 @@ export function NavButton({ action, label, className = "btn btn-primary justify-
 export function StepForm({ action, children, step, nextLabel = "Speichern & weiter", hideNext = false }: { action: StepAction; children: ReactNode; step: number; nextLabel?: string; hideNext?: boolean }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-4">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-4">
       {children}
       <FormError error={state?.error} />
       <div className="sticky bottom-0 -mx-4 md:-mx-5 -mb-4 md:-mb-5 px-4 md:px-5 py-3 bg-panel/95 backdrop-blur border-t border-line-soft flex items-center gap-2 rounded-b-lg">
@@ -88,7 +88,7 @@ export function StepForm({ action, children, step, nextLabel = "Speichern & weit
 export function InlineForm({ action, children, submitLabel, pendingLabel = "Wird gespeichert…", className = "" }: { action: StepAction; children: ReactNode; submitLabel: string; pendingLabel?: string; className?: string }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className={`flex flex-col gap-3 ${className}`}>
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className={`flex flex-col gap-3 ${className}`}>
       {children}
       <FormError error={state?.error} />
       <div>
@@ -129,7 +129,7 @@ export function SignatureForm({ action, role, defaultName, seenHash }: { action:
   const [state, formAction, pending] = useActionState(action, undefined);
   const [hasInk, setHasInk] = useState(false);
   return (
-    <form onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
+    <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-3">
       <input type="hidden" name="role" value={role} />
       <input type="hidden" name="seenHash" value={seenHash} />
       <div className="flex flex-col gap-1">
@@ -253,6 +253,7 @@ export function FinalizeForm({ action, disabled, reason, label = "Mietvertrag ve
   const locked = disabled || pending || (clicked && !state?.error);
   return (
     <form
+      action={formAction}
       onSubmit={(e) => {
         setClicked(true);
         submitWithoutReset(formAction)(e);

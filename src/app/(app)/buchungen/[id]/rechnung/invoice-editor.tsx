@@ -125,7 +125,7 @@ function FinalizeCard({ finalize, blocking, blockingReason, versionNo, kind, pay
   const overpaid = !!paymentPreview?.overpaid;
   const locked = blocking || pending || (clicked && !state?.error) || (overpaid && !confirmed) || offsetInvalid;
   return (
-    <form onSubmit={(e) => { setClicked(true); submitWithoutReset(formAction)(e); }} className="card p-4 flex flex-col gap-3">
+    <form action={formAction} onSubmit={(e) => { setClicked(true); submitWithoutReset(formAction)(e); }} className="card p-4 flex flex-col gap-3">
       {versionNo === 1 ? (
         <p className="text-sm text-ink-2">Mit dem Abschluss vergibt das System die Rechnungsnummer, friert Empfänger, Firmendaten und Beträge ein, erzeugt das PDF und sendet es an den Rechnungsempfänger. Danach ist die Fassung unveränderlich; Korrekturen erzeugen eine neue Fassung.</p>
       ) : (
