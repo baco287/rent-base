@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { Content, PageHeader } from "@/components/ui";
+import { Content } from "@/components/ui";
+import { SettingsHeader } from "../../settings-ui";
 import { createRatePlanAction } from "../actions";
 import { TariffEditor } from "../tariff-editor";
 
@@ -13,9 +14,9 @@ export default async function NewRatePlanPage() {
   const groups = await db.vehicleGroup.findMany({ where: { tenantId: tenant.id }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }], select: { id: true, name: true, defaultRatePlan: { select: { name: true } }, _count: { select: { vehicles: true } } } });
   return (
     <>
-      <PageHeader title="Miettarif anlegen" sub="Name frei wählbar (z. B. BASIC, PLUS, CITY 100). Preise je Fahrzeuggruppe.">
+      <SettingsHeader title="Miettarif anlegen" sub="Name frei wählbar (z. B. BASIC, PLUS, CITY 100). Preise je Fahrzeuggruppe.">
         <Link href="/einstellungen/tarife" className="btn">Zurück</Link>
-      </PageHeader>
+      </SettingsHeader>
       <Content>
         <div className="max-w-4xl">
           <TariffEditor

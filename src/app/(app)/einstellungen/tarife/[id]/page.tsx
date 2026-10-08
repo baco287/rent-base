@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireSession } from "@/lib/auth";
-import { Card, Chip, Content, PageHeader } from "@/components/ui";
+import { Card, Chip, Content } from "@/components/ui";
+import { SettingsHeader } from "../../settings-ui";
 import { fmtDateTime } from "@/lib/format";
 import { fmtCents } from "@/lib/money";
 import { ratePlanEditorState } from "@/lib/tariff-admin";
@@ -36,12 +37,12 @@ export default async function RatePlanPage({ params, searchParams }: PageProps<"
   const fehler = typeof sp.fehler === "string" ? sp.fehler : null;
   return (
     <>
-      <PageHeader title={`Miettarif ${plan.name}`} sub={<span className="flex flex-wrap items-center gap-2"><Chip tone={plan.active ? "good" : "grey"}>{plan.active ? "Aktiv" : "Deaktiviert"}</Chip><span className="text-ink-3">Revision {plan.revisions[0]?.revision ?? 0} · {plan._count.bookings} {plan._count.bookings === 1 ? "Buchung" : "Buchungen"}</span></span>}>
+      <SettingsHeader title={`Miettarif ${plan.name}`} sub={<span className="flex flex-wrap items-center gap-2"><Chip tone={plan.active ? "good" : "grey"}>{plan.active ? "Aktiv" : "Deaktiviert"}</Chip><span className="text-ink-3">Revision {plan.revisions[0]?.revision ?? 0} · {plan._count.bookings} {plan._count.bookings === 1 ? "Buchung" : "Buchungen"}</span></span>}>
         <Link href="/einstellungen/tarife" className="btn">Alle Tarife</Link>
         {canEdit && (plan.active
           ? <form action={setRatePlanActiveAction.bind(null, plan.id, false)}><button className="btn">Deaktivieren</button></form>
           : <form action={setRatePlanActiveAction.bind(null, plan.id, true)}><button className="btn btn-primary">Aktivieren</button></form>)}
-      </PageHeader>
+      </SettingsHeader>
       <Content>
         {sp.gespeichert === "1" && <p role="status" className="rounded-md bg-good-soft text-good px-3 py-2 text-sm">Gespeichert.</p>}
         {sp.kopie === "1" && <p role="status" className="rounded-md bg-info-soft text-info px-3 py-2 text-sm">Kopie angelegt (deaktiviert). Bitte prüfen und aktivieren.</p>}

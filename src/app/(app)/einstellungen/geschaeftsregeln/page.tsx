@@ -1,13 +1,12 @@
 import Link from "next/link";
 import { requireSession } from "@/lib/auth";
-import { Card, Chip, Content, PageHeader } from "@/components/ui";
+import { Card, Chip, Content } from "@/components/ui";
 import { DEFAULT_BUSINESS_RULES, RULE_KEYS, resolveRules, ruleConsistencyIssues, sanitizeRules } from "@/lib/business-rules";
 import { ADDITIONAL_DRIVER_FEE_TYPES, COUNTRIES, FUEL_POLICIES, KEY_DROP_LEGAL_HINT, KEY_DROP_PHOTO_CATEGORIES, KM_POLICIES, LATE_RETURN_RULES, OUT_OF_HOURS_RETURN, PETS_POLICIES, PHOTO_CATEGORIES } from "@/lib/constants";
-import { updateBusinessRulesAction, updateDunningSettingsAction, updateKeyDropSettingsAction, updatePrivacyReferenceAction } from "./actions";
-import { DunningSettingsForm, KeyDropSettingsForm, PrivacyForm, RulesSectionForm } from "./rules-forms";
-import { dunningSettingsOf } from "@/lib/dunning";
-import { DUNNING_HELP } from "@/lib/constants";
+import { updateBusinessRulesAction, updateKeyDropSettingsAction, updatePrivacyReferenceAction } from "./actions";
+import { KeyDropSettingsForm, PrivacyForm, RulesSectionForm } from "./rules-forms";
 import { keyDropSettingsOf } from "@/lib/key-drop";
+import { SettingsHeader } from "../settings-ui";
 
 export const metadata = { title: "Geschäftsregeln" };
 
@@ -26,19 +25,16 @@ export default async function BusinessRulesPage() {
   const set = Object.keys(sanitizeRules(tenant.businessRules, RULE_KEYS)).length;
   const problems = ruleConsistencyIssues(v);
   const keyDrop = keyDropSettingsOf(tenant.keyDropSettings);
-  const dunning = dunningSettingsOf(tenant);
   void DEFAULT_BUSINESS_RULES;
 
   return (
     <>
-      <PageHeader title="Geschäftsregeln" sub="Operative Standardwerte für neue Mietverträge – kein Ersatz für den Text der Mietbedingungen">
-        <Link href="/einstellungen" className="btn">Einstellungen</Link>
-        <Link href="/einstellungen/mietbedingungen" className="btn">Mietbedingungen</Link>
-      </PageHeader>
+      <SettingsHeader title="Geschäftsregeln" sub="Operative Standardwerte für neue Mietverträge – kein Ersatz für den Text der Mietbedingungen" />
       <Content>
         <div className="rounded-md bg-panel-2 px-3.5 py-2.5 text-sm text-ink-2 flex flex-wrap gap-x-4 gap-y-1 items-center">
           <span>Priorität: Standard des Vermieters → Fahrzeuggruppe → Fahrzeug → Mietvertrag. Der konkreteste Wert gewinnt; im Vertrag ist die Herkunft sichtbar.</span>
           <span>Für Buchungen mit Miettarif gelten Kilometerregel und Kaution aus dem <Link href="/einstellungen/tarife" className="underline">Miettarif</Link>; die Werte hier gelten für ältere Buchungen ohne Tarif.</span>
+          <span>Zahlungsziel, Mahnfristen und Mahngebühren: <Link href="/einstellungen/rechnungen#mahnwesen" className="underline">Rechnungen &amp; Belege</Link>.</span>
           <Chip>{set} von {RULE_KEYS.length} Werten gesetzt</Chip>
         </div>
         {problems.length > 0 && <div role="alert" className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm"><div className="font-medium">Widersprüche in den Regeln</div><ul className="list-disc pl-5">{problems.map((p) => <li key={p}>{p}</li>)}</ul></div>}
@@ -47,7 +43,6 @@ export default async function BusinessRulesPage() {
         {isOwner ? (
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
             {SECTIONS.map((s) => <Card key={s.key} title={s.title}><RulesSectionForm action={updateBusinessRulesAction.bind(null, s.key)} section={s.key} v={v} /></Card>)}
-            <Card title="Mahnwesen" right={<Chip>{dunning.feesEnabled ? "mit Gebühren" : "ohne Gebühren"}</Chip>}><DunningSettingsForm action={updateDunningSettingsAction} v={dunning} help={{ fees: DUNNING_HELP.FEES, noAutomation: DUNNING_HELP.NO_AUTOMATION, noInterest: DUNNING_HELP.NO_INTEREST }} /></Card>
             <Card title="Datenschutz"><PrivacyForm action={updatePrivacyReferenceAction} value={tenant.privacyNoticeReference ?? ""} /></Card>
             <Card title="Rückgabe: kontaktlos / Schlüsselbox" right={tenant.keyDropEnabled ? <Chip tone="good">erlaubt</Chip> : <Chip>aus</Chip>}><KeyDropSettingsForm action={updateKeyDropSettingsAction} v={{ enabled: tenant.keyDropEnabled, ...keyDrop, defaultInstructions: keyDrop.defaultInstructions ?? "", parkingNote: keyDrop.parkingNote ?? "", keyNote: keyDrop.keyNote ?? "", photoOptions: KEY_DROP_PHOTO_CATEGORIES.map((c) => ({ key: c, label: PHOTO_CATEGORIES[c] })), legalHint: KEY_DROP_LEGAL_HINT }} /></Card>
           </div>
@@ -63,7 +58,6 @@ export default async function BusinessRulesPage() {
               <dt className="label-xs">Rauchen / Tiere</dt><dd>{v.smokingAllowed ? "erlaubt" : "nicht erlaubt"} / {PETS_POLICIES[v.petsPolicy]}</dd>
               <dt className="label-xs">Verspätete Rückgabe</dt><dd>{LATE_RETURN_RULES[v.lateReturnRule]}</dd>
               <dt className="label-xs">Rückgabe außerhalb Öffnungszeiten</dt><dd>{OUT_OF_HOURS_RETURN[v.outOfHoursReturn]}</dd>
-              <dt className="label-xs">Mahnwesen</dt><dd>Zahlungsziel {dunning.paymentTermDays == null ? "keins" : `${dunning.paymentTermDays} Tage`} · Fristen {dunning.reminderDays} / {dunning.firstDays} / {dunning.secondDays} Tage · {dunning.feesEnabled ? `Gebühren ${eur(dunning.firstFeeCents)} / ${eur(dunning.secondFeeCents)}` : "keine Mahngebühren"}</dd>
               <dt className="label-xs">Kontaktlose Rückgabe</dt><dd>{tenant.keyDropEnabled ? `erlaubt (${keyDrop.label})` : "nicht freigeschaltet"}</dd>
             </dl>
             <p className="px-4 pb-3 text-xs text-ink-3">Ändern kann diese Werte nur der Inhaber.</p>

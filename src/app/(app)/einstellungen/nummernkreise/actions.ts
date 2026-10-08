@@ -29,6 +29,6 @@ export async function updateNumberRangesAction(_prev: RangesState, fd: FormData)
     throw e;
   }
   revalidatePath("/einstellungen/nummernkreise");
-  revalidatePath("/einstellungen");
+  revalidatePath("/einstellungen/rechnungen");
   return { ok: "Nummernkreise gespeichert. Bereits vergebene Nummern bleiben unverändert; neue Belege erhalten das neue Präfix." };
 }

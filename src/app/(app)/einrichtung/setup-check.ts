@@ -28,7 +28,7 @@ export async function computeSetupCheck(tenantId: string) {
 
   const items: SetupCheckItem[] = [
     { key: "unternehmen", label: "Unternehmensdaten", done: Boolean(tenant.street && tenant.zip && tenant.city && tenant.phone), blocker: false, href: "/einstellungen" },
-    { key: "rechnung", label: "Rechnungs- und Steuerdaten", done: invoiceSettingsMissing(tenant).length === 0, blocker: true, href: "/einstellungen", hint: invoiceSettingsMissing(tenant).join("; ") },
+    { key: "rechnung", label: "Rechnungs- und Steuerdaten", done: invoiceSettingsMissing(tenant).length === 0, blocker: true, href: "/einstellungen/rechnungen", hint: invoiceSettingsMissing(tenant).join("; ") },
     { key: "nummernkreise", label: "Nummernkreise", done: true, blocker: false, href: "/einstellungen/nummernkreise", hint: "Startwerte sind bereits vergeben (RE/GS/ST/AZ), bei Bedarf anpassen." },
     { key: "geschaeftsregeln", label: "Geschäftsregeln", done: true, blocker: false, href: "/einstellungen/geschaeftsregeln", hint: "Standardwerte sind bereits gesetzt, bei Bedarf anpassen." },
     { key: "mietbedingungen", label: "Mietbedingungen veröffentlicht", done: Boolean(terms.active), blocker: false, href: "/einstellungen/mietbedingungen", hint: terms.active ? undefined : "Ohne veröffentlichte Fassung nutzen neue Verträge vorerst keinen Bedingungstext." },

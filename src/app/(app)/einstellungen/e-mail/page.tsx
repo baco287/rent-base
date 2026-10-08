@@ -1,8 +1,8 @@
-import Link from "next/link";
 import { randomUUID } from "node:crypto";
 import { redirect } from "next/navigation";
 import { requireSession } from "@/lib/auth";
-import { Card, Chip, Content, PageHeader } from "@/components/ui";
+import { Card, Chip, Content } from "@/components/ui";
+import { SettingsHeader } from "../settings-ui";
 import { SMTP_ERROR_CODES, SMTP_MODES, SMTP_STATUS, SMTP_SECURITY, type SmtpStatus } from "@/lib/constants";
 import { getMailSettingsView } from "@/lib/tenant-mail";
 import { fmtDateTime } from "@/lib/format";
@@ -27,9 +27,7 @@ export default async function MailSettingsPage() {
 
   return (
     <>
-      <PageHeader title="E-Mail-Versand" sub={tenant.name}>
-        <Link href="/einstellungen" className="btn">Einstellungen</Link>
-      </PageHeader>
+      <SettingsHeader title="E-Mail-Versand" sub="Über welchen Weg geschäftliche E-Mails an Kunden gehen: RentBase-Versanddienst oder Ihr eigener SMTP-Server." />
       <Content>
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
           <Card title="Aktueller Versandweg" right={<Chip tone={tenantSmtp ? (stopped ? "bad" : "good") : "info"}>{SMTP_MODES[v.mode]}</Chip>}>

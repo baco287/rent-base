@@ -38,6 +38,7 @@ export async function updateBusinessRulesAction(section: string, _prev: RulesSta
     throw e;
   }
   revalidatePath("/einstellungen/geschaeftsregeln");
+  revalidatePath("/einstellungen/vertraege");
   revalidatePath("/buchungen", "layout");
   return { ok: "Geschäftsregeln gespeichert. Abgeschlossene Verträge bleiben unverändert; offene Entwürfe erhalten einen Hinweis." };
 }
@@ -47,6 +48,7 @@ export async function updatePrivacyReferenceAction(_prev: RulesState, fd: FormDa
   const value = String(fd.get("privacyNoticeReference") ?? "").trim().slice(0, 500) || null;
   await db.tenant.update({ where: { id: tenant.id }, data: { privacyNoticeReference: value } });
   revalidatePath("/einstellungen/geschaeftsregeln");
+  revalidatePath("/einstellungen/vertraege");
   return { ok: "Datenschutzverweis gespeichert." };
 }
 
@@ -64,6 +66,7 @@ export async function updateKeyDropSettingsAction(_prev: RulesState, fd: FormDat
     requestedPhotos: fd.getAll("requestedPhotos").map(String) as never,
   });
   revalidatePath("/einstellungen/geschaeftsregeln");
+  revalidatePath("/einstellungen/vertraege");
   return { ok: "Einstellungen zur kontaktlosen Rückgabe gespeichert." };
 }
 
@@ -90,6 +93,6 @@ export async function updateDunningSettingsAction(_prev: RulesState, fd: FormDat
     if (e instanceof DomainError) return { error: e.message };
     throw e;
   }
-  for (const p of ["/einstellungen/geschaeftsregeln", "/einstellungen", "/forderungen"]) revalidatePath(p);
+  for (const p of ["/einstellungen/rechnungen", "/einstellungen/geschaeftsregeln", "/forderungen"]) revalidatePath(p);
   return { ok: "Mahnwesen gespeichert. Die Werte gelten für künftige Rechnungen und Mahnschreiben; bestehende bleiben unverändert." };
 }

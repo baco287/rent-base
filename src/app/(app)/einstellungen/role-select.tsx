@@ -5,13 +5,14 @@ import { ROLES } from "@/lib/constants";
 import { changeUserRoleAction } from "./actions";
 
 /** Rollenwechsel direkt in der Mitarbeiterliste (Befehl 20, item 30). Auswahl sendet sofort ab. */
-export function RoleSelect({ userId, currentRole }: { userId: string; currentRole: string }) {
+export function RoleSelect({ userId, currentRole, label = "Rolle" }: { userId: string; currentRole: string; label?: string }) {
   const [state, formAction, pending] = useActionState(changeUserRoleAction, undefined);
   return (
     <form action={formAction} className="flex items-center gap-2">
       <input type="hidden" name="userId" value={userId} />
       <select
         name="role"
+        aria-label={label}
         defaultValue={currentRole}
         disabled={pending}
         className="input !py-1 !w-auto text-sm"
@@ -21,7 +22,7 @@ export function RoleSelect({ userId, currentRole }: { userId: string; currentRol
           <option key={k} value={k}>{l}</option>
         ))}
       </select>
-      {state?.error && <span className="text-bad text-xs">{state.error}</span>}
+      {state?.error && <span role="alert" className="text-bad text-xs">{state.error}</span>}
     </form>
   );
 }

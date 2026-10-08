@@ -58,7 +58,7 @@ for (const tenant of await db.tenant.findMany()) report(await isFeatureEnabled(t
 
 // 3) Bestehende Kernfunktionen des Betreiber-Mandanten (lesend): Buchungen, Verträge, Übergaben, Rechnungen, Zahlungen, Fahrerprüfung
 const bookings = await db.booking.findMany({ where: { tenantId: admin.tenantId }, orderBy: { createdAt: "asc" } });
-const core: string[] = ["/buchungen", "/buchungen?filter=alle", "/dispo", "/fahrzeuge", "/fahrzeuge/wartung", "/kunden", "/rechnungen", "/auszahlungen", "/schaeden", "/behoerden", "/einstellungen", "/einstellungen/geschaeftsregeln", "/einstellungen/mietbedingungen", "/einstellungen/nummernkreise", "/einstellungen/e-mail", "/kunden/import", "/fahrzeuge/neu", "/buchungen/neu"];
+const core: string[] = ["/buchungen", "/buchungen?filter=alle", "/dispo", "/fahrzeuge", "/fahrzeuge/wartung", "/kunden", "/rechnungen", "/auszahlungen", "/schaeden", "/behoerden", "/einstellungen", "/einstellungen/mitarbeiter", "/einstellungen/vertraege", "/einstellungen/rechnungen", "/einstellungen/tarife", "/einstellungen/geschaeftsregeln", "/einstellungen/mietbedingungen", "/einstellungen/nummernkreise", "/einstellungen/e-mail", "/kunden/import", "/fahrzeuge/neu", "/buchungen/neu"];
 for (const b of bookings) core.push(`/buchungen/${b.id}`, `/buchungen/${b.id}/vertrag`, `/buchungen/${b.id}/uebergabe`, `/buchungen/${b.id}/rueckgabe`, `/buchungen/${b.id}/rechnung`);
 for (const c of await db.customer.findMany({ where: { tenantId: admin.tenantId }, take: 5 })) core.push(`/kunden/${c.id}`);
 for (const v of await db.vehicle.findMany({ where: { tenantId: admin.tenantId } })) core.push(`/fahrzeuge/${v.id}`);

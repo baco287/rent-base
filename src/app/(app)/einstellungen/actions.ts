@@ -59,36 +59,36 @@ export async function inviteUserAction(_prev: FormState, formData: FormData): Pr
     if (e instanceof DomainError) return { error: e.message };
     throw e;
   }
-  revalidatePath("/einstellungen");
+  revalidatePath("/einstellungen/mitarbeiter");
   return { ok: `Einladung an ${d.email} gesendet.` };
 }
 
 export async function resendInvitationAction(invitationId: string) {
   const { tenant, user: me } = await requireRole("OWNER");
   await resendInvitation(tenant.id, { id: me.id, name: me.name }, invitationId, await requestBaseUrl());
-  revalidatePath("/einstellungen");
+  revalidatePath("/einstellungen/mitarbeiter");
 }
 
 export async function revokeInvitationAction(invitationId: string) {
   const { tenant, user: me } = await requireRole("OWNER");
   await revokeInvitation(tenant.id, { id: me.id, name: me.name }, invitationId);
-  revalidatePath("/einstellungen");
+  revalidatePath("/einstellungen/mitarbeiter");
 }
 
 export async function toggleUserActiveAction(userId: string) {
   const { tenant, user: me } = await requireRole("OWNER");
-  if (userId === me.id) redirect("/einstellungen?fehler=selbst");
+  if (userId === me.id) redirect("/einstellungen/mitarbeiter?fehler=selbst");
   const u = await db.user.findFirst({ where: { id: userId, tenantId: tenant.id } });
-  if (!u) redirect("/einstellungen");
+  if (!u) redirect("/einstellungen/mitarbeiter");
   try {
     if (u.active) await deactivateUser({ id: me.id, name: me.name }, tenant.id, userId);
     else await activateUser({ id: me.id, name: me.name }, tenant.id, userId);
   } catch (e) {
-    if (e instanceof DomainError) redirect(`/einstellungen?fehler=${encodeURIComponent(e.message)}`);
+    if (e instanceof DomainError) redirect(`/einstellungen/mitarbeiter?fehler=${encodeURIComponent(e.message)}`);
     throw e;
   }
-  revalidatePath("/einstellungen");
-  redirect("/einstellungen");
+  revalidatePath("/einstellungen/mitarbeiter");
+  redirect("/einstellungen/mitarbeiter");
 }
 
 export async function changeUserRoleAction(_prev: FormState, formData: FormData): Promise<FormState> {
@@ -102,7 +102,7 @@ export async function changeUserRoleAction(_prev: FormState, formData: FormData)
     if (e instanceof DomainError) return { error: e.message };
     throw e;
   }
-  revalidatePath("/einstellungen");
+  revalidatePath("/einstellungen/mitarbeiter");
   return { ok: "Rolle geändert." };
 }
 
@@ -139,6 +139,7 @@ export async function updateInvoiceSettingsAction(_prev: FormState, formData: Fo
       taxNote: d.taxNote ?? null,
     },
   });
-  revalidatePath("/einstellungen");
+  revalidatePath("/einstellungen/rechnungen");
+  revalidatePath("/einrichtung");
   return { ok: "Rechnungsdaten gespeichert. Sie gelten für alle Rechnungen, die ab jetzt abgeschlossen werden." };
 }

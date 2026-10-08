@@ -126,7 +126,7 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
               <div className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm">
                 <div className="font-semibold">Bevor Rechnungen erstellt werden können, fehlen Angaben in den Einstellungen:</div>
                 <ul className="list-disc pl-5 mt-1">{missing.map((m) => <li key={m}>{m}</li>)}</ul>
-                <div className="mt-1">{user.role === "OWNER" ? <Link href="/einstellungen" className="underline">Zu den Einstellungen</Link> : "Nur der Inhaber kann diese Angaben pflegen."} Steuersatz und Brutto/Netto-Angabe werden für jede Position gebraucht, deshalb gibt es ohne sie keinen Entwurf.</div>
+                <div className="mt-1">{user.role === "OWNER" ? <Link href="/einstellungen/rechnungen" className="underline">Zu den Rechnungsdaten</Link> : "Nur der Inhaber kann diese Angaben pflegen."} Steuersatz und Brutto/Netto-Angabe werden für jede Position gebraucht, deshalb gibt es ohne sie keinen Entwurf.</div>
               </div>
             )}
             <form action={create}><button className="btn btn-primary" disabled={!ready || missing.length > 0}>Rechnung erstellen</button></form>

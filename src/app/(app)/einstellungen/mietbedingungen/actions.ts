@@ -15,7 +15,7 @@ export type TermsState = { error?: string; ok?: string } | undefined;
 const BASE = "/einstellungen/mietbedingungen";
 
 function refresh(id?: string) {
-  revalidatePath("/einstellungen");
+  revalidatePath("/einstellungen/vertraege");
   revalidatePath(BASE);
   if (id) revalidatePath(`${BASE}/${id}`);
 }

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { requireSession } from "@/lib/auth";
-import { Card, Chip, Content, Empty, PageHeader } from "@/components/ui";
+import { Card, Chip, Content, Empty } from "@/components/ui";
+import { SettingsHeader } from "../settings-ui";
 import { proposeLabel, termsOverview } from "@/lib/rental-terms";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import { createDraftAction } from "./actions";
@@ -18,10 +19,9 @@ export default async function TermsPage() {
 
   return (
     <>
-      <PageHeader title="Mietbedingungen" sub={o.active ? `Aktiv: Version ${o.active.label}${o.active.effectiveFrom ? ` · gültig seit ${fmtDate(o.active.effectiveFrom)}` : o.active.publishedAt ? ` · veröffentlicht am ${fmtDate(o.active.publishedAt)}` : ""}` : "Noch keine Mietbedingungen veröffentlicht"}>
-        <Link href="/einstellungen" className="btn">Einstellungen</Link>
+      <SettingsHeader title="Mietbedingungen" sub={o.active ? `Aktiv: Version ${o.active.label}${o.active.effectiveFrom ? ` · gültig seit ${fmtDate(o.active.effectiveFrom)}` : o.active.publishedAt ? ` · veröffentlicht am ${fmtDate(o.active.publishedAt)}` : ""}` : "Noch keine Mietbedingungen veröffentlicht"}>
         <Link href="/einstellungen/geschaeftsregeln" className="btn">Geschäftsregeln</Link>
-      </PageHeader>
+      </SettingsHeader>
       <Content>
         {!o.active && (
           <p role="status" className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm">

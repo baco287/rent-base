@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireSession } from "@/lib/auth";
-import { Card, Chip, Content, PageHeader } from "@/components/ui";
+import { Card, Chip, Content } from "@/components/ui";
+import { SettingsHeader } from "../../settings-ui";
 import { TermsBlocksView } from "@/components/terms-view";
 import { DomainError } from "@/lib/integrity";
 import { fmtDate, fmtDateTime } from "@/lib/format";
@@ -30,10 +31,10 @@ export default async function TermsVersionPage({ params, searchParams }: PagePro
 
   return (
     <>
-      <PageHeader title={`Mietbedingungen Version ${v.label}`} sub={v.title}>
+      <SettingsHeader title={`Mietbedingungen Version ${v.label}`} sub={v.title}>
         <TermsStatusChip status={v.status} active={v.isActive} pending={v.status === "PUBLISHED" && !!v.effectiveFrom && v.effectiveFrom > new Date()} />
         <Link href="/einstellungen/mietbedingungen" className="btn">Alle Fassungen</Link>
-      </PageHeader>
+      </SettingsHeader>
       <Content>
         {sp.veroeffentlicht === "1" && <p role="status" className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Version {v.label} ist veröffentlicht und unveränderlich. {v.effectiveFrom && v.effectiveFrom > new Date() ? `Sie gilt für neue Verträge ab ${fmtDate(v.effectiveFrom)}.` : "Neue Mietverträge verwenden ab jetzt diese Fassung."}</p>}
         <dl className="card px-4 py-3 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-x-6 gap-y-1 text-sm">

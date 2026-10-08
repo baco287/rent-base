@@ -209,7 +209,11 @@ const pages: [string, string][] = [
   [`/buchungen/${old.id}`, "Muster"],
   [`/buchungen/${signedBooking.id}`, "Übergabe fortsetzen"],
   [`/buchungen/${doneBooking.id}`, "Übergabeprotokoll anzeigen"],
-  ["/einstellungen", "Mietbedingungen für Verträge"],
+  // Befehl 29.3.1: Einstellungscenter – Kategorien als eigene Seiten
+  ["/einstellungen", "Firmendaten"],
+  ["/einstellungen/mitarbeiter", "Mitarbeiter einladen"],
+  ["/einstellungen/vertraege", "Juristischer Text"],
+  ["/einstellungen/rechnungen", "Rechnungsdaten und Steuer"],
   // Vertragsassistent, alle sieben Schritte
   [`/buchungen/${w.bookingId}/vertrag?schritt=1`, "Die Daten des Mieters sind vollständig"],
   [`/buchungen/${w.bookingId}/vertrag?schritt=2`, "Mieter fährt selbst"],
@@ -350,8 +354,8 @@ const plain = async (res: Response) => (await res.text()).replace(/<!-- -->/g, "
 const invStart0 = await plain(await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } }));
 report(invStart0.includes("Rechnung zur Buchung RET-1 erstellen") && invStart0.includes("Steuersatz für Rechnungspositionen") && invStart0.includes("disabled"), "Rechnung: Startseite nennt fehlende Steuereinstellungen, Knopf gesperrt");
 await db.tenant.update({ where: { id: w.tenantId }, data: { defaultTaxRate: 19, pricesIncludeTax: true, taxNumber: "60/123/45678", paymentTermDays: 14, iban: "DE02120300000000202051", bic: "BYLADEM1001", bankName: "Testbank" } });
-const settingsHtml = await (await fetch(base + "/einstellungen", { headers: { cookie } })).text();
-report(settingsHtml.includes("Rechnungsdaten und Steuer") && settingsHtml.includes("DE02120300000000202051"), "Einstellungen: Rechnungsdaten und Steuer");
+const settingsHtml = await (await fetch(base + "/einstellungen/rechnungen", { headers: { cookie } })).text();
+report(settingsHtml.includes("Rechnungsdaten und Steuer") && settingsHtml.includes("DE02120300000000202051") && settingsHtml.includes("Rechnungsdaten speichern"), "Einstellungen › Rechnungen & Belege: Rechnungsdaten und Steuer");
 const invStart1 = await (await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie } })).text();
 report(invStart1.includes("Rechnung erstellen") && !invStart1.includes("Steuersatz für Rechnungspositionen"), "Rechnung: Startseite bereit");
 const retBookingHtml0 = await (await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } })).text();
@@ -667,8 +671,8 @@ const pubPage = await plain(await fetch(`${base}/einstellungen/mietbedingungen/$
 report(pubPage.includes("Veröffentlicht") && pubPage.includes("Inhalt der Fassung (unveränderlich)") && pubPage.includes("Neue Fassung erstellen") && pubPage.includes("Archivieren") && !pubPage.includes("Entwurf bearbeiten") && pubPage.includes(termsPub.checksum!), "Mietbedingungen: veröffentlichte Fassung nicht editierbar, Prüfsumme sichtbar");
 const termsList = await plain(await fetch(base + "/einstellungen/mietbedingungen", { headers: { cookie } }));
 report(termsList.includes("aktiv") && termsList.includes("Verwendet in") && !termsList.includes("Noch keine Mietbedingungen veröffentlicht"), "Mietbedingungen: Übersicht mit aktiver Fassung");
-const settingsTerms = await plain(await fetch(base + "/einstellungen", { headers: { cookie } }));
-report(settingsTerms.includes("Version 1.0 aktiv"), "Einstellungen: aktive Mietbedingungen ausgewiesen");
+const settingsTerms = await plain(await fetch(base + "/einstellungen/vertraege", { headers: { cookie } }));
+report(settingsTerms.includes("Version 1.0 aktiv") && settingsTerms.includes("Operative Standardwerte") && settingsTerms.includes(`href="/einstellungen/mietbedingungen/${termsPub.id}"`), "Einstellungen › Verträge & Dokumente: aktive Mietbedingungen und Geschäftsregeln getrennt ausgewiesen");
 // neuer Vertrag nach Veröffentlichung: Fassung eingefroren, Kenntnisnahme vor Unterschrift
 const start5 = new Date(Date.now() + 12 * 86400_000);
 const termsBooking = await db.booking.create({ data: { tenantId: w.tenantId, number: "AGB-1", vehicleId: v2.id, customerId: w.customerId, startAt: start5, endAt: new Date(start5.getTime() + 2 * 86400_000), dailyRate: 49, deposit: 300 } });
@@ -712,6 +716,39 @@ const dispoTerms = await plain(await fetch(`${base}/einstellungen/mietbedingunge
 report(dispoTerms.includes("Inhalt der Fassung") && !dispoTerms.includes("Archivieren") && !dispoTerms.includes("Neue Fassung erstellen"), "Disponent: Fassungen ansehen, nicht veröffentlichen oder archivieren");
 const dispoRules = await plain(await fetch(base + "/einstellungen/geschaeftsregeln", { headers: { cookie: `rb_session=${dispoSession}` } }));
 report(dispoRules.includes("Ändern kann diese Werte nur der Inhaber"), "Disponent: Geschäftsregeln nur lesen");
+// Befehl 29.3.1: Einstellungscenter – helle Kategorienavigation, Kategorien je Rolle, aktive Markierung, alte Deep Links,
+// Kategorieauswahl für Smartphones; Bearbeiten weiterhin nur Inhaber (serverseitig, die Navigation ersetzt keine Prüfung)
+{
+  const sc = async (c: string, p: string) => { const r = await fetch(`${base}${p}`, { headers: { cookie: c }, redirect: "manual" }); return { status: r.status, location: r.headers.get("location") ?? "", html: r.status === 200 ? await plain(r) : "" }; };
+  const owner = cookie, dispo = `rb_session=${dispoSession}`, yard = `rb_session=${yardSession}`;
+  const navOf = (html: string) => html.slice(html.indexOf('aria-label="Einstellungen"'), html.indexOf('aria-label="Einstellungen"') + 6000);
+  const cats = ["/einstellungen/mitarbeiter", "/einstellungen/vertraege", "/einstellungen/tarife", "/einstellungen/rechnungen"];
+  const oHome = await sc(owner, "/einstellungen");
+  report(oHome.status === 200 && cats.every((h) => navOf(oHome.html).includes(`href="${h}"`)) && navOf(oHome.html).includes('href="/einstellungen/e-mail"') && oHome.html.includes("Firmendaten speichern") && oHome.html.includes("Kategorie wechseln"), `${oHome.status} Einstellungscenter (Inhaber): alle Kategorien, Firmendaten bearbeitbar, Kategorieauswahl für Smartphones`);
+  const oStaff = await sc(owner, "/einstellungen/mitarbeiter");
+  report(oStaff.status === 200 && oStaff.html.includes("Mitarbeiter einladen") && oStaff.html.includes("Einladung senden") && oStaff.html.includes("Rollen") && /aria-current="page"[^>]*>[\s\S]{0,1500}Mitarbeiter &amp; Berechtigungen/.test(oStaff.html), `${oStaff.status} Mitarbeiter & Berechtigungen (Inhaber): Liste, Einladen, Rollen; Kategorie aktiv markiert`);
+  const oInv = await sc(owner, "/einstellungen/rechnungen");
+  report(oInv.status === 200 && oInv.html.includes("Rechnungsdaten speichern") && oInv.html.includes("Mahnwesen speichern") && oInv.html.includes('href="/einstellungen/nummernkreise"'), `${oInv.status} Rechnungen & Belege (Inhaber): Rechnungsdaten, Mahnwesen, Nummernkreise`);
+  const oRules = await sc(owner, "/einstellungen/geschaeftsregeln");
+  report(oRules.status === 200 && !oRules.html.includes("Mahnwesen speichern") && oRules.html.includes('href="/einstellungen/rechnungen#mahnwesen"') && /aria-current="page"[^>]*>[\s\S]{0,800}Geschäftsregeln/.test(oRules.html), `${oRules.status} Geschäftsregeln: Mahnwesen nach „Rechnungen & Belege“ verlegt (Verweis), Unterpunkt aktiv`);
+  // bestehende Deep Links bleiben erreichbar
+  const deep = await Promise.all(["/einstellungen/mietbedingungen", "/einstellungen/tarife", "/einstellungen/tarife/neu", "/einstellungen/nummernkreise", "/einstellungen/e-mail", "/einstellungen/vertraege"].map((p) => sc(owner, p)));
+  report(deep.every((d) => d.status === 200 && d.html.includes('aria-label="Einstellungen"')), `Einstellungen: bestehende Unterseiten im Rahmen erreichbar (${deep.map((d) => d.status).join("/")})`);
+  // Disponent: liest, bearbeitet nicht; E-Mail-Versand sichtbar (wie bisher)
+  const dHome = await sc(dispo, "/einstellungen");
+  const dStaff = await sc(dispo, "/einstellungen/mitarbeiter");
+  const dInv = await sc(dispo, "/einstellungen/rechnungen");
+  report([dHome, dStaff, dInv].every((x) => x.status === 200) && !dHome.html.includes("Firmendaten speichern") && !dStaff.html.includes("Einladung senden") && !dStaff.html.includes(">Deaktivieren<") && !dInv.html.includes("Rechnungsdaten speichern") && !dInv.html.includes("Mahnwesen speichern") && dInv.html.includes("Ändern kann diese Werte nur der Inhaber"), "Einstellungscenter (Disponent): alle Kategorien lesbar, keine Bearbeitung");
+  // Hof: kein E-Mail-Versand in der Navigation, Direktaufruf leitet um; Versandweg steht unter „Unternehmen“
+  const yHome = await sc(yard, "/einstellungen");
+  const yMail = await sc(yard, "/einstellungen/e-mail");
+  report(yHome.status === 200 && !navOf(yHome.html).includes('href="/einstellungen/e-mail"') && yHome.html.includes("E-Mail-Versand") && yMail.status === 307 && yMail.location.endsWith("/einstellungen"), `${yMail.status} Einstellungscenter (Hof): ohne E-Mail-Kategorie, Direktaufruf umgeleitet, Versandweg unter „Unternehmen“`);
+  // direkte Aufrufe der Inhaber-Aktionen bleiben gesperrt
+  const dNew = await sc(dispo, "/einstellungen/tarife/neu");
+  report(dNew.status === 307 && decodeURIComponent(dNew.location).includes("fehler=rechte"), `${dNew.status} Disponent: Inhaberseite per Direktaufruf gesperrt`);
+  const anon = await fetch(`${base}/einstellungen/mitarbeiter`, { redirect: "manual" });
+  report(anon.status === 307 && (anon.headers.get("location") ?? "").includes("/login"), `${anon.status} Einstellungen ohne Anmeldung: zum Login`);
+}
 // Inhaber (Testsitzung ist OWNER): Vertragsentwurf und Einstellungen
 const ownerDraft = await fetch(`${base}/buchungen/${w.bookingId}/vertrag?schritt=7`, { headers: { cookie } });
 report(ownerDraft.status === 200 && (await ownerDraft.text()).includes("Mietvertrag verbindlich abschließen"), `${ownerDraft.status} Inhaber: Vertrag abschließen sichtbar`);
@@ -760,8 +797,8 @@ const todayRefund = await plain(await fetch(base + "/heute", { headers: { cookie
 report(todayRefund.includes("Rechnungserstattungen offen") && todayRefund.includes("noch auszuzahlen"), "Dashboard: offene Rechnungserstattungen aus der zentralen Summierung");
 const bookingChain = await plain(await fetch(`${base}/buchungen/${retBooking.id}`, { headers: { cookie } }));
 report(bookingChain.includes("Gutschriften / Storno") && bookingChain.includes(creditNumber), "Buchung: Gegenbelege sichtbar");
-const settingsRanges = await plain(await fetch(base + "/einstellungen", { headers: { cookie } }));
-report(settingsRanges.includes("Nummernkreise der Belege") && settingsRanges.includes("RE · GS · ST"), "Einstellungen: Nummernkreise-Karte");
+const settingsRanges = await plain(await fetch(base + "/einstellungen/rechnungen", { headers: { cookie } }));
+report(settingsRanges.includes("Nummernkreise verwalten") && settingsRanges.includes("RE-JJJJ-NNNNNN") && [">RE<", ">GS<", ">ST<"].every((x) => settingsRanges.includes(x)), "Einstellungen › Rechnungen & Belege: Nummernkreise im Überblick");
 const rangesPage = await plain(await fetch(base + "/einstellungen/nummernkreise", { headers: { cookie } }));
 report(["Präfix Rechnungen", "Präfix Gutschriften", "Präfix Stornobelege", "Nummernkreise speichern", "Nächste Nummer", "Abgeschlossene Gutschriften"].every((t) => rangesPage.includes(t)), "Nummernkreise: Formular mit nächsten Nummern");
 const foreignCredit = await fetch(`${base}/buchungen/${retBooking.id}/rechnung?nr=${creditDraft.id}`, { headers: { cookie: `rb_session=${foreignSession}` } });
@@ -935,8 +972,10 @@ const supportHeader = /<header[\s\S]*?<\/header>/.exec(supportHome)?.[0] ?? "";
 report(supportHeader.includes("Suchen (Strg+K)") && ![supportAside, supportHeader].some((x) => x.includes('href="/buchungen/neu"') || x.includes('href="/kunden/neu"') || x.includes("+ Neue Buchung") || x.includes("+ Neuer Kunde")), "Supportmodus: keine Schnellaktionen in Kopf- und Seitenleiste");
 const supportCases = await plain(await fetch(`${base}/schaeden`, { headers: { cookie: supportCookies } }));
 report(!supportCases.includes("Nächster Schritt:") && !supportCases.includes("Haftung bewerten"), "Supportmodus: Schadenliste ohne Entscheidungsaktionen");
-const supportSettings = await plain(await fetch(`${base}/einstellungen`, { headers: { cookie: supportCookies } }));
-report(!supportSettings.includes("Mitarbeiter einladen"), "Supportmodus: keine Inhaber-Aktionen sichtbar (read-only)");
+const supportSettings = await plain(await fetch(`${base}/einstellungen/mitarbeiter`, { headers: { cookie: supportCookies } }));
+const supportInvoice = await plain(await fetch(`${base}/einstellungen/rechnungen`, { headers: { cookie: supportCookies } }));
+const supportCompany = await plain(await fetch(`${base}/einstellungen`, { headers: { cookie: supportCookies } }));
+report(!supportSettings.includes("Mitarbeiter einladen") && !supportSettings.includes(">Deaktivieren<") && !supportInvoice.includes("Rechnungsdaten speichern") && !supportInvoice.includes("Mahnwesen speichern") && !supportCompany.includes("Firmendaten speichern"), "Supportmodus: keine Inhaber-Aktionen sichtbar (read-only)");
 // Server Actions sind über requireRole() gesperrt (tests/platform.test.ts); API-Routen über apiSession() –
 // die lassen sich hier direkt per HTTP prüfen. Sperre greift vor jeder Datenbankabfrage, daher genügt eine beliebige ID.
 for (const [path, label] of [["driver-documents", "Ausweis-/Führerscheinkopie"], ["authority-documents", "Behördendokument"], ["damage-documents", "Schadendokument"]] as const) {
@@ -984,8 +1023,9 @@ const dnSearch = await plain(await fetch(`${base}/forderungen?filter=erinnerung&
 report(dnSearch.includes(dnBookingNumber), "Forderungen: serverseitige Suche nach Rechnungsnummer findet die Buchung");
 const dnHome = await plain(await fetch(`${base}/heute`, { headers: { cookie: dnCookie } }));
 report(dnHome.includes("Offene Forderungen") && dnHome.includes("In Mahnung") && dnHome.includes('href="/forderungen"'), "Dashboard: Forderungen und Mahnstufen, verlinkt");
-const dnRules = await plain(await fetch(`${base}/einstellungen/geschaeftsregeln`, { headers: { cookie: dnCookie } }));
-report(dnRules.includes("Mahnwesen") && dnRules.includes("Mahnwesen speichern") && dnRules.includes("Frist 1. Mahnung"), "Geschäftsregeln: Bereich Mahnwesen (Inhaber)");
+// Befehl 29.3.1: Mahnwesen liegt unter „Rechnungen & Belege“ (vorher Geschäftsregeln) – gleiche Erwartungen
+const dnRules = await plain(await fetch(`${base}/einstellungen/rechnungen`, { headers: { cookie: dnCookie } }));
+report(dnRules.includes("Mahnwesen") && dnRules.includes("Mahnwesen speichern") && dnRules.includes("Frist 1. Mahnung"), "Rechnungen & Belege: Bereich Mahnwesen (Inhaber)");
 const dnRanges = await plain(await fetch(`${base}/einstellungen/nummernkreise`, { headers: { cookie: dnCookie } }));
 report(dnRanges.includes("Präfix Mahnungen") && dnRanges.includes("MA-"), "Nummernkreise: Kreis Mahnungen");
 const dnInvoiceHtml = await plain(await fetch(dnInvoiceUrl, { headers: { cookie: dnCookie } }));
@@ -1435,7 +1475,7 @@ const kddAfter = await plain(await fetch(`${base}/buchungen/${kdd.bookingId}`, {
 report(kddAfter.includes("Kontaktlose Rückgabe vereinbaren") && !kddAfter.includes("bereits eine persönliche Rückgabe begonnen"), "Nach dem Verwerfen: kontaktlose Rückgabe vereinbar");
 
 const settingsWithCards = await plain(await fetch(`${base}/einstellungen`, { headers: { cookie } }));
-report(settingsWithCards.includes("E-Mail-Versand einrichten") && settingsWithCards.includes("Logo ersetzen") && settingsWithCards.includes("Website (optional)"), "Einstellungen: E-Mail-Versand, Logo und Website");
+report(settingsWithCards.includes('href="/einstellungen/e-mail"') && settingsWithCards.includes("Logo ersetzen") && settingsWithCards.includes("Website (optional)"), "Einstellungen: E-Mail-Versand (Kategorie), Logo und Website");
 
 mail.sent = [];
 await requestPasswordReset((await db.user.findUniqueOrThrow({ where: { id: w.userId } })).email, base);

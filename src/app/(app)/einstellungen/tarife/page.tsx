@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { requireSession } from "@/lib/auth";
-import { Card, Chip, Content, Empty, PageHeader } from "@/components/ui";
+import { Card, Chip, Content, Empty } from "@/components/ui";
+import { SettingsHeader } from "../settings-ui";
 import { fmtDateTime } from "@/lib/format";
 import { fmtCents } from "@/lib/money";
 import { listRatePlans } from "@/lib/tariff-admin";
@@ -15,10 +16,9 @@ export default async function RatePlansPage() {
   const plans = await listRatePlans(tenant.id);
   return (
     <>
-      <PageHeader title="Miettarife" sub="Eigene Tarife je Fahrzeuggruppe: Preisstufen, Kilometerregel und Kaution. Der Tarif liefert den regulären Preis – je Buchung kann mit Grund abgewichen werden.">
-        <Link href="/einstellungen" className="btn">Einstellungen</Link>
+      <SettingsHeader title="Miettarife" sub="Eigene Tarife je Fahrzeuggruppe: Preisstufen, Kilometerregel und Kaution. Der Tarif liefert den regulären Preis – je Buchung kann mit Grund abgewichen werden.">
         {canEdit && <Link href="/einstellungen/tarife/neu" className="btn btn-primary">+ Tarif anlegen</Link>}
-      </PageHeader>
+      </SettingsHeader>
       <Content>
         {plans.length === 0 ? (
           <Empty action={canEdit ? { href: "/einstellungen/tarife/neu", label: "Ersten Tarif anlegen" } : undefined}>Noch keine Miettarife. Ohne Tarif können keine neuen Buchungen angelegt werden.</Empty>

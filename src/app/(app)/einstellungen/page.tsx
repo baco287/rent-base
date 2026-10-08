@@ -1,148 +1,59 @@
 import { requireSession } from "@/lib/auth";
-import { db } from "@/lib/db";
-import { ROLES, INVITATION_STATUS, SMTP_STATUS, type Role, type InvitationStatus } from "@/lib/constants";
-import { Card, Chip, Content, PageHeader } from "@/components/ui";
-import { resendInvitationAction, revokeInvitationAction, toggleUserActiveAction } from "./actions";
-import Link from "next/link";
-import { InvoiceSettingsForm, InviteUserForm, TenantForm } from "./forms";
-import { RoleSelect } from "./role-select";
-import { invoiceSettingsMissing } from "@/lib/invoices";
-import { termsOverview } from "@/lib/rental-terms";
-import { listInvitations } from "@/lib/invitations";
-import { fmtDate, fmtDateTime } from "@/lib/format";
-import { numberRangesOf } from "@/lib/number-ranges";
+import { SMTP_STATUS } from "@/lib/constants";
+import { Chip, Content } from "@/components/ui";
+import { isFeatureEnabled } from "@/lib/features";
 import { mailStatusOf } from "@/lib/tenant-mail";
+import { TenantForm } from "./forms";
 import { LogoManager } from "./logo-card";
+import { SettingsHeader, SettingsSection } from "./settings-ui";
 
 export const metadata = { title: "Einstellungen" };
 
-export default async function SettingsPage({ searchParams }: PageProps<"/einstellungen">) {
+/**
+ * Befehl 29.3.1: Kategorie „Unternehmen“ des Einstellungscenters (bleibt unter /einstellungen, damit bestehende Links
+ * funktionieren). Firmendaten und Logo; Rechnungsdaten liegen unter „Rechnungen & Belege“, Mitarbeiter unter
+ * „Mitarbeiter & Berechtigungen“. Bearbeiten wie bisher nur der Inhaber.
+ */
+export default async function CompanySettingsPage() {
   const { tenant, user: me, supportSession } = await requireSession();
-  const sp = await searchParams;
-  const isOwner = me.role === "OWNER";
-  const users = await db.user.findMany({ where: { tenantId: tenant.id }, orderBy: [{ active: "desc" }, { name: "asc" }] });
-  const invitations = (await listInvitations(tenant.id)).filter((i) => i.status === "PENDING");
-  const terms = await termsOverview(tenant.id);
-  const ranges = numberRangesOf(tenant.numberRanges);
-  const mail = await mailStatusOf(tenant.id);
+  const canEdit = me.role === "OWNER" && !supportSession;
+  // Wer die Seite „E-Mail-Versand“ nicht öffnen kann (Hof, Supportmodus, Modul aus), sieht den Versandweg hier
+  const mailPage = me.role !== "YARD" && !supportSession && (await isFeatureEnabled(tenant.id, "TENANT_SMTP"));
+  const mail = mailPage ? null : await mailStatusOf(tenant.id);
 
   return (
     <>
-      <PageHeader title="Einstellungen" sub={tenant.name} />
-      <Content>
-        {sp.fehler === "selbst" && <Chip tone="bad">Das eigene Konto kann nicht deaktiviert werden.</Chip>}
-        {typeof sp.fehler === "string" && sp.fehler !== "selbst" && <Chip tone="bad">{decodeURIComponent(sp.fehler)}</Chip>}
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
-          <Card title="Firmendaten">
-            {isOwner ? (
-              <TenantForm t={tenant} />
-            ) : (
-              <dl className="p-5 grid grid-cols-[120px_1fr] gap-y-1.5 text-sm">
-                <dt className="label-xs self-center">Firma</dt><dd>{tenant.name}</dd>
-                <dt className="label-xs self-center">Adresse</dt><dd>{[tenant.street, [tenant.zip, tenant.city].filter(Boolean).join(" ")].filter(Boolean).join(", ") || "–"}</dd>
-                <dt className="label-xs self-center">Telefon</dt><dd>{tenant.phone || "–"}</dd>
-                <dt className="label-xs self-center">E-Mail</dt><dd>{tenant.email || "–"}</dd>
-              </dl>
-            )}
-          </Card>
-
-          <Card title="Mietbedingungen für Verträge" className="xl:row-start-2" right={terms.active ? <Chip tone="good">Version {terms.active.label} aktiv</Chip> : <Chip tone="amber">nicht veröffentlicht</Chip>}>
-            <div className="p-5 flex flex-col gap-3 text-sm">
-              {terms.active ? (
-                <p>Aktive Mietbedingungen: <span className="font-medium">Version {terms.active.label}</span>{terms.active.effectiveFrom ? `, gültig seit ${fmtDate(terms.active.effectiveFrom)}` : terms.active.publishedAt ? `, veröffentlicht am ${fmtDate(terms.active.publishedAt)}` : ""}. Neue Mietverträge frieren genau diese Fassung ein; ältere Verträge behalten ihre damalige Fassung.</p>
+      <SettingsHeader title="Unternehmen" sub="Firmendaten erscheinen auf neuen Verträgen, Protokollen, Rechnungen und in geschäftlichen E-Mails. Bereits erzeugte Dokumente behalten ihre damaligen Angaben." />
+      <Content className="max-w-[1120px]">
+        <div>
+          <SettingsSection title="Firmendaten" description={canEdit ? "Name, Anschrift und Kontakt für den Briefkopf. Pflicht ist nur der Firmenname." : "Ändern kann diese Angaben nur der Inhaber."}>
+            <div className="card">
+              {canEdit ? (
+                <TenantForm t={tenant} />
               ) : (
-                <p className="rounded-md bg-amber-soft text-amber px-3 py-2">Noch keine Mietbedingungen veröffentlicht. {terms.legacy.text ? "Neue Verträge nutzen bis dahin den bisherigen, unversionierten Text." : "Neue Verträge enthalten bis dahin keinen Bedingungstext."}{isOwner ? " Legen Sie unter „Mietbedingungen“ einen Entwurf an und veröffentlichen Sie ihn bewusst." : ""}</p>
+                <dl className="p-5 grid grid-cols-[120px_1fr] gap-y-1.5 text-sm">
+                  <dt className="label-xs self-center">Firma</dt><dd>{tenant.name}</dd>
+                  <dt className="label-xs self-center">Adresse</dt><dd>{[tenant.street, [tenant.zip, tenant.city].filter(Boolean).join(" ")].filter(Boolean).join(", ") || "–"}</dd>
+                  <dt className="label-xs self-center">Telefon</dt><dd>{tenant.phone || "–"}</dd>
+                  <dt className="label-xs self-center">E-Mail</dt><dd>{tenant.email || "–"}</dd>
+                  <dt className="label-xs self-center">Website</dt><dd>{tenant.website || "–"}</dd>
+                </dl>
               )}
-              {terms.draft && <p className="text-ink-2">Offener Entwurf: Version {terms.draft.label} (noch nicht veröffentlicht).</p>}
-              <div className="flex flex-wrap gap-2">
-                <Link href="/einstellungen/mietbedingungen" className="btn btn-primary">Mietbedingungen und Fassungen</Link>
-                <Link href="/einstellungen/geschaeftsregeln" className="btn">Geschäftsregeln</Link>
-                <Link href="/einstellungen/tarife" className="btn">Miettarife</Link>
+            </div>
+          </SettingsSection>
+          <SettingsSection title="Logo" description="Für Verträge, Protokolle, Rechnungen, Belege und geschäftliche E-Mails.">
+            <div className="card">
+              <LogoManager hasLogo={Boolean(tenant.logoStorageKey)} version={tenant.logoUpdatedAt?.toISOString() ?? "0"} canEdit={canEdit} />
+            </div>
+          </SettingsSection>
+          {mail && (
+            <SettingsSection title="E-Mail-Versand" description="Über welchen Weg geschäftliche E-Mails gehen.">
+              <div className="card p-5 flex flex-wrap items-center gap-3 text-sm">
+                <Chip tone={mail.status === "VERIFIED" ? "good" : mail.status === "ERROR" ? "bad" : mail.status === "CONFIGURED" ? "amber" : "grey"}>{SMTP_STATUS[mail.status]}</Chip>
+                <span className="min-w-0 flex-1">{mail.mode === "TENANT_SMTP" ? "Geschäftliche E-Mails werden über Ihren eigenen SMTP-Server versendet." : "Geschäftliche E-Mails werden derzeit über den RentBase-Versanddienst versendet."}</span>
               </div>
-              <p className="text-xs text-ink-3">Mietbedingungen sind der juristische Text (versioniert, unveränderlich nach Veröffentlichung). Geschäftsregeln sind operative Standardwerte wie Kaution, Kilometer, Tanken, Ausland – sie ersetzen den Text nicht.</p>
-            </div>
-          </Card>
-
-          <Card title="Nummernkreise der Belege" right={<Chip>{ranges.invoice.prefix} · {ranges.creditNote.prefix} · {ranges.cancellation.prefix} · {ranges.payout.prefix}</Chip>}>
-            <div className="p-5 flex flex-col gap-3 text-sm">
-              <p>Rechnungen <span className="font-mono">{ranges.invoice.prefix}-JJJJ-NNNNNN</span>, Gutschriften <span className="font-mono">{ranges.creditNote.prefix}-JJJJ-NNNNNN</span>, Stornobelege <span className="font-mono">{ranges.cancellation.prefix}-JJJJ-NNNNNN</span>, Auszahlungen <span className="font-mono">{ranges.payout.prefix}-JJJJ-NNNNNN</span>. Jeder Kreis zählt für sich; Nummern werden beim Abschluss vergeben und nie wiederverwendet.</p>
-              <div><Link href="/einstellungen/nummernkreise" className="btn">{isOwner ? "Nummernkreise verwalten" : "Nummernkreise ansehen"}</Link></div>
-            </div>
-          </Card>
-
-          {isOwner && (
-            <Card title="Rechnungsdaten und Steuer" className="xl:row-start-3 xl:col-span-2" right={invoiceSettingsMissing(tenant).length > 0 ? <Chip tone="amber">unvollständig</Chip> : <Chip tone="good">vollständig</Chip>}>
-              {invoiceSettingsMissing(tenant).length > 0 && (
-                <p className="mx-5 mt-4 rounded-md bg-amber-soft text-amber px-3 py-2 text-sm">Bevor Rechnungen erstellt werden können, fehlt noch: {invoiceSettingsMissing(tenant).join("; ")}.</p>
-              )}
-              <InvoiceSettingsForm t={{ legalForm: tenant.legalForm, country: tenant.country, vatId: tenant.vatId, taxNumber: tenant.taxNumber, bankName: tenant.bankName, iban: tenant.iban, bic: tenant.bic, invoiceFooter: tenant.invoiceFooter, paymentTermDays: tenant.paymentTermDays, defaultTaxRate: tenant.defaultTaxRate == null ? null : String(tenant.defaultTaxRate).replace(".", ","), pricesIncludeTax: tenant.pricesIncludeTax, taxNote: tenant.taxNote }} />
-            </Card>
+            </SettingsSection>
           )}
-
-          <div className="flex flex-col gap-4">
-            <Card title="Mitarbeiter" right={<Chip>{users.filter((u) => u.active).length} aktiv</Chip>}>
-              <ul className="divide-y divide-line-soft">
-                {users.map((u) => {
-                  const toggle = toggleUserActiveAction.bind(null, u.id);
-                  return (
-                    <li key={u.id} className="px-4 py-2.5 flex items-center gap-3 flex-wrap">
-                      <div className="flex-1 min-w-0">
-                        <div className="font-medium">{u.name}{u.id === me.id ? " (du)" : ""}</div>
-                        <div className="text-xs text-ink-3">{u.email}{u.lastLoginAt ? ` · zuletzt angemeldet ${fmtDateTime(u.lastLoginAt)}` : " · noch nie angemeldet"}</div>
-                      </div>
-                      {isOwner && u.id !== me.id ? (
-                        <RoleSelect userId={u.id} currentRole={u.role} />
-                      ) : (
-                        <Chip tone={u.role === "OWNER" ? "info" : "grey"}>{ROLES[u.role as Role] ?? u.role}</Chip>
-                      )}
-                      {!u.active && <Chip tone="bad">Deaktiviert</Chip>}
-                      {isOwner && u.id !== me.id && (
-                        <form action={toggle}><button className="btn !py-1">{u.active ? "Deaktivieren" : "Aktivieren"}</button></form>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            </Card>
-            {isOwner && invitations.length > 0 && (
-              <Card title="Offene Einladungen">
-                <ul className="divide-y divide-line-soft">
-                  {invitations.map((inv) => {
-                    const resend = resendInvitationAction.bind(null, inv.id);
-                    const revoke = revokeInvitationAction.bind(null, inv.id);
-                    return (
-                      <li key={inv.id} className="px-4 py-2.5 flex items-center gap-3 flex-wrap">
-                        <div className="flex-1 min-w-0">
-                          <div className="font-medium">{inv.email}</div>
-                          <div className="text-xs text-ink-3">{ROLES[inv.role as Role] ?? inv.role} · {INVITATION_STATUS[inv.status as InvitationStatus] ?? inv.status} · gültig bis {fmtDateTime(inv.expiresAt)}</div>
-                        </div>
-                        <form action={resend}><button className="btn !py-1">Erneut senden</button></form>
-                        <form action={revoke}><button className="btn !py-1">Widerrufen</button></form>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </Card>
-            )}
-            {isOwner && (
-              <Card title="Mitarbeiter einladen">
-                <InviteUserForm />
-              </Card>
-            )}
-          </div>
-
-          <div className="flex flex-col gap-4">
-            <Card title="E-Mail-Versand" right={<Chip tone={mail.status === "VERIFIED" ? "good" : mail.status === "ERROR" ? "bad" : mail.status === "CONFIGURED" ? "amber" : "grey"}>{SMTP_STATUS[mail.status]}</Chip>}>
-              <div className="p-5 flex flex-col gap-3 text-sm">
-                <p>{mail.mode === "TENANT_SMTP" ? "Geschäftliche E-Mails werden über Ihren eigenen SMTP-Server versendet." : "Geschäftliche E-Mails werden derzeit über den RentBase-Versanddienst versendet."}</p>
-                {mail.mode === "PLATFORM" && isOwner && <p className="rounded-md bg-amber-soft text-amber px-3 py-2">Eigener E-Mail-Versand empfohlen, damit Kunden Nachrichten direkt von Ihrer Firmenadresse erhalten.</p>}
-                {me.role !== "YARD" && !supportSession && <div><Link href="/einstellungen/e-mail" className="btn">{isOwner ? "E-Mail-Versand einrichten" : "E-Mail-Versand ansehen"}</Link></div>}
-              </div>
-            </Card>
-            <Card title="Logo">
-              <LogoManager hasLogo={Boolean(tenant.logoStorageKey)} version={tenant.logoUpdatedAt?.toISOString() ?? "0"} canEdit={isOwner && !supportSession} />
-            </Card>
-          </div>
         </div>
       </Content>
     </>

@@ -4,16 +4,18 @@ import { useActionState } from "react";
 import { ROLES } from "@/lib/constants";
 import { Field, FormError } from "@/components/ui";
 import { inviteUserAction, updateInvoiceSettingsAction, updateTenantAction, type FormState } from "./actions";
+import { FormFooter, useDirtyForm } from "./form-footer";
 
 function Ok({ state }: { state: FormState }) {
   if (!state?.ok) return null;
-  return <p className="md:col-span-2 text-good bg-good-soft rounded-md px-3 py-2 text-sm">{state.ok}</p>;
+  return <p role="status" className="md:col-span-2 text-good bg-good-soft rounded-md px-3 py-2 text-sm">{state.ok}</p>;
 }
 
 export function TenantForm({ t }: { t: { name: string; street: string | null; zip: string | null; city: string | null; phone: string | null; email: string | null; website: string | null } }) {
   const [state, formAction, pending] = useActionState(updateTenantAction, undefined);
+  const { ref, dirty, discard } = useDirtyForm();
   return (
-    <form action={formAction} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5 p-5">
+    <form ref={ref} action={formAction} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5 p-5">
       <Field label="Firmenname" htmlFor="name" full><input id="name" name="name" defaultValue={t.name} required className="input" /></Field>
       <Field label="Straße und Hausnummer" htmlFor="street" full><input id="street" name="street" defaultValue={t.street ?? ""} className="input" /></Field>
       <Field label="PLZ" htmlFor="zip"><input id="zip" name="zip" defaultValue={t.zip ?? ""} className="input" /></Field>
@@ -23,7 +25,7 @@ export function TenantForm({ t }: { t: { name: string; street: string | null; zi
       <Field label="Website (optional)" htmlFor="website" full hint="Erscheint auf neuen Dokumenten im Briefkopf neben Telefon und E-Mail."><input id="website" name="website" inputMode="url" defaultValue={t.website ?? ""} placeholder="www.ihre-firma.de" className="input" /></Field>
       <FormError error={state?.error} />
       <Ok state={state} />
-      <div className="md:col-span-2"><button disabled={pending} className="btn btn-primary">{pending ? "Wird gespeichert…" : "Speichern"}</button></div>
+      <FormFooter dirty={dirty} pending={pending} onDiscard={discard} label="Firmendaten speichern" />
     </form>
   );
 }
@@ -31,17 +33,18 @@ export function TenantForm({ t }: { t: { name: string; street: string | null; zi
 /** Lädt einen neuen Mitarbeiter per E-Mail ein (Befehl 20, item 15/27): kein vom Inhaber vergebenes Passwort mehr. */
 export function InviteUserForm() {
   const [state, formAction, pending] = useActionState(inviteUserAction, undefined);
+  const { ref, dirty, discard } = useDirtyForm();
   return (
-    <form action={formAction} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5 p-5" key={state?.ok}>
-      <Field label="E-Mail" htmlFor="u-email" full><input id="u-email" name="email" type="email" required className="input" autoComplete="off" /></Field>
-      <Field label="Rolle" htmlFor="u-role" full hint="Inhaber: alles. Disponent: Buchungen und Stammdaten. Hofmitarbeiter: Übergaben und Kunden.">
+    <form ref={ref} action={formAction} className="grid grid-cols-1 gap-y-3.5 p-5" key={state?.ok}>
+      <Field label="E-Mail" htmlFor="u-email"><input id="u-email" name="email" type="email" required className="input" autoComplete="off" placeholder="name@firma.de" /></Field>
+      <Field label="Rolle" htmlFor="u-role">
         <select id="u-role" name="role" defaultValue="DISPO" className="input">
           {Object.entries(ROLES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
         </select>
       </Field>
       <FormError error={state?.error} />
       <Ok state={state} />
-      <div className="md:col-span-2"><button disabled={pending} className="btn btn-primary">{pending ? "Wird eingeladen…" : "Einladen"}</button></div>
+      <FormFooter dirty={dirty} pending={pending} onDiscard={discard} label="Einladung senden" pendingLabel="Wird eingeladen…" />
     </form>
   );
 }
@@ -51,8 +54,9 @@ export type InvoiceSettings = { legalForm: string | null; country: string; vatId
 /** Rechnungsdaten. Steuerliche Angaben werden bewusst nicht vorbelegt: Der Inhaber entscheidet, das System rät nicht. */
 export function InvoiceSettingsForm({ t }: { t: InvoiceSettings }) {
   const [state, formAction, pending] = useActionState(updateInvoiceSettingsAction, undefined);
+  const { ref, dirty, discard } = useDirtyForm();
   return (
-    <form action={formAction} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5 p-5">
+    <form ref={ref} action={formAction} className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5 p-5">
       <Field label="Rechtsform" htmlFor="legalForm" hint="z. B. GmbH, e. K. oder leer. Wird hinter dem Firmennamen geführt."><input id="legalForm" name="legalForm" defaultValue={t.legalForm ?? ""} className="input" /></Field>
       <Field label="Land" htmlFor="country" hint="Zweibuchstaben-Kürzel"><input id="country" name="country" defaultValue={t.country} maxLength={2} className="input" /></Field>
       <Field label="Umsatzsteuer-ID" htmlFor="vatId"><input id="vatId" name="vatId" defaultValue={t.vatId ?? ""} className="input" placeholder="DE123456789" /></Field>
@@ -73,7 +77,7 @@ export function InvoiceSettingsForm({ t }: { t: InvoiceSettings }) {
       <Field label="Fußtext auf Rechnungen" htmlFor="invoiceFooter" full><textarea id="invoiceFooter" name="invoiceFooter" defaultValue={t.invoiceFooter ?? ""} rows={3} className="input" /></Field>
       <FormError error={state?.error} />
       <Ok state={state} />
-      <div className="md:col-span-2"><button disabled={pending} className="btn btn-primary">{pending ? "Wird gespeichert…" : "Rechnungsdaten speichern"}</button></div>
+      <FormFooter dirty={dirty} pending={pending} onDiscard={discard} label="Rechnungsdaten speichern" note="Gilt für alle Rechnungen, die ab jetzt abgeschlossen werden." />
     </form>
   );
 }

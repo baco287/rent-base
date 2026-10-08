@@ -2,7 +2,8 @@ import Link from "next/link";
 import { Fragment } from "react";
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { Card, Chip, Content, PageHeader } from "@/components/ui";
+import { Card, Chip, Content } from "@/components/ui";
+import { SettingsHeader } from "../settings-ui";
 import { NUMBER_RANGE_LABELS, RANGE_OF_TYPE, numberRangesOf, type InvoiceDocumentType, type NumberRangeKey } from "@/lib/number-ranges";
 import { previewNextNumbers } from "@/lib/numbering";
 import { NumberRangesForm } from "./forms";
@@ -24,10 +25,9 @@ export default async function NumberRangesPage() {
 
   return (
     <>
-      <PageHeader title="Nummernkreise" sub="Belegnummern für Rechnungen, Gutschriften, Stornobelege, Auszahlungen und Mahnschreiben">
-        <Link href="/einstellungen" className="btn">Einstellungen</Link>
+      <SettingsHeader title="Nummernkreise" sub="Belegnummern für Rechnungen, Gutschriften, Stornobelege, Auszahlungen und Mahnschreiben">
         <Link href="/rechnungen" className="btn">Rechnungen</Link>
-      </PageHeader>
+      </SettingsHeader>
       <Content>
         <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-4 items-start">
           <Card title="Präfixe" right={<Chip>{isOwner ? "Inhaber" : "nur lesend"}</Chip>}>

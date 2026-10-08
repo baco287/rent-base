@@ -7,6 +7,7 @@ import { useActionState, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Field, FormError } from "@/components/ui";
 import { submitWithoutReset } from "@/components/submit-without-reset";
+import { FormFooter, useDirtyForm } from "../form-footer";
 import { ADDITIONAL_DRIVER_FEE_TYPES, COUNTRIES, FUEL_POLICIES, KM_POLICIES, LATE_RETURN_RULES, OUT_OF_HOURS_RETURN, PETS_POLICIES } from "@/lib/constants";
 import type { BusinessRules } from "@/lib/business-rules";
 
@@ -217,8 +218,9 @@ export function KeyDropSettingsForm({ action, v }: { action: (s: RulesState, fd:
 export function DunningSettingsForm({ action, v, help }: { action: Action; v: { paymentTermDays: number | null; reminderDays: number; firstDays: number; secondDays: number; feesEnabled: boolean; firstFeeCents: number; secondFeeCents: number }; help: { fees: string; noAutomation: string; noInterest: string } }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   const [fees, setFees] = useState(v.feesEnabled);
+  const { ref, dirty, discard } = useDirtyForm();
   return (
-    <form action={formAction} className="p-4 flex flex-col gap-3 text-sm">
+    <form ref={ref} action={formAction} className="p-5 flex flex-col gap-3 text-sm">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Field label="Standard-Zahlungsziel neuer Rechnungen (Tage)" htmlFor="dn-term" hint="leer = kein Zahlungsziel; gilt nur für künftige Rechnungen">
           <input id="dn-term" name="paymentTermDays" type="number" min={0} max={365} defaultValue={v.paymentTermDays ?? ""} className="input tnum" />
@@ -236,8 +238,8 @@ export function DunningSettingsForm({ action, v, help }: { action: Action; v: { 
       <p className="text-xs text-ink-3">{help.fees}</p>
       <p className="text-xs text-ink-3">{help.noAutomation} {help.noInterest}</p>
       <FormError error={state?.error} />
-      {state?.ok && <p className="text-good bg-good-soft rounded-md px-3 py-2">{state.ok}</p>}
-      <div><button disabled={pending} className="btn btn-primary">{pending ? "Wird gespeichert…" : "Mahnwesen speichern"}</button></div>
+      {state?.ok && <p role="status" className="text-good bg-good-soft rounded-md px-3 py-2">{state.ok}</p>}
+      <FormFooter dirty={dirty} pending={pending} onDiscard={() => { discard(); setFees(v.feesEnabled); }} label="Mahnwesen speichern" />
     </form>
   );
 }
