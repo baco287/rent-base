@@ -11,7 +11,7 @@ import { consume, hashKeyPart, LOGIN_LIMIT_PER_ACCOUNT, LOGIN_LIMIT_PER_ADDRESS,
 import { slugify } from "@/lib/slug";
 import { acceptInvitation } from "@/lib/invitations";
 import { completePasswordReset, requestPasswordReset } from "@/lib/password-reset";
-import { requestBaseUrl } from "@/lib/request-url";
+import { appBaseUrl } from "@/lib/app-url";
 import { DomainError } from "@/lib/integrity";
 
 export type AuthState = { error?: string } | undefined;
@@ -130,7 +130,15 @@ export async function requestPasswordResetAction(_prev: RequestResetState, formD
   const address = (h.get("x-forwarded-for") ?? h.get("x-real-ip") ?? "unbekannt").split(",")[0].trim();
   const addressKey = `reset:adresse:${hashKeyPart(address)}`;
   if (!consume(addressKey, LOGIN_LIMIT_PER_ADDRESS).allowed) return { ok: true }; // neutral, auch bei zu vielen Anfragen
-  await requestPasswordReset(parsed.data.email, await requestBaseUrl());
+  let baseUrl: string;
+  try {
+    baseUrl = appBaseUrl();
+  } catch (e) {
+    // Konfigurationsfehler, unabhängig vom Konto: verrät nichts darüber, ob die Adresse existiert
+    console.error("Passwort-Reset nicht möglich:", (e as Error).message);
+    return { error: "Der Versand ist gerade nicht möglich. Bitte später erneut versuchen oder den Support informieren." };
+  }
+  await requestPasswordReset(parsed.data.email, baseUrl);
   return { ok: true };
 }
 

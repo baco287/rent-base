@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { db } from "@/lib/db";
+import { appUrlStatus } from "@/lib/app-url";
 import { mailStatus } from "@/lib/mail";
 import { storageStatus } from "@/lib/storage";
 import { secretKeyStatus } from "@/lib/secret-box";
@@ -69,7 +70,7 @@ export async function systemStatus(): Promise<SystemStatus> {
     secretKey: secretKeyStatus(env),
     authorityReminders: { enabled: remindersEnabled, source: flag ? `AUTHORITY_REMINDERS=${flag}` : env.NODE_ENV === "production" ? "Standard (Produktion: an)" : "Standard (Entwicklung: aus)" },
     optional: [
-      { name: "APP_URL", set: Boolean(env.APP_URL), purpose: "Links in Systemmails (Standard https://app.rent-base.de)" },
+      { name: "APP_URL", set: appUrlStatus(env).ok && Boolean(env.APP_URL), purpose: `Pflicht in Produktion: Basis aller Links in E-Mails (Einladung, Passwort-Reset, Rückgabe) – ${appUrlStatus(env).message}` },
       { name: "SETUP_KEY", set: Boolean(env.SETUP_KEY), purpose: "Schutz der Ersteinrichtung (/setup)" },
       { name: "RENTBASE_SECRET_KEY_PREVIOUS", set: Boolean(env.RENTBASE_SECRET_KEY_PREVIOUS), purpose: "Schlüsselrotation für verschlüsselte SMTP-Passwörter" },
       { name: "SMTP_ALLOW_PRIVATE_HOSTS", set: Boolean(env.SMTP_ALLOW_PRIVATE_HOSTS), purpose: "Nur Entwicklung: private SMTP-Hosts zulassen" },
