@@ -1,0 +1,93 @@
+# Prüft jeden Push auf main und jeden Pull Request: Lint, Typen, Migrationen, Tests und Produktions-Build.
+# Die Tests laufen gegen eine frische PostgreSQL-Datenbank, auf die alle Migrationen von Null an angewendet werden.
+# Damit fallen auch kaputte Migrationen und fehlende Trigger auf, bevor Coolify sie auf dem Server ausführt.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Ein neuer Push bricht den noch laufenden Lauf desselben Branches ab.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pruefen:
+    name: Lint, Typen, Tests, Build
+    runs-on: ubuntu-latest
+    # Die Suite hat über 580 Integrationstests gegen die Datenbank (lokal gegen PGlite rund 90 Minuten)
+    timeout-minutes: 120
+
+    services:
+      postgres:
+        # Möglichst dieselbe Hauptversion wie die PostgreSQL-Ressource in Coolify
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rentbase
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Nur für diesen Lauf, die Datenbank existiert ausschließlich im CI-Container
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/rentbase
+      SHADOW_DATABASE_URL: postgres://postgres:postgres@localhost:5432/rentbase_shadow
+      NEXT_TELEMETRY_DISABLED: 1
+      # Wie im Produktions-Image (Dockerfile): Kalendertage und Zeitangaben in deutscher Zeit
+      TZ: Europe/Berlin
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22 # wie im Dockerfile
+          cache: npm
+
+      - name: Abhängigkeiten installieren
+        run: npm ci
+
+      - name: Prisma Client erzeugen
+        run: npx prisma generate
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typprüfung
+        run: npm run typecheck
+
+      - name: Migrationen auf leere Datenbank anwenden
+        run: npx prisma migrate deploy
+
+      - name: schema.prisma passt zu den Migrationen
+        # Schlägt fehl, wenn das Schema geändert wurde, ohne eine Migration anzulegen
+        run: |
+          psql "$DATABASE_URL" -c "CREATE DATABASE rentbase_shadow"
+          npx prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema-datamodel prisma/schema.prisma \
+            --shadow-database-url "$SHADOW_DATABASE_URL" \
+            --exit-code
+
+      - name: Tests
+        run: npm test
+
+      - name: Build-Cache von Next.js
+        uses: actions/cache@v6
+        with:
+          path: .next/cache
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('package-lock.json') }}-${{ hashFiles('src/**') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-${{ hashFiles('package-lock.json') }}-
+
+      - name: Produktions-Build
+        run: npm run build
