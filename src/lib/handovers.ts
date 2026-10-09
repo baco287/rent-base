@@ -236,6 +236,15 @@ async function touch(tx: Tx, tenantId: string, handoverId: string) {
   return { hash, dropped: stale.length };
 }
 
+/**
+ * Sperrreihenfolge Buchung → Übergabe (wie Start, Storno und Verwerfen eines Entwurfs) für Vorgänge, die das Protokoll bearbeiten und
+ * dabei Zeilen mit Buchungsbezug anlegen (z. B. Zusatzkosten): die Buchung zuerst, in derselben Stufe, die der Fremdschlüssel beim
+ * Anlegen ohnehin nimmt (FOR KEY SHARE) – nicht stärker. Sonst verklemmt sich der Vorgang mit einem gleichzeitigen Verwerfen.
+ */
+export async function lockBookingOfHandover(tx: Tx, tenantId: string, handoverId: string) {
+  await tx.$queryRaw`SELECT "id" FROM "Booking" WHERE "id" = (SELECT "bookingId" FROM "Handover" WHERE "id" = ${handoverId} AND "tenantId" = ${tenantId}) AND "tenantId" = ${tenantId} FOR KEY SHARE`;
+}
+
 /** Für andere Module (Zusatzkosten): nach einer inhaltlichen Änderung außerhalb dieser Datei aufrufen. */
 export async function touchHandover(tx: Tx, tenantId: string, handoverId: string) {
   await loadDraft(tx, tenantId, handoverId);
@@ -829,6 +838,11 @@ export async function getHandoverState(tenantId: string, handoverId: string) {
  */
 export async function finalizeHandover(tenantId: string, handoverId: string, actor: Actor, options: FinalizeOptions = {}) {
   return db.$transaction(async (tx) => {
+    // Sperrreihenfolge Fall → Buchung → Übergabe wie Start, Storno und Verwerfen – sonst Deadlock mit einem gleichzeitigen Storno.
+    // Nur vorgezogen, nicht verstärkt: Fall FOR SHARE wie assertAccidentCaseOpen (geprüft wird weiter unten), Buchung FOR NO KEY UPDATE
+    // wie der spätere Statuswechsel; ein gleichzeitiges Archivieren des Protokoll-PDFs (FOR KEY SHARE) wird dadurch nicht blockiert.
+    await tx.$queryRaw`SELECT "id" FROM "AccidentReplacementCase" WHERE "bookingId" = (SELECT "bookingId" FROM "Handover" WHERE "id" = ${handoverId} AND "tenantId" = ${tenantId}) AND "tenantId" = ${tenantId} FOR SHARE`;
+    await tx.$queryRaw`SELECT "id" FROM "Booking" WHERE "id" = (SELECT "bookingId" FROM "Handover" WHERE "id" = ${handoverId} AND "tenantId" = ${tenantId}) AND "tenantId" = ${tenantId} FOR NO KEY UPDATE`;
     const locked = await tx.$queryRaw<{ id: string; status: string }[]>`SELECT "id", "status" FROM "Handover" WHERE "id" = ${handoverId} AND "tenantId" = ${tenantId} FOR UPDATE`;
     if (locked.length === 0) throw new DomainError("Protokoll nicht gefunden.");
     const { handover: h, hash } = await handoverContent(tx, tenantId, handoverId);

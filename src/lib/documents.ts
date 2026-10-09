@@ -143,7 +143,12 @@ async function archive(tenantId: string, actorId: string | null, subject: Subjec
         else if (subject.payoutId) await tx.$queryRaw`SELECT "id" FROM "Payout" WHERE "id" = ${subject.payoutId} AND "tenantId" = ${tenantId} FOR UPDATE`;
         else if (subject.invoiceVersionId) await tx.$queryRaw`SELECT "id" FROM "InvoiceVersion" WHERE "id" = ${subject.invoiceVersionId} AND "tenantId" = ${tenantId} FOR UPDATE`;
         else if (subject.invoiceId) await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${subject.invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE`;
-        else if (subject.handoverId) await tx.$queryRaw`SELECT "id" FROM "Handover" WHERE "id" = ${subject.handoverId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+        else if (subject.handoverId) {
+          // Buchung vor Protokoll (wie Storno und Verwerfen), in der Stufe, die das Dokument über den Fremdschlüssel ohnehin nimmt
+          // (FOR KEY SHARE) – sonst Deadlock mit einem gleichzeitigen Verwerfen aus einer veralteten Ansicht
+          if (subject.bookingId) await tx.$queryRaw`SELECT "id" FROM "Booking" WHERE "id" = ${subject.bookingId} AND "tenantId" = ${tenantId} FOR KEY SHARE`;
+          await tx.$queryRaw`SELECT "id" FROM "Handover" WHERE "id" = ${subject.handoverId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+        }
         else if (subject.contractId) await tx.$queryRaw`SELECT "id" FROM "RentalContract" WHERE "id" = ${subject.contractId} AND "tenantId" = ${tenantId} FOR UPDATE`;
         const latest = await latestDocument(tx, tenantId, subject);
         if (latest && (!opts.newVersion || latest.version !== before?.version)) return { document: latest, created: false };
