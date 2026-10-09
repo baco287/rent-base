@@ -322,16 +322,22 @@ export async function setMaintenanceCosts(tenantId: string, id: string, actor: A
 /**
  * Kilometerstand am Vorgang dokumentieren (auch Hof). Zentrale Regel: höher als der Fahrzeugstand → Fahrzeug fortschreiben
  * (mit Historie), niedriger → nur historischer Wert am Vorgang, Fahrzeugstand wird nie reduziert.
+ * Das Fortschreiben ist atomar: die Bedingung „nur nach oben“ prüft die Datenbank am aktuellen Stand – auch wenn gleichzeitig
+ * eine Rückgabe oder ein anderer Vorgang einen höheren Wert gespeichert hat. Ein niedrigerer Wert überschreibt nie einen höheren.
  */
 async function applyMileage(tx: Tx, tenantId: string, r: RecordRow, mileage: number, actor: Actor, occurredAt: Date): Promise<string[]> {
   const warnings: string[] = [];
-  const vehicle = await tx.vehicle.findUniqueOrThrow({ where: { id: r.vehicleId } });
-  if (mileage > vehicle.mileage) {
-    if (mileage - vehicle.mileage > 50_000) warnings.push(`Auffälliger Kilometersprung: ${vehicle.mileage.toLocaleString("de-DE")} km → ${mileage.toLocaleString("de-DE")} km. Bitte prüfen.`);
-    await tx.vehicle.update({ where: { id: vehicle.id }, data: { mileage } });
-    await recordVehicleEvent(tx, { tenantId, vehicleId: vehicle.id, type: "MILEAGE", occurredAt, mileage, actor, description: `Kilometerstand aus Wartungsvorgang ${r.maintenanceNumber}` });
-  } else if (mileage < vehicle.mileage) {
-    warnings.push(`Der Servicekilometerstand (${mileage.toLocaleString("de-DE")} km) liegt unter dem aktuellen Fahrzeugstand (${vehicle.mileage.toLocaleString("de-DE")} km). Er wurde als historischer Wert am Vorgang gespeichert; der Fahrzeugstand wurde nicht reduziert.`);
+  const before = await tx.vehicle.findUniqueOrThrow({ where: { id: r.vehicleId }, select: { id: true, mileage: true } });
+  const raised = await tx.vehicle.updateMany({ where: { id: before.id, tenantId, mileage: { lt: mileage } }, data: { mileage } });
+  if (raised.count > 0) {
+    if (mileage - before.mileage > 50_000) warnings.push(`Auffälliger Kilometersprung: ${before.mileage.toLocaleString("de-DE")} km → ${mileage.toLocaleString("de-DE")} km. Bitte prüfen.`);
+    await recordVehicleEvent(tx, { tenantId, vehicleId: before.id, type: "MILEAGE", occurredAt, mileage, actor, description: `Kilometerstand aus Wartungsvorgang ${r.maintenanceNumber}` });
+    return warnings;
+  }
+  // Nicht fortgeschrieben: der Hinweis nennt den tatsächlich gespeicherten Stand (kann seit dem Lesen oben gestiegen sein)
+  const current = await tx.vehicle.findUniqueOrThrow({ where: { id: before.id }, select: { mileage: true } });
+  if (mileage < current.mileage) {
+    warnings.push(`Der Servicekilometerstand (${mileage.toLocaleString("de-DE")} km) liegt unter dem aktuellen Fahrzeugstand (${current.mileage.toLocaleString("de-DE")} km). Er wurde als historischer Wert am Vorgang gespeichert; der Fahrzeugstand wurde nicht reduziert.`);
   }
   return warnings;
 }

@@ -894,8 +894,9 @@ export async function finalizeHandover(tenantId: string, handoverId: string, act
       await recordVehicleEvent(tx, { tenantId, vehicleId: h.vehicleId, type: "DAMAGE_DISCOVERED", occurredAt: now, mileage, bookingId: h.bookingId, damageId: damage.id, handoverId: h.id, actor, description: h.type === "PICKUP" ? `Vorschaden bei Übergabe: ${d.description}` : h.returnMode === "KEY_DROP" ? `Bei nachträglicher Kontrolle nach kontaktloser Rückgabe festgestellt: ${d.description}` : `Bei Rückgabe festgestellt: ${d.description}` });
     }
 
-    // Kilometerstand erst jetzt fortschreiben, nie zurückdrehen
-    if (mileage > vehicle.mileage) await tx.vehicle.update({ where: { id: vehicle.id }, data: { mileage } });
+    // Kilometerstand erst jetzt fortschreiben, nie zurückdrehen – atomar: die Bedingung prüft die Datenbank am aktuellen Stand,
+    // ein seit dem Lesen oben gleichzeitig gespeicherter höherer Wert (z. B. aus einer Wartung) wird nicht überschrieben
+    await tx.vehicle.updateMany({ where: { id: vehicle.id, tenantId, mileage: { lt: mileage } }, data: { mileage } });
     await recordVehicleEvent(tx, { tenantId, vehicleId: h.vehicleId, type: h.type as "PICKUP" | "RETURN", occurredAt: now, mileage, bookingId: h.bookingId, handoverId: h.id, actor, description: `${h.type === "PICKUP" ? "Übergabe" : "Rückgabe"} ${h.number}` });
     await recordVehicleEvent(tx, { tenantId, vehicleId: h.vehicleId, type: "MILEAGE", occurredAt: now, mileage, bookingId: h.bookingId, handoverId: h.id, actor });
 
