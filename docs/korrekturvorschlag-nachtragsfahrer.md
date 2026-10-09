@@ -64,6 +64,48 @@ Konkrete Änderungen (6 Dateien, siehe Patch):
 
 ## Betroffene Daten in Produktion (nur lesend prüfen)
 
+### Ausführung (nur nach Freigabe)
+
+Die Abfrage ändert nichts. Sie läuft in einer Transaktion, die PostgreSQL ausdrücklich als `READ ONLY` führt: Jeder schreibende Befehl darin würde mit einem Fehler abbrechen. Am Ende steht `ROLLBACK`.
+
+Auf dem Server, in der Konsole der **Datenbank**-Ressource in Coolify (Terminal) oder per SSH. Benutzer und Datenbankname stehen in der `DATABASE_URL` der App: `postgres://BENUTZER:…@…/DATENBANK`.
+
+```bash
+# Name des Datenbank-Containers ermitteln (nur bei SSH nötig; im Coolify-Terminal der Datenbank entfällt docker exec)
+docker ps --format '{{.Names}}\t{{.Image}}' | grep -i postgres
+
+docker exec -i <CONTAINER> psql -U <BENUTZER> -d <DATENBANK> -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN TRANSACTION READ ONLY;
+
+-- 1. Überblick: Verträge mit Fahrern aus Nachträgen
+SELECT count(DISTINCT cd."contractId") AS vertraege_mit_nachtragsfahrern,
+       count(*)                       AS nachtragsfahrer
+FROM "ContractDriver" cd
+WHERE cd."addedByAmendmentId" IS NOT NULL;
+
+-- 2. Betroffen: Vertrags-PDFs, die NACH dem Hinzufügen eines Nachtragsfahrers erzeugt wurden
+SELECT c."number" AS vertrag, d."version", d."createdAt" AS pdf_erzeugt
+FROM "Document" d
+JOIN "RentalContract" c ON c."id" = d."contractId"
+WHERE d."type" = 'RENTAL_CONTRACT'
+  AND EXISTS (
+    SELECT 1 FROM "ContractDriver" cd
+    WHERE cd."contractId" = c."id" AND cd."addedByAmendmentId" IS NOT NULL AND cd."createdAt" < d."createdAt"
+  )
+ORDER BY d."createdAt";
+
+ROLLBACK;
+SQL
+```
+
+**Auswertung:**
+
+- **Abfrage 1 ergibt 0:** Noch kein Nachtrag hat Fahrer hinzugefügt. Es ist nichts betroffen, und die Korrektur verhindert, dass es dazu kommt.
+- **Abfrage 2 ist leer:** Kein archiviertes PDF ist betroffen.
+- **Abfrage 2 liefert Treffer:** Diese Verträge nach dem Einspielen der Korrektur notieren und je eine neue PDF-Fassung erzeugen.
+
+### Abfrage
+
 Vertrags-PDFs, die erzeugt wurden, nachdem ein Nachtrag einen Fahrer hinzugefügt hatte:
 
 ```sql
