@@ -42,7 +42,8 @@ const FILE_MODELS = [
   ["driverDocumentCopy", "Fahrerdokument", { deletionStatus: { not: "DELETED" } }],
 ];
 
-const MAX_AGE_HOURS = 48;
+// Datenbank-Backups laufen alle 6 Stunden; ab 12 Stunden Abstand fehlen mindestens zwei Sicherungen
+const MAX_AGE_HOURS = 12;
 
 async function collectStats(client) {
   // Ohne Migrationstabelle ist es keine Rent-Base-Datenbank (oder der Import ist gescheitert)
@@ -109,8 +110,9 @@ export async function checkRestore({ prod, restored, backup, sampleSize = 5 }) {
   // Alter
   if (back.newest) {
     const ageHours = live.newest ? (live.newest - back.newest) / 3_600_000 : 0;
-    const text = `Neuester Datensatz im Backup: ${back.newest.toISOString()}`;
-    if (ageHours > MAX_AGE_HOURS) add("WARNUNG", `${text}, live ${live.newest.toISOString()}. Das Backup ist älter als ${MAX_AGE_HOURS} Stunden.`);
+    // Für das Protokoll immer beide Zeitpunkte und die Differenz (Abnahmekriterium: höchstens 6 Stunden, docs/backup.md)
+    const text = `Neuester Datensatz im Backup: ${back.newest.toISOString()}, live: ${live.newest ? live.newest.toISOString() : "–"}, Differenz ${ageHours.toFixed(1)} Stunden`;
+    if (ageHours > MAX_AGE_HOURS) add("WARNUNG", `${text}. Mehr als ${MAX_AGE_HOURS} Stunden: Backups wurden ausgelassen oder sind alt.`);
     else add("OK", text);
   }
 
