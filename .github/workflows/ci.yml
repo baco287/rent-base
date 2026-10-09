@@ -23,8 +23,11 @@ jobs:
 
     services:
       postgres:
-        # Möglichst dieselbe Hauptversion wie die PostgreSQL-Ressource in Coolify
-        image: postgres:16-alpine
+        # Dieselbe PostgreSQL-Version wie die Produktionsdatenbank (rent-base-db, postgres:18-alpine, Stand 09.10.2026: 18.6).
+        # Abweichung: Produktion nutzt ein älteres Alpine-Build desselben Releases (Digest sha256:d3e1620b…);
+        # dieser Tag zeigt auf den aktuellen Neubau (sha256:d8703cd7…). PostgreSQL selbst ist identisch.
+        # Nach einem PostgreSQL-Update in Coolify hier mitziehen.
+        image: postgres:18.6-alpine
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
