@@ -18,8 +18,9 @@ jobs:
   pruefen:
     name: Lint, Typen, Tests, Build
     runs-on: ubuntu-latest
-    # Die Suite hat über 580 Integrationstests gegen die Datenbank (lokal gegen PGlite rund 90 Minuten)
-    timeout-minutes: 120
+    # Gegen echtes PostgreSQL dauert die Suite rund 6 bis 10 Minuten (über 590 Integrationstests).
+    # Das Limit fängt nur echte Hänger ab; einzelne Tests haben zusätzlich ein eigenes Limit (siehe Schritt Tests).
+    timeout-minutes: 45
 
     services:
       postgres:
@@ -41,8 +42,12 @@ jobs:
           --health-retries 10
 
     env:
-      # Nur für diesen Lauf, die Datenbank existiert ausschließlich im CI-Container
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/rentbase
+      # Nur für diesen Lauf, die Datenbank existiert ausschließlich im CI-Container.
+      # connection_limit=5 wie in Produktion: Dort steht kein Parameter in der URL, Prisma nimmt 2 × vCPUs + 1 = 5.
+      # So laufen gleichzeitige Zugriffe in den Tests wirklich parallel, wie bei echten Nutzern.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/rentbase?connection_limit=5
+      # psql versteht Prisma-Parameter wie connection_limit nicht und bekommt deshalb eine eigene Adresse
+      PG_ADMIN_URL: postgres://postgres:postgres@localhost:5432/rentbase
       SHADOW_DATABASE_URL: postgres://postgres:postgres@localhost:5432/rentbase_shadow
       NEXT_TELEMETRY_DISABLED: 1
       # Wie im Produktions-Image (Dockerfile): Kalendertage und Zeitangaben in deutscher Zeit
@@ -74,7 +79,7 @@ jobs:
       - name: schema.prisma passt zu den Migrationen
         # Schlägt fehl, wenn das Schema geändert wurde, ohne eine Migration anzulegen
         run: |
-          psql "$DATABASE_URL" -c "CREATE DATABASE rentbase_shadow"
+          psql "$PG_ADMIN_URL" -c "CREATE DATABASE rentbase_shadow"
           npx prisma migrate diff \
             --from-migrations prisma/migrations \
             --to-schema-datamodel prisma/schema.prisma \
@@ -82,9 +87,20 @@ jobs:
             --exit-code
 
       - name: Tests
-        run: npm test
+        id: tests
+        # Kein Test wird übersprungen. Jeder einzelne Test scheitert nach 2 Minuten mit seinem Namen, statt zu hängen
+        # (--test-timeout); offene Verbindungen verhindern das Beenden nicht (--test-force-exit). Siehe package.json test:ci.
+        timeout-minutes: 30
+        run: npm run test:ci
+
+      - name: Fehlerübersicht
+        # Gescheiterte Tests mit Datei und Meldung in der Zusammenfassung des Laufs, ohne das ganze Log lesen zu müssen
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        run: node .github/scripts/test-summary.mjs test-results.xml >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build-Cache von Next.js
+        # Build auch prüfen, wenn Tests scheitern: Ein Build-Fehler soll nicht hinter Testfehlern verborgen bleiben
+        if: ${{ !cancelled() }}
         uses: actions/cache@v6
         with:
           path: .next/cache
@@ -93,4 +109,5 @@ jobs:
             ${{ runner.os }}-nextjs-${{ hashFiles('package-lock.json') }}-
 
       - name: Produktions-Build
+        if: ${{ !cancelled() }}
         run: npm run build

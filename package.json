@@ -13,7 +13,8 @@
     "typecheck": "next typegen && tsc --noEmit",
     "db:dev": "prisma dev -n rent-base -p 51214 --db-port 5433 --shadow-db-port 5434 --detach",
     "db:stop": "prisma dev stop rent-base",
-    "test": "tsx --test --test-concurrency=1 \"tests/**/*.test.ts\""
+    "test": "tsx --test --test-concurrency=1 --test-timeout=120000 --test-force-exit \"tests/**/*.test.ts\"",
+    "test:ci": "tsx --test --test-concurrency=1 --test-timeout=120000 --test-force-exit --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=test-results.xml \"tests/**/*.test.ts\""
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1136.0",
