@@ -26,29 +26,94 @@ Jeder Deploy ersetzt den laufenden Container. Wer gerade eine Seite offen hat, e
 - Wurde eine Server Action selbst geändert, umbenannt oder verschoben, bekommt sie eine neue ID. Wer genau dieses Formular offen hat, verliert die Eingabe. Die Fehlerseite sagt das dann klar.
 - Buchung, Kunde, Unfallersatz und Rechnungseditor halten ihre Eingaben bis zum Absenden nur im Browser. Für sie wäre ein Entwurf im `sessionStorage` der nächste Schritt (siehe unten).
 
-## Einstellungen in Coolify (einmalig)
+## Einstellungen in Coolify (einmalig, gemeinsam durchgehen)
 
-Alle Einstellungen gehören zur App `app.rent-base.de` und gelten ab dem nächsten Deploy.
+**Grundlage:** Die Bezeichnungen stammen aus dem Quellcode von **Coolify v4.4.3**. Ältere v4-Versionen beschriften manches anders, etwa „Available at Buildtime“ statt eines Auswahlfelds „Build time“. Deshalb zuerst die eingesetzte Version ablesen (Einstellungen bzw. Fußzeile).
 
-1. **`APP_URL`** (Laufzeit-Variable): `https://app.rent-base.de`
-   - **Pflicht vor dem Deploy dieses Stands.** Einladungs-, Passwort-Reset- und Rückgabelinks entstehen nur noch aus diesem Wert und nie mehr aus dem `Host`-Header der Anfrage.
-   - Fehlt er, scheitern Einladungen und Reset mit einer klaren Meldung, und beim Start steht ein Hinweis im Log.
-   - Ob der Wert gültig ist, zeigt das Control Center unter System.
-2. **`NEXT_SERVER_ACTIONS_ENCRYPTION_KEY`** (als **Build-Variable** markieren):
-   - Ein zufälliger Schlüssel, einmal erzeugen und danach **nie wieder ändern**:
-     ```
-     node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
-     ```
-   - Zusätzlich im Passwortmanager ablegen.
-   - Fehlt er, steht im Build-Log ein Hinweis, und der Build verhält sich wie bisher.
-3. **`SOURCE_COMMIT` für die `deploymentId`:** Coolify stellt den Commit als `SOURCE_COMMIT` bereit. Damit er schon beim **Build** ankommt, muss in den erweiterten Einstellungen der App die Option eingeschaltet sein, die den Source Commit in den Build übernimmt.
-   - **Nicht verifiziert:** wie die Option in der eingesetzten Coolify-Version genau heißt.
-   - Prüfen lässt es sich so: Nach dem Deploy trägt das `<html>`-Element im Seitenquelltext das Attribut `data-dpl-id`.
-4. **Healthcheck:** Der Dockerfile-Healthcheck wird laut Coolify-Doku automatisch übernommen. Rolling Updates gibt es nur, wenn
-   - kein Port direkt auf dem Host veröffentlicht ist,
-   - kein eigener Containername gesetzt ist („Consistent/Custom Container Name“).
+**Wirkung:** Alle Einstellungen gelten ab dem nächsten Deploy. Sie betreffen die Anwendung `app.rent-base.de`, nicht die Website `rent-base.de`.
 
-   Beides in den App-Einstellungen prüfen.
+### Schritt 0: Bestandsaufnahme (nur ansehen, nichts ändern)
+
+1. **Version:** Die Coolify-Version notieren.
+2. **Anwendung → Environment Variables:**
+   - Für jede Variable notieren, ob sie unter „Build time“ als „Available during build“ markiert ist. Neue Variablen sind in Coolify standardmäßig für Build **und** Laufzeit freigegeben.
+   - Notieren, wie „Build secrets“ steht. Es muss auf „Standard build arguments“ stehen, nicht auf „Docker BuildKit secrets“. Sonst kommen Build-Variablen nicht als Umgebungsvariable beim Build an.
+3. **Anwendung → Advanced → Build:**
+   - „Build arguments“ ist voraussichtlich „Inject build args automatically“, die Voreinstellung.
+   - „Source commit availability“ ist voraussichtlich „Runtime only (preserves cache)“.
+4. **Anwendung → Healthcheck:** voraussichtlich deaktiviert. **So lassen.**
+5. **Anwendung → Configuration:** prüfen, dass Rolling Updates möglich sind:
+   - „Port mappings“ ist leer.
+   - „Container naming“ steht nicht auf „Consistent name (no rolling updates)“.
+   - Es gibt keinen „Custom container name“.
+   - Unter „Custom Docker options“ steht kein `--ip` und kein `--ip6`.
+
+### Schritt 1: `APP_URL` setzen (Pflicht vor dem Deploy dieses Stands)
+
+1. **Anwendung → Environment Variables → neue Variable anlegen:**
+   - Name `APP_URL`
+   - Wert `https://app.rent-base.de` (ohne Schrägstrich am Ende, ohne Anführungszeichen)
+   - Build time: „Not available during build“
+   - Runtime: „Available at runtime“
+2. **Wirkung:** Einladungs-, Passwort-Reset- und Rückgabelinks entstehen nur noch aus diesem Wert und nie mehr aus dem `Host`-Header einer Anfrage.
+   - Fehlt der Wert, scheitern diese Mails mit einer klaren Meldung, und beim Serverstart steht `[Konfiguration] …` im Log.
+   - Nach dem Deploy zeigt das Control Center unter **System** bei `APP_URL` „gesetzt“ und „gültig“.
+
+### Schritt 2: `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` anlegen (Schutz offener Formulare)
+
+1. **Schlüssel einmalig erzeugen**, auf dem eigenen Rechner oder im Terminal der Anwendung:
+   ```
+   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+   ```
+   **Sofort im Passwortmanager ablegen.** Der Schlüssel darf sich danach **nie mehr ändern**. Ändert er sich, scheitern beim nächsten Deploy alle offenen Formulare einmalig, wie heute bei jedem Deploy.
+2. **Anwendung → Environment Variables → neue Variable anlegen:**
+   - Name `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY`
+   - Wert: der Schlüssel, ohne Anführungszeichen. `+`, `/` und `=` sind unproblematisch.
+   - Build time: **„Available during build“**
+   - Runtime: nicht nötig, der Schlüssel steckt nach dem Build im Image
+3. **Nach dem ersten Deploy prüfen:** Im Build-Log darf **kein** `[Build] NEXT_SERVER_ACTIONS_ENCRYPTION_KEY ist nicht gesetzt` stehen.
+4. **Erst ab dem zweiten Deploy mit diesem Schlüssel** bleiben offene Formulare über den Deploy hinweg absendbar.
+
+**Lokal nachgewiesen**, mit Standalone-Server wie im Image:
+
+| Szenario | Ergebnis |
+|---|---|
+| Gleicher Schlüssel, anderer Commit | Die alte offene Seite führt die Aktion auf dem neuen Server aus. |
+| Anderer Schlüssel | „RentBase wurde gerade aktualisiert“ |
+
+Außerdem steht der Schlüssel aus dem Build-Schritt unverändert im Laufzeit-Manifest.
+
+### Schritt 3 (optional, später): `deploymentId` aus dem Commit
+
+**Wirkung:** Nach einem Deploy lädt eine veraltete Seite beim Navigieren gezielt neu, statt auf fehlende Programmteile zu stoßen. Diesen Fall fängt die Fehlerseite schon ab („RentBase wurde gerade aktualisiert“). Die `deploymentId` ist deshalb ein Komfortgewinn, kein Muss.
+
+**Einstellung:** Anwendung → Advanced → Build → „Source commit availability“ auf **„Available during build“**.
+
+**Preis:** Coolify fügt `SOURCE_COMMIT` dann nach jedem `FROM` ein. Damit wird bei jedem Deploy der Docker-Cache aller Stufen ungültig, auch für `npm ci`, und Builds dauern spürbar länger.
+
+**Empfehlung:** Für den Pilotstart **aus lassen**. Später entscheiden, ob die längeren Builds den Komfort wert sind.
+
+**Prüfen, wenn eingeschaltet:** Im Seitenquelltext trägt `<html>` das Attribut `data-dpl-id="<Commit>"`.
+
+### Schritt 4: Healthcheck und Rolling Update
+
+1. **Anwendung → Healthcheck:** **deaktiviert lassen.** Coolify übernimmt dann den `HEALTHCHECK` aus dem Dockerfile und wartet, bis Docker den neuen Container als `healthy` meldet.
+2. **Prüfen im Deploy-Log:** Dort erscheint „Custom healthcheck found in Dockerfile.“
+3. **Bei einem kaputten Deploy:** Wird der neue Container nicht gesund (Startphase 90 s, danach 3 Fehlversuche im Abstand von 30 s), behält Coolify den alten. Der Deploy gilt dann als fehlgeschlagen.
+
+### Schritt 5: Geheimnisse aus dem Build heraushalten (empfohlen, Bestandsaufnahme aus Schritt 0)
+
+**Problem:** Variablen mit „Available during build“ gibt Coolify als Build-Argument in **jede** Stufe des Dockerfiles. Sie können dadurch in der Build-Historie des Images auf dem Server auftauchen. Der Build braucht nur:
+
+| Variable | Beim Build nötig? |
+|---|---|
+| `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` | ja |
+| `DATABASE_URL` | heute ja: `prisma.config.ts` verlangt sie schon bei `prisma generate`, ein Platzhalterwert würde genügen |
+| `S3_*`, `SMTP_*`, `RENTBASE_SECRET_KEY`, `SETUP_KEY`, `BACKUP_S3_*`, `APP_URL` | nein |
+
+**Vorgehen:** Bei den Variablen aus „nein“ Build time auf „Not available during build“ stellen. `DATABASE_URL` **nicht** umstellen, sonst scheitert der Build.
+
+**Später möglich:** `DATABASE_URL` ebenfalls aus dem Build nehmen. Dafür braucht der Build-Schritt im Dockerfile einen Platzhalter für `prisma generate`. Das wäre eine eigene kleine Änderung.
 
 ## Regeln für jeden Deploy mit echten Kunden
 

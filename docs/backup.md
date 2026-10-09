@@ -29,25 +29,33 @@ Der Backup-Bucket liegt in einem **eigenen Hetzner-Projekt** und an einem **ande
 
 ### 2. Datenbank-Backup in Coolify
 
-1. Seitenleiste → **S3 Storages** → „+ Add“:
-   - Endpoint `https://fsn1.your-objectstorage.com`
-   - Region `fsn1`
+Die Bezeichnungen stammen aus Coolify v4.4.3. Ältere Versionen beschriften manches anders.
+
+1. Seitenleiste → **S3 Storage** → „New storage“:
+   - Name „Hetzner Backup fsn1“
+   - Endpoint/Host `fsn1.your-objectstorage.com` (Protokoll https)
    - Bucket `rent-base-backup`
+   - Region `fsn1`
    - Access Key und Secret Key aus Schritt 1
 
-   Speichern. Coolify prüft dabei, ob der Bucket erreichbar ist.
-2. Datenbank-Ressource → **Backups** → „+ Add“:
-   - Frequency: `0 2 * * *`. Die Zeitzone steht in den Server-Einstellungen von Coolify, das Backup muss vor 02:48 UTC fertig sein.
-   - „Save to S3“ einschalten und den S3 Storage aus Schritt 1 wählen.
-   - Unter den zu sichernden Datenbanken muss der Datenbankname aus `DATABASE_URL` der App stehen (der Teil nach dem letzten `/`).
-   - Aufbewahrung: lokal 7 Backups, S3 30 Tage.
+   „Validate Connection & Continue“. Coolify prüft dabei, ob der Bucket erreichbar ist. Der Bucket muss also schon existieren.
+2. PostgreSQL-Ressource → **Backups** → „+ Add“ und den neuen Eintrag öffnen:
+   - **General:**
+     - Frequency `0 2 * * *`.
+     - Timezone UTC, das Backup muss vor 02:48 UTC fertig sein.
+     - „Missing backup alert after“ setzen, zum Beispiel 26 Stunden.
+   - **S3 storage:** „Enable S3“ einschalten und den S3 Storage aus Schritt 1 wählen. „Local copy“ bleibt an.
+   - **Retention:**
+     - lokal „Backups to keep“ 7
+     - S3 „Days to keep“ 30
+   - **Datenbank:** Unter den zu sichernden Datenbanken muss der Datenbankname aus `DATABASE_URL` der App stehen, also der Teil nach dem letzten `/`.
 3. Einmal „Backup Now“ auslösen und in der Hetzner Console prüfen, ob im Bucket eine Datei angekommen ist.
 
 ### 3. Dateisicherung als Scheduled Task
 
 Voraussetzung: Die App ist mit einer Version deployt, die `scripts/backup-files.mjs` enthält.
 
-1. App → **Environment Variables** → diese fünf Werte ergänzen und neu deployen:
+1. Anwendung → **Environment Variables** → diese fünf Werte ergänzen, jeweils mit Build time „Not available during build“ und Runtime „Available at runtime“. Danach neu deployen.
    ```
    BACKUP_S3_ENDPOINT=https://fsn1.your-objectstorage.com
    BACKUP_S3_REGION=fsn1
@@ -55,10 +63,13 @@ Voraussetzung: Die App ist mit einer Version deployt, die `scripts/backup-files.
    BACKUP_S3_ACCESS_KEY=…
    BACKUP_S3_SECRET_KEY=…
    ```
-2. App → **Scheduled Tasks** → „+ Add“:
+   Der Scheduled Task läuft per `docker exec` im laufenden App-Container und sieht deshalb nur die Laufzeit-Variablen.
+2. Anwendung → **Scheduled Tasks** → „New scheduled task“:
    - Name „Dateien sichern“
    - Command `node scripts/backup-files.mjs`
-   - Frequency `15 2 * * *`
+   - Schedule `15 2 * * *`
+   - Timeout (seconds) `3600`. Die Voreinstellung von 300 Sekunden reicht für den ersten, vollständigen Lauf nicht.
+   - Container leer lassen. Es gibt nur einen.
 3. Einmal von Hand ausführen und das Log prüfen. Erwartet werden Zeilen wie
    ```
    812 kopiert (950.3 MB), 0 waren schon vorhanden, 0 Fehler.
@@ -79,12 +90,15 @@ Voraussetzung: Die App ist mit einer Version deployt, die `scripts/backup-files.
 
 ### 4. Benachrichtigungen
 
-Coolify → **Notifications** → einen Kanal einrichten (E-Mail oder Telegram) und mindestens diese Ereignisse einschalten:
+Seitenleiste → **Notifications** (gilt für das ganze Team) → einen Kanal einrichten: Email, Telegram, Discord, Slack, Pushover oder Webhook. Mindestens diese Ereignisse einschalten:
 
-- Backup Failure
-- Scheduled Task (Fehlschlag)
-- Server Disk Usage
-- Server Unreachable
+- „Backup failure“
+- „Scheduled task failure“
+- „Deployment failure“
+- „Disk usage warning“
+- „Server unreachable“
+
+Die Schwelle für die Festplatte steht unter Server → **Advanced** → „Notification threshold“ (%), zum Beispiel 80.
 
 ### 5. Zugangsdaten außerhalb des Servers aufbewahren
 
