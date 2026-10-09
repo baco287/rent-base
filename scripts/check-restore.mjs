@@ -59,6 +59,17 @@ async function collectStats(client) {
   return { migrations, counts, newest };
 }
 
+/**
+ * Sortierregel der Datenbank (LC_CTYPE) und ob sie Umlaute ohne Groß-/Kleinschreibung vergleicht. Die Suche (ILIKE) braucht das;
+ * unter der Regel „C“ findet sie „müller“ nicht in „Müller“ – ohne Fehlermeldung. Geprüft wird das Verhalten, nicht der Name.
+ */
+async function localeOf(client) {
+  const rows = await client
+    .$queryRawUnsafe(`SELECT datctype AS ctype, lower('ÄÖÜ') = 'äöü' AS "foldsUmlauts" FROM pg_database WHERE datname = current_database()`)
+    .catch(() => null);
+  return rows?.[0] ?? null;
+}
+
 /** Alle Dateien, die die wiederhergestellte Datenbank im Object Storage erwartet. */
 async function expectedFiles(client) {
   const out = [];
@@ -96,6 +107,14 @@ export async function checkRestore({ prod, restored, backup, sampleSize = 5 }) {
   if (notInBackup.length) add("WARNUNG", `Das Backup ist älter als diese Migrationen: ${notInBackup.join(", ")}`);
   if (unknown.length) add("WARNUNG", `Migrationen im Backup, die live fehlen: ${unknown.join(", ")}`);
   if (!notInBackup.length && !unknown.length) add("OK", `Migrationen: alle ${live.migrations.length} vorhanden`);
+
+  // Sortierregel: eine Datenbank mit falscher Regel bestünde alle anderen Prüfungen, die Suche wäre aber still schlechter
+  const liveLocale = await localeOf(prod);
+  const backLocale = await localeOf(restored);
+  if (!backLocale) add("WARNUNG", "Sortierregel der wiederhergestellten Datenbank nicht lesbar");
+  else if (!backLocale.foldsUmlauts) add("FEHLER", `Sortierregel ${backLocale.ctype}: Umlaute werden ohne Groß-/Kleinschreibung nicht gefunden (Suche). Datenbank mit UTF-8-Regel anlegen, live: ${liveLocale?.ctype ?? "?"}`);
+  else if (liveLocale && liveLocale.ctype !== backLocale.ctype) add("WARNUNG", `Sortierregel weicht ab: Backup ${backLocale.ctype}, live ${liveLocale.ctype}`);
+  else add("OK", `Sortierregel: ${backLocale.ctype}, Umlaute ohne Groß-/Kleinschreibung`);
 
   // Datenbestand
   for (const [model, label] of TABLES) {

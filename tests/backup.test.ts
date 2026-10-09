@@ -220,6 +220,17 @@ test("Wiederherstellungsprüfung: vollständig, fehlende Datei, veränderte Date
   assert.ok(complete.some((f: { text: string }) => f.text.includes("alle 1 referenzierten Dateien")));
   assert.ok(complete.some((f: { text: string }) => f.text.startsWith("Buchungen: 1 im Backup, 1 live")));
   assert.ok(complete.some((f: { text: string }) => f.text.includes("Prüfsummen stimmen")));
+  assert.ok(complete.some((f: { level: string; text: string }) => f.level === "OK" && f.text.startsWith("Sortierregel: ")), "Sortierregel geprüft");
+
+  // Wiederhergestellt in eine Datenbank mit Regel „C“: alle Daten da, aber die Suche fände Umlaute nicht – das ist ein Fehler
+  const cLocale = new Proxy(client, {
+    get(target, prop) {
+      if (prop === "$queryRawUnsafe") return (sql: string) => (sql.includes("pg_database") ? Promise.resolve([{ ctype: "C", foldsUmlauts: false }]) : target.$queryRawUnsafe(sql));
+      return Reflect.get(target, prop);
+    },
+  });
+  const wrongLocale = await checkRestore({ prod: client, restored: cLocale, backup: memoryBucket({ [FILES_PREFIX + key]: bytes }), sampleSize: 10 });
+  assert.match(errors(wrongLocale).join("\n"), /Sortierregel C: Umlaute/);
 
   const missing = await checkRestore({ prod: client, restored: client, backup: memoryBucket() });
   assert.match(errors(missing).join("\n"), /1 von 1 Dateien fehlen im Backup/);

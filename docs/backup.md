@@ -198,6 +198,7 @@ Seitenleiste → **Notifications** → einen Kanal einrichten und testen. Diese 
    - [ ] Migrationen vollständig oder nur die Warnung „Backup älter als diese Migrationen“ mit erklärbarem Deploy dazwischen
    - [ ] Neuester Datensatz im Backup höchstens 6 Stunden älter als live
    - [ ] Alle referenzierten Dateien liegen im Backup, die Stichprobe der Prüfsummen stimmt
+   - [ ] Sortierregel OK (UTF-8 wie live). Unter der Regel „C“ findet die Suche Umlaute nicht ohne Groß-/Kleinschreibung; die Testdatenbank dann mit UTF-8-Regel neu anlegen
    - [ ] Import innerhalb von 30 Minuten (Ziel, beim ersten Test überprüfen)
 6. **Aufräumen:** `rent-base-restore-test` in Coolify **löschen**, denn sie enthält alle Kundendaten. Die Löschung im Protokoll vermerken.
 7. **Einmalig bei der Einrichtung, am Test-Bucket:** „Alte Version zurückholen“ (siehe unten) üben. Dabei die zurückgeholte Datei per SHA-256 gegen die Prüfsumme aus der Datenbank vergleichen.
