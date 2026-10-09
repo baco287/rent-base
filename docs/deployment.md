@@ -70,7 +70,7 @@ Jeder Deploy ersetzt den laufenden Container. Wer gerade eine Seite offen hat, e
    - Name `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY`
    - Wert: der Schlüssel, ohne Anführungszeichen. `+`, `/` und `=` sind unproblematisch.
    - Build time: **„Available during build“**
-   - Runtime: nicht nötig, der Schlüssel steckt nach dem Build im Image
+   - Runtime: **„Not available at runtime“** (siehe Entscheidung unten)
 3. **Nach dem ersten Deploy prüfen:** Im Build-Log darf **kein** `[Build] NEXT_SERVER_ACTIONS_ENCRYPTION_KEY ist nicht gesetzt` stehen.
 4. **Erst ab dem zweiten Deploy mit diesem Schlüssel** bleiben offene Formulare über den Deploy hinweg absendbar.
 
@@ -82,6 +82,15 @@ Jeder Deploy ersetzt den laufenden Container. Wer gerade eine Seite offen hat, e
 | Anderer Schlüssel | „RentBase wurde gerade aktualisiert“ |
 
 Außerdem steht der Schlüssel aus dem Build-Schritt unverändert im Laufzeit-Manifest.
+
+**Entscheidung (09.10.2026): nur Build-Variable, nie Laufzeit-Variable.**
+
+1. **Beim Build nötig:** Next.js leitet aus dem Schlüssel die IDs aller Server Actions ab und bettet ihn in das Laufzeit-Manifest des Images ein (`.next/server/server-reference-manifest.json`).
+2. **Zur Laufzeit nicht nötig:** Ohne Laufzeit-Variable nutzt der Server den eingebetteten Schlüssel. Next.js 16.3, `encryption-utils.js`: `process.env.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY || manifest.encryptionKey`.
+3. **Getestet mit echten Standalone-Builds und einer gebundenen Action** („Mietvertrag erstellen“):
+   - Build A mit K1, dann Build B mit K1 und **ohne** Laufzeit-Schlüssel: Die offene Seite aus A wird auf B korrekt ausgeführt.
+   - Derselbe Build mit **abweichendem** Laufzeit-Schlüssel funktioniert heute ebenfalls. Der Laufzeit-Schlüssel verschlüsselt nur Variablen aus Inline-Server-Actions (Closures), und RentBase hat keine: Alle Action-Dateien sind dateiweit mit `"use server"` markiert, und `.bind()`-Argumente werden nicht verschlüsselt.
+4. **Warum trotzdem nie zur Laufzeit setzen:** Die Laufzeit-Variable hätte Vorrang vor dem eingebetteten Schlüssel. Käme später eine Inline-Action dazu, würde ein abweichender oder nur bei manchen Deploys gesetzter Laufzeit-Wert offene Formulare über Deploys hinweg brechen. Mit „nur Build“ gibt es genau eine Quelle.
 
 ### Schritt 3 (optional, später): `deploymentId` aus dem Commit
 
