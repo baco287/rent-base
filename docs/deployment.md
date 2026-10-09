@@ -107,13 +107,14 @@ Außerdem steht der Schlüssel aus dem Build-Schritt unverändert im Laufzeit-Ma
 
 | Variable | Beim Build nötig? |
 |---|---|
-| `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` | ja |
-| `DATABASE_URL` | heute ja: `prisma.config.ts` verlangt sie schon bei `prisma generate`, ein Platzhalterwert würde genügen |
+| `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` | ja, **nur** beim Build (siehe Schritt 2) |
+| `DATABASE_URL` | **nein**, sobald dieses Dockerfile deployt ist: Der Build setzt für `prisma generate` und `next build` einen Platzhalter (`build.invalid`). Lokal geprüft: Der Build läuft durch, weder Platzhalter noch eine mitgegebene echte Adresse landen im Ergebnis, zur Laufzeit gilt die echte Adresse. |
 | `S3_*`, `SMTP_*`, `RENTBASE_SECRET_KEY`, `SETUP_KEY`, `BACKUP_S3_*`, `APP_URL` | nein |
 
-**Vorgehen:** Bei den Variablen aus „nein“ Build time auf „Not available during build“ stellen. `DATABASE_URL` **nicht** umstellen, sonst scheitert der Build.
+**Vorgehen:**
 
-**Später möglich:** `DATABASE_URL` ebenfalls aus dem Build nehmen. Dafür braucht der Build-Schritt im Dockerfile einen Platzhalter für `prisma generate`. Das wäre eine eigene kleine Änderung.
+1. Bei allen Variablen außer `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` Build time auf „Not available during build“ stellen.
+2. **Reihenfolge bei `DATABASE_URL`:** erst umstellen, **nachdem** dieser Stand deployt ist. Das heute laufende Dockerfile braucht die Variable noch beim Build, sonst scheitert der nächste Deploy.
 
 ## Regeln für jeden Deploy mit echten Kunden
 

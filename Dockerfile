@@ -20,8 +20,10 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # Beide sind optional; fehlen sie, verhält sich der Build wie bisher.
 ARG NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
 ARG SOURCE_COMMIT
-# DATABASE_URL wird beim Build nicht gebraucht, Prisma liest nur das Schema.
-RUN npx prisma generate && npm run build
+# prisma.config.ts verlangt DATABASE_URL schon bei "prisma generate", der Build verbindet sich aber nie mit einer Datenbank.
+# Ein Platzhalter (.invalid ist nie auflösbar) ersetzt deshalb jede echte Adresse, auch wenn Coolify sie als Build-Variable
+# mitgibt. Der Build braucht so keine Produktionszugangsdaten; zur Laufzeit gilt die echte DATABASE_URL (docker-entrypoint.sh).
+RUN export DATABASE_URL="postgresql://build:build@build.invalid:5432/build" && npx prisma generate && npm run build
 
 FROM node:22-alpine AS runner
 WORKDIR /app
