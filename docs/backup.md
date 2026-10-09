@@ -79,12 +79,18 @@ Voraussetzung: Die App ist mit einer Version deployt, die `scripts/backup-files.
 
 **So arbeitet das Skript:**
 
-- **Kopieren:** Es kopiert jede neue Datei mit ihrer SHA-256-Prüfsumme als Metadatum.
-- **Löschungen übernehmen:** Die App löscht manche Dateien bewusst, etwa Führerscheinkopien aus Datenschutzgründen oder verworfene Entwurfsfotos. Das Skript merkt sich, seit wann eine gesicherte Datei in der App fehlt, und entfernt sie erst **30 Tage** später auch aus dem Backup.
-  - Innerhalb dieser Frist kann ein Datenbank-Backup die Datei noch brauchen, danach gibt es keines mehr.
+- **Kopieren:** Jede neue Datei wird mit ihrer SHA-256-Prüfsumme als Metadatum ins Backup kopiert.
+- **Nie überschreiben:** Eine Datei, die schon im Backup liegt, wird nie überschrieben. Hat sie im App-Bucket plötzlich eine andere Größe, bleibt die gesicherte Fassung, und der Task meldet einen Fehler. Ursache kann eine Manipulation mit gestohlenen App-Zugangsdaten sein.
+- **Nur legitime Löschungen übernehmen:** Die App löscht persistierte Dateien nur in zwei Fällen, und nur diese verschwinden auch aus dem Backup, **30 Tage** nachdem sie im App-Bucket fehlen:
+  - Fotos aus Entwürfen. Die Datenbank verweist dann nicht mehr darauf.
+  - Führerscheinkopien, die aus Datenschutzgründen gelöscht wurden (`deletionStatus = DELETED`).
+
+  Ob eine Datei noch gebraucht wird, entscheidet die **Datenbank**, nicht der App-Bucket. Innerhalb der Frist kann ein Datenbank-Backup die Datei noch brauchen.
   - Die Merkliste liegt unter `files-state/missing.json`.
   - Die Frist ist über `BACKUP_GRACE_DAYS` einstellbar, mindestens 7 Tage.
-- **Schutzschwelle:** Fehlen auf einmal ungewöhnlich viele Dateien (mehr als 10 % und mehr als 20 Stück, zum Beispiel bei falschem Bucket oder einem Angriff), merkt das Skript nichts vor, löscht nichts und meldet einen Fehler.
+- **Geschützte Dateien:** Verträge, Protokolle, Rechnungen, Akten, Unterschriften, Logos und alle Fotos, auf die die Datenbank verweist, werden **nie** aus dem Backup gelöscht. Fehlen sie im App-Bucket, meldet der Task jede Nacht einen Fehler, bis sie mit `--restore` zurückgeholt sind.
+- **Ohne Datenbank kein Löschen:** Ist die Datenbank nicht erreichbar, wird nichts gelöscht, und der Task meldet einen Fehler.
+- **Schutzschwelle:** Fehlen auf einmal ungewöhnlich viele löschbare Dateien (mehr als 10 % und mehr als 20 Stück, zum Beispiel bei falschem Bucket), merkt das Skript nichts vor, löscht nichts und meldet einen Fehler.
 - **Fehler:** Kann etwas nicht kopiert oder entfernt werden, endet der Task mit Fehler.
 - **App-Bucket:** Dort wird nie etwas gelöscht oder überschrieben.
 

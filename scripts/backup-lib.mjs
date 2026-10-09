@@ -92,13 +92,16 @@ async function eachLimited(items, limit, fn) {
 /**
  * Kopiert alle Objekte, die im Ziel fehlen. Löscht nie etwas.
  * Schlüssel in der App werden nie wiederverwendet, ein vorhandenes Objekt gleicher Größe ist deshalb dieselbe Datei.
- * replaceDifferent: ein Zielobjekt mit abweichender Größe gilt als beschädigt und wird neu geschrieben (nur für den Backup-Bucket).
+ * Ein vorhandenes Zielobjekt wird nie überschrieben. Hat es eine andere Größe als die Quelle, ist eine der beiden Seiten
+ * verändert worden: im App-Bucket z. B. durch kompromittierte Zugangsdaten. Das Ziel bleibt dann unangetastet und der
+ * Schlüssel kommt in "mismatched"; der Aufrufer meldet das als Fehler.
  * Jede Kopie bekommt die SHA-256-Prüfsumme als Metadatum mit, damit sie sich später gegen die Datenbank prüfen lässt.
  */
-export async function copyMissing({ from, fromPrefix = "", to, toPrefix = "", replaceDifferent = false, concurrency = 4, log = () => {} }) {
+export async function copyMissing({ from, fromPrefix = "", to, toPrefix = "", concurrency = 4, log = () => {} }) {
   const source = await from.list(fromPrefix);
   const target = await to.list(toPrefix);
-  const todo = [...source].filter(([key, size]) => !target.has(key) || (replaceDifferent && target.get(key) !== size));
+  const todo = [...source].filter(([key]) => !target.has(key));
+  const mismatched = [...source].filter(([key, size]) => target.has(key) && target.get(key) !== size).map(([key, size]) => ({ key, sourceSize: size, targetSize: target.get(key) }));
   log(`${source.size} Objekte in der Quelle, ${source.size - todo.length} bereits vorhanden, ${todo.length} zu kopieren.`);
 
   let copied = 0;
@@ -117,28 +120,69 @@ export async function copyMissing({ from, fromPrefix = "", to, toPrefix = "", re
       failed.push({ key, error: e?.message ?? String(e) });
     }
   });
-  return { total: source.size, alreadyPresent: source.size - todo.length, copied, bytes, failed };
+  return { total: source.size, alreadyPresent: source.size - todo.length, copied, bytes, failed, mismatched };
+}
+
+/** Speicherbereich eines Schlüssels nach src/lib/storage.ts buildStorageKey: t/<mandant>/<bereich>/<jahr>/<monat>/… */
+export function storageArea(key) {
+  const parts = key.split("/");
+  return parts[0] === "t" && parts.length > 3 ? parts[2] : null;
 }
 
 /**
- * Entfernt aus dem Backup, was in der App gelöscht wurde, aber erst nach graceDays.
+ * Welche fehlenden Dateien die Sicherung überhaupt löschen darf. Alles andere bleibt für immer im Backup.
  *
- * Die App löscht Dateien bewusst, z. B. Führerscheinkopien aus Datenschutzgründen oder verworfene Entwurfsfotos.
- * Ein Backup, das nur hinzufügt, würde diese Löschung unterlaufen. Sofort mitlöschen wäre aber gefährlich: Ein Fehler
- * oder ein Angriff im App-Bucket wäre dann auch im Backup verloren. Deshalb merkt sich die Sicherung, seit wann eine
- * Datei fehlt, und löscht sie erst nach der Frist. Innerhalb der Frist kann eine Datenbank-Sicherung die Datei noch
- * brauchen, nach der Frist gibt es keine solche Sicherung mehr.
+ * Die App löscht persistierte Dateien nur in zwei Fällen:
+ * - Fotos aus Entwürfen (Übergabe/Rückgabe, kontaktlose Rückgabe, Storno): die Photo-Zeile verschwindet mit.
+ * - Führerscheinkopien aus Datenschutzgründen: die DriverDocumentCopy-Zeile bleibt mit deletionStatus DELETED.
+ * Verträge, Protokolle, Rechnungen, Akten, Unterschriften und Logos löscht sie nie.
  *
- * Schutzschwelle: Fehlen auf einmal ungewöhnlich viele Dateien (falscher Bucket, leere Antwort, Angriff), wird nichts
- * vorgemerkt und nichts gelöscht, sondern abgebrochen. maxNewShare ist der erlaubte Anteil neu fehlender Dateien.
+ * Gelöscht werden darf deshalb nur, was in einem dieser Bereiche liegt UND worauf die Datenbank nicht mehr aktiv
+ * verweist. Wer nur Zugang zum App-Bucket hat, kann die Verweise nicht entfernen: Dateien, die er dort löscht, bleiben
+ * im Backup und werden als Fehler gemeldet.
+ * references: { photoKeys: Set, activeDriverCopyKeys: Set } aus loadReferences().
  */
-export async function pruneDeleted({ source, sourcePrefix = "", backup, backupPrefix = FILES_PREFIX, stateKey = MISSING_STATE_KEY, graceDays = DEFAULT_GRACE_DAYS, now = new Date(), maxNewShare = 0.1, minNewAbsolute = 20, log = () => {} }) {
+export function makeIsPrunable(references) {
+  return (key) => {
+    const area = storageArea(key);
+    if (area === "photos") return !references.photoKeys.has(key);
+    if (area === "driver-verifications") return !references.activeDriverCopyKeys.has(key);
+    return false;
+  };
+}
+
+/** Lädt die Datei-Verweise aus der Datenbank (Prisma-Client der App). */
+export async function loadReferences(client) {
+  const [photos, copies] = await Promise.all([
+    client.photo.findMany({ select: { storageKey: true } }),
+    client.driverDocumentCopy.findMany({ where: { deletionStatus: { not: "DELETED" } }, select: { storageKey: true } }),
+  ]);
+  return { photoKeys: new Set(photos.map((p) => p.storageKey)), activeDriverCopyKeys: new Set(copies.map((c) => c.storageKey)) };
+}
+
+/**
+ * Entfernt aus dem Backup, was die App legitim gelöscht hat (siehe makeIsPrunable), aber erst nach graceDays.
+ *
+ * Ein Backup, das nur hinzufügt, würde Datenschutz-Löschungen unterlaufen. Sofort mitlöschen wäre gefährlich: Ein Fehler
+ * oder ein Angriff wäre dann auch im Backup verloren. Deshalb merkt sich die Sicherung, seit wann eine löschbare Datei
+ * fehlt, und löscht sie erst nach der Frist. Innerhalb der Frist kann eine Datenbank-Sicherung die Datei noch brauchen.
+ *
+ * Fehlende Dateien, die nicht gelöscht werden dürfen, kommen in "protectedMissing": Sie bleiben im Backup, werden nie
+ * vorgemerkt und jede Nacht erneut gemeldet, bis sie im App-Bucket wiederhergestellt sind (backup-files.mjs --restore).
+ *
+ * Schutzschwelle: Fehlen auf einmal ungewöhnlich viele löschbare Dateien (falscher Bucket, leere Antwort, Angriff),
+ * wird nichts vorgemerkt und nichts gelöscht, sondern abgebrochen. maxNewShare ist der erlaubte Anteil.
+ * Ohne isPrunable wird nie etwas gelöscht.
+ */
+export async function pruneDeleted({ source, sourcePrefix = "", backup, backupPrefix = FILES_PREFIX, stateKey = MISSING_STATE_KEY, graceDays = DEFAULT_GRACE_DAYS, now = new Date(), isPrunable = () => false, maxNewShare = 0.1, minNewAbsolute = 20, log = () => {} }) {
   const inSource = await source.list(sourcePrefix);
   const inBackup = await backup.list(backupPrefix);
   const stateObj = await backup.get(stateKey);
   const state = stateObj ? JSON.parse(new TextDecoder().decode(stateObj.body)) : {};
 
-  const missing = [...inBackup.keys()].filter((key) => !inSource.has(key));
+  const allMissing = [...inBackup.keys()].filter((key) => !inSource.has(key));
+  const protectedMissing = allMissing.filter((key) => !isPrunable(key));
+  const missing = allMissing.filter((key) => isPrunable(key));
   const newlyMissing = missing.filter((key) => !state[key]);
   const limit = Math.max(minNewAbsolute, Math.floor(inBackup.size * maxNewShare));
   if (newlyMissing.length > limit) {
@@ -164,6 +208,6 @@ export async function pruneDeleted({ source, sourcePrefix = "", backup, backupPr
   }
   const body = new TextEncoder().encode(JSON.stringify(nextState));
   await backup.put(stateKey, body, "application/json");
-  log(`${missing.length} gesicherte Dateien fehlen in der App (${newlyMissing.length} neu), ${deleted} nach ${graceDays} Tagen aus dem Backup entfernt.`);
-  return { missing: missing.length, newlyMissing: newlyMissing.length, deleted, pending: Object.keys(nextState).length, failed };
+  log(`${missing.length} legitim gelöschte Dateien (${newlyMissing.length} neu), ${deleted} nach ${graceDays} Tagen aus dem Backup entfernt; ${protectedMissing.length} geschützte Dateien fehlen im App-Bucket.`);
+  return { missing: missing.length, newlyMissing: newlyMissing.length, deleted, pending: Object.keys(nextState).length, failed, protectedMissing };
 }
