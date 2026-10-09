@@ -1,13 +1,16 @@
 // Fasst den JUnit-Bericht des Node-Testrunners für die Job-Zusammenfassung von GitHub Actions zusammen:
 // Anzahl der Tests und eine Tabelle der gescheiterten Tests mit Datei und erster Zeile der Fehlermeldung.
 // Aufruf: node .github/scripts/test-summary.mjs test-results.xml >> "$GITHUB_STEP_SUMMARY"
+// Mit --annotations stattdessen je gescheitertem Test eine Fehler-Annotation am Lauf (auch ohne Anmeldung sichtbar).
 
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-const file = process.argv[2] ?? "test-results.xml";
+const args = process.argv.slice(2);
+const annotations = args.includes("--annotations");
+const file = args.find((a) => !a.startsWith("--")) ?? "test-results.xml";
 if (!existsSync(file)) {
-  console.log(`## Tests\n\nKein Testbericht vorhanden (\`${file}\`). Die Tests liefen nicht bis zum Ende, Ursache im Log des vorherigen Schritts.`);
+  if (!annotations) console.log(`## Tests\n\nKein Testbericht vorhanden (\`${file}\`). Die Tests liefen nicht bis zum Ende, Ursache im Log des vorherigen Schritts.`);
   process.exit(0);
 }
 
@@ -26,9 +29,11 @@ const TESTCASE = new RegExp(`<testcase${ATTRS}\\s*(\\/>|>([\\s\\S]*?)<\\/testcas
 const FAILURE = new RegExp(`<failure${ATTRS}\\s*\\/?>`);
 const cases = [...xml.matchAll(TESTCASE)].map((m) => {
   const failure = m[3]?.match(FAILURE);
+  const fullPath = attr(m[1], "file");
   return {
     name: attr(m[1], "name"),
-    file: path.basename(attr(m[1], "file").replace(/\\/g, "/")),
+    file: path.basename(fullPath.replace(/\\/g, "/")),
+    relPath: path.relative(process.cwd(), fullPath).replace(/\\/g, "/"),
     failed: Boolean(failure),
     type: failure ? attr(failure[1], "type") : "",
     message: failure ? essence(attr(failure[1], "message")) : "",
@@ -55,4 +60,10 @@ if (failed.length) {
   lines.push("| Datei | Test | Art | Meldung |", "|---|---|---|---|");
   for (const c of failed) lines.push(`| ${cell(c.file)} | ${cell(c.name).slice(0, 160)} | ${cell(c.type)} | ${cell(c.message).slice(0, 220)} |`);
 }
-console.log(lines.join("\n"));
+
+if (annotations) {
+  // Workflow-Befehle (::error …::), Sonderzeichen nach GitHub-Vorgabe kodiert
+  const data = (s) => s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+  const prop = (s) => data(s).replace(/:/g, "%3A").replace(/,/g, "%2C");
+  for (const c of failed) console.log(`::error file=${prop(c.relPath)},title=${prop(c.name.slice(0, 200))}::${data(`${c.type}: ${c.message}`.slice(0, 500))}`);
+} else console.log(lines.join("\n"));

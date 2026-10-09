@@ -94,9 +94,12 @@ jobs:
         run: npm run test:ci
 
       - name: Fehlerübersicht
-        # Gescheiterte Tests mit Datei und Meldung in der Zusammenfassung des Laufs, ohne das ganze Log lesen zu müssen
+        # Gescheiterte Tests mit Datei und Meldung in der Zusammenfassung des Laufs, ohne das ganze Log lesen zu müssen,
+        # und zusätzlich als Annotationen (auch ohne Anmeldung auf der Laufseite sichtbar und über die API lesbar)
         if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
-        run: node .github/scripts/test-summary.mjs test-results.xml >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          node .github/scripts/test-summary.mjs test-results.xml >> "$GITHUB_STEP_SUMMARY"
+          node .github/scripts/test-summary.mjs --annotations test-results.xml
 
       - name: Build-Cache von Next.js
         # Build auch prüfen, wenn Tests scheitern: Ein Build-Fehler soll nicht hinter Testfehlern verborgen bleiben
