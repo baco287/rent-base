@@ -227,6 +227,7 @@ export async function createMaintenance(tenantId: string, actor: Actor, input: M
         }
         return { record, overlaps, blocked, futureBookings };
       }, TX),
+      "maintenanceNumber",
     );
   } catch (e) {
     return domainFromDb(e);
