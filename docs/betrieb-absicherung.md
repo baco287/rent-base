@@ -103,6 +103,9 @@ Bitte auch die aktuellen Bedingungen und Datenverarbeitung auf der Seite des Anb
 
 ## 4. Test-Bucket für die Backup-Strategie
 
+**Entscheidung 10.10.2026: Option A.** Schritt-für-Schritt-Anleitung und Ablauf: [backup-test-bucket.md](backup-test-bucket.md).
+Weitere Entscheidungen: Überwachung zunächst mit UptimeRobot; SMTP in Coolify, Hetzner-Prüfung und Passwortmanager übernimmst du selbst.
+
 **Mit den vorhandenen Rechten** steht nur der S3-Schlüssel der App zur Verfügung (Projekt „Rent-Base“). Ein damit angelegter
 Bucket läge im Produktionsprojekt und wäre mit dem Produktionsschlüssel erreichbar, also **nicht isoliert**. Deshalb ist er
 noch nicht angelegt.
