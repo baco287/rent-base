@@ -198,3 +198,22 @@ Reihenfolge. Jeder Schritt braucht deine Freigabe, Schritt 4 zusätzlich das Dep
 6. **Vollständiger Wiederherstellungstest** mit `check-restore`, danach vierteljährlich.
 
 Bis Schritt 3 steht, gibt es **kein** Backup der Produktionsdaten außer dem Hetzner-Server-Image. Das ist die dringendste Lücke.
+
+**Vor Schritt 2 und 3 zu klären (Befunde vom 10.10.2026, nur gelesen):**
+- **Test-Schlüssel im Backup-Projekt:**
+  - Der Test-Bucket `rent-base-backup-test` liegt im Projekt „Rent-Base Backup“, in dem auch `rent-base-backup` entstehen soll.
+  - S3-Schlüssel gelten für alle Buckets eines Projekts. Die Test-Schlüssel werden deshalb nach dem Test gelöscht, **bevor**
+    dort der produktive Bucket entsteht.
+  - Alternativ entsteht der produktive Bucket in einem eigenen, neuen Projekt.
+- **Coolify übergibt S3-Schlüssel als Prozessargumente:**
+  - Laut Quelltext (`DatabaseBackupJob.php`, Coolify 4.4.6) ruft Coolify `docker exec … mc alias set … <Key> <Secret>` auf dem Host auf.
+  - `/proc` ist ohne `hidepid` eingehängt, und neben root gibt es den Login-Benutzer `deploy`. Er könnte die Schlüssel während
+    eines Backup-Laufs in der Prozessliste sehen.
+  - Vorschlag:
+    - Zuerst klären, wofür `deploy` gebraucht wird.
+    - Wird er nicht gebraucht, die Anmeldung für ihn sperren.
+    - Sonst `hidepid` für `/proc` einrichten. Das ist eine Systemänderung und wird gesondert freigegeben.
+  - Den Schreibschlüssel ohne Löschrecht nutzen. Das begrenzt den möglichen Schaden zusätzlich.
+- **Coolifys Aufbewahrung löscht über die S3-Bibliothek von PHP** (`$disk->delete(...)`), nicht über `mc`. In einem Bucket mit Object Lock
+  entsteht dabei nur ein Löschmarker. Die gesperrten Fassungen bleiben bis Sperrende und danach bis zu einer Lifecycle-Regel
+  erhalten (Ergebnis Tag 1/2 des Tests).

@@ -7,6 +7,8 @@
 //   node backup-bucket-test.mjs --after-retention  frühestens 24 h später: Ablauf der Sperre und Wirkung der Lifecycle-Regel
 //   node backup-bucket-test.mjs --cleanup          nach Ablauf der Sperre: alle Testobjekte unter rb-test/ entfernen
 // Prüfung 6 (Coolify-Upload mit mc) läuft getrennt im Coolify-Hilfs-Image, siehe Anleitung.
+// Exit: 0 bestanden · 1 Prüfung nicht ok oder unerwarteter Fehler · 2 Konfiguration abgelehnt · 3 Anmeldung oder Isolation
+// gescheitert (nichts geschrieben).
 
 import { createHash, randomBytes } from "node:crypto";
 import s3 from "@aws-sdk/client-s3";
@@ -45,12 +47,21 @@ if (!/hel1\./.test(env.TEST_S3_ENDPOINT)) record("Standort", null, "Endpunkt ist
 const listed = await tryIt(() => c.send(new ListBucketsCommand({})));
 const names = listed.ok ? (listed.value.Buckets ?? []).map((b) => b.Name) : [];
 const sees = names.filter((n) => PRODUCTION_BUCKETS.includes(n));
-if (sees.length) { record("0 Isolation", false, `Schlüssel sieht Produktions-Bucket ${sees.join(", ")} – falsches Projekt. Abbruch, nichts geschrieben.`); process.exit(1); }
+if (sees.length) { record("0 Isolation", false, `Schlüssel sieht Produktions-Bucket ${sees.join(", ")} – falsches Projekt. Abbruch, nichts geschrieben.`); process.exit(3); }
 record("0 Isolation", listed.ok && names.includes(Bucket), listed.ok ? `Schlüssel sieht ${names.length} Bucket(s), keinen Produktions-Bucket` : `ListBuckets ${listed.error}`);
+if (!listed.ok) { console.log("ABBRUCH: Anmeldung oder Zugriff abgelehnt – Schlüssel prüfen. Nichts geschrieben."); process.exit(3); }
+if (!names.includes(Bucket)) { console.log(`ABBRUCH: Bucket ${Bucket} ist für diesen Schlüssel nicht sichtbar – Name oder Projekt prüfen. Nichts geschrieben.`); process.exit(3); }
 
-if (mode === "day0") await day0();
-else if (mode === "after") await afterRetention();
-else await cleanup();
+// Unerwartete Fehler nur mit Namen und HTTP-Status melden: S3-Fehlerobjekte können Felder wie AWSAccessKeyId enthalten,
+// die Node beim Standard-Abbruch mit ausgeben würde.
+const abort = (e) => { console.log(`ABBRUCH: unerwarteter Fehler ${err(e)} (Details aus Sicherheitsgründen nicht ausgegeben)`); process.exit(1); };
+process.on("uncaughtException", abort);
+process.on("unhandledRejection", abort);
+try {
+  if (mode === "day0") await day0();
+  else if (mode === "after") await afterRetention();
+  else await cleanup();
+} catch (e) { abort(e); }
 
 const failed = results.filter((r) => r.ok === false).length;
 console.log(`\nErgebnis: ${results.filter((r) => r.ok === true).length} bestanden, ${failed} nicht ok, ${results.filter((r) => r.ok === null).length} Hinweise`);
