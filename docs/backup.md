@@ -157,6 +157,30 @@ Voraussetzung: Die App ist mit einer Version deployt, die die Skripte enthält.
 - **Schutzschwelle:** Fehlen auf einmal ungewöhnlich viele löschbare Dateien (mehr als 10 % und mehr als 20 Stück), merkt das Skript nichts vor, löscht nichts und meldet einen Fehler.
 - **App-Bucket:** Dort wird nie etwas gelöscht oder überschrieben.
 
+### 4a. Aufräumlauf für gelöschte Ausweis- und Führerscheinkopien
+
+Die App entfernt die Datei einer gelöschten Kopie direkt nach dem Löschen (beim Storno nach dem Commit, mit drei Versuchen;
+Fehlschläge stehen im Audit-Log als „Datei nach dem Storno nicht entfernt“). Bricht der Prozess genau dazwischen ab oder ist der
+Speicher nicht erreichbar, bleibt die Datei im App-Bucket liegen, obwohl die Kopie in der Datenbank schon gelöscht ist.
+`scripts/cleanup-driver-copies.mjs` holt das nach und richtet sich dabei ausschließlich nach der Datenbank:
+
+- berücksichtigt nur Kopien mit `deletionStatus = DELETED`, je Mandant;
+- löscht nur Schlüssel im Kopienbereich desselben Mandanten (`t/<Mandant>/driver-verifications/…`), nie Dateien aktiver Kopien
+  und nie etwas außerhalb dieses Bereichs (solche Fälle werden als „verweigert“ gemeldet);
+- listet je Mandant einmal auf, löscht nur, was noch da ist, und bestätigt das Löschen durch erneutes Auflisten;
+- schreibt jeden Fehlschlag ins Audit-Log (`STORAGE_FILE_REMOVAL_FAILED`, Benutzer „Aufräumlauf“) und endet dann mit Code 1;
+  ein erneuter Lauf ist unschädlich.
+
+**Einrichtung (noch nicht erfolgt):** Anwendung → Scheduled Tasks → „New scheduled task“:
+- Name „Gelöschte Dokumentkopien aufräumen“
+- Command `node scripts/cleanup-driver-copies.mjs`
+- Schedule `15 2,8,14,20 * * *` (eine Viertelstunde vor der Dateisicherung: gelöschte Kopien gelangen so gar nicht erst ins Backup)
+- Timeout `600`, Container leer lassen
+
+Vorher einmal von Hand mit `--dry-run` ausführen (nur Bericht). Erwartet wird z. B.
+`1 Mandanten, 2 gelöschte Kopien geprüft: 0 würden entfernt, 2 bereits entfernt, 0 verweigert, 0 Fehler.`
+Einzelner Mandant: `--tenant <id>`.
+
 ### 5. Benachrichtigungen
 
 Seitenleiste → **Notifications** → einen Kanal einrichten und testen. Diese Ereignisse einschalten:
@@ -263,6 +287,9 @@ Abweichungsmeldungen der Dateisicherung **sofort** ernst nehmen.
 
 - **Test-Bucket:** Alle sechs Prüfpunkte stehen noch aus, insbesondere Durchsetzung von Sperre und Policy in fsn1 sowie die Kompatibilität mit Coolify.
 - **Löschkonzept (DSGVO):** Die Backup-Fristen aus [backup-strategie.md](backup-strategie.md) aufnehmen und rechtlich bestätigen lassen. Für Datensätze selbst (Kunden, Verträge) gibt es in der App noch keine Löschfristen. Die Aufbewahrungspflichten gelten.
+- **Versionierung des App-Buckets prüfen:** Ist sie eingeschaltet, entfernt ein Löschen nur die aktuelle Fassung; ältere
+  Fassungen (z. B. von Ausweiskopien) bleiben, bis eine Lifecycle-Regel für nicht aktuelle Versionen sie entfernt. In der
+  Hetzner Console nachsehen und gegebenenfalls eine kurze Frist für nicht aktuelle Versionen festlegen.
 - **Manipulation mit gleicher Dateigröße im App-Bucket:** Das erkennt die Dateisicherung nicht sofort. Die gesicherte Fassung bleibt aber unverändert, und die Stichprobe beim Wiederherstellungstest prüft den Inhalt.
 
 ## Protokoll
