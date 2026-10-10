@@ -43,12 +43,14 @@ const body = async (r) => Buffer.from(await r.Body.transformToByteArray());
 console.log(`Test-Bucket ${Bucket} · Endpunkt ${new URL(env.TEST_S3_ENDPOINT).host} · Modus ${mode}`);
 if (!/hel1\./.test(env.TEST_S3_ENDPOINT)) record("Standort", null, "Endpunkt ist nicht hel1 – geplant ist Helsinki (Dateien liegen in fsn1, Server in nbg1)");
 
-// 0) Isolation: der Testschlüssel darf keinen Produktions-Bucket sehen
+// 0) Isolation: der Testschlüssel darf außer dem Test-Bucket keinen Bucket sehen, erst recht keinen Produktions-Bucket
 const listed = await tryIt(() => c.send(new ListBucketsCommand({})));
 const names = listed.ok ? (listed.value.Buckets ?? []).map((b) => b.Name) : [];
 const sees = names.filter((n) => PRODUCTION_BUCKETS.includes(n));
 if (sees.length) { record("0 Isolation", false, `Schlüssel sieht Produktions-Bucket ${sees.join(", ")} – falsches Projekt. Abbruch, nichts geschrieben.`); process.exit(3); }
-record("0 Isolation", listed.ok && names.includes(Bucket), listed.ok ? `Schlüssel sieht ${names.length} Bucket(s), keinen Produktions-Bucket` : `ListBuckets ${listed.error}`);
+const others = names.filter((n) => n !== Bucket);
+if (others.length) { record("0 Isolation", false, `Schlüssel sieht weitere Bucket(s) ${others.join(", ")} – erwartet ist nur ${Bucket}. Abbruch, nichts geschrieben.`); process.exit(3); }
+record("0 Isolation", listed.ok && names.includes(Bucket), listed.ok ? `Schlüssel sieht nur ${names.join(", ") || "keinen Bucket"}, keinen Produktions-Bucket` : `ListBuckets ${listed.error}`);
 if (!listed.ok) { console.log("ABBRUCH: Anmeldung oder Zugriff abgelehnt – Schlüssel prüfen. Nichts geschrieben."); process.exit(3); }
 if (!names.includes(Bucket)) { console.log(`ABBRUCH: Bucket ${Bucket} ist für diesen Schlüssel nicht sichtbar – Name oder Projekt prüfen. Nichts geschrieben.`); process.exit(3); }
 
