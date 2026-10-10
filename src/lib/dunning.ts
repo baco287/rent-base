@@ -26,10 +26,9 @@ import { companySnapshotOf, createDunningFeeInvoiceDraft, finalizeInvoiceIn, rec
 import { fmtCents, toCents, type Cents } from "@/lib/money";
 import { isUniqueViolation, nextDunningNumber, withNumberRetry } from "@/lib/numbering";
 import { customerSearchWhere } from "@/lib/search";
-import { zonedDayStart, zonedDaysBetween } from "@/lib/time";
+import { zonedDayStart, zonedDaysBetween, zonedPlusDays } from "@/lib/time";
 
 type Client = Prisma.TransactionClient | typeof db;
-const DAY = 86_400_000;
 
 // ---------------------------------------------------------------------------
 // Einstellungen (Einstellungen → Geschäftsregeln → Mahnwesen)
@@ -357,7 +356,8 @@ function planOf(r: Receivable, row: MainRow, settings: DunningSettings, recipien
   return {
     invoiceId: r.invoiceId, invoiceNumber: row.number, level, levelLabel: dunningLevelLabel(level), allowed: reason === null, reason,
     principalOpenCents: r.principalOpenCents, priorFeesOpenCents: r.feesOpenCents, feeCents, totalCents: r.principalOpenCents + r.feesOpenCents + feeCents,
-    deadlineDays, deadlineAt: new Date(now.getTime() + deadlineDays * DAY), recipientName: recipient.name, recipientEmail: recipient.email,
+    // Frist in Berliner Kalendertagen (nicht 24-Stunden-Blöcken): der Fristtag im Mahnschreiben bleibt über eine Zeitumstellung richtig
+    deadlineDays, deadlineAt: zonedPlusDays(now, deadlineDays), recipientName: recipient.name, recipientEmail: recipient.email,
     dueDate: r.dueDate, daysOverdue: r.daysOverdue,
   };
 }
