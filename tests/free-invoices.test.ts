@@ -27,6 +27,7 @@ import { createPayout } from "../src/lib/payouts";
 import { renderInvoicePdf } from "../src/lib/pdf/invoice-pdf";
 import { sendInvoiceDocument } from "../src/lib/rental-mail";
 import { getStorage, type StorageDriver } from "../src/lib/storage";
+import { zonedPlusDays } from "../src/lib/time";
 import { createWorld, purgeTenants } from "./helpers";
 import { returnedWorld } from "./rental-flow";
 
@@ -48,9 +49,9 @@ class FakeTransport implements MailTransport {
   async send(m: MailMessage) { this.sent.push(m); return { messageId: `<fake-${this.sent.length}@test>` }; }
 }
 
-const DAY = 86_400_000;
 const at = new Date(Date.now() - 60_000);
-const T = (days: number) => new Date(Date.now() + days * DAY);
+/** Jetzt + n Berliner Kalendertage zur selben Uhrzeit (nicht n × 24 h, sonst kippt der Tag nachts über eine Zeitumstellung). */
+const T = (days: number) => zonedPlusDays(new Date(), days);
 const year = new Date().getFullYear();
 let seq = 0;
 const nonce = (p = "fr") => `${p}-${Date.now().toString(36)}-${++seq}-free`;
@@ -98,7 +99,7 @@ test("1/3/4/5/6/8/9: freie Rechnung ohne Buchung – keine Dummy-Buchung, mehrer
   const inv = await db.invoice.findUniqueOrThrow({ where: { id: invoice.id } });
   assert.match(inv.number!, new RegExp(`^RE-${year}-\\d{6}$`));
   assert.deepEqual([inv.status, inv.bookingId, v.status, v.paymentTermDays], ["FINALIZED", null, "FINALIZED", 7]);
-  assert.ok(Math.abs(v.paymentDueDate!.getTime() - (v.finalizedAt!.getTime() + 7 * DAY)) < 1000, "Fälligkeit = Abschluss + Zahlungsziel, versiegelt");
+  assert.equal(v.paymentDueDate!.getTime(), zonedPlusDays(v.finalizedAt!, 7).getTime(), "Fälligkeit = Abschluss + Zahlungsziel in Berliner Kalendertagen, versiegelt");
   const snap = v.customerSnapshot as { lastName: string; street: string | null; number: string | null };
   assert.deepEqual([snap.lastName, snap.street, snap.number], [customer.lastName, customer.street, customer.number], "Rechnungsempfänger aus dem Kundenstamm, versiegelt");
   await db.customer.update({ where: { id: w.customerId }, data: { street: "Neue Straße 99" } });

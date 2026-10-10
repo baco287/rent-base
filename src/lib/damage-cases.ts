@@ -71,6 +71,7 @@ export async function openDamageCase(tenantId: string, damageId: string, actor: 
         await recordAudit(tx, tenantId, actor, { action: "DAMAGE_CASE_CREATED", bookingId, details: { caseNumber, damageId, vehicleId: d.vehicleId } });
         return { row: created, created: true };
       }, TX),
+      "caseNumber",
     );
     return { damageCase: result.row, created: result.created };
   } catch (e) {

@@ -13,8 +13,17 @@ RUN apk add --no-cache libc6-compat openssl
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
-# DATABASE_URL wird beim Build nicht gebraucht, Prisma liest nur das Schema.
-RUN npx prisma generate && npm run build
+# Schutz offener Formulare bei Deploys (docs/deployment.md), in Coolify als Build-Variablen setzen:
+# - NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: fester Schlüssel, damit Server Actions über Deploys hinweg dieselbe ID behalten.
+#   Ohne ihn erzeugt jeder Build neue IDs und jede offene Seite scheitert beim nächsten Speichern.
+# - SOURCE_COMMIT: wird zur deploymentId; veraltete Seiten laden dann neu, statt mit Fehlern weiterzulaufen.
+# Beide sind optional; fehlen sie, verhält sich der Build wie bisher.
+ARG NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
+ARG SOURCE_COMMIT
+# prisma.config.ts verlangt DATABASE_URL schon bei "prisma generate", der Build verbindet sich aber nie mit einer Datenbank.
+# Ein Platzhalter (.invalid ist nie auflösbar) ersetzt deshalb jede echte Adresse, auch wenn Coolify sie als Build-Variable
+# mitgibt. Der Build braucht so keine Produktionszugangsdaten; zur Laufzeit gilt die echte DATABASE_URL (docker-entrypoint.sh).
+RUN export DATABASE_URL="postgresql://build:build@build.invalid:5432/build" && npx prisma generate && npm run build
 
 FROM node:22-alpine AS runner
 WORKDIR /app
@@ -47,4 +56,9 @@ RUN chmod +x docker-entrypoint.sh
 
 USER app
 EXPOSE 3000
+# Prüft App und Datenbank über /api/health (antwortet 503, wenn die Datenbank fehlt). Alpine hat wget, kein curl.
+# Coolify übernimmt diesen Healthcheck und schaltet bei einem Deploy erst auf den neuen Container um, wenn er gesund ist.
+# Großzügige Startphase, weil vor dem Serverstart noch die Migrationen laufen.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+  CMD wget -q -O /dev/null "http://127.0.0.1:${PORT:-3000}/api/health" || exit 1
 ENTRYPOINT ["./docker-entrypoint.sh"]

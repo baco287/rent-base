@@ -17,7 +17,7 @@ import { readContractRules, resolveRules, type BusinessRules } from "@/lib/busin
 import { CHARGE_UNITS, EXTRA_CHARGE_TYPES, FUEL_POLICIES, LATE_RETURN_RULES, energyRequirements, type ExtraChargeType, type LateReturnRule } from "@/lib/constants";
 import { fmtDateTime } from "@/lib/format";
 import { extraMileageCharge, flatCharge, fuelCharge, mileagePeriod, saveExtraCharge, type ChargeDraft } from "@/lib/extra-charges";
-import { touchHandover } from "@/lib/handovers";
+import { lockBookingOfHandover, touchHandover } from "@/lib/handovers";
 import { contractKmPolicy, extensionPriceProposal, loadEffectiveContract } from "@/lib/amendments";
 import type { KmPolicy } from "@/lib/constants";
 import { DomainError, assertHandoverDraft } from "@/lib/integrity";
@@ -279,6 +279,8 @@ const touchAfterCharge = (tx: Tx, tenantId: string, handoverId: string) => touch
  */
 export async function confirmProposal(tenantId: string, handoverId: string, actorId: string | null, key: Proposal["key"]) {
   return db.$transaction(async (tx) => {
+    // Buchung vor Protokoll: die Position verweist auf die Buchung (sonst Deadlock mit einem gleichzeitigen Verwerfen)
+    await lockBookingOfHandover(tx, tenantId, handoverId);
     await tx.$queryRaw`SELECT "id" FROM "Handover" WHERE "id" = ${handoverId} AND "tenantId" = ${tenantId} FOR UPDATE`;
     const { h, booking, contract, pickup, accessories, vehicleTankLiters } = await loadReturn(tx, tenantId, handoverId);
     assertHandoverDraft(h);
@@ -338,6 +340,8 @@ export async function addManualCharge(tenantId: string, handoverId: string, acto
   if (!(Number.isFinite(input.unitPrice) && input.unitPrice >= 0 && input.unitPrice <= 1_000_000)) throw new DomainError("Der Einzelpreis darf nicht negativ sein.");
   if (!(CHARGE_UNITS as readonly string[]).includes(input.unit)) throw new DomainError("Unbekannte Einheit.");
   return db.$transaction(async (tx) => {
+    // Buchung vor Protokoll ausdrücklich – bisher nur durch die Prüfreihenfolge der Fremdschlüssel beim Anlegen der Position gegeben
+    await lockBookingOfHandover(tx, tenantId, handoverId);
     const { h } = await loadReturn(tx, tenantId, handoverId);
     assertHandoverDraft(h);
     let damageRef: string | null = null;

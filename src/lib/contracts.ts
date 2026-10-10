@@ -876,10 +876,20 @@ async function rulesStateOf(tx: Tx, tenantId: string, c: Awaited<ReturnType<type
   return { snapshot, resolved, deposit, depositSource: depositSourceOf(Math.round(Number(c.deposit) * 100), deposit), newerDefaults: c.status === "DRAFT" && !!snapshot && (snapshot.defaultsFingerprint !== rulesFingerprint(resolved.values) || depositChanged), driveClass: driveClassOf((c.vehicleSnapshot as VehicleSnapshot).fuel ?? booking.vehicle.fuel) };
 }
 
+/**
+ * Vertragszeile sperren, bevor Fassung und Kenntnisnahme gelesen werden: Kenntnisnahme und Fassungswechsel laufen nacheinander,
+ * sonst schreibt eine Kenntnisnahme den Hash der alten Fassung über einen gleichzeitigen Wechsel. Reihenfolge Fall → Vertrag
+ * (nach guardContract) wie finalizeContract; FOR NO KEY UPDATE ist die Stufe, die das spätere Update ohnehin nimmt.
+ */
+async function lockContractForUpdate(tx: Tx, tenantId: string, contractId: string) {
+  await tx.$queryRaw`SELECT "id" FROM "RentalContract" WHERE "id" = ${contractId} AND "tenantId" = ${tenantId} FOR NO KEY UPDATE`;
+}
+
 /** Bewusster Wechsel auf eine (neuere) veröffentlichte Fassung. Setzt die Kenntnisnahme zurück; Unterschriften verfallen. */
 export async function adoptTermsVersion(tenantId: string, contractId: string, actor: Actor, versionId: string | null = null) {
   return db.$transaction(async (tx) => {
     await guardContract(tx, tenantId, contractId);
+    await lockContractForUpdate(tx, tenantId, contractId);
     const c = await loadContract(tx, tenantId, contractId);
     assertContractDraft(c);
     const version = versionId ? await tx.rentalTermsVersion.findFirst({ where: { id: versionId, tenantId } }) : await activeTermsVersion(tx, tenantId);
@@ -898,6 +908,7 @@ export async function acknowledgeTerms(tenantId: string, contractId: string, act
   if (!input.confirmed) throw new DomainError("Bitte die Kenntnisnahme der Mietbedingungen ausdrücklich bestätigen.");
   return db.$transaction(async (tx) => {
     await guardContract(tx, tenantId, contractId);
+    await lockContractForUpdate(tx, tenantId, contractId);
     const c = await loadContract(tx, tenantId, contractId);
     assertContractDraft(c);
     const h = acknowledgementHash(c);

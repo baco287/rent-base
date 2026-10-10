@@ -204,6 +204,7 @@ export async function createAuthorityCase(tenantId: string, actor: Actor, input:
         const matched = await runMatching(tx, tenantId, created, actor);
         return refreshStatus(tx, tenantId, matched.id, actor);
       }, TX),
+      "caseNumber",
     );
   } catch (e) {
     return domainFromDb(e);
