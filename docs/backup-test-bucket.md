@@ -110,7 +110,7 @@ Lifecycle-Regel gewirkt? Hetzner verarbeitet Regeln eventuell mit Verzögerung, 
 
 | Ergebnis | Folge für den produktiven Backup-Bucket |
 |---|---|
-| Prüfungen 1, 2 und 4 bestanden | Object Lock COMPLIANCE schützt Backups wie geplant, auch gegen gestohlene Schlüssel |
+| Prüfungen 1, 2 und 4 bestanden | Object Lock COMPLIANCE schützt vorhandene Backups wie geplant, auch gegen gestohlene Schlüssel. Ein Projektschlüssel kann aber Standard-Sperre und Lifecycle-Regeln für **künftige** Objekte ändern. Coolify bekommt deshalb einen Schlüssel ohne diese Rechte |
 | Lifecycle wirkt (Tag 1/2) | Alte Backups und Löschmarker verschwinden nach Ablauf automatisch |
 | Lifecycle wirkt nicht | Aufräumen alter Backups muss anders gelöst werden, z. B. regelmäßig nach Ablauf der Sperre |
 | Prüfung 6 bestanden | Coolify kann in einen gesperrten Bucket hochladen |
@@ -119,3 +119,29 @@ Lifecycle-Regel gewirkt? Hetzner verarbeitet Regeln eventuell mit Verzögerung, 
 Noch nicht Teil dieses Tests:
 - **Schreibschlüssel aus einem dritten Projekt über eine Bucket-Policy** (`backup-strategie.md`). Das folgt beim produktiven Bucket, falls wir es nutzen.
 - **„Test connection“ und ein echtes Datenbank-Backup aus Coolify.** Das braucht eine Coolify-Einstellung und wird gesondert freigegeben.
+
+## Ergebnis Tag 0 (10.10.2026, 11:14 UTC)
+
+Bucket `rent-base-backup-test` in hel1, Projekt „Rent-Base Backup“. **SDK-Teil: 19 bestanden, 0 nicht ok, 1 Hinweis. Prüfung 6: 4 bestanden, 1 Hinweis.** Gesamt-Exit 0.
+
+| Nr. | Ergebnis |
+|---|---|
+| 0 | Schlüssel sieht nur `rent-base-backup-test` (mit SDK und mit `mc` geprüft) |
+| 1a–1c | Object Lock aktiv, Versionierung `Enabled`; Abschalten abgelehnt (`InvalidBucketState`, HTTP 409) |
+| 2 | Standard-Sperre COMPLIANCE 1 Tag gesetzt und zurückgelesen |
+| 3a–3b | Upload mit SDK-Prüfsumme und mit Content-MD5 angenommen |
+| 3c | Hinweis: Upload **ohne** Prüfsumme wird ebenfalls angenommen. Kein Werkzeug scheitert also an fehlenden Prüfsummen |
+| 3d | Sperre am Objekt: COMPLIANCE bis 11.10.2026 11:13:53 UTC |
+| 4a–4e | Version löschen, Governance-Umgehung, Mehrfach-Löschen, Verkürzen, Herabstufen: alle abgelehnt (`AccessDenied`, HTTP 403) |
+| 4f | Löschen ohne Version setzt nur einen Löschmarker, die gesperrte Fassung bleibt unverändert abrufbar |
+| 4g | Überschreiben legt eine neue Fassung an, die alte bleibt |
+| 5a–5b | Lifecycle-Regel trotz Object Lock angenommen und zurückgelesen; Testobjekt abgelegt |
+| 6a | `mc` RELEASE.2026-09-06T02-44-40Z aus coolify-helper 1.0.17 nimmt die Schlüssel über stdin an |
+| 6b–6c | 20 MB mit `mc cp` hochgeladen (Teil-Upload) und rückgelesen, SHA-256 identisch |
+| 6d | Hinweis: `mc retention info` liefert nur die Kopfzeile. Die Sperre selbst belegen 3d und 6e |
+| 6e | `mc rm --versions --force` abgelehnt (`AccessDenied`), die Fassung bleibt |
+| 7a–7b | 1 MB einzeln und 12 MB in drei Teilen: SHA-256 identisch |
+
+**Offen:**
+- A1 Löschen nach Ablauf der Sperre und A2 Wirkung der Lifecycle-Regel: `--after-retention` frühestens am 11.10.2026 um 11:15 UTC.
+- Das Aufräumen folgt erst nach Prüfung der Ergebnisse und mit Freigabe.
