@@ -38,38 +38,32 @@ Im neuen Projekt: **Object Storage** → **Bucket erstellen**.
 
 Im selben Projekt: **Sicherheit** → Reiter **S3-Zugangsdaten** → **Zugangsdaten generieren** → Beschreibung `backup-test`.
 
-Access Key und Secret Key werden **nur einmal** angezeigt. Fenster offen lassen, bis Schritt 4 erledigt ist.
+Access Key und Secret Key werden **nur einmal** angezeigt. Beide sofort im Passwortmanager speichern.
 
 ## Schritt 4: Zugangsdaten sicher auf den Server legen
 
 Die Werte kommen **nur** in eine Datei auf dem Server, die ausschließlich root lesen kann. Nicht in den Chat, keine E-Mail,
-kein Repository. Das Testskript liest die Datei und gibt die Werte nie aus.
+kein Repository. Das Einrichtungsskript [`scripts/backup-test-env-setup.sh`](../scripts/backup-test-env-setup.sh) liest die
+Schlüssel verdeckt ein und schreibt sie nur mit Shell-Builtins in die Datei. So landen sie nicht in Befehlsargumenten, in der
+Umgebung, in der History oder in einer Ausgabe. Eine vorhandene Datei überschreibt es nie.
 
-1. In einem Terminal auf deinem Rechner `ssh rb` eingeben. Die Web-Konsole der Hetzner Console eignet sich schlecht, weil
-   Einfügen dort oft nicht zuverlässig funktioniert.
-2. Eingeben:
+1. Vorbereitung (Claude, nach deiner Freigabe):
+   - Nur lesend prüfen, dass `/root/backup-test.env` noch nicht existiert und keine Tastatur-Protokollierung (`pam_tty_audit`) aktiv ist.
+   - Das Skript als `/root/backup-test-env-setup.sh` auf den Server kopieren, ohne Überschreiben.
+2. In einem Terminal auf deinem Rechner eingeben:
    ```
-   umask 077
-   nano /root/backup-test.env
+   ssh -t rb bash /root/backup-test-env-setup.sh
    ```
-3. Diese fünf Zeilen einfügen und die Platzhalter ersetzen. Keine Anführungszeichen, keine Leerzeichen um das `=`:
-   ```
-   TEST_S3_ENDPOINT=https://hel1.your-objectstorage.com
-   TEST_S3_REGION=hel1
-   TEST_S3_BUCKET=rent-base-backup-test-20261010
-   TEST_S3_ACCESS_KEY=hier-den-Access-Key-einfügen
-   TEST_S3_SECRET_KEY=hier-den-Secret-Key-einfügen
-   ```
-4. Speichern mit **Strg+O**, **Enter**, dann **Strg+X**.
-5. Rechte festlegen und prüfen:
-   ```
-   chmod 600 /root/backup-test.env
-   ls -l /root/backup-test.env
-   ```
-   Erwartet: `-rw------- 1 root root …`. Danach mit `exit` abmelden.
-6. Willst du die Testschlüssel im Passwortmanager ablegen, tu das jetzt. Nötig ist es nicht, denn sie werden nach dem Test
-   gelöscht. Dann das Fenster mit den Schlüsseln in der Console schließen. Nutzt du den Windows-Zwischenablageverlauf
-   (Win+V), die beiden Einträge dort löschen.
+   Die Web-Konsole der Hetzner Console eignet sich schlecht, weil Einfügen dort oft nicht zuverlässig funktioniert.
+3. Bucket-Name eingeben (sichtbar, kein Geheimnis).
+4. Access Key aus dem Passwortmanager einfügen (Strg+V oder Rechtsklick) und Enter drücken. Es erscheint nichts, das ist
+   gewollt. Danach den Secret Key genauso.
+5. Das Skript zeigt nur Besitzer, Rechte (`root:root 600`) und welche der fünf Variablen vorhanden sind.
+6. Zwischenablage leeren. Nutzt du den Windows-Zwischenablageverlauf (Win+V), die beiden Einträge dort löschen.
+
+Bei Tippfehlern oder Abbruch (Strg+C) entsteht keine Datei; das Skript einfach erneut starten. Ein falscher, aber gültig
+aussehender Schlüssel fällt in Prüfung 0 des Testprotokolls auf: Anmeldung abgelehnt, nichts geschrieben. Dann melde ich
+mich, du entfernst die Datei mit `shred -u /root/backup-test.env` und richtest sie neu ein.
 
 ## Schritt 5: Mir Bescheid geben
 
@@ -83,6 +77,13 @@ Kurze Nachricht genügt, ohne Schlüssel: „Bucket `<Name>` in hel1 mit Object 
 
 - **Ausführung:** in zwei Wegwerf-Containern, die danach automatisch verschwinden. Prüfungen 0–5 und 7 laufen mit dem AWS SDK, Prüfung 6 mit demselben `mc`, das Coolify für Backups nutzt.
 - **Ablage:** Das Skript schreibt nur unter `rb-test/` im Test-Bucket.
+- **Abbruch vor dem Schreiben:** Lehnt Hetzner die Anmeldung ab oder ist der Bucket für den Schlüssel nicht sichtbar, endet der Lauf
+  nach Prüfung 0 mit Exit 3. Dann ist nichts geschrieben, auch Prüfung 6 läuft nicht.
+- **Keine Schlüssel in Ausgaben oder Prozessargumenten:**
+  - Fehler meldet das Skript nur mit Namen und HTTP-Status. S3-Fehlertexte können `AWSAccessKeyId` enthalten und werden deshalb nicht ausgegeben.
+  - Prüfung 6 übergibt die Schlüssel über stdin an `mc alias set`, nicht als Argumente. Fehlertexte von `mc` erscheinen nur mit ersetzten Schlüsseln.
+  - Coolify selbst übergibt sie als Argumente (siehe [betrieb-absicherung.md](betrieb-absicherung.md), Abschnitt 6). Für das Prüfergebnis
+    spielt das keine Rolle: Binary, Alias-Konfiguration und `mc cp` sind dieselben.
 
 | Nr. | Prüfung |
 |---|---|
@@ -100,7 +101,9 @@ Lifecycle-Regel gewirkt? Hetzner verarbeitet Regeln eventuell mit Verzögerung, 
 
 **Aufräumen (nach Ablauf der Sperre, mit deiner Freigabe):**
 1. `--cleanup` entfernt alle Testobjekte unter `rb-test/`.
-2. Danach löschst du in der Console den leeren Bucket, die S3-Zugangsdaten `backup-test` und das Projekt `Rent-Base Backup Test`.
+2. Danach löschst du in der Console den leeren Bucket und die Test-S3-Zugangsdaten.
+   - Umgesetzt wurde der Test im Projekt `Rent-Base Backup`, in dem später der produktive Bucket entstehen soll.
+   - Das Projekt bleibt deshalb bestehen. Die Test-Zugangsdaten müssen aber **vor** dem Anlegen von `rent-base-backup` gelöscht sein.
 3. Auf dem Server die Datei entfernen: `shred -u /root/backup-test.env`.
 
 ## Was das Ergebnis für die Produktion bedeutet
