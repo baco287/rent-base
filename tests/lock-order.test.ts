@@ -85,7 +85,13 @@ test("Sperrreihenfolge: Übergabe abschließen ∥ Storno – nie Deadlock, gena
     const booking = await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } });
     const handover = await db.handover.findFirst({ where: { id: pickupId } });
     if (booking.status === "ACTIVE") { assert.equal(r[0].status, "fulfilled"); assert.equal(r[1].status, "rejected"); assert.equal(handover?.status, "FINALIZED"); }
-    else { assert.equal(booking.status, "CANCELLED", `Runde ${i}: Abschluss ${reasonOf(r[0]).slice(0, 200)} | Storno ${reasonOf(r[1]).slice(0, 200)}`); assert.equal(r[0].status, "rejected"); assert.equal(handover, null); }
+    else {
+      assert.equal(booking.status, "CANCELLED", `Runde ${i}: Abschluss ${reasonOf(r[0]).slice(0, 200)} | Storno ${reasonOf(r[1]).slice(0, 200)}`);
+      assert.equal(r[0].status, "rejected");
+      // Fahrer geprüft: verworfen statt gelöscht, Prüfvermerke bleiben
+      assert.equal(handover?.status, "DISCARDED");
+      assert.ok((await db.driverVerification.count({ where: { handoverId: pickupId } })) > 0);
+    }
   }
 });
 

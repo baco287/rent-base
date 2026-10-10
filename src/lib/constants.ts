@@ -289,7 +289,7 @@ export const COUNTRIES = { DE: "Deutschland", AT: "Österreich", CH: "Schweiz", 
 export const HANDOVER_TYPES = { PICKUP: "Übergabe", RETURN: "Rückgabe" } as const;
 export type HandoverType = keyof typeof HANDOVER_TYPES;
 
-export const HANDOVER_STATUS = { DRAFT: "In Arbeit", FINALIZED: "Finalisiert" } as const;
+export const HANDOVER_STATUS = { DRAFT: "In Arbeit", FINALIZED: "Finalisiert", DISCARDED: "Verworfen" } as const;
 export type HandoverStatus = keyof typeof HANDOVER_STATUS;
 
 export const DAMAGE_VIEWS = { FRONT: "Vorne", REAR: "Hinten", LEFT: "Links (Fahrerseite)", RIGHT: "Rechts (Beifahrerseite)", TOP: "Dach", INTERIOR: "Innenraum" } as const;
@@ -663,6 +663,9 @@ export const AUDIT_ACTIONS = {
   KEY_DROP_EXCEPTION_USED: "Kontaktlose Rückgabe ohne Kundenbestätigung abgeschlossen (Ausnahme)",
   KEY_DROP_RETURN_TIME_CORRECTED: "Mietende bei kontaktloser Rückgabe korrigiert",
   RETURN_DRAFT_DISCARDED: "Leerer Rückgabeentwurf verworfen",
+  // Storno nach Fahrerprüfung: Übergabe-Entwurf verworfen statt gelöscht (Prüfvermerke bleiben), Dateien nach dem Storno entfernt
+  HANDOVER_DRAFT_DISCARDED: "Übergabe-Entwurf beim Storno verworfen",
+  STORAGE_FILE_REMOVAL_FAILED: "Datei nach dem Storno nicht entfernt",
   // Befehl 29: Unfallersatz (Bezug immer die Buchung; Details nur Fallnummer, Statuswerte, Beträge – keine Personendaten)
   ACCIDENT_CASE_CREATED: "Unfallersatzfall angelegt",
   ACCIDENT_CASE_UPDATED: "Unfallersatzfall geändert",

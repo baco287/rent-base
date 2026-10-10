@@ -1,7 +1,15 @@
-# Vorschlag: Übergabe-Entwurf beim Storno als „verworfen“ kennzeichnen (Option A)
+# Übergabe-Entwurf beim Storno als „verworfen“ kennzeichnen (Option A)
 
-Stand 09.10.2026, Branch `worktree-pilot-p0`. **Nur Vorschlag – nichts davon ist umgesetzt, keine Migration angelegt.**
-Zeilenangaben beziehen sich auf den Stand nach Commit 4b820c7.
+**Umgesetzt am 10.10.2026** nach Freigabe mit den Entscheidungen E1 a, E2 a, E3 a, E4 a, E5 a, E6 a, E7 b (nur Übergaben):
+Migration und Datenbankregeln in „Übergabe verwerfen (1/2)“, Anwendung in „Übergabe verwerfen (2/2)“ auf `worktree-pilot-p0`.
+Abweichend vom ursprünglichen Vorschlag (unten):
+- E7: Grund am Entwurf ist der feste Text „Mit dem Storno der Buchung verworfen“; der Stornogrund steht nur an der Buchung.
+- Dateien (Fotos, Kopien) entfernt `removeCancellationFiles` nach dem Commit mit bis zu drei Versuchen je Datei; was dann noch
+  scheitert, steht im Audit-Log (`STORAGE_FILE_REMOVAL_FAILED`, Speicherschlüssel und Kopie-Id) und kann mit derselben Funktion
+  nachgeholt werden. Vorher wurden Fehler beim Entfernen stillschweigend ignoriert.
+- Die Übergabe-Seite zeigt für stornierte Buchungen einen eigenen Hinweis statt „vor Einführung des Assistenten übergeben“.
+
+Der folgende Text ist der ursprüngliche Vorschlag vom 09.10.2026 (Zeilenangaben Stand Commit 4b820c7).
 
 ## 1. Problem
 

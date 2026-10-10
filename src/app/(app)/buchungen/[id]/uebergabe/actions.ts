@@ -32,7 +32,7 @@ const base = (bookingId: string) => `/buchungen/${bookingId}/uebergabe`;
 /** Rolle, Mandant und das Übergabeprotokoll der Buchung. Übergaben führen Inhaber, Disponent und Hofmitarbeiter durch. */
 async function context(bookingId: string) {
   const { tenant, user } = await requireRole("DISPO", "YARD");
-  const handover = await db.handover.findFirst({ where: { bookingId, tenantId: tenant.id, type: "PICKUP", correctsId: null }, orderBy: { createdAt: "desc" } });
+  const handover = await db.handover.findFirst({ where: { bookingId, tenantId: tenant.id, type: "PICKUP", correctsId: null, status: { not: "DISCARDED" } }, orderBy: { createdAt: "desc" } });
   if (!handover) redirect(base(bookingId));
   return { tenant, user, handover, actor: { id: user.id, name: user.name } };
 }

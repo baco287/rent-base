@@ -45,7 +45,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
 
   const b = await db.booking.findFirst({
     where: { id, tenantId: tenant.id },
-    include: { vehicle: { include: { group: true } }, customer: true, contract: { include: { drivers: true } }, handovers: { where: { type: "PICKUP", correctsId: null }, orderBy: { createdAt: "desc" }, take: 1 } },
+    include: { vehicle: { include: { group: true } }, customer: true, contract: { include: { drivers: true } }, handovers: { where: { type: "PICKUP", correctsId: null, status: { not: "DISCARDED" } }, orderBy: { createdAt: "desc" }, take: 1 } },
   });
   if (!b) notFound();
   const stage = bookingStage(b, b.contract);
@@ -54,8 +54,9 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
   const caseClosed = b.rentalType === "ACCIDENT_REPLACEMENT" && (await accidentCaseClosed(db, tenant.id, b.id));
   const closedNotice = caseClosed ? <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm font-medium">{ACCIDENT_CASE_CLOSED_MESSAGE} Übergabe und Rückgabe sind gesperrt, bis der Fall in der Fallakte wieder geöffnet wird.</p> : null;
 
-  // Noch keine Übergabe begonnen
+  // Noch keine Übergabe begonnen (ein beim Storno verworfener Entwurf zählt nicht als Übergabe)
   if (!existing) {
+    const discardedDrafts = stage === "CANCELLED" ? await db.handover.count({ where: { tenantId: tenant.id, bookingId: b.id, type: "PICKUP", status: "DISCARDED" } }) : 0;
     return (
       <>
         <PageHeader title="Übergabe" sub={`Buchung ${b.number}`}>
@@ -79,6 +80,11 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
                 <p role="alert" className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 font-medium">Die Übergabe ist erst möglich, wenn der Mietvertrag abgeschlossen ist.</p>
                 {!caseClosed && <div><Link href={`/buchungen/${b.id}/vertrag`} className="btn btn-primary">{stage === "CONTRACT_DRAFT" ? "Mietvertrag fortsetzen" : "Zum Mietvertrag"}</Link></div>}
               </>
+            ) : stage === "CANCELLED" ? (
+              <p className="text-sm text-ink-2">
+                Die Buchung ist storniert, eine Übergabe findet nicht statt.
+                {discardedDrafts > 0 && " Ein begonnener Übergabe-Entwurf wurde mit dem Storno verworfen; erfasste Fahrerprüfungen bleiben als Nachweis erhalten."}
+              </p>
             ) : (
               <p className="text-sm text-ink-2">Für diese Buchung gibt es kein Übergabeprotokoll. Sie wurde vor Einführung des Assistenten übergeben.</p>
             )}

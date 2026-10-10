@@ -11,13 +11,12 @@ import { customerFieldsFromForm, customerSchema, customerToData } from "@/lib/cu
 import { nextCustomerNumber, withNumberRetry } from "@/lib/numbering";
 import { changeBookingStatus } from "@/lib/booking-status";
 import { changeBookingPeriod, previewBookingPeriodChange, type PeriodPriceDecision } from "@/lib/booking-period";
-import { cancelBooking, previewCancellation, type CancellationInput } from "@/lib/cancellation";
+import { cancelBooking, previewCancellation, removeCancellationFiles, type CancellationInput } from "@/lib/cancellation";
 import { sendCancellationConfirmation } from "@/lib/cancellation-mail";
 import { ensureCancellationDocument } from "@/lib/documents";
 import { runCancellationFollowUp } from "@/lib/followup";
 import { fmtCents, toCents } from "@/lib/money";
 import { DomainError } from "@/lib/integrity";
-import { getStorage } from "@/lib/storage";
 import { parseLocalDateTime } from "@/lib/time";
 import { PAYMENT_METHODS, RENTAL_PAYMENT_INTENTS, type RentalPaymentIntent } from "@/lib/constants";
 import { insertRentalPayment, parseRentalAmount, type RentalPaymentInput } from "@/lib/rental-payments";
@@ -261,9 +260,9 @@ export async function setBookingStatusAction(id: string, status: "ACTIVE" | "RET
   // Altfall-Rücknahme ist eine Dispositionsentscheidung; Storno nur über cancelBookingAction (Befehl 27: mit Grund)
   const { tenant } = await requireRole("DISPO");
   try {
-    const { orphanedStorageKeys } = await changeBookingStatus(tenant.id, id, status);
-    // Fotos verworfener Entwürfe aufräumen; ein Fehler hier darf den Statuswechsel nicht rückgängig machen
-    await Promise.all(orphanedStorageKeys.map((k) => Promise.resolve().then(() => getStorage().remove(k)).catch(() => {})));
+    const files = await changeBookingStatus(tenant.id, id, status);
+    // Dateien verworfener Entwürfe aufräumen; ein Fehler hier macht den Statuswechsel nicht rückgängig (steht im Audit-Log)
+    await removeCancellationFiles(tenant.id, null, id, files);
   } catch (e) {
     if (e instanceof DomainError) redirect(`/buchungen/${id}?hinweis=${encodeURIComponent(e.message)}`);
     throw e;
@@ -337,7 +336,8 @@ export async function cancelBookingAction(id: string, _prev: CancelState, formDa
     throw e;
   }
   await runCancellationFollowUp(tenant.id, result, user.id);
-  await Promise.all(result.orphanedStorageKeys.map((k) => Promise.resolve().then(() => getStorage().remove(k)).catch(() => {})));
+  // Fotos verworfener Entwürfe und gelöschte Ausweis-/Führerscheinkopien: Dateien entfernen; Fehlschläge stehen im Audit-Log
+  await removeCancellationFiles(tenant.id, actor, id, result);
   revalidate(id);
   revalidatePath("/auszahlungen");
   revalidatePath("/dispo");
