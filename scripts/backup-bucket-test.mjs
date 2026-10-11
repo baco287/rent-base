@@ -4,7 +4,9 @@
 //
 // Aufruf (Server, siehe Anleitung):
 //   node backup-bucket-test.mjs                    Tag 0: Prüfungen 0–5 und 7
-//   node backup-bucket-test.mjs --after-retention  frühestens 24 h später: Ablauf der Sperre und Wirkung der Lifecycle-Regel
+//   node backup-bucket-test.mjs --after-retention  frühestens 24 h später: Ablauf der Sperre, Löschen der am Tag 0 geschützten
+//                                                  Fassungen (Ablaufprobe, md5.txt), Wirkung der Lifecycle-Regel
+//   node backup-bucket-test.mjs --inventory        nur lesend: Bucket-Einstellungen, Bestand, Sperren, Stand der Lifecycle-Regel
 //   node backup-bucket-test.mjs --cleanup          nach Ablauf der Sperre: alle Testobjekte unter rb-test/ entfernen
 // Prüfung 6 (Coolify-Upload mit mc) läuft getrennt im Coolify-Hilfs-Image, siehe Anleitung.
 // Exit: 0 bestanden · 1 Prüfung nicht ok oder unerwarteter Fehler · 2 Konfiguration abgelehnt · 3 Anmeldung oder Isolation
@@ -18,11 +20,14 @@ const {
   PutBucketVersioningCommand, PutObjectCommand, GetObjectCommand, GetObjectRetentionCommand, PutObjectRetentionCommand,
   DeleteObjectCommand, DeleteObjectsCommand, PutBucketLifecycleConfigurationCommand, GetBucketLifecycleConfigurationCommand,
   ListObjectVersionsCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand,
+  GetBucketPolicyCommand,
 } = s3;
 
 const PREFIX = "rb-test/";
 const PRODUCTION_BUCKETS = ["rent-base-files", "rent-base-backup"];
-const mode = process.argv.includes("--cleanup") ? "cleanup" : process.argv.includes("--after-retention") ? "after" : "day0";
+const mode = process.argv.includes("--cleanup") ? "cleanup"
+  : process.argv.includes("--after-retention") ? "after"
+  : process.argv.includes("--inventory") ? "inventory" : "day0";
 const env = process.env;
 const missing = ["TEST_S3_ENDPOINT", "TEST_S3_BUCKET", "TEST_S3_ACCESS_KEY", "TEST_S3_SECRET_KEY"].filter((k) => !env[k]);
 if (missing.length) { console.log(`ABBRUCH: in /root/backup-test.env fehlt ${missing.join(", ")}`); process.exit(2); }
@@ -61,7 +66,8 @@ process.on("uncaughtException", abort);
 process.on("unhandledRejection", abort);
 try {
   if (mode === "day0") await day0();
-  else if (mode === "after") await afterRetention();
+  else if (mode === "after") { await bucketState(); await afterRetention(); }
+  else if (mode === "inventory") { await bucketState(); await stock("I1"); await lifecycleState("I2"); }
   else await cleanup();
 } catch (e) { abort(e); }
 
@@ -162,16 +168,79 @@ async function versionsUnder(prefix) {
   return out;
 }
 
-async function afterRetention() {
-  const probe = (await versionsUnder(`${PREFIX}ablaufprobe.txt`)).versions[0];
-  if (!probe) { record("A1 Ablaufprobe", false, "nicht gefunden – erst den Tag-0-Lauf ausführen"); return; }
-  const ret = await tryIt(() => c.send(new GetObjectRetentionCommand({ Bucket, Key: probe.Key, VersionId: probe.VersionId })));
-  const until = ret.ok ? new Date(ret.value.Retention?.RetainUntilDate) : null;
-  if (until && until > new Date()) { record("A1 Ablauf der Sperre", null, `Sperre läuft noch bis ${until.toISOString()} – später erneut`); return; }
-  const del = await tryIt(() => c.send(new DeleteObjectCommand({ Bucket, Key: probe.Key, VersionId: probe.VersionId })));
-  record("A1 Löschen nach Ablauf", del.ok, del.ok ? "Ablaufprobe gelöscht – Aufräumen alter Backups ist nach Ablauf möglich" : `weiterhin gesperrt: ${del.error}`);
+// Bucket-Einstellungen nur lesen. Den Policy-Inhalt nicht ausgeben, er kann Access-Key-IDs enthalten.
+async function bucketState() {
+  const lock = await tryIt(() => c.send(new GetObjectLockConfigurationCommand({ Bucket })));
+  const rule = lock.ok ? lock.value.ObjectLockConfiguration?.Rule?.DefaultRetention : null;
+  record("B1 Object Lock", lock.ok && lock.value.ObjectLockConfiguration?.ObjectLockEnabled === "Enabled",
+    lock.ok ? `aktiv, Standard-Sperre ${rule ? `${rule.Mode} ${rule.Days ? `${rule.Days} Tag(e)` : `${rule.Years} Jahr(e)`}` : "keine"}` : lock.error);
+  const ver = await tryIt(() => c.send(new GetBucketVersioningCommand({ Bucket })));
+  record("B2 Versionierung", ver.ok && ver.value.Status === "Enabled", ver.ok ? `Status ${ver.value.Status ?? "aus"}` : ver.error);
+  const lc = await tryIt(() => c.send(new GetBucketLifecycleConfigurationCommand({ Bucket })));
+  const rules = lc.ok ? lc.value.Rules ?? [] : [];
+  record("B3 Lifecycle-Regel", rules.some((r) => r.ID === "rb-test-ablauf" && r.Status === "Enabled"), lc.ok
+    ? rules.map((r) => `${r.ID} ${r.Status}, Präfix ${r.Filter?.Prefix ?? r.Prefix ?? "?"}, Ablauf ${r.Expiration?.Days ?? "–"} Tag, alte Fassungen ${r.NoncurrentVersionExpiration?.NoncurrentDays ?? "–"} Tag`).join("; ")
+    : lc.error);
+  const pol = await tryIt(() => c.send(new GetBucketPolicyCommand({ Bucket })));
+  record("B4 Bucket-Policy", null, pol.ok ? "vorhanden (Inhalt nicht ausgegeben)" : pol.error.startsWith("NoSuchBucketPolicy") ? "keine gesetzt" : `Abfrage: ${pol.error}`);
+}
+
+// Bestand des ganzen Test-Buckets mit Sperrfristen. Fassungen außerhalb von rb-test/ sind eine Abweichung: Abbruch vor jedem Löschen.
+async function stock(id) {
+  const all = await versionsUnder("");
+  const outside = [...all.versions, ...all.markers].filter((v) => !v.Key.startsWith(PREFIX));
+  if (outside.length) { record(id, false, `${outside.length} Fassung(en) außerhalb von ${PREFIX} – Abweichung, Abbruch vor jedem Löschen`); process.exit(3); }
+  const now = new Date();
+  let locked = 0, last = null;
+  for (const v of all.versions) {
+    const r = await tryIt(() => c.send(new GetObjectRetentionCommand({ Bucket, Key: v.Key, VersionId: v.VersionId })));
+    const until = r.ok && r.value.Retention?.RetainUntilDate ? new Date(r.value.Retention.RetainUntilDate) : null;
+    if (until && until > now) locked++;
+    if (until && (!last || until > last)) last = until;
+  }
+  record(id, null, `${all.versions.length} Fassung(en), ${all.markers.length} Löschmarker, alle unter ${PREFIX}; ${locked} noch gesperrt${last ? `, spätestes Sperrende ${last.toISOString()}` : ""}`);
+  return { ...all, locked, last };
+}
+
+// Stand der Lifecycle-Regel unter rb-test/lc/: noch nicht gewirkt, nur Löschmarker gesetzt oder Fassung entfernt.
+async function lifecycleState(id) {
   const lc = await versionsUnder(`${PREFIX}lc/`);
-  record("A2 Wirkung der Lifecycle-Regel", null, lc.versions.length === 0 ? "Objekt unter lc/ automatisch entfernt – Lifecycle wirkt mit Object Lock" : `noch ${lc.versions.length} Fassung(en) unter lc/ – Lifecycle hat (noch) nicht gewirkt; Hetzner verarbeitet Regeln ggf. mit Verzögerung, in 24 h erneut prüfen`);
+  const markerOnTop = lc.markers.some((m) => m.IsLatest);
+  const text = lc.versions.length === 0 && lc.markers.length === 0 ? "Objekt samt aller Fassungen entfernt – Expiration und NoncurrentVersionExpiration haben gewirkt"
+    : lc.versions.length === 0 ? `Fassung entfernt, ${lc.markers.length} Löschmarker übrig`
+    : markerOnTop ? `Expiration hat einen Löschmarker gesetzt, die alte Fassung ist noch da (${lc.versions.length}); NoncurrentVersionExpiration steht aus`
+    : `noch nicht gewirkt: ${lc.versions.length} Fassung, kein Löschmarker`;
+  record(id, null, `Lifecycle unter ${PREFIX}lc/: ${text}`);
+  return lc;
+}
+
+async function afterRetention() {
+  const before = await stock("A0 Bestand vorher");
+  record("A0 Sperre abgelaufen", before.locked === 0, before.locked === 0
+    ? `keine Fassung mehr gesperrt (spätestes Sperrende ${before.last?.toISOString() ?? "?"})`
+    : `${before.locked} Fassung(en) noch gesperrt – später erneut, nichts gelöscht`);
+  if (before.locked) return;
+  // Gelöscht werden nur die am Tag 0 geschützten und dafür vorgesehenen Fassungen: Ablaufprobe und md5.txt (Prüfungen 4a–4e).
+  // Löschen mit Versions-ID entfernt die Fassung endgültig; ein Löschmarker darf dabei nicht entstehen.
+  for (const [id, key] of [["A1 Ablaufprobe endgültig löschen", `${PREFIX}ablaufprobe.txt`], ["A1b In 4a geschützte Fassung endgültig löschen", `${PREFIX}md5.txt`]]) {
+    const pre = await versionsUnder(key);
+    const vs = pre.versions.filter((v) => v.Key === key);
+    const markersBefore = pre.markers.filter((m) => m.Key === key).length;
+    if (!vs.length) { record(id, false, `${key}: keine Fassung gefunden`); continue; }
+    let deleted = 0, failure = "";
+    for (const v of vs) {
+      const d = await tryIt(() => c.send(new DeleteObjectCommand({ Bucket, Key: key, VersionId: v.VersionId })));
+      if (d.ok) deleted++; else failure = d.error;
+    }
+    const post = await versionsUnder(key);
+    const left = post.versions.filter((v) => v.Key === key).length;
+    const markersAfter = post.markers.filter((m) => m.Key === key).length;
+    record(id, deleted === vs.length && left === 0 && markersAfter === markersBefore, left === 0
+      ? `${deleted} Fassung(en) endgültig entfernt; Löschmarker vorher ${markersBefore}, nachher ${markersAfter} (kein neuer)`
+      : `${left} Fassung(en) bleiben${failure ? ` (${failure})` : ""}`);
+  }
+  await lifecycleState("A2 Lifecycle");
+  await stock("A3 Bestand nachher");
 }
 
 async function cleanup() {
