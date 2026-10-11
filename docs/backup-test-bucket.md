@@ -175,3 +175,17 @@ Bucket `rent-base-backup-test` in hel1, Projekt „Rent-Base Backup“. **SDK-Te
 - 13.10.2026: erwartet ist, dass NoncurrentVersionExpiration die alte Fassung endgültig entfernt.
 
 Hetzner nennt keine Bearbeitungszeiten. Verzögert sich die Wirkung um einen Tag, ist das kein Fehler.
+
+**Ausgangsstand vor dem Stichtag** (11.10.2026, 21:2x UTC, `--inventory`, nur lesend): 6 Fassungen, 1 Löschmarker, nichts gesperrt.
+
+| Objekt | Fassungen | Löschmarker | Aktuell |
+|---|---|---|---|
+| `rb-test/default.txt` | 2 | 0 | Fassung vom 10.10. |
+| `rb-test/lc/ablauf.txt` (Lifecycle-Regel) | 1 | 0 | Fassung vom 10.10. 11:13 UTC; fällig ab 12.10. 00:00 UTC |
+| `rb-test/md5.txt` | 0 | 1 | Löschmarker aus Prüfung 4f |
+| `rb-test/ohne-pruefsumme.txt` | 1 | 0 | Fassung |
+| `rb-test/rundlauf-12mb-teile.bin` | 1 | 0 | Fassung |
+| `rb-test/rundlauf-1mb.bin` | 1 | 0 | Fassung |
+
+Außerhalb von `lc/` gilt keine Lifecycle-Regel. Diese Objekte dürfen sich bis zum Aufräumen nicht verändern.
+Das ist zugleich die Gegenprobe: Die Regel darf nur ihr Präfix treffen.
