@@ -67,7 +67,7 @@ process.on("unhandledRejection", abort);
 try {
   if (mode === "day0") await day0();
   else if (mode === "after") { await bucketState(); await afterRetention(); }
-  else if (mode === "inventory") { await bucketState(); await stock("I1"); await lifecycleState("I2"); }
+  else if (mode === "inventory") { await bucketState(); await stock("I1"); await perKey("I3"); await lifecycleState("I2"); }
   else await cleanup();
 } catch (e) { abort(e); }
 
@@ -200,6 +200,15 @@ async function stock(id) {
   }
   record(id, null, `${all.versions.length} Fassung(en), ${all.markers.length} Löschmarker, alle unter ${PREFIX}; ${locked} noch gesperrt${last ? `, spätestes Sperrende ${last.toISOString()}` : ""}`);
   return { ...all, locked, last };
+}
+
+// Je Objekt: Anzahl Fassungen und Löschmarker, und ob die aktuelle Fassung ein Löschmarker ist (nur lesend).
+async function perKey(id) {
+  const all = await versionsUnder(PREFIX);
+  const keys = new Map();
+  for (const v of all.versions) { const k = keys.get(v.Key) ?? { versions: 0, markers: 0, top: "" }; k.versions++; if (v.IsLatest) k.top = `Fassung vom ${new Date(v.LastModified).toISOString().slice(0, 16)}Z`; keys.set(v.Key, k); }
+  for (const m of all.markers) { const k = keys.get(m.Key) ?? { versions: 0, markers: 0, top: "" }; k.markers++; if (m.IsLatest) k.top = `Löschmarker vom ${new Date(m.LastModified).toISOString().slice(0, 16)}Z`; keys.set(m.Key, k); }
+  for (const [key, k] of [...keys].sort()) record(id, null, `${key}: ${k.versions} Fassung(en), ${k.markers} Löschmarker; aktuell: ${k.top || "–"}`);
 }
 
 // Stand der Lifecycle-Regel unter rb-test/lc/: noch nicht gewirkt, nur Löschmarker gesetzt oder Fassung entfernt.
