@@ -4,6 +4,10 @@ Entscheidungsgrundlage für den Backup-Bucket. Das operative Vorgehen steht in [
 
 **Stand:** 09.10.2026, nur aus Anbieter-Dokumentation und Quellcode geprüft. **Es ist noch nichts angelegt.**
 
+**Nachtrag 11.10.2026:** Object Lock, Coolify-Upload und das Löschen nach Ablauf der Sperre sind am Test-Bucket in hel1
+belegt ([backup-test-bucket.md](backup-test-bucket.md)). Offen sind die Wirkung der Lifecycle-Regel und der Policy-Test.
+Der angepasste Vorschlag steht in [backup-produktion-vorschlag.md](backup-produktion-vorschlag.md).
+
 **Quellen:**
 - Hetzner: [Buckets und Objekte](https://docs.hetzner.com/storage/object-storage/faq/buckets-objects/), [Object Lock Retention](https://docs.hetzner.com/storage/object-storage/howto-protect-objects/protect-object-lock-retention/), [Lifecycle](https://docs.hetzner.com/storage/object-storage/howto-protect-objects/manage-lifecycle/), [S3-Zugangsdaten](https://docs.hetzner.com/storage/object-storage/faq/s3-credentials/), [unterstützte Aktionen](https://docs.hetzner.com/storage/object-storage/supported-actions/)
 - Coolify v4.4.3: `app/Jobs/DatabaseBackupJob.php`

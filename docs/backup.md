@@ -2,6 +2,12 @@
 
 Rent-Base speichert Verträge, Unterschriften, Übergabeprotokolle und Fotos, die nicht verloren gehen dürfen. Die Begründungen zu Object Lock, Zugangsdaten und Datenschutz stehen in [backup-strategie.md](backup-strategie.md). Dieses Dokument ist die Betriebsanleitung.
 
+**Stand 11.10.2026:**
+- Der Test-Bucket ist geprüft ([backup-test-bucket.md](backup-test-bucket.md)).
+- Der aktuelle Vorschlag steht in [backup-produktion-vorschlag.md](backup-produktion-vorschlag.md): Bucket in **hel1**,
+  zwei Schreibschlüssel, stündliche Sicherung.
+- Die fsn1-Angaben unten werden mit dessen Freigabe angepasst.
+
 **Status:** vorbereitet, **noch nichts aktiv**. Reihenfolge der Einrichtung:
 1. Test-Bucket prüfen.
 2. Produktiven Bucket anlegen.

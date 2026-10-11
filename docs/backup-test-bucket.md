@@ -145,3 +145,33 @@ Bucket `rent-base-backup-test` in hel1, Projekt „Rent-Base Backup“. **SDK-Te
 **Offen:**
 - A1 Löschen nach Ablauf der Sperre und A2 Wirkung der Lifecycle-Regel: `--after-retention` frühestens am 11.10.2026 um 11:15 UTC.
 - Das Aufräumen folgt erst nach Prüfung der Ergebnisse und mit Freigabe.
+
+## Ergebnis Tag 1 (11.10.2026, 17:39 UTC)
+
+**Vorab nur lesend (`--inventory`):**
+- Bestand wie am Ende von Tag 0: 9 Fassungen und 1 Löschmarker (aus 4f), alle unter `rb-test/`.
+- Keine Sperre mehr aktiv; die letzte endete am 11.10. um 11:14:07 UTC.
+- Einstellungen unverändert, keine Bucket-Policy. Es gab keine Abweichung.
+
+**Nachtest (`--after-retention`):** SDK-Teil 7 bestanden, 0 nicht ok. `mc`-Teil 2 bestanden. Gesamt-Exit 0.
+
+| Nr. | Frage | Ergebnis |
+|---|---|---|
+| 0, B1–B4 | Isolation und Einstellungen | PASS. Nur der Test-Bucket sichtbar; COMPLIANCE 1 Tag; Versionierung an; Lifecycle-Regel vorhanden; keine Policy |
+| A0 | Ist die Sperre abgelaufen? | PASS. Keine der 9 Fassungen mehr gesperrt |
+| A1 | Lässt sich die Ablaufprobe jetzt löschen? | PASS. Fassung endgültig entfernt, kein neuer Löschmarker |
+| A1b | Lässt sich die in 4a–4e geschützte `md5.txt` jetzt löschen? | PASS. Fassung endgültig entfernt. Übrig bleibt nur der Löschmarker aus 4f |
+| M1–M4 | Verhält sich `mc` anders als das SDK? | PASS, kein Unterschied. Gleicher Bestand (7 Fassungen, 1 Löschmarker), gleiche Standard-Sperre. `mc retention info` meldet für die `mc`-Testdatei „COMPLIANCE, expired“. `mc rm --versions --force` entfernt sie jetzt endgültig, ohne Löschmarker; am Tag 0 wurde genau das abgelehnt |
+| A2 | Hat die Lifecycle-Regel gewirkt? | Noch nicht. Das ist erwartet: S3 rechnet „1 Tag“ ab der Erstellung (10.10. 11:14 UTC) und rundet auf die nächste Mitternacht UTC, also auf den 12.10. 00:00 UTC |
+
+**Löschen mit Versions-ID entfernt Daten endgültig, Löschen ohne Versions-ID setzt nur einen Löschmarker (4f).**
+- Für die Produktion heißt das: Nach Ablauf der Sperre kann nur wer `DeleteObjectVersion` darf Daten wirklich entfernen, also der Admin-Schlüssel oder die Lifecycle-Regel.
+- Der Schreibschlüssel darf das nicht.
+
+**Bestand nach Tag 1:** 6 Fassungen, 1 Löschmarker. Ungesperrt sind `default.txt` (2), `ohne-pruefsumme.txt`, `lc/ablauf.txt`, `rundlauf-1mb.bin` und `rundlauf-12mb-teile.bin`.
+
+**Lifecycle-Nachprüfung, nur lesend mit `--inventory`:**
+- 12.10.2026: erwartet ist, dass Expiration einen Löschmarker setzt.
+- 13.10.2026: erwartet ist, dass NoncurrentVersionExpiration die alte Fassung endgültig entfernt.
+
+Hetzner nennt keine Bearbeitungszeiten. Verzögert sich die Wirkung um einen Tag, ist das kein Fehler.

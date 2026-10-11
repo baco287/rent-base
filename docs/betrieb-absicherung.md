@@ -209,6 +209,9 @@ Bis Schritt 3 steht, gibt es **kein** Backup der Produktionsdaten außer dem Het
   - Laut Quelltext (`DatabaseBackupJob.php`, Coolify 4.4.6) ruft Coolify `docker exec … mc alias set … <Key> <Secret>` auf dem Host auf.
   - `/proc` ist ohne `hidepid` eingehängt, und neben root gibt es den Login-Benutzer `deploy`. Er könnte die Schlüssel während
     eines Backup-Laufs in der Prozessliste sehen.
+  - **Nachtrag 11.10.2026:**
+    - `deploy` hat `sudo` ohne Passwort, ist in der Gruppe `docker` und hat einen SSH-Schlüssel. Er ist also ohnehin gleichwertig zu root.
+    - Bewertung und Lösungen: [backup-produktion-vorschlag.md](backup-produktion-vorschlag.md), Abschnitt 3.
   - Vorschlag:
     - Zuerst klären, wofür `deploy` gebraucht wird.
     - Wird er nicht gebraucht, die Anmeldung für ihn sperren.
