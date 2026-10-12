@@ -20,7 +20,7 @@ const {
   PutBucketVersioningCommand, PutObjectCommand, GetObjectCommand, GetObjectRetentionCommand, PutObjectRetentionCommand,
   DeleteObjectCommand, DeleteObjectsCommand, PutBucketLifecycleConfigurationCommand, GetBucketLifecycleConfigurationCommand,
   ListObjectVersionsCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand,
-  GetBucketPolicyCommand,
+  GetBucketPolicyCommand, GetObjectLegalHoldCommand, ListMultipartUploadsCommand,
 } = s3;
 
 const PREFIX = "rb-test/";
@@ -198,7 +198,15 @@ async function stock(id) {
     if (until && until > now) locked++;
     if (until && (!last || until > last)) last = until;
   }
-  record(id, null, `${all.versions.length} Fassung(en), ${all.markers.length} Löschmarker, alle unter ${PREFIX}; ${locked} noch gesperrt${last ? `, spätestes Sperrende ${last.toISOString()}` : ""}`);
+  // Legal Holds laufen nicht ab; unvollständige Teil-Uploads werden berechnet, ohne als Fassung zu erscheinen.
+  let holds = 0, holdUnknown = 0;
+  for (const v of all.versions) {
+    const h = await tryIt(() => c.send(new GetObjectLegalHoldCommand({ Bucket, Key: v.Key, VersionId: v.VersionId })));
+    if (h.ok) { if (h.value.LegalHold?.Status === "ON") holds++; } else if (!/NoSuchObjectLockConfiguration|NoSuchLegalHold/.test(h.error)) holdUnknown++;
+  }
+  const mpu = await tryIt(() => c.send(new ListMultipartUploadsCommand({ Bucket, Prefix: PREFIX })));
+  const parts = mpu.ok ? (mpu.value.Uploads ?? []).length : null;
+  record(id, null, `${all.versions.length} Fassung(en), ${all.markers.length} Löschmarker, alle unter ${PREFIX}; ${locked} noch gesperrt${last ? `, spätestes Sperrende ${last.toISOString()}` : ""}; Legal Hold an: ${holds}${holdUnknown ? `, unklar: ${holdUnknown}` : ""}; unvollständige Teil-Uploads: ${parts ?? `nicht lesbar (${mpu.error})`}`);
   return { ...all, locked, last };
 }
 
@@ -253,6 +261,10 @@ async function afterRetention() {
 }
 
 async function cleanup() {
+  const mpu = await tryIt(() => c.send(new ListMultipartUploadsCommand({ Bucket, Prefix: PREFIX })));
+  let abortedParts = 0;
+  for (const m of mpu.ok ? mpu.value.Uploads ?? [] : []) if ((await tryIt(() => c.send(new AbortMultipartUploadCommand({ Bucket, Key: m.Key, UploadId: m.UploadId })))).ok) abortedParts++;
+  record("C0 Teil-Uploads", mpu.ok && abortedParts === (mpu.value.Uploads ?? []).length, mpu.ok ? `${abortedParts} von ${(mpu.value.Uploads ?? []).length} unvollständigen Teil-Uploads abgebrochen` : `nicht lesbar (${mpu.error})`);
   const all = await versionsUnder(PREFIX);
   let removed = 0, locked = 0;
   for (const v of [...all.versions, ...all.markers]) {

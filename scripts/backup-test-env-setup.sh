@@ -77,8 +77,11 @@ if [ "$WRITER" = 0 ]; then
   [[ $bucket =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ ]] || abbruch "ungültiger Bucket-Name (nur a–z, 0–9 und Bindestrich)"
   [[ $bucket == *test* ]] || abbruch "der Bucket-Name muss „test“ enthalten"
 else
-  IFS= read -r -p "Projekt-ID des Writer-Projekts (Zahl aus der Console-Adresse …/projects/<ID>/…): " projekt || abbruch "Eingabe beendet, nichts angelegt"
-  [[ $projekt =~ ^[0-9]{1,12}$ ]] || abbruch "ungültige Projekt-ID (nur Ziffern)"
+  # Verdeckt, damit ein versehentlich zu früh eingefügter Schlüssel nicht sichtbar wird; die gültige ID wird danach angezeigt.
+  IFS= read -r -s -p "Projekt-ID des Writer-Projekts (Zahl aus der Console-Adresse …/projects/<ID>/…, bleibt unsichtbar): " projekt || abbruch "Eingabe beendet, nichts angelegt"
+  builtin printf '\n'
+  [[ $projekt =~ ^[0-9]{1,12}$ ]] || { projekt=""; abbruch "ungültige Projekt-ID (nur Ziffern) – Eingabe verworfen; jetzt nichts weiter einfügen"; }
+  builtin printf '  Projekt-ID %s erfasst.\n' "$projekt"
 fi
 
 lies_geheim ak "Access Key"
