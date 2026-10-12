@@ -221,8 +221,10 @@ async function run() {
   console.log("S0 Policy wird jetzt gesetzt");
   const put = await tryIt(() => Aonce.send(new PutBucketPolicyCommand({ Bucket, Policy: policyDoc })));
   record("S1 Policy gesetzt", put.ok, put.ok ? "mit dem Admin-Schlüssel gesetzt (Inhalt nicht ausgegeben)" : `nicht bestätigt: ${put.error} – --finish prüft und räumt auf`);
-  if (!put.ok) return;
-  const back = await retry(() => A.send(new GetBucketPolicyCommand({ Bucket })));
+  if (!put.ok) { unconfirmedPolicyWrite("S1"); return; }
+  let back = await retry(() => A.send(new GetBucketPolicyCommand({ Bucket })));
+  // Bestätigtes Setzen, aber noch „keine Policy“ lesbar: bis zu 60 s auf die Sichtbarkeit warten (wie P1 auf die Wirkung).
+  for (let i = 0; i < 12 && isNoPolicy(back); i++) { await sleep(5000); back = await retry(() => A.send(new GetBucketPolicyCommand({ Bucket }))); }
   if (back.ok && isExactlyOurs(back.value.Policy)) {
     const exact = canon(back.value.Policy) === canon(policyDoc);
     record("S2 Policy zurückgelesen", true, exact ? "genau die Test-Policy dieses Laufs" : "Test-Policy dieses Laufs, von Hetzner umformatiert");
@@ -309,13 +311,16 @@ async function run() {
   const beforeN6 = await retry(() => A.send(new GetBucketPolicyCommand({ Bucket })));
   if (!(beforeN6.ok && isExactlyOurs(beforeN6.value.Policy))) record("N6/N7", null, "entfallen: am Bucket steht nicht mehr genau die Test-Policy dieses Laufs");
   else {
-    expectDenied("N6", "Bucket-Policy setzen (identischer Inhalt)", await tryIt(() => Wonce.send(new PutBucketPolicyCommand({ Bucket, Policy: policyDoc }))), "ERLAUBT – der Writer kann die Policy ändern (Inhalt blieb gleich)");
+    const n6 = await tryIt(() => Wonce.send(new PutBucketPolicyCommand({ Bucket, Policy: policyDoc })));
+    expectDenied("N6", "Bucket-Policy setzen (identischer Inhalt)", n6, "ERLAUBT – der Writer kann die Policy ändern (Inhalt blieb gleich)");
+    if (!n6.ok && !isDenied(n6)) unconfirmedPolicyWrite("N6");
     const dp = await tryIt(() => Wonce.send(new DeleteBucketPolicyCommand({ Bucket })));
     expectDenied("N7", "Bucket-Policy löschen", dp, "ERLAUBT – der Writer kann die Policy löschen");
     if (!isDenied(dp)) {
       const now = await retry(() => A.send(new GetBucketPolicyCommand({ Bucket })));
       if (isNoPolicy(now)) {
         const re = await tryIt(() => Aonce.send(new PutBucketPolicyCommand({ Bucket, Policy: policyDoc })));
+        if (!re.ok) unconfirmedPolicyWrite("N7 Wiederherstellung");
         record("N7 Wiederherstellung", re.ok, re.ok ? "Policy war weg; Test-Policy vom Admin neu gesetzt" : `nicht neu gesetzt (${re.error}) – der Writer hat damit keinen Zugriff mehr`);
       } else record("N7 Wiederherstellung", now.ok && isExactlyOurs(now.value.Policy) ? null : false, now.ok && isExactlyOurs(now.value.Policy) ? "Test-Policy steht weiterhin – nichts neu gesetzt" : `Zustand ${now.ok ? "verändert" : `unklar (${now.error})`} – nichts neu gesetzt`);
     }
@@ -358,6 +363,10 @@ async function run() {
   console.log("\nDie Policy bleibt für den mc-Teil gesetzt; danach entfernt --finish sie.");
 }
 
+// Ein Policy-Schreibaufruf ohne Antwort könnte der Server verspätet noch ausführen: das Rahmenskript räumt dann nach 10 Minuten
+// ein zweites Mal auf (feste Zeile „S9 …“).
+function unconfirmedPolicyWrite(where) { console.log(`S9 Policy-Schreibaufruf unbestätigt (${where})`); }
+
 // Legal-Hold-Zustand einer Fassung: "frei", "an" oder "unklar". Erst Admin, ersatzweise Writer (nur solange die Policy gilt).
 async function holdState(Key, VersionId) {
   for (const c of [A, W]) {
@@ -399,35 +408,42 @@ async function removeOurPolicy() {
 
 // Aufräumen in dieser Reihenfolge: Legal Holds (solange die Policy dem Writer noch Zugriff gibt), Teil-Uploads, dann die Policy.
 // Nur die Policy DIESES Laufs wird entfernt. Exit 0 aufgeräumt, 1 bleibender Befund, 4 vorübergehend – erneut versuchen.
+// Ist die Policy offen oder unklar, gilt immer Exit 4 (erneut versuchen), auch neben einem bleibenden Befund.
 async function finish() {
   let transient = false, lasting = false;
-  const inv = await retry(() => A.send(new ListObjectVersionsCommand({ Bucket, Prefix: PREFIX })));
-  let on = 0, unknown = 0;
-  if (inv.ok) {
-    const deadline = Date.now() + 5 * 60_000; // Holds höchstens 5 Minuten lang prüfen, dann weiter zur Policy
-    for (const v of inv.value.Versions ?? []) {
-      if (Date.now() > deadline) { unknown++; continue; }
+  let inv = { ok: false, error: "nicht gelesen" }, on = 0, unknown = 0, checked = 0;
+  let mpu = { ok: false, error: "nicht gelesen" }, aborted = 0, abortFail = 0;
+  // Legal Holds und Teil-Uploads höchstens 5 Minuten; danach in jedem Fall weiter zur Policy (Rest zählt als unklar).
+  let stop = false;
+  const pre = async () => {
+    inv = await retry(() => A.send(new ListObjectVersionsCommand({ Bucket, Prefix: PREFIX })));
+    for (const v of inv.ok ? inv.value.Versions ?? [] : []) {
+      if (stop) break;
       let st = await holdState(v.Key, v.VersionId);
       if (st !== "frei") st = await releaseHold(v.Key, v.VersionId);
+      checked++;
       if (st === "an") on++; else if (st === "unklar") unknown++;
     }
-    if (inv.value.IsTruncated) unknown++;
-  }
+    if (stop) return;
+    mpu = await retry(() => A.send(new ListMultipartUploadsCommand({ Bucket, Prefix: PREFIX })));
+    for (const m of mpu.ok ? mpu.value.Uploads ?? [] : []) {
+      if (stop) break;
+      const a = await retry(() => A.send(new AbortMultipartUploadCommand({ Bucket, Key: m.Key, UploadId: m.UploadId })));
+      if (a.ok) aborted++; else abortFail++;
+    }
+  };
+  const limit = new Promise((r) => setTimeout(r, 5 * 60_000).unref());
+  await Promise.race([pre(), limit.then(() => { stop = true; })]);
+  if (inv.ok) unknown += (inv.value.Versions ?? []).length - checked + (inv.value.IsTruncated ? 1 : 0);
   if (!inv.ok) transient = true;
   if (on) lasting = true;
   if (unknown) transient = true;
   record("F1 Legal Holds im Laufpräfix", inv.ok && !on && !unknown, !inv.ok ? `Bestand nicht lesbar (${inv.error})`
-    : on || unknown ? `${on} weiterhin AN, ${unknown} unklar – Writer-Testschlüssel NICHT löschen; Rückweg in der Anleitung`
-    : `${(inv.value.Versions ?? []).length} Fassung(en) geprüft, kein Legal Hold`);
-
-  const mpu = await retry(() => A.send(new ListMultipartUploadsCommand({ Bucket, Prefix: PREFIX })));
-  let aborted = 0, abortFail = 0;
-  for (const m of mpu.ok ? mpu.value.Uploads ?? [] : []) {
-    const a = await retry(() => A.send(new AbortMultipartUploadCommand({ Bucket, Key: m.Key, UploadId: m.UploadId })));
-    if (a.ok) aborted++; else abortFail++;
-  }
-  if (!mpu.ok || abortFail) transient = true;
-  record("F2 Unvollständige Teil-Uploads", mpu.ok && abortFail === 0, mpu.ok ? `${aborted + abortFail} gefunden, ${aborted} abgebrochen` : `nicht lesbar (${mpu.error})`);
+    : on || unknown ? `${on} weiterhin AN, ${unknown} unklar oder nicht geprüft – Writer-Testschlüssel NICHT löschen; Rückweg in der Anleitung`
+    : `${checked} Fassung(en) geprüft, kein Legal Hold`);
+  const mpuOpen = !mpu.ok || abortFail > 0 || (stop && mpu.ok && aborted + abortFail < (mpu.value.Uploads ?? []).length);
+  if (mpuOpen) transient = true;
+  record("F2 Unvollständige Teil-Uploads", !mpuOpen, mpu.ok ? `${(mpu.value.Uploads ?? []).length} gefunden, ${aborted} abgebrochen` : `nicht lesbar (${mpu.error})`);
 
   const res = await removeOurPolicy();
   if (res.state === "offen") transient = true;
@@ -436,10 +452,10 @@ async function finish() {
 
   let w;
   for (let i = 0; i < 12; i++) { w = await tryIt(() => W.send(new ListObjectsV2Command({ Bucket, Prefix: PREFIX, MaxKeys: 1 }))); if (!w.ok) break; await sleep(5000); }
-  if (!isDenied(w) && !lasting) transient = true;
   record("F4 Writer ohne Zugriff", isDenied(w), isDenied(w) ? "Zugriff auf den Test-Bucket abgewiesen" : w.ok ? "Writer hat WEITERHIN Zugriff" : `nicht eindeutig (${w.error})`);
   record("F5 Bestand im Laufpräfix", null, inv.ok
-    ? `${(inv.value.Versions ?? []).length} Fassung(en), ${(inv.value.DeleteMarkers ?? []).length} Löschmarker; ${on || unknown ? "Legal Hold offen – siehe F1" : "gesperrt höchstens bis Standard-Sperre bzw. 26 h"}. Aufräumen später mit --cleanup des Bucket-Tests; den Writer-Testschlüssel erst danach löschen`
+    ? `${(inv.value.Versions ?? []).length} Fassung(en), ${(inv.value.DeleteMarkers ?? []).length} Löschmarker; ${on || unknown ? "Legal Hold offen oder ungeprüft – siehe F1" : "gesperrt höchstens bis Standard-Sperre bzw. 26 h"}. Aufräumen später mit --cleanup des Bucket-Tests; den Writer-Testschlüssel erst danach löschen`
     : inv.error);
-  process.exitCode = lasting ? 1 : transient ? 4 : results.some((r) => r.ok === false) ? 1 : 0;
+  const policyOpen = res.state === "offen" || ((res.state === "keine" || res.state === "weg") && !isDenied(w));
+  process.exitCode = policyOpen ? 4 : lasting ? 1 : transient ? 4 : results.some((r) => r.ok === false) ? 1 : 0;
 }

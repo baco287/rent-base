@@ -91,8 +91,15 @@ Zufallsteil, etwa `20261013T130000Z-3fa91c`; das Präfix muss vor dem Lauf leer 
      `docker kill` oder einem Signal an bash.
    - Ohne Markierung entfällt das Aufräumen nur, wenn `--run` regulär vor dem Setzen endete (Exit 2 oder 3) und die
      Mitschrift vollständig ist. In jedem anderen Fall wird vorsorglich aufgeräumt; das ist harmlos.
-   - Blieb das Setzen unbestätigt (keine Antwort), folgt nach 10 Minuten ein zweiter Aufräumdurchgang. Falls der Server den
-     Aufruf verspätet doch noch ausführt, wird die Policy so auch dann entfernt.
+   - In bestimmten Fällen folgt nach 10 Minuten ein zweiter Aufräumdurchgang. Er erfasst eine Policy, die erst verspätet
+     sichtbar oder wirksam wird:
+     - die gesetzte Policy wurde nicht als eigene zurückgelesen (S2; S2 wartet vorher bis zu 60 s auf die Sichtbarkeit),
+     - ein späterer Policy-Schreibaufruf blieb ohne Antwort (Zeile `S9`),
+     - die Mitschrift war gestört.
+   - Der `mc`-Teil startet nur nach einem regulär abgeschlossenen `--run`, also mit Ergebniszeile und bestandenem S1, S2 und
+     P1, und läuft höchstens 75 Minuten. Nach einem Abbruch wird sofort aufgeräumt.
+   - Beim Aufräumen sind Legal Holds und Teil-Uploads auf 5 Minuten begrenzt; danach geht es in jedem Fall weiter zur Policy.
+     Ist die Policy offen oder unklar, gilt immer „erneut versuchen“, auch neben einem bleibenden Befund.
    - Das Aufräumen versucht es bis zu fünfmal mit Pause, außer bei Erfolg und bei einem bleibenden Befund wie einer fremden
      Policy.
    - **Zeitlimits:**
@@ -123,8 +130,11 @@ Zufallsteil, etwa `20261013T130000Z-3fa91c`; das Präfix muss vor dem Lauf leer 
    - Schlüssel kommen nur über `--env-file` in die Container und über stdin an `mc`. Fehler meldet das Skript nur mit Namen
      und HTTP-Status, `mc`-Fehlertexte mit ersetzten Schlüsseln.
    - Die Policy wird nie ausgegeben, weil sie die Access-Key-ID des Writers enthält.
-   - Der Lauf bricht ab, wenn der Docker-Debug-Modus oder das Log-Level `debug` aktiv ist; sonst stünden die
+   - Der Lauf bricht ab, wenn der Docker-Debug-Modus oder das Log-Level `debug`/`trace` aktiv ist; sonst stünden die
      Container-Umgebungen im Daemon-Log.
+     - Geprüft werden `docker info`, die Startparameter von `dockerd` (auch eine abweichende Konfigurationsdatei) und das
+       Daemon-Protokoll der letzten 15 Minuten.
+     - Ist das nicht prüfbar, bricht der Lauf ebenfalls ab.
    - Container schreiben keine Speicherabbilder (`--ulimit core=0`).
    - Die Projekt-ID wird verdeckt eingegeben, mit drei Versuchen. So bleibt ein zu früh eingefügter Schlüssel unsichtbar.
    - Nach einem Abbruch mitten in der Eingabe nimmt das Skript weitere Eingaben unsichtbar entgegen, bis „ende“ kommt. So
@@ -132,14 +142,19 @@ Zufallsteil, etwa `20261013T130000Z-3fa91c`; das Präfix muss vor dem Lauf leer 
 
 **Lokal nachgewiesen** mit erfundenen Schlüsseln und nachgebildetem S3:
 - 36 Fälle des Einrichtungsskripts
-- 25 Fälle zur Policy-Sicherheit: fremde, unklare, umformatierte, veränderte und Alt-Policies, Abweichungen direkt nach dem
-  Setzen, belegtes Präfix, Stichtag, Konfiguration
-- 13 Fälle zur Ablauflogik des Rahmenskripts: Markierung, gestörte Mitschrift, Abbruch, Signal, Wiederholungen, zweiter
-  Durchgang
+- 27 Fälle zur Policy-Sicherheit: fremde, unklare, umformatierte, veränderte und Alt-Policies, Abweichungen und verzögerte
+  Sichtbarkeit direkt nach dem Setzen, belegtes Präfix, Stichtag, Konfiguration
+- 17 Fälle zur Ablauflogik des Rahmenskripts: Markierung, gestörte Mitschrift, Abbruch vor und nach P1, Signal,
+  Wiederholungen, zweiter Durchgang, `mc`-Start
 - Prüfungen, dass kein Schlüssel-Teilstück in einer Ausgabe erscheint
 
-**Dazu zwei unabhängige Prüfrunden:** Je fünf Prüfer sollten die Zusagen gezielt widerlegen, jeder Befund wurde gegengeprüft.
-Die bestätigten Befunde (21 in Runde 1, 25 in Runde 2, viele davon überschneidend) sind behoben.
+**Dazu drei unabhängige Prüfrunden:** Prüfer sollten die Zusagen gezielt widerlegen, jeder Befund wurde gegengeprüft.
+- Runde 1: 21 bestätigte Befunde
+- Runde 2: 25 bestätigte Befunde
+- Runde 3 (nur geänderte Stellen): 9 bestätigte Befunde
+
+Viele Befunde überschneiden sich, alle sind behoben. Die lokalen Tests fanden zusätzlich einen Fehler, der sogar im Vorschlag
+eines Prüfers steckte (`PIPESTATUS`).
 
 ## 4. Wann ist der Lauf sauber beendet?
 
@@ -156,7 +171,7 @@ Erst dann dürfen die Zugangsdatei des Writers entfernt und, später, der Writer
 |---|---|
 | Lauf hängt sichtbar | `docker kill rb-policy-run-<Lauf> rb-policy-mc-<Lauf> rb-policy-finish-<Lauf>`. Danach räumt das Rahmenskript selbst auf. bash nicht beenden |
 | Neuer Lauf startet nicht: „Container eines früheren Laufs vorhanden“ | zuerst `--finish-only` mit dessen Kennung |
-| Protokoll endet ohne „aufgeräumt“, oder der Server wurde neu gestartet | `bash /root/backup-policy-test/run.sh --finish-only <Lauf>`. Die Laufkennung steht in der ersten Protokollzeile. Wiederholbar; ändert nichts, wenn es nichts zu tun gibt. Braucht beide Zugangsdateien und einen laufenden App-Container |
+| Protokoll endet ohne „aufgeräumt“, oder der Server wurde neu gestartet | Aufräumen ebenfalls losgelöst starten: `cd /root/backup-policy-test && setsid nohup bash run.sh --finish-only <Lauf> > finish-<Zeit>.txt 2>&1 < /dev/null &`, dann die Datei lesen. Die Laufkennung steht in der ersten Protokollzeile. Wiederholbar; ändert nichts, wenn es nichts zu tun gibt. Braucht beide Zugangsdateien und einen laufenden App-Container |
 | `F3`: Policy eines anderen Laufs | `--finish-only` mit der gemeldeten Kennung |
 | `F3`: fremde Policy | nichts tun, mich hinzuziehen. Sie wird bewusst nicht angetastet |
 | `F1`: Legal Hold weiterhin an oder unklar | **Writer-Testschlüssel NICHT löschen.** Gehören die Objekte dem Writer-Projekt (K6), kann nur er den Hold aufheben. Dann mit einer kurzzeitigen Policy, die nur diese Aktion erlaubt; eigene Freigabe |
