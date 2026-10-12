@@ -11,8 +11,9 @@ keine Sperren, Regeln oder Policies ändern.
 **Dateien:**
 - [`scripts/backup-policy-test.mjs`](../scripts/backup-policy-test.mjs): Prüfungen, mit `--run` und `--finish`
 - [`scripts/backup-test-env-setup.sh`](../scripts/backup-test-env-setup.sh): verdeckte Schlüsseleingabe, Modus `--writer`
-- Rahmenskript auf dem Server: `/root/backup-policy-test/run.sh`. Es baut auf `backup-policy-test.mjs` auf, übernimmt den
-  `mc`-Teil und räumt auf.
+- [`scripts/backup-policy-test-run.sh`](../scripts/backup-policy-test-run.sh): Rahmenskript. Es startet die Wegwerf-Container,
+  übernimmt den `mc`-Teil und räumt in jedem Fall auf.
+- Auf dem Server liegen beide als `/root/backup-policy-test/run.sh` und `/root/backup-policy-test/backup-policy-test.mjs`.
 
 ## 1. Welche Rechte gebraucht werden
 
@@ -246,7 +247,7 @@ ssh -t rb bash /root/backup-env-setup.sh --writer
 | 2 Einrichtungsskript als neue Datei `/root/backup-env-setup.sh` bereitstellen, ohne Überschreiben. Die alte Fassung `/root/backup-test-env-setup.sh` entferne ich danach | ich | ja |
 | 3 Writer-Schlüssel verdeckt eingeben | du | – |
 | 4 Nachprüfung der Datei, nur lesend | ich | – |
-| 5 Rahmenskript nach `/root/backup-policy-test/run.sh` legen (Verzeichnis root, 700) und Lauf losgelöst starten: `setsid nohup bash run.sh > log-<Zeit>.txt 2>&1 < /dev/null &`; Protokoll lesen. Frühestens am 13.10.2026 um 14:30 Uhr | ich | ja |
+| 5 Verzeichnis `/root/backup-policy-test` (root, 700) anlegen. `run.sh` und `backup-policy-test.mjs` aus dem Repository ohne Überschreiben hineinkopieren und die Prüfsummen vergleichen. Lauf losgelöst starten: `setsid nohup bash run.sh > log-<Zeit>.txt 2>&1 < /dev/null &`; Protokoll lesen. Frühestens am 13.10.2026 um 14:30 Uhr | ich | ja |
 | 6 Ergebnis dokumentieren, Entscheidung über die produktive Policy | ich / du | – |
 | 7 Test-Bucket aufräumen, dann Writer-Datei entfernen und Writer-Testschlüssel löschen (Reihenfolge aus Abschnitt 5) | ich / du | ja |
 
