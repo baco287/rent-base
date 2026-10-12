@@ -189,3 +189,23 @@ Hetzner nennt keine Bearbeitungszeiten. Verzögert sich die Wirkung um einen Tag
 
 Außerhalb von `lc/` gilt keine Lifecycle-Regel. Diese Objekte dürfen sich bis zum Aufräumen nicht verändern.
 Das ist zugleich die Gegenprobe: Die Regel darf nur ihr Präfix treffen.
+
+## Lifecycle-Nachprüfung 12.10.2026 (14:07 Uhr Berlin, 12:07 UTC, nur lesend)
+
+**Einstellungen unverändert:**
+- Isolation bestanden: Der Schlüssel sieht nur `rent-base-backup-test`.
+- Object Lock COMPLIANCE 1 Tag, Versionierung an, Lifecycle-Regel `rb-test-ablauf` aktiv, keine Bucket-Policy.
+
+**Bestand:** 6 Fassungen und 1 Löschmarker, Stück für Stück identisch mit dem Ausgangsstand vom 11.10.
+
+| Bereich | Ergebnis |
+|---|---|
+| `rb-test/lc/ablauf.txt` (Lifecycle-Regel) | **noch nicht gewirkt**: 1 Fassung, kein Löschmarker |
+| außerhalb von `rb-test/lc/` | unverändert: 5 Fassungen, Löschmarker nur auf `md5.txt`. Die Regel hat nichts außerhalb ihres Präfixes angefasst |
+
+**Bewertung:** Nach S3-Regel war die Expiration ab 12.10. 00:00 UTC fällig. Gut 12 Stunden später hat Hetzner sie noch
+nicht ausgeführt. S3 führt Lifecycle-Aktionen asynchron aus; Hetzner nennt keine Bearbeitungszeit.
+
+Nach den vorab festgelegten Kriterien ([backup-policy-test.md](backup-policy-test.md), Abschnitt 7a) ist das **„weiter“**:
+noch unverändert, alles andere wie im Ausgangsstand. **Entscheidend ist die Prüfung am 13.10.:** Hat die Regel dann gar
+nicht gewirkt, wird gestoppt und berichtet.
