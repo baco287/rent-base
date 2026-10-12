@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Legt /root/backup-test.env für den Backup-Test-Bucket an (Anleitung: docs/backup-test-bucket.md, Schritt 4).
-# Aufruf im eigenen Terminal:  ssh -t rb bash /root/backup-test-env-setup.sh
+# Legt die Zugangsdatei für den Backup-Test an (Anleitungen: docs/backup-test-bucket.md Schritt 4, docs/backup-policy-test.md).
+# Aufruf im eigenen Terminal:
+#   ssh -t rb bash /root/backup-test-env-setup.sh            Test-Admin-Schlüssel  → /root/backup-test.env
+#   ssh -t rb bash /root/backup-test-env-setup.sh --writer   Writer-Testschlüssel  → /root/backup-writer-test.env
 #
 # Access Key und Secret Key werden verdeckt eingelesen (kein Echo) und nur mit Shell-Builtins verarbeitet und geschrieben:
 # nicht in Befehlsargumenten anderer Programme, nicht in der Umgebung, nicht in der History, nie ausgegeben, auch nicht
@@ -10,24 +12,32 @@ set +x
 umask 077
 ulimit -c 0
 
-ZIEL=/root/backup-test.env
+BASIS=/root
 ENDPUNKT=https://hel1.your-objectstorage.com
 REGION=hel1
 MUSTER='^[A-Za-z0-9/+=._~-]+$'
+case "${1:-}" in
+  "") WRITER=0; P=TEST; ZIEL="$BASIS/backup-test.env" ;;
+  --writer) WRITER=1; P=WRITER; ZIEL="$BASIS/backup-writer-test.env" ;;
+  *) builtin printf 'ABBRUCH: unbekannte Option %s (erlaubt: --writer)\n' "$1" >&2; exit 2 ;;
+esac
 
 abbruch() { builtin printf 'ABBRUCH: %s\n' "$1" >&2; exit 2; }
 
 [ "$(id -u)" = 0 ] || abbruch "nur als root ausführen"
 [ -t 0 ] || abbruch "nur interaktiv im Terminal ausführen (ssh -t); Schlüssel nie per Pipe übergeben"
 if [ -e "$ZIEL" ] || [ -L "$ZIEL" ]; then abbruch "$ZIEL existiert bereits, nichts verändert"; fi
+if [ "$WRITER" = 1 ] && [ ! -f "$BASIS/backup-test.env" ]; then abbruch "$BASIS/backup-test.env fehlt; der Writer-Test braucht den Test-Admin-Schlüssel"; fi
 
 tmp=""
 ak=""
 sk=""
+adm=""
 aufraeumen() {
   stty echo 2>/dev/null || true
   ak=""
   sk=""
+  adm=""
   unset BASH_REMATCH 2>/dev/null || true
   if [ -n "$tmp" ]; then rm -f -- "$tmp"; fi
 }
@@ -61,22 +71,34 @@ lies_geheim() {
 }
 
 builtin printf 'Einrichtung %s (Endpunkt %s)\n\n' "$ZIEL" "$ENDPUNKT"
-IFS= read -r -p "Bucket-Name (z. B. rent-base-backup-test): " bucket || abbruch "Eingabe beendet, nichts angelegt"
-case "$bucket" in rent-base-files | rent-base-backup) abbruch "Produktions-Bucket ist nicht erlaubt" ;; esac
-[[ $bucket =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ ]] || abbruch "ungültiger Bucket-Name (nur a–z, 0–9 und Bindestrich)"
-[[ $bucket == *test* ]] || abbruch "der Bucket-Name muss „test“ enthalten"
+if [ "$WRITER" = 0 ]; then
+  IFS= read -r -p "Bucket-Name (z. B. rent-base-backup-test): " bucket || abbruch "Eingabe beendet, nichts angelegt"
+  case "$bucket" in rent-base-files | rent-base-backup) abbruch "Produktions-Bucket ist nicht erlaubt" ;; esac
+  [[ $bucket =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ ]] || abbruch "ungültiger Bucket-Name (nur a–z, 0–9 und Bindestrich)"
+  [[ $bucket == *test* ]] || abbruch "der Bucket-Name muss „test“ enthalten"
+else
+  IFS= read -r -p "Projekt-ID des Writer-Projekts (Zahl aus der Console-Adresse …/projects/<ID>/…): " projekt || abbruch "Eingabe beendet, nichts angelegt"
+  [[ $projekt =~ ^[0-9]{1,12}$ ]] || abbruch "ungültige Projekt-ID (nur Ziffern)"
+fi
 
 lies_geheim ak "Access Key"
 lies_geheim sk "Secret Key"
 [[ $ak != "$sk" ]] || abbruch "Access Key und Secret Key sind gleich (zweimal dasselbe eingefügt?), nichts angelegt"
+if [ "$WRITER" = 1 ]; then
+  # Der Writer-Schlüssel muss aus einem anderen Projekt stammen als der Test-Admin-Schlüssel. Vergleich nur mit Builtins.
+  while IFS='=' read -r name wert; do [[ $name == TEST_S3_ACCESS_KEY ]] && adm=$wert; done <"$BASIS/backup-test.env"
+  [[ -n $adm ]] || abbruch "TEST_S3_ACCESS_KEY in $BASIS/backup-test.env nicht gefunden, nichts angelegt"
+  [[ $ak != "$adm" ]] || abbruch "das ist der Test-Admin-Schlüssel, nicht der Writer-Schlüssel – nichts angelegt"
+  adm=""
+fi
 
-tmp=$(mktemp /root/.backup-test.env.XXXXXX)
+tmp=$(mktemp "$BASIS/.backup-env.XXXXXX")
 {
-  builtin printf 'TEST_S3_ENDPOINT=%s\n' "$ENDPUNKT"
-  builtin printf 'TEST_S3_REGION=%s\n' "$REGION"
-  builtin printf 'TEST_S3_BUCKET=%s\n' "$bucket"
-  builtin printf 'TEST_S3_ACCESS_KEY=%s\n' "$ak"
-  builtin printf 'TEST_S3_SECRET_KEY=%s\n' "$sk"
+  builtin printf '%s_S3_ENDPOINT=%s\n' "$P" "$ENDPUNKT"
+  builtin printf '%s_S3_REGION=%s\n' "$P" "$REGION"
+  if [ "$WRITER" = 0 ]; then builtin printf 'TEST_S3_BUCKET=%s\n' "$bucket"; else builtin printf 'WRITER_PROJECT_ID=%s\n' "$projekt"; fi
+  builtin printf '%s_S3_ACCESS_KEY=%s\n' "$P" "$ak"
+  builtin printf '%s_S3_SECRET_KEY=%s\n' "$P" "$sk"
 } >"$tmp"
 ak=""
 sk=""
@@ -88,8 +110,10 @@ tmp=""
 
 builtin printf '\nAngelegt: %s\n' "$ZIEL"
 builtin printf '  Besitzer und Rechte: %s\n' "$(stat -c '%U:%G %a' -- "$ZIEL")"
+if [ "$WRITER" = 0 ]; then NAMEN="TEST_S3_ENDPOINT TEST_S3_REGION TEST_S3_BUCKET TEST_S3_ACCESS_KEY TEST_S3_SECRET_KEY"
+else NAMEN="WRITER_S3_ENDPOINT WRITER_S3_REGION WRITER_PROJECT_ID WRITER_S3_ACCESS_KEY WRITER_S3_SECRET_KEY"; fi
 fehlt=0
-for name in TEST_S3_ENDPOINT TEST_S3_REGION TEST_S3_BUCKET TEST_S3_ACCESS_KEY TEST_S3_SECRET_KEY; do
+for name in $NAMEN; do
   if grep -q "^${name}=." -- "$ZIEL"; then
     builtin printf '  %-20s vorhanden\n' "$name"
   else
