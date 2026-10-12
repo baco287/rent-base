@@ -251,6 +251,38 @@ ssh -t rb bash /root/backup-env-setup.sh --writer
 | 6 Ergebnis dokumentieren, Entscheidung über die produktive Policy | ich / du | – |
 | 7 Test-Bucket aufräumen, dann Writer-Datei entfernen und Writer-Testschlüssel löschen (Reihenfolge aus Abschnitt 5) | ich / du | ja |
 
+## 7a. Freigabe vom 12.10.2026 und vorab festgelegte Kriterien
+
+**Freigegeben:**
+- Verzeichnis `/root/backup-policy-test` anlegen.
+- Die beiden geprüften Skripte dorthin kopieren.
+- Den Test losgelöst von der SSH-Sitzung ausführen, sobald alle Bedingungen erfüllt sind.
+
+**Nicht freigegeben:**
+- produktive Buckets anlegen oder ändern
+- Testobjekte außerhalb des Laufpräfixes löschen
+- Test-Zugangsdaten löschen oder rotieren
+- Merge, Deployment, Änderungen an Datenbank oder App
+
+**Bedingungen:**
+1. Start frühestens am **13.10.2026 um 14:30 Uhr** (Europe/Berlin).
+2. **Beide Lifecycle-Prüfungen** (12. und 13.10.) sind abgeschlossen und dokumentiert.
+3. **Unerwartetes Lifecycle-Ergebnis:** stoppen und berichten.
+4. **Vorher prüfen:** Zustand des Test-Buckets, Trennung der Zugangsdaten, keine Bucket-Policy.
+5. **Nur** `rent-base-backup-test` verwenden.
+6. Schreibversuche nur unter `rb-test/policy/<Lauf>/`.
+7. Das geprüfte Skript und den Aufräummechanismus **unverändert** verwenden. Gelaufen wird mit dem Stand von Commit `e6ca6ab`, Prüfsummen werden beim Kopieren verglichen.
+8. **Stoppen und berichten** bei unerwarteten Berechtigungen, fehlgeschlagener Isolation oder Problemen beim Entfernen der Test-Policy.
+
+**Was als „erwartet“ gilt (festgelegt vor den Ergebnissen):**
+
+| Prüfung | Weiter, wenn | Stopp und Bericht, wenn |
+|---|---|---|
+| Lifecycle 12.10. | `rb-test/lc/ablauf.txt` hat einen aktuellen Löschmarker und die alte Fassung noch (S3-Regel), **oder** ist noch unverändert (Hetzner verarbeitet später). Alles außerhalb von `rb-test/lc/` wie im Ausgangsstand: 5 Fassungen, Löschmarker nur auf `md5.txt`. Einstellungen gleich, keine Policy | etwas außerhalb von `rb-test/lc/` fehlt, ist neu oder verändert; Einstellungen oder Policy anders; fremde Buckets oder Objekte; Fehler |
+| Lifecycle 13.10. | keine Fassung mehr unter `rb-test/lc/` (höchstens ein Löschmarker), **oder** Löschmarker gesetzt und die Fassung noch da (höchstens 1 Tag Verzögerung; N8 entfällt dann automatisch). Rest wie oben | nach zwei Tagen gar keine Wirkung; Fassung ohne Löschmarker verschwunden; Änderungen außerhalb von `rb-test/lc/`; Einstellungen oder Policy anders; Fehler |
+| Vorprüfung Policy-Test | Admin sieht nur den Test-Bucket; keine Policy; beide Zugangsdateien root/600, getrennt, Schlüssel verschieden; kein Testverzeichnis und kein `rb-policy-`-Container | jede Abweichung |
+| Policy-Test | Protokoll endet mit `== Ende Lauf <Lauf>: aufgeräumt`; F1, F3, F4 bestanden | Abbruch vor dem Setzen, `AUFRÄUMEN NICHT ABGESCHLOSSEN`, eine fremde Policy, ein Legal Hold oder eine **unerwartete Erlaubnis** (ein N-Test „ERLAUBT“). Dann keine weiteren Schritte ohne neue Freigabe |
+
 ## 8. Wenn Hetzner Einschränkungen nicht durchsetzt
 
 - **Folge:** Gelingen P- und N-Tests gleichermaßen, taugt die Policy nicht als Schutzschicht. Vorhandene Backups schützt
