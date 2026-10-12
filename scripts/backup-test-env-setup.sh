@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Legt die Zugangsdatei für den Backup-Test an (Anleitungen: docs/backup-test-bucket.md Schritt 4, docs/backup-policy-test.md).
-# Aufruf im eigenen Terminal:
-#   ssh -t rb bash /root/backup-test-env-setup.sh            Test-Admin-Schlüssel  → /root/backup-test.env
-#   ssh -t rb bash /root/backup-test-env-setup.sh --writer   Writer-Testschlüssel  → /root/backup-writer-test.env
+# Liegt auf dem Server als /root/backup-env-setup.sh (root, 700). Aufruf im eigenen Terminal:
+#   ssh -t rb bash /root/backup-env-setup.sh            Test-Admin-Schlüssel  → /root/backup-test.env
+#   ssh -t rb bash /root/backup-env-setup.sh --writer   Writer-Testschlüssel  → /root/backup-writer-test.env
 #
 # Access Key und Secret Key werden verdeckt eingelesen (kein Echo) und nur mit Shell-Builtins verarbeitet und geschrieben:
 # nicht in Befehlsargumenten anderer Programme, nicht in der Umgebung, nicht in der History, nie ausgegeben, auch nicht
@@ -43,11 +43,13 @@ tmp=""
 ak=""
 sk=""
 adm=""
+wert=""
 aufraeumen() {
   stty echo 2>/dev/null || true
   ak=""
   sk=""
   adm=""
+  wert=""
   unset BASH_REMATCH 2>/dev/null || true
   if [ -n "$tmp" ]; then rm -f -- "$tmp"; fi
 }
@@ -106,7 +108,8 @@ lies_geheim sk "Secret Key"
 [[ $ak != "$sk" ]] || abbruch "Access Key und Secret Key sind gleich (zweimal dasselbe eingefügt?), nichts angelegt"
 if [ "$WRITER" = 1 ]; then
   # Der Writer-Schlüssel muss aus einem anderen Projekt stammen als der Test-Admin-Schlüssel. Vergleich nur mit Builtins.
-  while IFS='=' read -r name wert; do [[ $name == TEST_S3_ACCESS_KEY ]] && adm=$wert; done <"$BASIS/backup-test.env"
+  while IFS='=' read -r name wert; do [[ $name == TEST_S3_ACCESS_KEY ]] && adm=$wert; wert=""; done <"$BASIS/backup-test.env"
+  wert=""
   [[ -n $adm ]] || abbruch "TEST_S3_ACCESS_KEY in $BASIS/backup-test.env nicht gefunden, nichts angelegt"
   [[ $ak != "$adm" ]] || abbruch "das ist der Test-Admin-Schlüssel, nicht der Writer-Schlüssel – nichts angelegt"
   adm=""
