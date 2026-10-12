@@ -267,9 +267,16 @@ async function cleanup() {
   record("C0 Teil-Uploads", mpu.ok && abortedParts === (mpu.value.Uploads ?? []).length, mpu.ok ? `${abortedParts} von ${(mpu.value.Uploads ?? []).length} unvollständigen Teil-Uploads abgebrochen` : `nicht lesbar (${mpu.error})`);
   const all = await versionsUnder(PREFIX);
   let removed = 0, locked = 0;
+  let held = 0, unclear = 0;
   for (const v of [...all.versions, ...all.markers]) {
     const r = await tryIt(() => c.send(new DeleteObjectCommand({ Bucket, Key: v.Key, VersionId: v.VersionId })));
-    if (r.ok) removed++; else locked++;
+    if (r.ok) { removed++; continue; }
+    locked++;
+    // Legal Holds laufen nicht ab: getrennt melden, damit „später erneut“ nicht in die Irre führt.
+    const h = await tryIt(() => c.send(new GetObjectLegalHoldCommand({ Bucket, Key: v.Key, VersionId: v.VersionId })));
+    if (h.ok && h.value.LegalHold?.Status === "ON") held++;
+    else if (!h.ok && !/NoSuchObjectLockConfiguration|NoSuchLegalHold/.test(h.error)) unclear++;
   }
-  record("C Aufräumen", locked === 0, `${removed} Fassungen/Löschmarker unter ${PREFIX} entfernt${locked ? `, ${locked} noch gesperrt – später erneut` : ""}. Den leeren Bucket und das Test-Projekt löschst du danach in der Console.`);
+  const timed = locked - held - unclear;
+  record("C Aufräumen", locked === 0, `${removed} Fassungen/Löschmarker unter ${PREFIX} entfernt${timed ? `, ${timed} noch zeitlich gesperrt – später erneut` : ""}${held ? `, ${held} mit Legal Hold (läuft nicht ab; Rückweg F1 in docs/backup-policy-test.md)` : ""}${unclear ? `, ${unclear} nicht löschbar und Hold-Zustand unklar (z. B. Writer-Besitz; siehe docs/backup-policy-test.md, Abschnitt 5)` : ""}. Den leeren Bucket löschst du danach in der Console.`);
 }

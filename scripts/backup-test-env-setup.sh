@@ -23,6 +23,16 @@ case "${1:-}" in
 esac
 
 abbruch() { builtin printf 'ABBRUCH: %s\n' "$1" >&2; exit 2; }
+# Abbruch mitten in der Schlüsseleingabe: weitere Eingaben unsichtbar auffangen, bis „ende“ kommt. Sonst landete ein danach
+# eingefügter Schlüssel nach dem Ende der SSH-Sitzung in der lokalen Shell (und ihrer History).
+abbruch_still() {
+  builtin printf 'ABBRUCH: %s\n' "$1" >&2
+  local x
+  while IFS= read -r -s -p 'Zum Beenden „ende“ eingeben (Eingaben bleiben unsichtbar): ' x && [[ $x != ende ]]; do x=""; builtin printf '\n'; done
+  x=""
+  builtin printf '\n'
+  exit 2
+}
 
 [ "$(id -u)" = 0 ] || abbruch "nur als root ausführen"
 [ -t 0 ] || abbruch "nur interaktiv im Terminal ausführen (ssh -t); Schlüssel nie per Pipe übergeben"
@@ -66,7 +76,7 @@ lies_geheim() {
     wert=""
     fehler=$((fehler + 1))
     builtin printf '  Nicht übernommen (zu kurz oder mit Leer- bzw. Sonderzeichen). Versuch %s von 3.\n' "$fehler"
-    ((fehler < 3)) || abbruch "$2 nicht erfasst, nichts angelegt"
+    ((fehler < 3)) || abbruch_still "$2 nicht erfasst, nichts angelegt"
   done
 }
 
@@ -78,10 +88,17 @@ if [ "$WRITER" = 0 ]; then
   [[ $bucket == *test* ]] || abbruch "der Bucket-Name muss „test“ enthalten"
 else
   # Verdeckt, damit ein versehentlich zu früh eingefügter Schlüssel nicht sichtbar wird; die gültige ID wird danach angezeigt.
-  IFS= read -r -s -p "Projekt-ID des Writer-Projekts (Zahl aus der Console-Adresse …/projects/<ID>/…, bleibt unsichtbar): " projekt || abbruch "Eingabe beendet, nichts angelegt"
-  builtin printf '\n'
-  [[ $projekt =~ ^[0-9]{1,12}$ ]] || { projekt=""; abbruch "ungültige Projekt-ID (nur Ziffern) – Eingabe verworfen; jetzt nichts weiter einfügen"; }
-  builtin printf '  Projekt-ID %s erfasst.\n' "$projekt"
+  fehler=0
+  while :; do
+    IFS= read -r -s -p "Projekt-ID des Writer-Projekts (Zahl aus der Console-Adresse …/projects/<ID>/…, bleibt unsichtbar): " projekt || abbruch "Eingabe beendet, nichts angelegt"
+    builtin printf '\n'
+    [[ -n $projekt ]] || continue
+    if [[ $projekt =~ ^[0-9]{1,12}$ ]]; then builtin printf '  Projekt-ID %s erfasst.\n' "$projekt"; break; fi
+    projekt=""
+    fehler=$((fehler + 1))
+    builtin printf '  Nicht übernommen (nur Ziffern; eingefügter Text wurde verworfen). Versuch %s von 3.\n' "$fehler"
+    ((fehler < 3)) || abbruch_still "Projekt-ID nicht erfasst, nichts angelegt"
+  done
 fi
 
 lies_geheim ak "Access Key"

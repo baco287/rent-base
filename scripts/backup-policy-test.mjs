@@ -55,8 +55,9 @@ const AREA = `${PREFIX}w/`;
 const NOT_BEFORE = new Date(env.RB_FRUEHESTENS || "2026-10-13T12:30:00Z");
 if (Number.isNaN(NOT_BEFORE.getTime())) fail(2, "RB_FRUEHESTENS ist kein Datum");
 
-// Zeitlimits je Anfrage, damit ein hängender Server die Policy nicht unbegrenzt in Kraft lässt.
-const timeouts = { requestHandler: { requestTimeout: 30_000, connectionTimeout: 10_000 } };
+// Zeitlimits je Anfrage, damit ein hängender Server die Policy nicht unbegrenzt in Kraft lässt. Ohne throwOnRequestTimeout
+// meldet der Handler (@smithy/node-http-handler 4.12) eine Überschreitung nur als Warnung.
+const timeouts = { requestHandler: { connectionTimeout: 10_000, requestTimeout: 30_000, socketTimeout: 30_000, throwOnRequestTimeout: true } };
 const client = (ak, sk, endpoint, region, extra = {}) => new S3Client({ endpoint, region: region || "hel1", forcePathStyle: true, credentials: { accessKeyId: ak, secretAccessKey: sk }, ...timeouts, ...extra });
 const A = client(env.TEST_S3_ACCESS_KEY, env.TEST_S3_SECRET_KEY, env.TEST_S3_ENDPOINT, env.TEST_S3_REGION);
 const Astrict = client(env.TEST_S3_ACCESS_KEY, env.TEST_S3_SECRET_KEY, env.TEST_S3_ENDPOINT, env.TEST_S3_REGION, { requestChecksumCalculation: "WHEN_REQUIRED" });
@@ -64,6 +65,7 @@ const Astrict = client(env.TEST_S3_ACCESS_KEY, env.TEST_S3_SECRET_KEY, env.TEST_
 const Aonce = client(env.TEST_S3_ACCESS_KEY, env.TEST_S3_SECRET_KEY, env.TEST_S3_ENDPOINT, env.TEST_S3_REGION, { maxAttempts: 1 });
 const W = client(env.WRITER_S3_ACCESS_KEY, env.WRITER_S3_SECRET_KEY, env.WRITER_S3_ENDPOINT, env.WRITER_S3_REGION);
 const Wstrict = client(env.WRITER_S3_ACCESS_KEY, env.WRITER_S3_SECRET_KEY, env.WRITER_S3_ENDPOINT, env.WRITER_S3_REGION, { requestChecksumCalculation: "WHEN_REQUIRED" });
+const Wonce = client(env.WRITER_S3_ACCESS_KEY, env.WRITER_S3_SECRET_KEY, env.WRITER_S3_ENDPOINT, env.WRITER_S3_REGION, { maxAttempts: 1 });
 
 const results = [];
 const record = (id, ok, text) => { results.push({ id, ok }); console.log(`${ok === true ? "BESTANDEN " : ok === false ? "NICHT OK  " : "HINWEIS   "} ${id}: ${text}`); };
@@ -77,7 +79,8 @@ const isNoPolicy = (r) => !r.ok && /NoSuchBucketPolicy/.test(r.error);
 const md5 = (b) => createHash("md5").update(b).digest("base64");
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 const body = async (r) => Buffer.from(await r.Body.transformToByteArray());
-const abort = (e) => { console.log(`ABBRUCH: unerwarteter Fehler ${err(e)} (Details aus Sicherheitsgründen nicht ausgegeben)`); process.exit(1); };
+// Beim Aufräumen ist jeder unerwartete Abbruch vorübergehend (Exit 4): das Rahmenskript versucht es dann erneut.
+const abort = (e) => { console.log(`ABBRUCH: unerwarteter Fehler ${err(e)} (Details aus Sicherheitsgründen nicht ausgegeben)`); process.exit(mode === "finish" ? 4 : 1); };
 process.on("uncaughtException", abort);
 process.on("unhandledRejection", abort);
 
@@ -139,14 +142,25 @@ const runOfTestPolicy = (text) => {
   if (!m || !RUN_RE.test(m[1])) return null;
   return canon(policyFor(`rb-test/policy/${m[1]}/`)) === c ? m[1] : null;
 };
-const isOurs = (text) => runOfTestPolicy(text) === env.RB_RUN;
+// Enthält eine Policy die Laufkennung DIESES Laufs (mit Zufallsteil) und den Writer-Principal, kann sie nur aus diesem Lauf
+// stammen – auch wenn sie umformatiert oder nachträglich verändert wurde. Vor dem Lauf kann es sie nicht gegeben haben.
+const mine = (text) => { try { const s = JSON.stringify(JSON.parse(text)); return s.includes(`${bucketArn}/${PREFIX}`) && s.includes(principal); } catch { return false; } };
+// Unsere Policy: exakt die dieses Laufs, oder eine Variante davon, die keinem anderen Lauf zugeordnet werden kann.
+const isOurs = (text) => { const run = runOfTestPolicy(text); return run === env.RB_RUN || (run === null && mine(text)); };
+const isExactlyOurs = (text) => runOfTestPolicy(text) === env.RB_RUN;
 
 // Die einzige Lifecycle-Regel und Standard-Sperre, die der Test-Bucket haben darf (aus dem Bucket-Test, Tag 0). Verbotsversuche
 // N8/N9 senden genau diesen Inhalt, und nur wenn der Bucket ihn tatsächlich hat; sonst entfallen sie.
 const KNOWN_RULE = { ID: "rb-test-ablauf", Status: "Enabled", Filter: { Prefix: "rb-test/lc/" }, Expiration: { Days: 1 }, NoncurrentVersionExpiration: { NoncurrentDays: 1 } };
 const KNOWN_LOCK = { ObjectLockEnabled: "Enabled", Rule: { DefaultRetention: { Mode: "COMPLIANCE", Days: 1 } } };
-const hasKnownRule = (rules) => Array.isArray(rules) && rules.length === 1 && rules[0].ID === KNOWN_RULE.ID && rules[0].Status === "Enabled"
-  && (rules[0].Filter?.Prefix ?? rules[0].Prefix) === "rb-test/lc/" && rules[0].Expiration?.Days === 1 && rules[0].NoncurrentVersionExpiration?.NoncurrentDays === 1;
+// Exakter Strukturvergleich unabhängig von der Schlüsselreihenfolge; undefinierte Felder zählen nicht.
+const deepSame = (a, b) => {
+  if (typeof a !== "object" || a === null || typeof b !== "object" || b === null) return a === b;
+  const ka = Object.keys(a).filter((k) => a[k] !== undefined), kb = Object.keys(b).filter((k) => b[k] !== undefined);
+  return ka.length === kb.length && ka.every((k) => deepSame(a[k], b[k]));
+};
+const normRule = (r) => { const { Prefix, ...rest } = r; return Prefix !== undefined && !rest.Filter ? { ...rest, Filter: { Prefix } } : rest; };
+const hasKnownRule = (rules) => Array.isArray(rules) && rules.length === 1 && deepSame(normRule(rules[0]), KNOWN_RULE);
 const hasKnownLock = (c) => c?.ObjectLockEnabled === "Enabled" && c?.Rule?.DefaultRetention?.Mode === "COMPLIANCE" && c?.Rule?.DefaultRetention?.Days === 1 && !c?.Rule?.DefaultRetention?.Years;
 
 console.log(`Test-Bucket ${Bucket} · Endpunkt ${new URL(env.TEST_S3_ENDPOINT).host} · Writer-Projekt ${env.WRITER_PROJECT_ID} · Lauf ${env.RB_RUN} · Modus ${mode}`);
@@ -168,7 +182,10 @@ try {
   if (mode === "run") {
     setTimeout(() => abort(new Error("Watchdog: --run dauert länger als 20 Minuten")), 20 * 60_000).unref();
     await run();
-  } else await finish();
+  } else {
+    setTimeout(() => abort(new Error("Watchdog: --finish dauert länger als 15 Minuten")), 15 * 60_000).unref();
+    await finish();
+  }
 } catch (e) { abort(e); }
 const failed = results.filter((r) => r.ok === false).length;
 console.log(`\nErgebnis: ${results.filter((r) => r.ok === true).length} bestanden, ${failed} nicht ok, ${results.filter((r) => r.ok === null).length} Hinweise`);
@@ -206,15 +223,14 @@ async function run() {
   record("S1 Policy gesetzt", put.ok, put.ok ? "mit dem Admin-Schlüssel gesetzt (Inhalt nicht ausgegeben)" : `nicht bestätigt: ${put.error} – --finish prüft und räumt auf`);
   if (!put.ok) return;
   const back = await retry(() => A.send(new GetBucketPolicyCommand({ Bucket })));
-  if (back.ok && isOurs(back.value.Policy)) {
+  if (back.ok && isExactlyOurs(back.value.Policy)) {
     const exact = canon(back.value.Policy) === canon(policyDoc);
     record("S2 Policy zurückgelesen", true, exact ? "genau die Test-Policy dieses Laufs" : "Test-Policy dieses Laufs, von Hetzner umformatiert");
   } else {
-    // V5 hat Sekunden vorher „keine Policy“ nachgewiesen, und das Sperrschloss schließt parallele Läufe aus: was jetzt am Bucket
-    // steht, stammt von diesem PUT. Es wird sofort wieder entfernt, ohne Writer-Tests.
-    const del = back.ok ? await tryIt(() => Aonce.send(new DeleteBucketPolicyCommand({ Bucket }))) : { ok: false, error: back.error };
-    const gone = await retry(() => A.send(new GetBucketPolicyCommand({ Bucket })));
-    record("S2 Policy zurückgelesen", false, `${back.ok ? "weicht in der Form ab" : `nicht lesbar (${back.error})`}; ${isNoPolicy(gone) ? "sofort wieder entfernt" : `NICHT entfernt (${del.ok ? "Löschen gemeldet" : del.error}) – --finish prüft erneut`}; Writer-Tests entfallen`);
+    // Nicht lesbar oder abweichend: ohne Writer-Tests aufhören. Entfernt wird nur, was nachweislich aus diesem Lauf stammt
+    // (Laufkennung mit Zufallsteil); eine fremde Policy oder die eines anderen Laufs bleibt unverändert.
+    const res = await removeOurPolicy();
+    record("S2 Policy zurückgelesen", false, `${!back.ok ? `nicht lesbar (${back.error})` : isOurs(back.value.Policy) ? "Variante der Policy dieses Laufs" : "FREMDE oder andere Lauf-Policy"}; ${res.text}; Writer-Tests entfallen`);
     return;
   }
   let p1;
@@ -262,13 +278,13 @@ async function run() {
   // N2: endgültiges Löschen einer Fassung dieses Laufs, deren eigene Sperre (60 s) schon abgelaufen ist
   const unl = Buffer.from("Fassung mit 60 Sekunden Sperre\n");
   const unlUntil = new Date(Date.now() + 60_000);
-  const u = await tryIt(() => Astrict.send(new PutObjectCommand({ Bucket, Key: `${AREA}ungesperrt/probe.txt`, Body: unl, ContentMD5: md5(unl), ObjectLockMode: "COMPLIANCE", ObjectLockRetainUntilDate: unlUntil })));
+  const u = await tryIt(() => Astrict.send(new PutObjectCommand({ Bucket, Key: `${AREA}files/ungesperrt/probe.txt`, Body: unl, ContentMD5: md5(unl), ObjectLockMode: "COMPLIANCE", ObjectLockRetainUntilDate: unlUntil })));
   if (!u.ok) record("N2", null, `nicht prüfbar: Admin-Upload mit kurzer Sperre abgelehnt (${u.error})`);
   else {
     await sleep(unlUntil.getTime() - Date.now() + 10_000);
-    const r = await tryIt(() => A.send(new GetObjectRetentionCommand({ Bucket, Key: `${AREA}ungesperrt/probe.txt`, VersionId: u.value.VersionId })));
+    const r = await tryIt(() => A.send(new GetObjectRetentionCommand({ Bucket, Key: `${AREA}files/ungesperrt/probe.txt`, VersionId: u.value.VersionId })));
     if (!(r.ok && new Date(r.value.Retention?.RetainUntilDate) < new Date())) record("N2", null, "nicht prüfbar: Sperre der Prüffassung noch aktiv oder nicht lesbar");
-    else expectDenied("N2", "Fassung endgültig löschen (DeleteObjectVersion, Sperre abgelaufen)", await tryIt(() => W.send(new DeleteObjectCommand({ Bucket, Key: `${AREA}ungesperrt/probe.txt`, VersionId: u.value.VersionId }))), "ERLAUBT – der Writer kann Fassungen nach Sperrende endgültig löschen");
+    else expectDenied("N2", "Fassung endgültig löschen (DeleteObjectVersion, Sperre abgelaufen)", await tryIt(() => W.send(new DeleteObjectCommand({ Bucket, Key: `${AREA}files/ungesperrt/probe.txt`, VersionId: u.value.VersionId }))), "ERLAUBT – der Writer kann Fassungen nach Sperrende endgültig löschen");
   }
   const until26 = new Date(Date.now() + 26 * 3600_000);
   if (v4) expectDenied("N3", "Sperre verlängern (PutObjectRetention, 26 h)", await tryIt(() => W.send(new PutObjectRetentionCommand({ Bucket, Key: `${AREA}db/probe.txt`, VersionId: v4, Retention: { Mode: "COMPLIANCE", RetainUntilDate: until26 } }))), "ERLAUBT – der Writer kann Sperren verlängern (Fassung jetzt 26 h gesperrt)");
@@ -276,22 +292,38 @@ async function run() {
   const lockBody = Buffer.from("Upload mit eigener Sperre\n");
   expectDenied("N4", "Upload mit eigener Sperre (Object-Lock-Header, 26 h)", await tryIt(() => Wstrict.send(new PutObjectCommand({ Bucket, Key: `${AREA}db/eigene-sperre.txt`, Body: lockBody, ContentMD5: md5(lockBody), ObjectLockMode: "COMPLIANCE", ObjectLockRetainUntilDate: until26 }))), "ERLAUBT – der Writer kann beim Hochladen eigene Sperren setzen (Objekt 26 h gesperrt)");
   if (v4) {
-    const lh = await tryIt(() => W.send(new PutObjectLegalHoldCommand({ Bucket, Key: `${AREA}db/probe.txt`, VersionId: v4, LegalHold: { Status: "ON" } })));
-    expectDenied("N5", "Legal Hold setzen", lh, "ERLAUBT – der Writer kann Legal Holds setzen");
-    if (lh.ok) {
-      const res = await releaseHold(`${AREA}db/probe.txt`, v4);
-      record("N5 Rücknahme", res === "frei", res === "frei" ? "Legal Hold sofort zurückgenommen und nachgeprüft" : `Legal Hold ${res === "an" ? "WEITERHIN AN" : "Zustand unklar"} – --finish versucht es vor dem Entfernen der Policy erneut`);
+    // N5 nur, wenn der Admin Legal Holds auf Writer-Uploads ändern kann (unwirksames OFF vorab). Sonst könnte ein unerwartet
+    // erlaubter Hold entstehen, den nur der Writer-Schlüssel wieder aufheben kann.
+    const adminCan = await retry(() => A.send(new PutObjectLegalHoldCommand({ Bucket, Key: `${AREA}db/probe.txt`, VersionId: v4, LegalHold: { Status: "OFF" } })));
+    if (!adminCan.ok) record("N5", null, `nicht prüfbar: der Admin kann Legal Holds auf Writer-Uploads nicht ändern (${adminCan.error}) – zur Sicherheit nicht versucht`);
+    else {
+      const lh = await tryIt(() => Wonce.send(new PutObjectLegalHoldCommand({ Bucket, Key: `${AREA}db/probe.txt`, VersionId: v4, LegalHold: { Status: "ON" } })));
+      expectDenied("N5", "Legal Hold setzen", lh, "ERLAUBT – der Writer kann Legal Holds setzen");
+      if (!isDenied(lh)) {
+        const res = await releaseHold(`${AREA}db/probe.txt`, v4);
+        record("N5 Rücknahme", res === "frei", res === "frei" ? "Legal Hold geprüft und nicht (mehr) gesetzt" : `Legal Hold ${res === "an" ? "WEITERHIN AN" : "Zustand unklar"} – --finish versucht es vor dem Entfernen der Policy erneut`);
+      }
     }
   } else record("N5", null, "nicht prüfbar: keine Versions-ID aus P4");
-  expectDenied("N6", "Bucket-Policy setzen (identischer Inhalt)", await tryIt(() => W.send(new PutBucketPolicyCommand({ Bucket, Policy: policyDoc }))), "ERLAUBT – der Writer kann die Policy ändern (Inhalt blieb gleich)");
-  const dp = await tryIt(() => W.send(new DeleteBucketPolicyCommand({ Bucket })));
-  expectDenied("N7", "Bucket-Policy löschen", dp, "ERLAUBT – der Writer kann die Policy löschen");
-  if (dp.ok) {
-    const now = await retry(() => A.send(new GetBucketPolicyCommand({ Bucket })));
-    const re = isNoPolicy(now) ? await tryIt(() => Aonce.send(new PutBucketPolicyCommand({ Bucket, Policy: policyDoc }))) : { ok: false, error: now.ok ? "inzwischen eine andere Policy gesetzt" : now.error };
-    record("N7 Wiederherstellung", re.ok, re.ok ? "Test-Policy vom Admin neu gesetzt" : `nicht neu gesetzt (${re.error}) – der Writer hat damit keinen Zugriff mehr`);
+  // N6/N7: nur wenn am Bucket nachweislich noch genau unsere Policy steht; je ein Versuch ohne automatische Wiederholung.
+  const beforeN6 = await retry(() => A.send(new GetBucketPolicyCommand({ Bucket })));
+  if (!(beforeN6.ok && isExactlyOurs(beforeN6.value.Policy))) record("N6/N7", null, "entfallen: am Bucket steht nicht mehr genau die Test-Policy dieses Laufs");
+  else {
+    expectDenied("N6", "Bucket-Policy setzen (identischer Inhalt)", await tryIt(() => Wonce.send(new PutBucketPolicyCommand({ Bucket, Policy: policyDoc }))), "ERLAUBT – der Writer kann die Policy ändern (Inhalt blieb gleich)");
+    const dp = await tryIt(() => Wonce.send(new DeleteBucketPolicyCommand({ Bucket })));
+    expectDenied("N7", "Bucket-Policy löschen", dp, "ERLAUBT – der Writer kann die Policy löschen");
+    if (!isDenied(dp)) {
+      const now = await retry(() => A.send(new GetBucketPolicyCommand({ Bucket })));
+      if (isNoPolicy(now)) {
+        const re = await tryIt(() => Aonce.send(new PutBucketPolicyCommand({ Bucket, Policy: policyDoc })));
+        record("N7 Wiederherstellung", re.ok, re.ok ? "Policy war weg; Test-Policy vom Admin neu gesetzt" : `nicht neu gesetzt (${re.error}) – der Writer hat damit keinen Zugriff mehr`);
+      } else record("N7 Wiederherstellung", now.ok && isExactlyOurs(now.value.Policy) ? null : false, now.ok && isExactlyOurs(now.value.Policy) ? "Test-Policy steht weiterhin – nichts neu gesetzt" : `Zustand ${now.ok ? "verändert" : `unklar (${now.error})`} – nichts neu gesetzt`);
+    }
   }
-  if (hasKnownRule(snapLc.value.Rules)) expectDenied("N8", "Lifecycle setzen (identische, bekannte Regel)", await tryIt(() => Wstrict.send(new PutBucketLifecycleConfigurationCommand({ Bucket, LifecycleConfiguration: { Rules: [KNOWN_RULE] } }))), "ERLAUBT – der Writer kann Lifecycle-Regeln ändern (Inhalt blieb gleich)");
+  // N8 nur mit exakt bekanntem Inhalt und nur, wenn die Lifecycle-Beobachtung unter rb-test/lc/ abgeschlossen ist (keine Fassung mehr).
+  const lcOpen = await tryIt(() => A.send(new ListObjectVersionsCommand({ Bucket, Prefix: "rb-test/lc/" })));
+  if (!lcOpen.ok || (lcOpen.value.Versions ?? []).length) record("N8", null, `entfällt: Lifecycle-Beobachtung unter rb-test/lc/ ${lcOpen.ok ? "noch offen" : `nicht prüfbar (${lcOpen.error})`}`);
+  else if (hasKnownRule(snapLc.value.Rules)) expectDenied("N8", "Lifecycle setzen (identische, bekannte Regel)", await tryIt(() => Wstrict.send(new PutBucketLifecycleConfigurationCommand({ Bucket, LifecycleConfiguration: { Rules: [KNOWN_RULE] } }))), "ERLAUBT – der Writer kann Lifecycle-Regeln ändern (Inhalt blieb gleich)");
   else record("N8", null, "entfällt: Lifecycle weicht vom bekannten Stand ab, ein identisches Neusetzen ist nicht sicher");
   expectDenied("N9", "Standard-Sperre setzen (identisch, COMPLIANCE 1 Tag)", await tryIt(() => W.send(new PutObjectLockConfigurationCommand({ Bucket, ObjectLockConfiguration: KNOWN_LOCK }))), "ERLAUBT – der Writer kann die Standard-Sperre ändern (Inhalt blieb gleich)");
   expectDenied("N10", "Versionierung aussetzen (bei Object Lock ohnehin unmöglich)", await tryIt(() => W.send(new PutBucketVersioningCommand({ Bucket, VersioningConfiguration: { Status: "Suspended" } }))), "ERLAUBT – Versionierung ausgesetzt");
@@ -311,7 +343,7 @@ async function run() {
     && ver.ok && ver.value.Status === snapVer.value.Status && lc.ok && JSON.stringify(lc.value.Rules) === JSON.stringify(snapLc.value.Rules);
   record("K2 Bucket-Einstellungen unverändert", same, same ? "Standard-Sperre, Versionierung und Lifecycle wie vor dem Test" : "ABWEICHUNG gegenüber dem Ausgangszustand");
   const pol = await retry(() => A.send(new GetBucketPolicyCommand({ Bucket })));
-  record("K3 Policy unverändert", pol.ok && isOurs(pol.value.Policy), pol.ok ? (isOurs(pol.value.Policy) ? "Test-Policy dieses Laufs" : "weicht ab") : pol.error);
+  record("K3 Policy unverändert", pol.ok && isExactlyOurs(pol.value.Policy), pol.ok ? (isExactlyOurs(pol.value.Policy) ? "Test-Policy dieses Laufs" : "weicht ab") : pol.error);
   if (v4) {
     const st = await holdState(`${AREA}db/probe.txt`, v4);
     record("K4 Kein Legal Hold", st === "frei", st === "frei" ? "auf der Writer-Fassung kein Legal Hold" : st === "an" ? "Legal Hold AN – --finish hebt ihn vor dem Entfernen der Policy auf" : "Zustand unklar – --finish prüft erneut");
@@ -319,7 +351,9 @@ async function run() {
     record("K5 Admin liest Writer-Upload", k5.ok && k5.value === sha(small), k5.ok ? "der Admin-Schlüssel kann Uploads des Writers lesen (Notfall-Wiederherstellung möglich)" : `${k5.error} – der Admin kann Uploads des Writers NICHT lesen; für die Produktion klären`);
     const acl = await tryIt(() => A.send(new GetObjectAclCommand({ Bucket, Key: `${AREA}db/probe.txt`, VersionId: v4 })));
     const owner = acl.ok ? acl.value.Owner?.ID : undefined;
-    record("K6 Besitzer von Writer-Uploads", null, !acl.ok ? `nicht lesbar (${acl.error})` : owner && adminOwner && owner === adminOwner ? "gehören dem Bucket-Projekt" : "gehören NICHT dem Bucket-Projekt – den Writer-Testschlüssel erst löschen, wenn das Aufräumen der Testobjekte mit dem Admin-Schlüssel gelungen ist");
+    const ownedByBucket = acl.ok && owner && adminOwner && owner === adminOwner;
+    record("K6 Besitzer von Writer-Uploads", null, ownedByBucket ? "gehören dem Bucket-Projekt"
+      : `${acl.ok ? "gehören NICHT dem Bucket-Projekt" : `Besitz nicht nachweisbar (${acl.error}) – wie Writer-Besitz behandeln`}; den Writer-Testschlüssel erst löschen, wenn das Aufräumen der Testobjekte mit dem Admin-Schlüssel gelungen ist`);
   }
   console.log("\nDie Policy bleibt für den mc-Teil gesetzt; danach entfernt --finish sie.");
 }
@@ -343,18 +377,36 @@ async function releaseHold(Key, VersionId) {
   return holdState(Key, VersionId);
 }
 
+
+// Entfernt die Policy nur, solange sie nachweislich aus diesem Lauf stammt; vor jedem Löschen neu gelesen, je ein Versuch.
+// Liefert { state: "keine" | "weg" | "anderer" | "fremd" | "offen", text }.
+async function removeOurPolicy() {
+  let last = "", deleted = false;
+  for (let i = 0; i < 5; i++) {
+    const now = await retry(() => A.send(new GetBucketPolicyCommand({ Bucket })));
+    if (isNoPolicy(now)) return deleted ? { state: "weg", text: "Test-Policy dieses Laufs entfernt, Bucket wieder ohne Policy" } : { state: "keine", text: "keine Policy gesetzt – nichts zu entfernen" };
+    if (!now.ok) { last = now.error; await sleep(3000 * (i + 1)); continue; }
+    if (!isOurs(now.value.Policy)) {
+      const other = runOfTestPolicy(now.value.Policy);
+      return other ? { state: "anderer", text: `Test-Policy eines ANDEREN Laufs (${other}) – nicht verändert; dafür run.sh --finish-only ${other}` }
+        : { state: "fremd", text: "am Bucket steht eine FREMDE Policy – sie wurde nicht verändert" };
+    }
+    const del = await tryIt(() => Aonce.send(new DeleteBucketPolicyCommand({ Bucket })));
+    if (del.ok) deleted = true; else { last = del.error; await sleep(3000 * (i + 1)); }
+  }
+  return { state: "offen", text: `Test-Policy WEITERHIN gesetzt oder Zustand unklar (${last || "unbestätigt"})` };
+}
+
 // Aufräumen in dieser Reihenfolge: Legal Holds (solange die Policy dem Writer noch Zugriff gibt), Teil-Uploads, dann die Policy.
 // Nur die Policy DIESES Laufs wird entfernt. Exit 0 aufgeräumt, 1 bleibender Befund, 4 vorübergehend – erneut versuchen.
 async function finish() {
   let transient = false, lasting = false;
-  const cur = await retry(() => A.send(new GetBucketPolicyCommand({ Bucket })));
-  const otherRun = cur.ok ? runOfTestPolicy(cur.value.Policy) : null;
-  const ours = cur.ok && otherRun === env.RB_RUN;
-
   const inv = await retry(() => A.send(new ListObjectVersionsCommand({ Bucket, Prefix: PREFIX })));
   let on = 0, unknown = 0;
   if (inv.ok) {
+    const deadline = Date.now() + 5 * 60_000; // Holds höchstens 5 Minuten lang prüfen, dann weiter zur Policy
     for (const v of inv.value.Versions ?? []) {
+      if (Date.now() > deadline) { unknown++; continue; }
       let st = await holdState(v.Key, v.VersionId);
       if (st !== "frei") st = await releaseHold(v.Key, v.VersionId);
       if (st === "an") on++; else if (st === "unklar") unknown++;
@@ -377,22 +429,11 @@ async function finish() {
   if (!mpu.ok || abortFail) transient = true;
   record("F2 Unvollständige Teil-Uploads", mpu.ok && abortFail === 0, mpu.ok ? `${aborted + abortFail} gefunden, ${aborted} abgebrochen` : `nicht lesbar (${mpu.error})`);
 
-  if (isNoPolicy(cur)) record("F3 Policy", true, "keine Policy gesetzt – nichts zu entfernen");
-  else if (!cur.ok) { transient = true; record("F3 Policy", false, `Zustand nicht lesbar (${cur.error}) – nichts entfernt`); }
-  else if (!ours) { lasting = true; record("F3 Policy", false, otherRun ? `Test-Policy eines ANDEREN Laufs (${otherRun}) – nicht verändert; dafür run.sh --finish-only ${otherRun}` : "am Bucket steht eine FREMDE Policy – sie wurde nicht verändert"); }
-  else {
-    let gone = false, last = "";
-    for (let i = 0; i < 5 && !gone; i++) {
-      const now = await retry(() => A.send(new GetBucketPolicyCommand({ Bucket })));
-      if (isNoPolicy(now)) { gone = true; break; }
-      if (!now.ok || !isOurs(now.value.Policy)) { last = now.ok ? "inzwischen eine andere Policy" : now.error; break; }
-      const del = await tryIt(() => Aonce.send(new DeleteBucketPolicyCommand({ Bucket })));
-      if (!del.ok) { last = del.error; await sleep(3000 * (i + 1)); }
-    }
-    if (!gone) { const chk = await retry(() => A.send(new GetBucketPolicyCommand({ Bucket }))); gone = isNoPolicy(chk); }
-    if (!gone) transient = true;
-    record("F3 Policy entfernt", gone, gone ? "Test-Policy dieses Laufs entfernt, Bucket wieder ohne Policy" : `Test-Policy WEITERHIN gesetzt oder unklar (${last || "unbestätigt"})`);
-  }
+  const res = await removeOurPolicy();
+  if (res.state === "offen") transient = true;
+  if (res.state === "anderer" || res.state === "fremd") lasting = true;
+  record("F3 Policy", res.state === "keine" || res.state === "weg", res.text);
+
   let w;
   for (let i = 0; i < 12; i++) { w = await tryIt(() => W.send(new ListObjectsV2Command({ Bucket, Prefix: PREFIX, MaxKeys: 1 }))); if (!w.ok) break; await sleep(5000); }
   if (!isDenied(w) && !lasting) transient = true;
