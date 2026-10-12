@@ -1,6 +1,7 @@
 # Serverbenutzer `deploy`: Befund und Maßnahmenplan
 
-**Stand 11.10.2026.** Alles nur gelesen, nichts geändert. Die Umsetzung braucht deine ausdrückliche Freigabe.
+**Stand 12.10.2026: Plan A ist umgesetzt** (Freigabe vom 12.10.2026), siehe [Umsetzung](#umsetzung-am-12102026).
+Der Befund und der Plan darunter stammen vom 11.10.2026.
 
 ## Befund
 
@@ -68,3 +69,64 @@
 - **C: Nur `NOPASSWD` und `docker` entfernen, Anmeldung behalten.**
   - Dann wäre `deploy` ein unprivilegierter Login-Benutzer, ohne erkennbaren Zweck.
   - Erst in diesem Fall wäre `hidepid` sinnvoll.
+
+## Umsetzung am 12.10.2026
+
+Ausgeführt von Claude als root über `ssh rb`, zwischen 05:51 und 05:55 UTC.
+- Ohne Neustart von Server oder Diensten.
+- Ohne Löschen von Dateien oder Konten.
+- Ohne Änderung an Datenbank, Coolify oder Containern.
+- Jeder Schritt war ein eigenes Skript mit eingebauten Prüfungen und automatischem Zurücksetzen bei einem unerwarteten Ergebnis.
+  Es wurde nichts zurückgesetzt, alle Prüfungen waren beim ersten Mal erfolgreich.
+
+### Ausgangszustand (05:51 UTC)
+
+| Bereich | Zustand |
+|---|---|
+| `deploy` | Gruppen `deploy`, `sudo`, `users`, `docker`; sudo `(ALL : ALL) ALL` und `(ALL) NOPASSWD: ALL`; Shell `/bin/bash`; Konto ohne Ablauf; Passwort gesperrt; ein Schlüssel `SHA256:cAeos…`; keine Sitzung, keine Prozesse |
+| root | Schlüssel `SHA256:cAeos…` (deiner) und `SHA256:XKgrg…` (Coolify); sshd `permitrootlogin prohibit-password`, `passwordauthentication no`, `usepam yes` |
+| fail2ban | aktiv, sshd-Jail `maxretry 5`, keine Sperre |
+| Betrieb | `/api/health` HTTP 200. 8 Container laufen seit 09.10., 7 davon „healthy“. Coolify-Server erreichbar und nutzbar, 0 Fehlversuche. Coolifys SSH-Weg funktioniert (aus dem Coolify-Container mit Coolifys Schlüssel als root, Befehl `true`) |
+
+### Schritte und Prüfergebnisse
+
+| Schritt (UTC) | Ausgeführt | Prüfung | Ergebnis |
+|---|---|---|---|
+| 0b Sicherung (05:53) | Verzeichnis `/root/deploy-stilllegung-20261012` (root, 700) mit Kopien von `/etc/sudoers.d/deploy`, `authorized_keys`, `passwd`, `group`, `gshadow`, `shadow`; `zustand-vorher.txt`; Rückweg-Skript `rueckweg.sh` | Kopien per SHA-256, Besitzer und Rechten identisch; `visudo -cf` der gesicherten Regel; `bash -n rueckweg.sh` | bestanden |
+| 1 sudo-Regel (05:53:31) | `mv /etc/sudoers.d/deploy` nach `…/sudoers.d-deploy.aus-etc` | `visudo -c`: „parsed OK“; `sudo -l -U deploy` ohne `NOPASSWD`; root-sudo unberührt | bestanden |
+| 2 Gruppen (05:53:44) | `gpasswd -d deploy sudo`, `gpasswd -d deploy docker` | `id -nG deploy` = `deploy users`; „not allowed to run sudo“; 8/8 Container | bestanden |
+| Gegenprobe (05:54) | Anmeldung als `deploy` mit deinem Schlüssel, Befehl `id` | Anmeldung möglich, sudo verweigert | wie erwartet |
+| 3 Anmeldung (05:54:10) | `usermod --shell /usr/sbin/nologin deploy`, `chage -E 0 deploy`, `authorized_keys` in `authorized_keys.stillgelegt` umbenannt | Shell `nologin`; Ablauf 01.01.1970; Schlüsseldatei erhalten und identisch mit der Sicherung | bestanden |
+
+### Abschlussprüfung (05:54–05:55 UTC)
+
+| Prüfung | Ergebnis |
+|---|---|
+| Root-SSH | funktioniert |
+| Coolify erreicht den Server | Coolifys SSH-Weg funktioniert, sshd bestätigt die Anmeldung mit dem Coolify-Schlüssel; Server erreichbar und nutzbar, 0 Fehlversuche, Sentinel aktuell |
+| `/api/health` | HTTP 200 |
+| Container | alle 8 unverändert: gleiche ID, gleiche Startzeit, 7 „healthy“ |
+| `deploy` hat keine Admin-Rechte | nur Gruppen `deploy`, `users`; „not allowed to run sudo“; Gruppen `sudo` und `docker` ohne Mitglieder |
+| `deploy` kann sich nicht anmelden | Versuch mit deinem Schlüssel: „Permission denied (publickey)“. Shell `nologin`, Konto abgelaufen, keine aktive Schlüsseldatei |
+| fail2ban | nach dem einen abgewiesenen Versuch keine Sperre |
+| Unverändert | root-Schlüssel, sshd-Einstellungen, `/etc/sudoers.d/90-cloud-init-users` (root) |
+
+### Rückweg
+
+Auf dem Server als root, je Schritt einzeln oder alle zusammen, ohne Neustart:
+
+```
+bash /root/deploy-stilllegung-20261012/rueckweg.sh 3      # Anmeldung wieder erlauben
+bash /root/deploy-stilllegung-20261012/rueckweg.sh 2      # Gruppen sudo und docker
+bash /root/deploy-stilllegung-20261012/rueckweg.sh 1      # sudo-Regel NOPASSWD
+bash /root/deploy-stilllegung-20261012/rueckweg.sh alle   # alles in der Reihenfolge 3, 2, 1
+```
+
+- **Was das Skript tut:**
+  - Es benennt die Schlüsseldatei zurück, setzt die Shell auf `/bin/bash` und hebt den Ablauf auf (`chage -E -1`).
+  - Es nimmt `deploy` wieder in die Gruppen `sudo` und `docker` auf.
+  - Es kopiert die sudo-Regel mit Rechten 440 zurück und prüft sie mit `visudo -c`.
+- **Ausgabe:** Am Ende zeigt es den erreichten Zustand.
+
+**Nächste Entscheidung:** nach 30 Tagen Beobachtung, frühestens am 11.11.2026: das Konto behalten (stillgelegt) oder löschen.
+Beides wird gesondert freigegeben. Bis dahin bleibt das Sicherungsverzeichnis bestehen.

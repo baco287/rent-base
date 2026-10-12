@@ -227,7 +227,7 @@ verschlüsselt sind. Gegen `deploy` hilft deshalb nur eine Entscheidung über da
 |---|---|
 | Lifecycle wirkt nicht oder nur teilweise | Nachprüfung 12./13.10.; Ersatz wäre ein monatlicher Aufräumlauf mit dem Admin-Schlüssel |
 | Hetzner setzt Policy-Einschränkungen nicht durch | Policy-Test am Test-Bucket nötig, vor dem produktiven Bucket |
-| `deploy` ist ein zweiter, bisher nicht benutzter root-Zugang | untersucht; Stilllegung mit Rückweg vorgeschlagen ([server-benutzer-deploy.md](server-benutzer-deploy.md)), Freigabe offen |
+| `deploy` war ein zweiter, nicht benutzter root-Zugang | **erledigt am 12.10.2026:** stillgelegt, ohne sudo, ohne `docker`, ohne Anmeldung, mit Rückweg ([server-benutzer-deploy.md](server-benutzer-deploy.md)) |
 | Coolify-Schlüssel kurz in der Prozessliste | gering, solange nur root-gleiche Benutzer existieren; eingeschränkter Schreibschlüssel begrenzt den Schaden |
 | Übernahme des Hetzner-Kontos | Zwei-Faktor-Anmeldung, wenige Personen mit Zugriff; optional eine monatliche verschlüsselte Kopie anderswo |
 | Ausfall von Coolify bleibt unbemerkt | wöchentlicher Blick, später ein Totmann-Signal |

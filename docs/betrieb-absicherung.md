@@ -212,6 +212,8 @@ Bis Schritt 3 steht, gibt es **kein** Backup der Produktionsdaten außer dem Het
   - **Nachtrag 11.10.2026:**
     - `deploy` hat `sudo` ohne Passwort, ist in der Gruppe `docker` und hat einen SSH-Schlüssel. Er ist also ohnehin gleichwertig zu root.
     - Bewertung und Lösungen: [backup-produktion-vorschlag.md](backup-produktion-vorschlag.md), Abschnitt 3.
+    - **12.10.2026:** `deploy` ist stillgelegt; es gibt keinen weiteren Login-Benutzer mit Admin-Rechten
+      ([server-benutzer-deploy.md](server-benutzer-deploy.md)).
   - Vorschlag:
     - Zuerst klären, wofür `deploy` gebraucht wird.
     - Wird er nicht gebraucht, die Anmeldung für ihn sperren.
