@@ -162,11 +162,18 @@ verschlüsselt sind. Gegen `deploy` hilft deshalb nur eine Entscheidung über da
 
 **Coolify:** S3-Aufbewahrung auf 0 / 0 / 0, damit Coolify nichts löscht. Lokale Aufbewahrung: 24.
 
-**Falls die Lifecycle-Regel am 12./13.10. nicht wirkt:**
+**Ergebnis 12./13.10.2026: Die Lifecycle-Regel hat im Test-Bucket nicht gewirkt** ([backup-test-bucket.md](backup-test-bucket.md)).
+- Nach gut zwei Tagen gab es weder einen Löschmarker noch ein Entfernen.
 - Die Kosten sind kein Problem: rund 720 Dumps im Monat bleiben weit unter dem enthaltenen Kontingent.
 - Der **Datenschutz** aber schon: Dumps blieben länger als 31 Tage liegen.
-- Ersatz: ein **monatlicher Aufräumlauf mit dem Admin-Schlüssel vom eigenen Rechner**. Er entfernt nur Fassungen, deren Sperre
-  abgelaufen ist; ein Skript dafür wäre noch zu schreiben. Auf dem Server liegt der Admin-Schlüssel nie.
+
+**Möglichkeiten** (jeweils eigene Freigabe):
+
+| Möglichkeit | Vorgehen | Bewertung |
+|---|---|---|
+| A Ursache klären | Hetzner-Support fragen: Bearbeitungszeit, Präfix-Filter, Object Lock. Zusätzlich die Beobachtung lesend weiterlaufen lassen | ohne Risiko; liefert die Grundlage für B oder C |
+| B Täglicher Aufräumlauf mit eigenem Schlüssel | Ein dritter Schlüssel im Writer-Projekt mit nur `ListBucketVersions` und `DeleteObjectVersion` auf dem Dump-Präfix. Er läuft als Scheduled Task und löscht nur Fassungen, die älter als 31 Tage sind | COMPLIANCE verhindert jedes Löschen innerhalb der 30 Tage, auch mit diesem Schlüssel. Gestohlen könnte er nur Dumps entfernen, die ohnehin fällig sind. Setzt voraus, dass Hetzner Policies durchsetzt (Policy-Test) |
+| C Monatlicher Aufräumlauf mit dem Admin-Schlüssel | vom eigenen Rechner, nur Fassungen mit abgelaufener Sperre; der Admin-Schlüssel kommt nie auf den Server | einfach, aber manuell; Dumps bleiben bis zu 61 Tage |
 
 ### Wiederherstellungstests
 - **Wann:** vor dem ersten externen Vermieter, danach vierteljährlich und nach größeren Änderungen. Ablauf und Abnahmekriterien
@@ -225,8 +232,8 @@ verschlüsselt sind. Gegen `deploy` hilft deshalb nur eine Entscheidung über da
 
 | Risiko | Stand |
 |---|---|
-| Lifecycle wirkt nicht oder nur teilweise | Nachprüfung 12./13.10.; Ersatz wäre ein monatlicher Aufräumlauf mit dem Admin-Schlüssel |
-| Hetzner setzt Policy-Einschränkungen nicht durch | Policy-Test am Test-Bucket nötig, vor dem produktiven Bucket |
+| **Lifecycle wirkt im Test nicht** (12./13.10.) | Ursache offen. Vor produktiven Backups einen nachweislich funktionierenden Aufräumweg festlegen (Möglichkeiten A–C oben) |
+| Hetzner setzt Policy-Einschränkungen nicht durch | Policy-Test vorbereitet, aber nach dem Lifecycle-Stopp **nicht ausgeführt**; neue Freigabe nötig |
 | `deploy` war ein zweiter, nicht benutzter root-Zugang | **erledigt am 12.10.2026:** stillgelegt, ohne sudo, ohne `docker`, ohne Anmeldung, mit Rückweg ([server-benutzer-deploy.md](server-benutzer-deploy.md)) |
 | Coolify-Schlüssel kurz in der Prozessliste | gering, solange nur root-gleiche Benutzer existieren; eingeschränkter Schreibschlüssel begrenzt den Schaden |
 | Übernahme des Hetzner-Kontos | Zwei-Faktor-Anmeldung, wenige Personen mit Zugriff; optional eine monatliche verschlüsselte Kopie anderswo |

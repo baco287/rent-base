@@ -209,3 +209,41 @@ nicht ausgeführt. S3 führt Lifecycle-Aktionen asynchron aus; Hetzner nennt kei
 Nach den vorab festgelegten Kriterien ([backup-policy-test.md](backup-policy-test.md), Abschnitt 7a) ist das **„weiter“**:
 noch unverändert, alles andere wie im Ausgangsstand. **Entscheidend ist die Prüfung am 13.10.:** Hat die Regel dann gar
 nicht gewirkt, wird gestoppt und berichtet.
+
+## Lifecycle-Nachprüfung 13.10.2026 (20:57 Uhr Berlin, 18:57 UTC, nur lesend) – FAIL, Stopp
+
+**Zum Zeitpunkt:**
+- Die für 14:07 Uhr geplante Prüfung und der Policy-Test um 14:37 Uhr sind entfallen, weil die Sitzung zwischenzeitlich neu
+  gestartet wurde; eingeplante Aufträge überdauern das nicht.
+- Auf dem Server ist nichts gelaufen: kein `/root/backup-policy-test`, keine `rb-policy-`-Container, keine Policy. Die
+  Prüfung wurde am Abend nachgeholt.
+
+**Einstellungen unverändert:**
+- Isolation bestanden: Der Schlüssel sieht nur `rent-base-backup-test`.
+- Object Lock COMPLIANCE 1 Tag, Versionierung an, Lifecycle-Regel `rb-test-ablauf` aktiv, keine Bucket-Policy.
+- Admin- und Writer-Zugangsdaten unverändert: root/600, getrennt, Schlüssel verschieden.
+
+**Bestand:** identisch mit dem 11. und 12.10., also 6 Fassungen und 1 Löschmarker.
+
+| Bereich | Ergebnis |
+|---|---|
+| `rb-test/lc/ablauf.txt` | **weiterhin keine Wirkung**: 1 Fassung, kein Löschmarker. Hochgeladen am 10.10. um 11:13 UTC; nach S3-Regel fällig seit 12.10. 00:00 UTC, also seit rund 43 Stunden |
+| außerhalb von `rb-test/lc/` | unverändert (5 Fassungen, Löschmarker nur auf `md5.txt`) |
+
+**Bewertung: FAIL.** Nach den vorab festgelegten Kriterien heißt „nach zwei Tagen gar keine Wirkung“ **Stopp und Bericht**.
+Der Policy-Test wurde deshalb **nicht** gestartet.
+
+**Mögliche Ursachen (ohne Änderung am Bucket nicht zu klären):**
+1. Hetzner arbeitet Lifecycle-Regeln langsamer ab als in zwei Tagen. Die Doku nennt keine Zeiten.
+2. Regeln mit Präfix-Filter (`Filter.Prefix`) werden nicht ausgeführt. Das einzige Beispiel der Hetzner-Doku gilt für den
+   ganzen Bucket.
+3. In Buckets mit Object Lock führt Hetzner Lifecycle-Regeln nicht oder nur eingeschränkt aus. Die Doku erwähnt Object Lock
+   beim Löschen alter Fassungen („unless object lock is applied“). Ein Hetzner-Leitfaden für Veeam rät von Lifecycle-Regeln
+   zusammen mit Object Lock ab.
+
+**Folge für die Produktion:**
+- Auf die Lifecycle-Regel als Aufräumweg ist derzeit **kein Verlass**.
+- Ohne sie verschwinden Datenbank-Dumps nicht nach 31 Tagen von selbst. Das ist vor allem eine Datenschutzfrage; die Kosten
+  bleiben gering.
+- Vor produktiven Backups braucht es deshalb einen nachweislich funktionierenden Aufräumweg; Optionen in
+  [backup-produktion-vorschlag.md](backup-produktion-vorschlag.md).
