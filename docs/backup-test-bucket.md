@@ -247,3 +247,9 @@ Der Policy-Test wurde deshalb **nicht** gestartet.
   bleiben gering.
 - Vor produktiven Backups braucht es deshalb einen nachweislich funktionierenden Aufräumweg; Optionen in
   [backup-produktion-vorschlag.md](backup-produktion-vorschlag.md).
+
+**Weiteres Vorgehen:**
+- **Weitere lesende Prüfung am 14.10.2026 um 14:07 Uhr.** Sie ist nur in dieser Sitzung eingeplant und wird sonst beim nächsten
+  Kontakt nachgeholt. Das FAIL bleibt bestehen, auch wenn die Regel verspätet wirkt.
+- **Support-Anfrage an Hetzner:** [hetzner-support-lifecycle.md](hetzner-support-lifecycle.md).
+- **Aufräumweg ohne Lifecycle:** [backup-aufraeumen-konzept.md](backup-aufraeumen-konzept.md).

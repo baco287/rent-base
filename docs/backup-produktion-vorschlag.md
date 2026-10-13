@@ -172,7 +172,7 @@ verschlüsselt sind. Gegen `deploy` hilft deshalb nur eine Entscheidung über da
 | Möglichkeit | Vorgehen | Bewertung |
 |---|---|---|
 | A Ursache klären | Hetzner-Support fragen: Bearbeitungszeit, Präfix-Filter, Object Lock. Zusätzlich die Beobachtung lesend weiterlaufen lassen | ohne Risiko; liefert die Grundlage für B oder C |
-| B Täglicher Aufräumlauf mit eigenem Schlüssel | Ein dritter Schlüssel im Writer-Projekt mit nur `ListBucketVersions` und `DeleteObjectVersion` auf dem Dump-Präfix. Er läuft als Scheduled Task und löscht nur Fassungen, die älter als 31 Tage sind | COMPLIANCE verhindert jedes Löschen innerhalb der 30 Tage, auch mit diesem Schlüssel. Gestohlen könnte er nur Dumps entfernen, die ohnehin fällig sind. Setzt voraus, dass Hetzner Policies durchsetzt (Policy-Test) |
+| B Täglicher Aufräumlauf mit eigenem Schlüssel ([Konzept](backup-aufraeumen-konzept.md)) | Ein dritter Schlüssel im Writer-Projekt, ohne Leserecht, mit `DeleteObjectVersion` nur auf den Backup-Präfixen. Er läuft als Scheduled Task und löscht nur Fassungen mit abgelaufener Sperre, die älter als 31 Tage sind; Schutzschwellen gegen Massenlöschung | COMPLIANCE verhindert jedes Löschen innerhalb der 30 Tage, auch mit diesem Schlüssel. Gestohlen könnte er nur Dumps entfernen, die ohnehin fällig sind. Setzt voraus, dass Hetzner Policies durchsetzt (Policy-Test) |
 | C Monatlicher Aufräumlauf mit dem Admin-Schlüssel | vom eigenen Rechner, nur Fassungen mit abgelaufener Sperre; der Admin-Schlüssel kommt nie auf den Server | einfach, aber manuell; Dumps bleiben bis zu 61 Tage |
 
 ### Wiederherstellungstests
@@ -233,7 +233,7 @@ verschlüsselt sind. Gegen `deploy` hilft deshalb nur eine Entscheidung über da
 | Risiko | Stand |
 |---|---|
 | **Lifecycle wirkt im Test nicht** (12./13.10.) | Ursache offen. Vor produktiven Backups einen nachweislich funktionierenden Aufräumweg festlegen (Möglichkeiten A–C oben) |
-| Hetzner setzt Policy-Einschränkungen nicht durch | Policy-Test vorbereitet, aber nach dem Lifecycle-Stopp **nicht ausgeführt**; neue Freigabe nötig |
+| Hetzner setzt Policy-Einschränkungen nicht durch | **weiter offen:** Der Policy-Test vom 13.10. brach in der Vorbedingung ab, weil Hetzner den Writer-Schlüssel nicht kennt (InvalidAccessKeyId); nichts wurde verändert ([backup-policy-test.md](backup-policy-test.md), 7b) |
 | `deploy` war ein zweiter, nicht benutzter root-Zugang | **erledigt am 12.10.2026:** stillgelegt, ohne sudo, ohne `docker`, ohne Anmeldung, mit Rückweg ([server-benutzer-deploy.md](server-benutzer-deploy.md)) |
 | Coolify-Schlüssel kurz in der Prozessliste | gering, solange nur root-gleiche Benutzer existieren; eingeschränkter Schreibschlüssel begrenzt den Schaden |
 | Übernahme des Hetzner-Kontos | Zwei-Faktor-Anmeldung, wenige Personen mit Zugriff; optional eine monatliche verschlüsselte Kopie anderswo |

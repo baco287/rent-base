@@ -283,6 +283,48 @@ ssh -t rb bash /root/backup-env-setup.sh --writer
 | Vorprüfung Policy-Test | Admin sieht nur den Test-Bucket; keine Policy; beide Zugangsdateien root/600, getrennt, Schlüssel verschieden; kein Testverzeichnis und kein `rb-policy-`-Container | jede Abweichung |
 | Policy-Test | Protokoll endet mit `== Ende Lauf <Lauf>: aufgeräumt`; F1, F3, F4 bestanden | Abbruch vor dem Setzen, `AUFRÄUMEN NICHT ABGESCHLOSSEN`, eine fremde Policy, ein Legal Hold oder eine **unerwartete Erlaubnis** (ein N-Test „ERLAUBT“). Dann keine weiteren Schritte ohne neue Freigabe |
 
+## 7b. Lauf vom 13.10.2026: Abbruch in der Vorbedingung V1, nichts verändert
+
+Separat freigegeben am 13.10.2026, unabhängig vom Lifecycle-Ergebnis. Das Lifecycle-FAIL bleibt bestehen.
+
+**Vorprüfung vor dem Start:** alles erfüllt.
+- **Bucket:** Admin sieht nur `rent-base-backup-test`; keine Bucket-Policy; Bestand 6 Fassungen und 1 Löschmarker.
+- **Zugangsdaten:** beide root/600, getrennt, Schlüssel verschieden.
+- **Laufende Prozesse:** keine anderen Läufe, Container oder Aufräumprozesse.
+- **Skripte:** `run.sh` (SHA-256 `ae0bc604…`) und `backup-policy-test.mjs` (`a3743a32…`), unverändert seit Commit `38bdcfb`.
+  - Lokal erneut 28 Sicherheitsfälle und 17 Ablauffälle bestanden.
+  - Ein Testfall war nur zeitabhängig (Stichtag vergangen) und ist jetzt zeitunabhängig.
+- **Bereitstellung:** Die Skripte wurden ohne Überschreiben nach `/root/backup-policy-test` (root, 700) kopiert, die Prüfsummen
+  sind identisch.
+
+**Lauf `20261013T212129Z-6e3793`** (gestartet 21:21:30 UTC, losgelöst):
+
+```
+BESTANDEN  V0 Isolation Admin: Admin-Schlüssel sieht nur rent-base-backup-test
+ABBRUCH: Writer-Anmeldung abgelehnt (InvalidAccessKeyId (HTTP 403)). Nichts geändert.
+== Policy wurde nicht gesetzt (Exit 3) – nichts geändert
+```
+
+- Die Policy wurde **nicht** gesetzt; es entstand kein Testobjekt und kein Container. Das Aufräumen entfiel, weil nichts gesetzt
+  wurde.
+- **Im Testverzeichnis bleiben:** `run.sh`, `backup-policy-test.mjs`, das Protokoll, die Mitschrift und die Sperrdatei. Keine
+  davon enthält Zugangsdaten.
+
+**Diagnose, nur lokal auf dem Server und ohne Werte auszugeben:**
+- Weder der Writer-Access-Key noch der Writer-Secret-Key hat das Format (Länge, Zeichenart) der funktionierenden
+  Admin-Schlüssel.
+- Vertauscht sind sie nicht.
+
+**Mögliche Ursachen:**
+1. In der Datei stehen nicht die S3-Zugangsdaten `writer-test`, sondern andere Werte, z. B. ein API-Token des Projekts.
+2. Der Schlüssel ist bei Hetzner nicht (mehr) gültig.
+3. S3-Zugangsdaten eines Projekts ohne eigenen Bucket gelten am Endpunkt hel1 nicht. Das ist offen und Teil der Support-Anfrage
+   ([hetzner-support-lifecycle.md](hetzner-support-lifecycle.md), Frage 6).
+
+**Einordnung:** Unerwartetes Ergebnis, deshalb Stopp. Ein neuer Lauf braucht eine neue Freigabe.
+- Die Datei `/root/backup-writer-test.env` lässt sich bewusst nicht überschreiben.
+- Ein Ersatz mit korrekten Werten braucht deshalb zuerst deine Freigabe, die vorhandene Datei zu entfernen.
+
 ## 8. Wenn Hetzner Einschränkungen nicht durchsetzt
 
 - **Folge:** Gelingen P- und N-Tests gleichermaßen, taugt die Policy nicht als Schutzschicht. Vorhandene Backups schützt
