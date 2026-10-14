@@ -1,7 +1,10 @@
 # Policy-Test: eingeschränkter Schreibschlüssel für Backups
 
-**Stand 12.10.2026: vorbereitet und lokal geprüft, noch nicht ausgeführt.** Es ist kein Projekt und kein Schlüssel angelegt,
-und am Test-Bucket ist nichts verändert. Jeder Schritt in Abschnitt 7 braucht deine Freigabe.
+**Stand 14.10.2026: ausgeführt (Lauf `20261014T072427Z-a3e4f3`), Ergebnis in Abschnitt 7d.**
+- Der Writer konnte **nichts Verbotenes** tun.
+- Aber mehrere **gewährte** Rechte wirkten nicht, und Coolifys `mc cp` scheiterte.
+- Die Policy ist in dieser Form **nicht produktionstauglich**.
+- Die Test-Policy ist entfernt. Jeder weitere Schritt braucht deine Freigabe.
 
 **Ziel:** Bevor der produktive Backup-Bucket entsteht, prüfen wir an `rent-base-backup-test`, ob Hetzner eine Bucket-Policy
 für einen Schlüssel aus einem **eigenen Projekt** so durchsetzt, wie [backup-produktion-vorschlag.md](backup-produktion-vorschlag.md)
@@ -403,6 +406,123 @@ Anmeldeprobe, jeweils mit Freigabe.
   - Der Writer-Schlüssel ist also gültig.
   - Wie vorgesehen sieht er weder den Test-Bucket noch einen Produktions-Bucket. Das entspricht der Vorbedingung V1 des
     Policy-Tests.
+
+## 7d. Lauf vom 14.10.2026: nichts Verbotenes erlaubt, aber gewährte Rechte wirken nur teilweise
+
+**Freigabe:** am 14.10.2026 freigegeben, nach dem Hinweis auf den Lifecycle-Löschmarker vom selben Morgen erneut bestätigt.
+**Das Lifecycle-FAIL vom 13.10. bleibt bestehen** und gilt nicht als erfolgreich.
+
+**Lauf `20261014T072427Z-a3e4f3`:**
+- Losgelöst gestartet am 14.10.2026 um 07:24:28 UTC, nach etwa 5 Minuten beendet.
+- Skripte unverändert seit dem 13.10.; Prüfsumme im Protokoll `a3743a32…`.
+- Protokoll: `/root/backup-policy-test/log-20261014T072426Z.txt`. Es endet mit `== Ende Lauf 20261014T072427Z-a3e4f3: aufgeräumt`.
+
+### Ergebnis je Testfall
+
+| Nr. | Ergebnis | Befund |
+|---|---|---|
+| V0–V5 | PASS | Admin sieht nur den Test-Bucket. Writer aus eigenem Projekt sieht 0 Buckets und ohne Policy keinen Zugriff. Vorher keine Policy, zweimal geprüft. Laufpräfix leer |
+| S0–S2 | PASS | Policy gesetzt und als genau die Policy dieses Laufs zurückgelesen |
+| P1 | PASS | `ListObjectsV2` erlaubt (Coolifys Verbindungstest) |
+| P2 | **FAIL** | `GetBucketLocation` abgewiesen (AccessDenied 403), obwohl gewährt |
+| P3 | PASS | `GetObjectLockConfiguration` erlaubt |
+| P4 | **FAIL** | `PutObject` mit SDK-Standard-Prüfsumme unter `w/db/` abgewiesen (403), obwohl gewährt |
+| P5 | PASS | `PutObject` mit Content-MD5 unter `w/files/` erlaubt |
+| P6 | **FAIL** | Teil-Upload (6 MB, 2 Teile, Content-MD5) unter `w/db/` abgewiesen (403). **Gestartet werden konnte er**: Es gab eine Upload-ID, der Admin brach den Rest ab. Abgewiesen wurde also ein Teil oder der Abschluss |
+| P7 | **FAIL** | Folgefehler: kein Objekt zum Lesen, weil P6 scheiterte |
+| P8 | nicht prüfbar | P4 lieferte keine Versions-ID |
+| P9 | **FAIL** | `DeleteObject` unter `w/files/` abgewiesen (403), obwohl gewährt. Die Dateisicherung könnte legitime Löschungen nicht übernehmen |
+| P10 | PASS | Upload im Laufpräfix, aber außerhalb von `w/`, abgewiesen |
+| N1 | PASS | Löschen außerhalb von `files/` abgewiesen |
+| N2 | PASS | Fassung mit abgelaufener Sperre endgültig löschen (`DeleteObjectVersion`) abgewiesen |
+| N3 | nicht prüfbar | keine Versions-ID aus P4 |
+| N4 | PASS | Upload mit eigener Sperre (26 h) abgewiesen |
+| N5 | nicht prüfbar | keine Versions-ID aus P4 |
+| N6, N7 | PASS | Bucket-Policy setzen bzw. löschen abgewiesen |
+| **N8** | **NICHT GETESTET** | entfällt, solange die Lifecycle-Beobachtung unter `rb-test/lc/` läuft |
+| N9 | PASS | Standard-Sperre setzen abgewiesen |
+| N10 | PASS | Versionierung aussetzen abgewiesen (403) |
+| N11, N13 | PASS | Policy lesen, Fassungen auflisten abgewiesen |
+| N12 | nicht prüfbar | keine Versions-ID aus P4 |
+| K1, K4, K5, K6 | nicht ausgeführt | brauchen den Writer-Upload aus P4. **Offen bleibt damit, ob der Admin Writer-Uploads lesen kann und wem sie gehören** |
+| K2, K3 | PASS | Bucket-Einstellungen und Policy während des Tests unverändert |
+| M1, M2 | PASS | `mc` (coolify-helper 1.0.17) sieht keine eigenen Buckets; `mc ls` im erlaubten Bereich |
+| M3 | **FAIL** | `mc cp` (17 MiB, wie Coolify) unter `w/coolify/`: „Insufficient permissions“. Ein begonnener Teil-Upload blieb übrig; F2 hat ihn abgebrochen |
+| M4–M6 | nicht ausgeführt | entfallen nach M3 |
+| F1–F4 | PASS | kein Legal Hold (2 Fassungen geprüft); 1 Teil-Upload abgebrochen; **Test-Policy entfernt, Bucket ohne Policy**; Writer wieder ohne Zugriff |
+| F5 | Hinweis | 2 Fassungen, 0 Löschmarker im Laufpräfix |
+
+**Nachkontrolle um 07:30 UTC, nur lesend:**
+- Admin `GetBucketPolicy`: 5 von 5 Abfragen ergaben `NoSuchBucketPolicy` (404).
+- Writer `ListObjectsV2`: 15 von 15 Abfragen über 75 Sekunden ergaben `AccessDenied` (403).
+- Kein `rb-policy-`-Container und kein Prozess läuft mehr.
+
+### Was Hetzner tatsächlich durchsetzt
+
+- **Trennung der Projekte wirkt:** Ein Schlüssel aus dem Writer-Projekt hat ohne Policy keinen Zugriff (V2, F4, Nachkontrolle).
+- **Wirksam gewährt:**
+  - `ListObjectsV2` (P1, M2)
+  - `GetObjectLockConfiguration` (P3)
+  - einfacher `PutObject` mit Content-MD5 (P5)
+  - der Start eines Teil-Uploads (P6, vermutlich auch M3)
+- **Pfadgrenze:** Außerhalb von `w/` wurde ein Upload abgewiesen (P10), innerhalb angenommen (P5).
+- **Nicht wirksam, obwohl gewährt:**
+  - `GetBucketLocation` (P2)
+  - `PutObject` mit SDK-Standard-Prüfsumme (P4)
+  - Teile oder Abschluss eines Teil-Uploads (P6, M3)
+  - `DeleteObject` (P9)
+- **Verbotene Aktionen:** Alle geprüften wurden abgewiesen. Der Writer hat ohne Policy allerdings gar keine Rechte.
+  - Belegt ist damit: Die Policy gibt diese Aktionen nicht frei.
+  - Nicht belegt ist: ob Hetzner das ausdrückliche `Deny` selbst auswertet.
+  - Für die Sicherheit zählt das Ergebnis: Der Writer konnte keine verbotene Aktion ausführen.
+
+**Hinweis aus dem Vergleich:** P6 zeigt, dass `PutObject` unter `w/db/` grundsätzlich greift, denn der Start des Teil-Uploads
+gelang. Zugleich laden der Admin-Schlüssel und `mc` mit SDK-Standard bzw. in Teilen hoch (Bucket-Test, Tag 0). Die Ursache
+liegt also eher an der **Art der Anfrage** als am Pfad.
+
+### Mögliche Ursachen
+
+Nicht belegt; unterscheiden lassen sie sich nur mit einem weiteren Lauf oder einer Antwort des Supports.
+
+| Vermutung | passt zu | passt nicht zu |
+|---|---|---|
+| Hetzner ordnet einzelne Anfragen anderen Aktionen zu als AWS, etwa Teil-Upload-Schritte, `GetBucketLocation` oder `DeleteObject` im versionierten Bucket mit Object Lock | P2, P6, P9, M3 | – |
+| Übertragung mit nachgestellter Prüfsumme (`aws-chunked`, SDK-Standard und neuere `mc`) wird bei Schlüsseln aus einem fremden Projekt anders ausgewertet | P4, M3 | P2, P9 (ohne Inhalt) |
+| Das ausdrückliche `Deny`, z. B. auf `PutObjectRetention`, greift bei Uploads in einen Bucket mit Standard-Sperre | P4, P6, M3 | P5 wurde angenommen |
+| Die Policy wirkt nicht auf allen Knoten gleichzeitig | uneinheitliches Muster | Lesende Anfragen gelangen durchgehend; die Nachkontrolle war einheitlich |
+
+### Verbleibender Bestand
+
+**Im Laufpräfix `rb-test/policy/20261014T072427Z-a3e4f3/`:** 2 Fassungen, kein Löschmarker, kein Legal Hold, kein offener
+Teil-Upload.
+
+| Fassung | Hochgeladen von | Sperre |
+|---|---|---|
+| `w/files/ungesperrt/probe.txt` | Admin, für N2 | 60 s, abgelaufen |
+| `w/files/probe.txt` | Writer, P5 | Standard-Sperre, bis etwa 15.10.2026, 07:25 UTC |
+
+**Unverändert:**
+- der ältere Bestand unter `rb-test/` (Bucket-Test, Lifecycle-Beobachtung)
+- beide Zugangsdateien (root, 600)
+- das Testverzeichnis `/root/backup-policy-test`: Skripte, Protokolle, Mitschriften, Sperrdatei, alles ohne Zugangsdaten
+
+### Einordnung
+
+**Der eingeschränkte Writer ist in dieser Form nicht produktionstauglich.**
+- Er kann nichts Verbotenes.
+- Aber Coolify könnte keine Datenbank-Backups hochladen (M3).
+- Die Dateisicherung könnte keine größeren Dateien hochladen (P6) und keine Löschungen übernehmen (P9).
+
+Es gab **keine unerwartete Erlaubnis**, und das Aufräumen ist vollständig. Deshalb kein Stopp nach Abschnitt 7a; weitere
+Schritte nur mit neuer Freigabe:
+1. **Ursache klären:** Fragen zu P2, P4, P6, P9 und M3 an die Support-Anfrage anhängen, oder einen Diagnoselauf freigeben.
+   - Diagnoselauf: je Anfrageart mehrfach, Teil-Upload-Schritte einzeln, Prüfsummen-Modi.
+   - Zusätzlich eine Policy-Variante ohne `Deny`-Anweisung.
+   - Das braucht neuen Code, Gegenprüfung und eine Freigabe.
+2. **Übergangsweg für den Start:** Entscheidung über Coolify mit einem Schlüssel aus dem Bucket-Projekt. Geschützt wäre er
+   durch Object Lock COMPLIANCE und einen täglichen lesenden Prüflauf der Bucket-Einstellungen (Abschnitt 8).
+3. **Testobjekte aufräumen:** frühestens nach Sperrende, also ab 15.10.2026, 07:30 UTC, mit `--cleanup`. Den
+   Writer-Testschlüssel erst danach löschen.
 
 ## 8. Wenn Hetzner Einschränkungen nicht durchsetzt
 

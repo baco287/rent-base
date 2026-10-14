@@ -232,8 +232,8 @@ verschlüsselt sind. Gegen `deploy` hilft deshalb nur eine Entscheidung über da
 
 | Risiko | Stand |
 |---|---|
-| **Lifecycle wirkt im Test nicht** (12./13.10.) | Ursache offen. Vor produktiven Backups einen nachweislich funktionierenden Aufräumweg festlegen (Möglichkeiten A–C oben) |
-| Hetzner setzt Policy-Einschränkungen nicht durch | **weiter offen:** Der Policy-Test vom 13.10. brach in der Vorbedingung ab, weil Hetzner den Writer-Schlüssel nicht kennt (InvalidAccessKeyId); nichts wurde verändert ([backup-policy-test.md](backup-policy-test.md), 7b) |
+| **Lifecycle wirkt im Test nicht** (12./13.10.) | FAIL vom 13.10. bleibt. Am 14.10. um 01:30 UTC setzte die Regel den ersten Löschmarker, rund 49,5 Stunden zu spät; ob alte Fassungen entfernt werden, zeigt sich ab 15.10. Vor produktiven Backups einen nachweislich funktionierenden Aufräumweg festlegen (Möglichkeiten A–C oben) |
+| Eingeschränkter Writer-Schlüssel funktioniert nicht wie geplant | **Policy-Test vom 14.10.** ([backup-policy-test.md](backup-policy-test.md), 7d): Der Writer konnte nichts Verbotenes. Aber `GetBucketLocation`, `PutObject` mit SDK-Standard-Prüfsumme, Teil-Uploads, `DeleteObject` und **Coolifys `mc cp`** wurden trotz Freigabe abgewiesen. Ursache offen; die Policy ist so nicht produktionstauglich |
 | `deploy` war ein zweiter, nicht benutzter root-Zugang | **erledigt am 12.10.2026:** stillgelegt, ohne sudo, ohne `docker`, ohne Anmeldung, mit Rückweg ([server-benutzer-deploy.md](server-benutzer-deploy.md)) |
 | Coolify-Schlüssel kurz in der Prozessliste | gering, solange nur root-gleiche Benutzer existieren; eingeschränkter Schreibschlüssel begrenzt den Schaden |
 | Übernahme des Hetzner-Kontos | Zwei-Faktor-Anmeldung, wenige Personen mit Zugriff; optional eine monatliche verschlüsselte Kopie anderswo |
