@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Legt die Zugangsdatei für den Backup-Test an (Anleitungen: docs/backup-test-bucket.md Schritt 4, docs/backup-policy-test.md).
-# Liegt auf dem Server als /root/backup-env-setup.sh (root, 700). Aufruf im eigenen Terminal:
-#   ssh -t rb bash /root/backup-env-setup.sh            Test-Admin-Schlüssel  → /root/backup-test.env
-#   ssh -t rb bash /root/backup-env-setup.sh --writer   Writer-Testschlüssel  → /root/backup-writer-test.env
+# Liegt auf dem Server als /root/backup-env-setup-v2.sh (root, 700; ab 14.10.2026, die Vorversion /root/backup-env-setup.sh
+# bleibt unverändert). Aufruf im eigenen Terminal:
+#   ssh -t rb bash /root/backup-env-setup-v2.sh            Test-Admin-Schlüssel  → /root/backup-test.env
+#   ssh -t rb bash /root/backup-env-setup-v2.sh --writer   Writer-Testschlüssel  → /root/backup-writer-test.env
+# Seit v2 werden doppelt eingefügte Werte und ein Access Key im Secret-Feld sofort abgelehnt (Anlass: Eingabefehler 13.10.2026).
 #
 # Access Key und Secret Key werden verdeckt eingelesen (kein Echo) und nur mit Shell-Builtins verarbeitet und geschrieben:
 # nicht in Befehlsargumenten anderer Programme, nicht in der Umgebung, nicht in der History, nie ausgegeben, auch nicht
@@ -43,13 +45,18 @@ tmp=""
 ak=""
 sk=""
 adm=""
+adms=""
 wert=""
+zeile=""
+grund=""
 aufraeumen() {
   stty echo 2>/dev/null || true
   ak=""
   sk=""
   adm=""
+  adms=""
   wert=""
+  zeile=""
   unset BASH_REMATCH 2>/dev/null || true
   if [ -n "$tmp" ]; then rm -f -- "$tmp"; fi
 }
@@ -59,35 +66,73 @@ trap 'builtin printf "\nAbgebrochen, nichts angelegt.\n" >&2; exit 130' INT TERM
 # Einfügen ohne Klammer-Steuerzeichen (Bracketed Paste), damit der Passwortmanager-Wert unverändert ankommt.
 builtin printf '\033[?2004l'
 
-# $1 = Name der Zielvariable, $2 = Anzeigename. Leere Zeilen (zusätzliches Enter) werden übergangen,
-# ungültige Werte bis zu dreimal abgelehnt. Der Wert wird nie angezeigt.
+# $1 = Name der Zielvariable, $2 = Anzeigename, $3 = "secret" beim Secret Key (dann Vergleich mit dem erfassten Access Key).
+# Leere Zeilen (zusätzliches Enter) werden übergangen, ungültige Werte bis zu dreimal abgelehnt. Der Wert wird nie angezeigt.
+# Alle Prüfungen nur mit Shell-Builtins.
+# Besteht der Wert aus zwei oder mehr gleichen Stücken (z. B. zwei- oder dreimal eingefügt)? Nur Builtins.
+wiederholt() {
+  local w=$1 n=${#1} d i stueck kette
+  for ((d = 1; d <= n / 2; d++)); do
+    ((n % d == 0)) || continue
+    stueck=${w:0:d}
+    kette=""
+    for ((i = 0; i < n / d; i++)); do kette+=$stueck; done
+    if [[ $kette == "$w" ]]; then w=""; stueck=""; kette=""; return 0; fi
+  done
+  w=""; stueck=""; kette=""
+  return 1
+}
+
 lies_geheim() {
   local -n _ziel=$1
-  local fehler=0 wert
+  local fehler=0 wert grund
   while :; do
     IFS= read -r -s -p "$2 einfügen (bleibt unsichtbar), dann Enter: " wert || abbruch "Eingabe beendet, nichts angelegt"
     builtin printf '\n'
     [[ -n $wert ]] || continue
-    if ((${#wert} >= 10)) && [[ $wert =~ $MUSTER ]]; then
+    grund=""
+    if ! { ((${#wert} >= 10)) && [[ $wert =~ $MUSTER ]]; }; then
+      grund="zu kurz oder mit Leer- bzw. Sonderzeichen"
+    elif wiederholt "$wert"; then
+      grund="besteht aus mehrfach demselben Wert – vermutlich mehrmals eingefügt; bitte genau einmal einfügen"
+    elif [[ ${3:-} == secret ]] && [[ $wert == *"$ak"* ]]; then
+      grund="entspricht dem Access Key oder enthält ihn – bitte den Secret Key einfügen"
+    elif [[ ${3:-} == secret ]] && [[ $ak == *"$wert"* ]]; then
+      grund="steckt bereits im erfassten Access Key – dort wurde vermutlich zu viel eingefügt; mit Strg+C abbrechen und neu starten"
+    fi
+    unset BASH_REMATCH 2>/dev/null || true
+    if [[ -z $grund ]]; then
       _ziel=$wert
       wert=""
-      unset BASH_REMATCH 2>/dev/null || true
       builtin printf '  %s erfasst.\n' "$2"
       return 0
     fi
     wert=""
     fehler=$((fehler + 1))
-    builtin printf '  Nicht übernommen (zu kurz oder mit Leer- bzw. Sonderzeichen). Versuch %s von 3.\n' "$fehler"
+    builtin printf '  Nicht übernommen (%s). Versuch %s von 3.\n' "$grund" "$fehler"
     ((fehler < 3)) || abbruch_still "$2 nicht erfasst, nichts angelegt"
   done
 }
 
 builtin printf 'Einrichtung %s (Endpunkt %s)\n\n' "$ZIEL" "$ENDPUNKT"
 if [ "$WRITER" = 0 ]; then
-  IFS= read -r -p "Bucket-Name (z. B. rent-base-backup-test): " bucket || abbruch "Eingabe beendet, nichts angelegt"
-  case "$bucket" in rent-base-files | rent-base-backup) abbruch "Produktions-Bucket ist nicht erlaubt" ;; esac
-  [[ $bucket =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ ]] || abbruch "ungültiger Bucket-Name (nur a–z, 0–9 und Bindestrich)"
-  [[ $bucket == *test* ]] || abbruch "der Bucket-Name muss „test“ enthalten"
+  # Verdeckt wie die Projekt-ID, damit ein zu früh eingefügter Schlüssel nicht sichtbar wird; der gültige Name wird danach angezeigt.
+  fehler=0
+  while :; do
+    IFS= read -r -s -p "Bucket-Name (z. B. rent-base-backup-test, bleibt unsichtbar): " bucket || abbruch "Eingabe beendet, nichts angelegt"
+    builtin printf '\n'
+    [[ -n $bucket ]] || continue
+    grund=""
+    case "$bucket" in rent-base-files | rent-base-backup) grund="Produktions-Bucket ist nicht erlaubt" ;; esac
+    if [[ -z $grund ]] && ! [[ $bucket =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ ]]; then grund="nur a–z, 0–9 und Bindestrich; eingefügter Text wurde verworfen"; fi
+    if [[ -z $grund && $bucket != *test* ]]; then grund="der Bucket-Name muss „test“ enthalten"; fi
+    unset BASH_REMATCH 2>/dev/null || true
+    if [[ -z $grund ]]; then builtin printf '  Bucket %s erfasst.\n' "$bucket"; break; fi
+    bucket=""
+    fehler=$((fehler + 1))
+    builtin printf '  Nicht übernommen (%s). Versuch %s von 3.\n' "$grund" "$fehler"
+    ((fehler < 3)) || abbruch_still "Bucket-Name nicht erfasst, nichts angelegt"
+  done
 else
   # Verdeckt, damit ein versehentlich zu früh eingefügter Schlüssel nicht sichtbar wird; die gültige ID wird danach angezeigt.
   fehler=0
@@ -104,15 +149,25 @@ else
 fi
 
 lies_geheim ak "Access Key"
-lies_geheim sk "Secret Key"
+lies_geheim sk "Secret Key" secret
 [[ $ak != "$sk" ]] || abbruch "Access Key und Secret Key sind gleich (zweimal dasselbe eingefügt?), nichts angelegt"
 if [ "$WRITER" = 1 ]; then
   # Der Writer-Schlüssel muss aus einem anderen Projekt stammen als der Test-Admin-Schlüssel. Vergleich nur mit Builtins.
-  while IFS='=' read -r name wert; do [[ $name == TEST_S3_ACCESS_KEY ]] && adm=$wert; wert=""; done <"$BASIS/backup-test.env"
-  wert=""
-  [[ -n $adm ]] || abbruch "TEST_S3_ACCESS_KEY in $BASIS/backup-test.env nicht gefunden, nichts angelegt"
-  [[ $ak != "$adm" ]] || abbruch "das ist der Test-Admin-Schlüssel, nicht der Writer-Schlüssel – nichts angelegt"
+  # Ganze Zeilen lesen und mit Parametererweiterung trennen: IFS='=' würde ein einzelnes '=' am Wertende abschneiden. Auch die
+  # letzte Zeile ohne Zeilenschaltung wird gelesen.
+  while IFS= read -r zeile || [[ -n $zeile ]]; do
+    case $zeile in
+      TEST_S3_ACCESS_KEY=*) adm=${zeile#*=} ;;
+      TEST_S3_SECRET_KEY=*) adms=${zeile#*=} ;;
+    esac
+    zeile=""
+  done <"$BASIS/backup-test.env"
+  zeile=""
+  [[ -n $adm && -n $adms ]] || abbruch "Test-Admin-Schlüssel in $BASIS/backup-test.env nicht vollständig gefunden, nichts angelegt"
+  [[ $ak != "$adm" && $ak != "$adms" ]] || abbruch "der Access Key ist ein Test-Admin-Schlüssel, nicht der Writer-Schlüssel – nichts angelegt"
+  [[ $sk != "$adms" && $sk != "$adm" ]] || abbruch "der Secret Key ist ein Test-Admin-Schlüssel, nicht der Writer-Schlüssel – nichts angelegt"
   adm=""
+  adms=""
 fi
 
 tmp=$(mktemp "$BASIS/.backup-env.XXXXXX")
