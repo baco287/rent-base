@@ -360,6 +360,11 @@ Key ist. Einen Wert sieht dabei niemand; ausgegeben wird nur GLEICH oder VERSCHI
 ssh -t rb 'IFS= read -rs -p Access-Key-aus-dem-Passwortmanager-einfuegen: k; echo; v=$(grep -m1 ^WRITER_S3_SECRET_KEY= /root/backup-writer-test.env | cut -d= -f2-); [ x$k = x$v ] && echo GLEICH || echo VERSCHIEDEN; k=; v='
 ```
 
+**Bestätigt am 14.10.2026:** Der Vergleich ergab `GLEICH`.
+- Der einfach gespeicherte Wert, also das Secret-Feld, ist der Access Key aus dem Passwortmanager, und der stimmt laut Nutzer mit
+  dem Eintrag `writer-test` in der Console überein.
+- Die Diagnose „Access Key dreimal eingefügt, Secret Key fehlt“ ist damit belegt.
+
 **Kleinster sicherer nächster Schritt** (braucht deine Freigabe, weil die Datei bewusst nicht überschrieben werden kann):
 1. Die fehlerhafte Datei mit `shred -u /root/backup-writer-test.env` entfernen. Sie enthält keinen gültigen Secret Key; der
    Schlüssel `writer-test` bei Hetzner bleibt unberührt.
