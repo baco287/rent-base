@@ -325,6 +325,51 @@ ABBRUCH: Writer-Anmeldung abgelehnt (InvalidAccessKeyId (HTTP 403)). Nichts geä
 - Die Datei `/root/backup-writer-test.env` lässt sich bewusst nicht überschreiben.
 - Ein Ersatz mit korrekten Werten braucht deshalb zuerst deine Freigabe, die vorhandene Datei zu entfernen.
 
+## 7c. Diagnose vom 14.10.2026: Eingabefehler in der Writer-Zugangsdatei
+
+Nur lesend. Keine Werte, Teile, Längen, Signaturen oder Header ausgegeben; verglichen wurde ausschließlich im Speicher auf dem
+Server.
+
+| Prüfung | Ergebnis |
+|---|---|
+| Dateiformat | 5 Zeilen, kein BOM, keine CR. Endpunkt exakt `https://hel1.your-objectstorage.com`, Region `hel1`, Projekt-ID 16367501 |
+| Writer-Access-Feld | nur Großbuchstaben/Ziffern, so lang wie ein Secret Key. **Besteht aus zwei gleichen Hälften und ist genau das Secret-Feld zweimal hintereinander** |
+| Writer-Secret-Feld | nur Großbuchstaben/Ziffern, so lang wie ein Access Key: das Format eines Access Keys. Ein Secret Key hat gemischte Groß- und Kleinbuchstaben, wie der Admin-Secret-Key |
+| `ListBuckets` Writer an hel1, fsn1, nbg1 | jeweils `InvalidAccessKeyId (HTTP 403)` |
+| `ListBuckets` Admin an hel1, fsn1, nbg1 (Kontrolle) | überall angenommen; in hel1 sichtbar nur der Test-Bucket |
+
+**Diagnose:**
+- Beim verdeckten Einfügen wurde derselbe Wert, dem Format nach der Access Key, zweimal ins Access-Feld und einmal ins
+  Secret-Feld eingefügt.
+- Der Secret Key steht nicht in der Datei, und die Datei enthält ungültige Zugangsdaten.
+
+**Abgrenzung der Ursachen:**
+
+| Mögliche Ursache | Ausgeschlossen, weil … |
+|---|---|
+| Fehlende Berechtigung | Sie zeigt sich als `AccessDenied`, und erst nachdem der Schlüssel erkannt wurde |
+| Fehlende Bucket-Policy | `ListBuckets` listet nur das eigene Projekt und braucht keine Policy; außerdem käme sonst ebenfalls `AccessDenied` |
+| Isolation zwischen Projekten | würde sich als `AccessDenied` zeigen, nicht als unbekannter Schlüssel |
+| Signatur- oder Endpunktfehler | Ein falscher Secret Key ergibt `SignatureDoesNotMatch`, aber erst bei bekannter Access-Key-ID. Endpunkt und Region stimmen exakt, und der Admin-Schlüssel funktioniert an allen drei Standorten |
+| **Ungültige Zugangsdaten (Eingabefehler)** | **belegt:** Die vorgelegte Access-Key-ID ist der verdoppelte Wert; Hetzner kennt sie deshalb an keinem Standort |
+
+**Lokaler Bestätigungsweg (optional, du selbst):** Prüfen, ob der einfach gespeicherte Wert, also das Secret-Feld, dein Access
+Key ist. Einen Wert sieht dabei niemand; ausgegeben wird nur GLEICH oder VERSCHIEDEN:
+
+```
+ssh -t rb 'IFS= read -rs -p Access-Key-aus-dem-Passwortmanager-einfuegen: k; echo; v=$(grep -m1 ^WRITER_S3_SECRET_KEY= /root/backup-writer-test.env | cut -d= -f2-); [ x$k = x$v ] && echo GLEICH || echo VERSCHIEDEN; k=; v='
+```
+
+**Kleinster sicherer nächster Schritt** (braucht deine Freigabe, weil die Datei bewusst nicht überschrieben werden kann):
+1. Die fehlerhafte Datei mit `shred -u /root/backup-writer-test.env` entfernen. Sie enthält keinen gültigen Secret Key; der
+   Schlüssel `writer-test` bei Hetzner bleibt unberührt.
+2. Neu eingeben: `ssh -t rb bash /root/backup-env-setup.sh --writer`. Je Abfrage **genau einmal** einfügen: zuerst die
+   Projekt-ID, dann den Access Key, dann den **Secret Key**.
+3. Lesende Anmeldeprobe (`ListBuckets` mit dem Writer-Schlüssel). Erst danach kommt eine neue Freigabe für den Policy-Test.
+
+**Vorschlag gegen Wiederholung:** Das Einrichtungsskript soll ein Access-Feld aus zwei gleichen Hälften ablehnen, ebenso Werte,
+die im jeweils anderen Feld enthalten sind. Die Kopie auf dem Server zu ersetzen braucht eine Freigabe.
+
 ## 8. Wenn Hetzner Einschränkungen nicht durchsetzt
 
 - **Folge:** Gelingen P- und N-Tests gleichermaßen, taugt die Policy nicht als Schutzschicht. Vorhandene Backups schützt

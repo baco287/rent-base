@@ -66,7 +66,7 @@ Fassung einen Tag später entfernen sollen. Andere Objekte im Bucket außerhalb 
    Rechte auf diesen Bucket geben (Principal `arn:aws:iam:::user/p<Projekt-ID>:<Access-Key>`).
    - Sind S3-Zugangsdaten eines Projekts ohne eigenen Bucket am Endpunkt `hel1.your-objectstorage.com` gültig?
    - Muss Object Storage im zweiten Projekt dafür erst aktiviert werden?
-   - Ein erster Versuch ergab beim Auflisten der eigenen Buckets (`ListBuckets`) „InvalidAccessKeyId“. Die Ursache klären wir
-     noch.
+   - Zur Einordnung, nicht zum Absenden: Unser erster Fehlversuch („InvalidAccessKeyId“) beruhte auf einem Eingabefehler auf
+     unserer Seite. Diese Frage ist deshalb nur noch vorsorglich gestellt.
 
 Vielen Dank und freundliche Grüße
