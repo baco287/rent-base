@@ -482,6 +482,11 @@ liegt also eher an der **Art der Anfrage** als am Pfad.
 
 ### Mögliche Ursachen
 
+**Berichtigt am 14.10.2026** durch die Analyse in [backup-prod-vortest.md](backup-prod-vortest.md), Abschnitt 5: Die
+Vermutungen „nachgestellte Prüfsumme (`aws-chunked`)“ und „`Deny` auf `PutObjectRetention`“ sind widerlegt bzw. widersprechen dem
+Ceph-Quelltext. P2 ist eine lesende Anfrage und scheiterte. Die Dateisicherung lädt nicht in Teilen hoch; für sie zählt P4.
+Die Tabelle bleibt als damaliger Stand stehen.
+
 Nicht belegt; unterscheiden lassen sie sich nur mit einem weiteren Lauf oder einer Antwort des Supports.
 
 | Vermutung | passt zu | passt nicht zu |
