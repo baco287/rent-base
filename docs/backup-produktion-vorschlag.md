@@ -3,6 +3,12 @@
 **Stand 11.10.2026. Nur ein Vorschlag: Es ist nichts angelegt und nichts umgestellt.** Jeder Schritt in Abschnitt 6 braucht
 eine ausdrückliche Freigabe.
 
+**Nachtrag 14.10.2026:**
+- Der eingeschränkte Writer-Schlüssel aus Abschnitt 2 funktioniert mit Coolify nicht ([backup-policy-test.md](backup-policy-test.md), 7d).
+- Für den Start ist deshalb der **Übergangsweg** in [backup-uebergang.md](backup-uebergang.md) vorbereitet: Projektschlüssel,
+  Object Lock COMPLIANCE 30 Tage und ein stündlicher Prüflauf.
+- Abschnitte 4 bis 6 bleiben das Ziel für die Zeit nach dem Umstieg.
+
 **Grundlagen:**
 - Testergebnisse: [backup-test-bucket.md](backup-test-bucket.md)
 - Begründungen: [backup-strategie.md](backup-strategie.md)

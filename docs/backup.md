@@ -2,6 +2,11 @@
 
 Rent-Base speichert Verträge, Unterschriften, Übergabeprotokolle und Fotos, die nicht verloren gehen dürfen. Die Begründungen zu Object Lock, Zugangsdaten und Datenschutz stehen in [backup-strategie.md](backup-strategie.md). Dieses Dokument ist die Betriebsanleitung.
 
+**Stand 14.10.2026: Für den Start gilt der Übergangsweg in [backup-uebergang.md](backup-uebergang.md).**
+- Projektschlüssel mit Object Lock COMPLIANCE und einem Prüflauf, weil der eingeschränkte Writer-Schlüssel mit Coolify nicht
+  funktioniert ([backup-policy-test.md](backup-policy-test.md), 7d).
+- Wo sich die Angaben unten (fsn1, Writer-Schlüssel, Policy) widersprechen, gilt bis zum Umstieg der Übergangsweg.
+
 **Stand 11.10.2026:**
 - Der Test-Bucket ist geprüft ([backup-test-bucket.md](backup-test-bucket.md)).
 - Der aktuelle Vorschlag steht in [backup-produktion-vorschlag.md](backup-produktion-vorschlag.md): Bucket in **hel1**,
