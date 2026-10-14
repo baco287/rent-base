@@ -34,7 +34,7 @@
 | [`scripts/backup-prod-run.sh`](../scripts/backup-prod-run.sh) | Rahmen auf dem Server: verdeckte Eingabe, Wegwerf-Container, Protokoll |
 | [`tests/backup-prod.test.ts`](../tests/backup-prod.test.ts) | 18 Tests gegen einen nachgebildeten Bucket, ohne Netz und Datenbank |
 
-Den Rahmen `run.sh` habe ich zusätzlich lokal mit nachgebildetem Docker geprüft (25 Fälle). Geprüft wurde:
+Den Rahmen `run.sh` habe ich zusätzlich lokal mit nachgebildetem Docker geprüft (27 Fälle). Geprüft wurde:
 - Schlüssel landen nur auf der Standardeingabe: nicht in Argumenten, Ausgabe oder Protokoll.
 - Test-Schlüssel und mehrfach eingefügte Werte werden abgelehnt.
 - Echo und „ja“ sind verdeckt.

@@ -71,8 +71,9 @@ done
 exec 9>"$DIR/.lock"
 flock -n 9 || abbruch "ein anderer Lauf ist aktiv"
 [ "$(docker info --format '{{.Debug}}' 2>/dev/null)" = false ] || abbruch "Docker nicht erreichbar oder im Debug-Modus (würde Anfragen protokollieren)"
-# Nur der Produktions-Container (<uuid>-<Ziffern>), keine Vorschau-Deployments (<uuid>-pr-<n>); genau einer.
-KANDIDATEN=$(docker ps --format '{{.Names}}' | grep -E "^${APP}-[0-9]+$")
+# Nur der Produktions-Container (<uuid>-<Zeitstempel>, z. B. -20261008T120740), keine Vorschau-Deployments (<uuid>-pr-<n>);
+# genau einer.
+KANDIDATEN=$(docker ps --format '{{.Names}}' | grep -E "^${APP}-[0-9]+(T[0-9]+)?$")
 [ -n "$KANDIDATEN" ] || abbruch "App-Container $APP läuft nicht; sein Image wird für den Wegwerf-Container gebraucht"
 [ "$(builtin printf '%s\n' "$KANDIDATEN" | wc -l)" -eq 1 ] || abbruch "mehrere App-Container laufen (Deploy im Gange?); später erneut versuchen"
 CONTAINER=$KANDIDATEN
