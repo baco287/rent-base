@@ -393,6 +393,17 @@ die im jeweils anderen Feld enthalten sind. Die Kopie auf dem Server zu ersetzen
 **Neu eingeben (du):** `ssh -t rb bash /root/backup-env-setup-v2.sh --writer`. Danach folgen die lesende Nachprüfung und die
 Anmeldeprobe, jeweils mit Freigabe.
 
+**Ergebnis 14.10.2026:**
+- **Neu eingegeben** mit v2.
+- **Lesende Nachprüfung:** root:root 600, fünf Namen, hel1, Projekt 16367501, keine Reste, getrennt von den Admin-Daten, alle
+  Schlüssel verschieden.
+  - Formatvergleich (nur ja/nein): Access Key und Secret Key haben jeweils das Format der Admin-Gegenstücke.
+  - Kein Feld enthält mehrfach denselben Wert oder das andere Feld, nichts vertauscht.
+- **Lesende Anmeldeprobe** (eine `ListBuckets`-Anfrage an hel1): **angenommen (HTTP 200), 0 eigene Buckets**.
+  - Der Writer-Schlüssel ist also gültig.
+  - Wie vorgesehen sieht er weder den Test-Bucket noch einen Produktions-Bucket. Das entspricht der Vorbedingung V1 des
+    Policy-Tests.
+
 ## 8. Wenn Hetzner Einschränkungen nicht durchsetzt
 
 - **Folge:** Gelingen P- und N-Tests gleichermaßen, taugt die Policy nicht als Schutzschicht. Vorhandene Backups schützt
