@@ -270,3 +270,37 @@ Der Policy-Test wurde deshalb **nicht** gestartet.
   Kontakt nachgeholt. Das FAIL bleibt bestehen, auch wenn die Regel verspätet wirkt.
 - **Support-Anfrage an Hetzner:** [hetzner-support-lifecycle.md](hetzner-support-lifecycle.md).
 - **Aufräumweg ohne Lifecycle:** [backup-aufraeumen-konzept.md](backup-aufraeumen-konzept.md).
+
+## Lifecycle-Prüfung 14.10.2026 (14:07 Uhr Berlin, 12:07 UTC, nur lesend)
+
+Wie am 13.10. angeordnet, mit `run-on-server.sh --inventory` und dem Test-Admin-Schlüssel. Nichts gelöscht oder geschrieben,
+keine Schlüssel ausgegeben.
+
+| Prüfung | Ergebnis |
+|---|---|
+| Isolation | Der Schlüssel sieht nur `rent-base-backup-test` |
+| Einstellungen | Object Lock COMPLIANCE 1 Tag, Versionierung an, nur die Regel `rb-test-ablauf` (Präfix `rb-test/lc/`, Ablauf 1 Tag, alte Fassungen 1 Tag), **keine Policy**. Unverändert |
+| `rb-test/lc/ablauf.txt` | 1 Fassung **und 1 Löschmarker vom 14.10. 01:30 UTC**. Seit der Beobachtung um 07:18 UTC unverändert. `NoncurrentVersionExpiration` steht aus; die alte Fassung ist noch da |
+| Bestand vom 13.10. außerhalb von `rb-test/lc/` | **Unverändert:** `default.txt` 2 Fassungen, `ohne-pruefsumme.txt`, `rundlauf-1mb.bin` und `rundlauf-12mb-teile.bin` je 1 Fassung, Löschmarker nur auf `md5.txt` |
+| Neu seit dem 13.10. | Nur die Objekte der beiden freigegebenen Läufe vom 14.10. (siehe unten) |
+| Gesamt | 16 Fassungen, 5 Löschmarker, alle unter `rb-test/`; 8 noch gesperrt, spätestens bis 15.10. 11:36 UTC |
+
+**Neue Objekte seit dem 13.10.:**
+- `rb-test/policy/20261014T072427Z-a3e4f3/`: 2 Fassungen aus dem Policy-Test
+  ([backup-policy-test.md](backup-policy-test.md), 7d).
+- `rb-test/prodskript/20261014T113609Z-f2a637/`: 8 Fassungen und 3 Löschmarker aus dem Vortest der Produktionsskripte
+  ([backup-prod-vortest.md](backup-prod-vortest.md)).
+
+Beides ist dokumentiert und erwartet; die Zählung geht auf: 6 + 2 + 8 Fassungen, 1 + 1 + 3 Löschmarker. Am Bestand vom 13.10.
+außerhalb von `rb-test/lc/` hat sich nichts geändert, deshalb kein Stopp.
+
+**Bewertung:**
+- Das **FAIL vom 13.10. bleibt bestehen.**
+- Die Regel hat am 14.10. um 01:30 UTC rund 49,5 Stunden verspätet den Löschmarker gesetzt. Seitdem ist nichts weiter passiert.
+- Das endgültige Entfernen der alten Fassung (`NoncurrentVersionExpiration`, 1 Tag) ist nach S3-Regeln frühestens ab dem 15.10.
+  fällig, mit Hetzners Verzögerung eher ab dem 16./17.10. Bis dahin ist es nicht belegt.
+- Für den Übergangsweg heißt das: Ein geprüfter Aufräumweg für alte Fassungen fehlt weiterhin
+  ([backup-uebergang.md](backup-uebergang.md), Abschnitt 8).
+
+**Weiteres Vorgehen:** Nächste lesende Prüfung frühestens am 16.10., auf Anordnung. Die Testobjekte der Läufe vom 14.10. sind ab
+15.10. 11:37 UTC nicht mehr gesperrt; aufgeräumt wird nur mit Freigabe.
