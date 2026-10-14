@@ -164,6 +164,16 @@ einschalten:
 - Ohne Überschreiben kopieren, die Prüfsummen mit dem Repository vergleichen.
 - Kein Schlüssel, kein Lauf, keine Änderung an Coolify oder am Bucket.
 
+**Erledigt am 14.10.2026** (Freigabe vom selben Tag), Stand Commit `58f3bb7`:
+- **Abgelegt:** Verzeichnisse und Rechte wie oben, alles root:root. Alle fünf Prüfsummen gleich dem Repository
+  (`run.sh` `06c231a3…`).
+- **Syntax:** in Ordnung.
+- **Startprobe ohne Terminal:** bricht wie vorgesehen vor jeder Abfrage ab (Exit 2).
+- **Probe im Wegwerf-Container, ohne Schlüssel und ohne Netz:** Benutzer `app` lädt die Skripte samt AWS SDK, und der Aufruf
+  ohne Modus zeigt die Nutzung.
+- **Vorher behoben:** Coolify benennt den App-Container mit Zeitstempel (`…-20261008T120740`). Das ursprüngliche Muster hätte
+  ihn nicht erkannt.
+
 **A3 Lesende Prüfung (du):**
 
 ```bash
