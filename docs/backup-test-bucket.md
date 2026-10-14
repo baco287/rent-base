@@ -248,6 +248,23 @@ Der Policy-Test wurde deshalb **nicht** gestartet.
 - Vor produktiven Backups braucht es deshalb einen nachweislich funktionierenden Aufräumweg; Optionen in
   [backup-produktion-vorschlag.md](backup-produktion-vorschlag.md).
 
+**Beobachtung 14.10.2026, 07:18 UTC** (nur lesend, bei der Vorprüfung für den Policy-Test):
+
+| Bereich | Ergebnis |
+|---|---|
+| `rb-test/lc/ablauf.txt` | **Löschmarker gesetzt am 14.10.2026 um 01:30 UTC**, die alte Fassung ist noch da. Das ist die erste Wirkung der Regel, rund 49,5 Stunden nach S3-Fälligkeit (12.10. 00:00 UTC) und rund 3,6 Tage nach dem Hochladen. `NoncurrentVersionExpiration` steht aus |
+| außerhalb von `rb-test/lc/` | unverändert: 5 Fassungen, Löschmarker nur auf `md5.txt` |
+| Einstellungen, Policy | unverändert, keine Policy |
+
+**Bewertung:**
+- Das **FAIL vom 13.10. bleibt bestehen.** Am 12. und 13.10. hatte die Regel nicht gewirkt.
+- Neu belegt ist: Hetzner führt die Regel **mit Präfix-Filter und in einem Bucket mit Object Lock** aus, aber mit deutlicher
+  Verzögerung. Die Ursachen 2 und 3 oben sind damit für Expiration widerlegt.
+- Ob auch `NoncurrentVersionExpiration` die alte Fassung endgültig entfernt, zeigt sich frühestens ab dem 15.10.
+- Für die Produktion gilt deshalb: Die Lifecycle-Regel ist ein möglicher, aber langsamer Aufräumweg. Fristen im Löschkonzept
+  brauchen einen Puffer von mehreren Tagen, oder ein Aufräumlauf ([backup-aufraeumen-konzept.md](backup-aufraeumen-konzept.md))
+  sichert die Frist ab.
+
 **Weiteres Vorgehen:**
 - **Weitere lesende Prüfung am 14.10.2026 um 14:07 Uhr.** Sie ist nur in dieser Sitzung eingeplant und wird sonst beim nächsten
   Kontakt nachgeholt. Das FAIL bleibt bestehen, auch wenn die Regel verspätet wirkt.
