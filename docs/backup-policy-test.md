@@ -375,6 +375,24 @@ ssh -t rb 'IFS= read -rs -p Access-Key-aus-dem-Passwortmanager-einfuegen: k; ech
 **Vorschlag gegen Wiederholung:** Das Einrichtungsskript soll ein Access-Feld aus zwei gleichen Hälften ablehnen, ebenso Werte,
 die im jeweils anderen Feld enthalten sind. Die Kopie auf dem Server zu ersetzen braucht eine Freigabe.
 
+**Umgesetzt am 14.10.2026 (Freigabe vom selben Tag):**
+1. **Fehlerhafte Datei entfernt:** Erst wurde lesend bestätigt, dass `/root/backup-writer-test.env` exakt dem diagnostizierten
+   Zustand entsprach: root:root 600, 5 Zeilen, hel1, Projekt 16367501, Access-Feld = Secret-Feld doppelt. Dann wurde sie mit
+   `shred -u` entfernt.
+   - Keine Reste; Admin-Datei und Vorversionen der Einrichtungsskripte unverändert.
+   - Der Schlüssel `writer-test` bei Hetzner ist unberührt.
+2. **Einrichtungsskript v2** (Commit `cb80d0c`), unabhängig gegengeprüft, 56 lokale Fälle bestanden:
+   - Werte aus mehrfach demselben Stück werden abgelehnt.
+   - Ein Access Key im Secret-Feld wird abgelehnt.
+   - Admin-Schlüssel werden in beiden Writer-Feldern abgelehnt.
+   - Die Admin-Datei wird robust gelesen.
+   - Die Bucket-Abfrage im Admin-Modus ist verdeckt.
+3. **Bereitgestellt** als `/root/backup-env-setup-v2.sh`, ohne Überschreiben: root:root 700, SHA-256 `4f3696a5…`, identisch mit
+   dem Repository. Syntax auf dem Server in Ordnung; ein Probestart ohne Terminal bricht vor jeder Abfrage ab.
+
+**Neu eingeben (du):** `ssh -t rb bash /root/backup-env-setup-v2.sh --writer`. Danach folgen die lesende Nachprüfung und die
+Anmeldeprobe, jeweils mit Freigabe.
+
 ## 8. Wenn Hetzner Einschränkungen nicht durchsetzt
 
 - **Folge:** Gelingen P- und N-Tests gleichermaßen, taugt die Policy nicht als Schutzschicht. Vorhandene Backups schützt
