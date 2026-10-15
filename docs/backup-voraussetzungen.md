@@ -1,6 +1,6 @@
 # Offene Voraussetzungen für produktive Backups
 
-**Stand 15.10.2026.** Grundlage ist der Übergangsweg ([backup-uebergang.md](backup-uebergang.md)): Projektschlüssel, Object Lock
+**Stand 15.10.2026** (ergänzt um Benachrichtigungen, [backup-vergleich.md](backup-vergleich.md), [backup-erster-lauf.md](backup-erster-lauf.md) und [hetzner-support-anfrage.md](hetzner-support-anfrage.md)). Grundlage ist der Übergangsweg ([backup-uebergang.md](backup-uebergang.md)): Projektschlüssel, Object Lock
 COMPLIANCE 30 Tage und ein Prüflauf. Noch ist kein produktiver Bucket angelegt und kein Backup aktiv. Außer dem
 Hetzner-Serverbackup gibt es keine Sicherung.
 
@@ -12,7 +12,7 @@ Legende: ✅ erledigt · ◻ offen · ◆ Entscheidung
 |---|---|---|---|
 | ◆ | **Übergangsweg und seine Grenzen annehmen** ([backup-uebergang.md](backup-uebergang.md), Abschnitt 1). Vor allem: gesicherte Dateien über 30 Tage sind ungeschützt, der Prüflauf läuft im selben System, Legal Holds werden nicht geprüft | offen | du |
 | ◆ | Projekt für den Bucket: neues Projekt „Rent-Base Backup Produktion“ (empfohlen) oder das Test-Projekt nach dem Aufräumen | offen | du |
-| ◻ | Coolify-Benachrichtigung per E-Mail mit Test-Mail (A0). Stand 10.10.: alle Kanäle aus | offen | du |
+| ◻ | Coolify-Benachrichtigung per E-Mail (A0): **Kanal eingerichtet** (lesend bestätigt am 15.10.; Backup-, Task- und Deploy-Fehler an). Offen: Test-Mail bestätigen, „Server Disk Usage“ einschalten | teilweise | du |
 | ◻ | Hetzner: Projekt, Bucket `rent-base-backup` in hel1 mit Object Lock, drei Schlüssel (A1). Ob der Name frei ist, zeigt sich beim Anlegen | offen | du |
 | ✅ | Einrichtungs- und Prüfskripte auf dem Server (A2), Prüfsummen gleich dem Repository | 14.10. | ich |
 | ✅ | Vortest der Skripte gegen Hetzner ([backup-prod-vortest.md](backup-prod-vortest.md)): alle Prüfungen wie erwartet; das echte Setzen von Sperre und Lifecycle nur im Trockenlauf | 14.10. | ich |
