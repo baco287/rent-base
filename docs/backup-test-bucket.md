@@ -304,3 +304,39 @@ außerhalb von `rb-test/lc/` hat sich nichts geändert, deshalb kein Stopp.
 
 **Weiteres Vorgehen:** Nächste lesende Prüfung frühestens am 16.10., auf Anordnung. Die Testobjekte der Läufe vom 14.10. sind ab
 15.10. 11:37 UTC nicht mehr gesperrt; aufgeräumt wird nur mit Freigabe.
+
+## Vorbereitet: Lifecycle-Prüfung 16.10.2026 (nur lesend, noch nicht ausgeführt)
+
+**Wann:** frühestens am 16.10.2026, **erst wenn du dich meldest**. Es ist keine automatische Ausführung eingeplant.
+
+**Womit:** [`scripts/backup-test-lc-check.mjs`](../scripts/backup-test-lc-check.mjs), im Wegwerf-Container aus dem App-Image, mit
+dem Test-Admin-Schlüssel aus `/root/backup-test.env`.
+- Nur lesende Anfragen: ListBuckets, Versionierung, Sperre, Lifecycle, Policy, ACL, alle Fassungen und Löschmarker, offene
+  Teil-Uploads.
+- Ausgabe nur Schlüsselnamen, Zähler und Zeitpunkte.
+- Auf dem Server wird dafür keine Datei abgelegt; das Skript kommt über die Standardeingabe. Der Befehl steht im Kopf des Skripts.
+- Lokal mit 11 Fällen geprüft: Stand wie am 14.10., alte Fassung entfernt, Fassung und Marker entfernt, verschwundene Fassung
+  außerhalb, neuer Löschmarker, Policy, geänderte Sperre, zusätzliche Regel, offener Teil-Upload, neuer Schlüssel unter
+  `rb-test/lc/`. Gesendet werden nur lesende Anfragen.
+
+**Was geprüft wird:**
+
+| Frage | Wie |
+|---|---|
+| Ist die alte Fassung von `rb-test/lc/ablauf.txt` endgültig entfernt? | Ergebnis ist einer von drei Zuständen: „unverändert, alte Fassung noch da“, „alte Fassung ENDGÜLTIG ENTFERNT, Löschmarker noch da“ oder „alte Fassung UND Löschmarker entfernt“. Alles andere unter `rb-test/lc/` gilt als unerwartet |
+| Sind weitere Löschmarker entstanden? | Außerhalb von `rb-test/lc/` müssen es genau 4 bleiben: `md5.txt` und die 3 aus dem Vortest. Jeder Schlüssel wird einzeln verglichen |
+| Hat sich die Bucket-Konfiguration verändert? | Isolation (nur der Test-Bucket), Versionierung an, COMPLIANCE 1 Tag, genau die Regel `rb-test-ablauf`, keine Policy, ACL nur der Besitzer, keine offenen Teil-Uploads |
+| Wurden Testobjekte unerwartet verändert? | Jeder der 14 Schlüssel außerhalb von `rb-test/lc/` wird mit dem Stand vom 14.10. 12:07 UTC verglichen: Anzahl Fassungen, Anzahl Löschmarker, aktuellster Eintrag mit Art und Minute. Neue oder fehlende Schlüssel fallen ebenso auf |
+
+**Vergleichsstand 14.10.2026, 12:07 UTC** (aus der Lifecycle-Prüfung oben, im Skript hinterlegt):
+- 16 Fassungen, 5 Löschmarker, keine offenen Teil-Uploads.
+- `rb-test/lc/ablauf.txt`: 1 Fassung, Löschmarker vom 14.10. 01:30.
+- Die Sperren aller Testobjekte sind seit dem 15.10. 11:37 UTC abgelaufen. Das ändert am Bestand nichts, solange niemand löscht.
+
+**Bewertung im Voraus festgelegt:**
+- **Alles außerhalb von `rb-test/lc/` und die Einstellungen unverändert** (Exit 0): Ergebnis dokumentieren.
+  - Ist die alte Fassung entfernt, ist `NoncurrentVersionExpiration` belegt.
+  - Ist sie noch da, bleibt der Aufräumweg offen; eine weitere Prüfung braucht eine neue Anordnung.
+  - Das **FAIL vom 13.10. bleibt in jedem Fall bestehen.**
+- **Abweichung außerhalb von `rb-test/lc/` oder an den Einstellungen** (Exit 1): sofort stoppen und berichten, nichts weiter tun.
+- **Nicht lesbar** (Exit 2): berichten.
