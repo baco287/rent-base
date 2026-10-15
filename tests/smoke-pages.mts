@@ -202,6 +202,7 @@ const pages: [string, string][] = [
   ["/buchungen/neu", "Miete &amp; Kaution"],
   ["/buchungen/neu", "Teilweise bezahlt"],
   ["/buchungen/neu", "Kaution jetzt erhalten"],
+  ["/buchungen/neu", ">Zwischenspeichern</button>"],
   [`/buchungen/${w.bookingId}`, "Mietvertrag fortsetzen"],
   [`/buchungen/${w.bookingId}`, "Gesamtpreis (voraussichtlich)"],
   [`/buchungen/${w.bookingId}`, "Noch keine Mietzahlung erfasst"],
@@ -1621,6 +1622,22 @@ report(!!stdNoReason?.error && /Grund/.test(stdNoReason.error), "Individueller P
 const stdCall = await callAction("/buchungen/neu", stdCreateId, ueDispo, { form: stdTariffForm });
 const stdBooking = await db.booking.findFirst({ where: { tenantId: ue.tenantId, vehicleId: ueV3.id, startAt: stdStart } });
 report(stdBooking?.rentalType === "STANDARD" && stdBooking.endAt !== null && Number(stdBooking.dailyRate) === 65 && stdBooking.ratePlanId === uePlan.id && stdBooking.regularPriceCents === 11_700 && stdCall.redirectTo.includes(`/buchungen/${stdBooking.id}`), `${stdCall.status} Standardbuchung bei freigeschaltetem Unfallersatz: als Standardmiete mit Miettarif angelegt (2 Tage = 130 € − 10 % Kundenrabatt = 117 €; gespeichert ${stdBooking?.regularPriceCents})`);
+// Buchungsentwurf (nur im Browser): Anlage aus einem fortgesetzten Entwurf leitet mit ?ausEntwurf=<id> weiter, die Buchungsseite
+// entfernt ihn dort; eine ungültige Kennung ändert nichts. Fortsetzen lädt den Entwurf erst im Browser (nichts vom Server).
+{
+  const at = (days: number) => new Date(stdStart.getTime() + days * 86400_000);
+  const draftId = "00000000-0000-4000-8000-00000000d1f7";
+  const draftCall = await callAction("/buchungen/neu", stdCreateId, ueDispo, { form: { ...stdTariffForm, startAt: toDateTimeInput(at(5)), endAt: toDateTimeInput(at(7)), draftId } });
+  const draftBooking = await db.booking.findFirst({ where: { tenantId: ue.tenantId, vehicleId: ueV3.id, startAt: at(5) } });
+  report(!!draftBooking && draftCall.redirectTo.includes(`/buchungen/${draftBooking.id}?ausEntwurf=${draftId}`) && (await db.payment.count({ where: { bookingId: draftBooking.id } })) === 0, `${draftCall.status} Anlage aus einem Entwurf: Weiterleitung mit ?ausEntwurf=…, Miete „Offen“ ohne Zahlung`);
+  const badCall = await callAction("/buchungen/neu", stdCreateId, ueDispo, { form: { ...stdTariffForm, startAt: toDateTimeInput(at(10)), endAt: toDateTimeInput(at(12)), draftId: "../x" } });
+  const badBooking = await db.booking.findFirst({ where: { tenantId: ue.tenantId, vehicleId: ueV3.id, startAt: at(10) } });
+  report(!!badBooking && badCall.redirectTo.includes(`/buchungen/${badBooking.id}`) && !badCall.redirectTo.includes("ausEntwurf"), "Ungültige Entwurfskennung: normale Weiterleitung");
+  const fromDraft = await plain(await fetch(`${base}/buchungen/${draftBooking?.id}?ausEntwurf=${draftId}`, { headers: { cookie: ueDispo } }));
+  report(fromDraft.includes("Buchung aus dem Entwurf angelegt"), "Buchungsseite nach Anlage aus Entwurf: Entwurf wird im Browser entfernt");
+  const resume = await plain(await fetch(`${base}/buchungen/neu?entwurf=${draftId}`, { headers: { cookie: ueDispo } }));
+  report(resume.includes("Entwurf wird geladen") && !resume.includes(">Zwischenspeichern</button>"), "Neue Buchung ?entwurf=…: Entwurf wird erst im Browser geladen");
+}
 // Befehl 29: Tarifseiten, Rechte (serverseitig) und Anzeige
 {
   const tg = async (c: string, p: string) => { const r = await fetch(`${base}${p}`, { headers: { cookie: c }, redirect: "manual" }); return { status: r.status, location: r.headers.get("location") ?? "", html: r.status === 200 ? await plain(r) : "" }; };

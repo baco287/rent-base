@@ -26,6 +26,8 @@ import { PeriodChangeDialog } from "../period-dialog";
 import { CancellationPanel } from "./storno-panel";
 import { createAmendmentAction } from "./nachtrag/actions";
 import { BookingForm } from "../booking-form";
+import { BookingDraftCleanup } from "../booking-draft-cleanup";
+import { isDraftId } from "@/lib/booking-draft";
 import { customerOptionOf } from "../customer-option";
 import { loadBookingOptions } from "../options";
 import { DocumentsPanel } from "./dokumente/documents-panel";
@@ -170,6 +172,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
       </PageHeader>
       <Content>
         {sp.gespeichert === "1" && <Chip tone="good">Gespeichert</Chip>}
+        {isDraftId(sp.ausEntwurf) && <BookingDraftCleanup draftId={sp.ausEntwurf} />}
         {sp.fehler === "status" && <Chip tone="bad">Dieser Statuswechsel ist nicht möglich.</Chip>}
         {typeof sp.hinweis === "string" && <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p>}
         {sp.zurueckgenommen === "1" && <p role="status" className="rounded-md bg-info-soft text-info px-3.5 py-2.5 text-sm">Die vereinbarte Vertragsänderung wurde zurückgenommen. Der Mietvertrag gilt unverändert; die Reservierung ist aufgehoben.</p>}

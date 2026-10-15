@@ -27,6 +27,7 @@ import { refreshContractDraft } from "@/lib/contracts";
 import { describePrice } from "@/lib/pricing";
 import { bookingQuote } from "@/lib/booking-price";
 import { bookingTariffFor, choicesOf, keepBookingTariff, kmRuleText, priceSourceText, quoteTariff, readTariffSnapshot, vehicleTariffs, type BookingTariffResult, type TariffChoices } from "@/lib/tariffs";
+import { isDraftId } from "@/lib/booking-draft";
 import { tariffChoicesFromForm, tariffSelectionFromForm } from "./tariff-form-data";
 
 export type FormState = { error?: string } | undefined;
@@ -180,7 +181,9 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
 
   revalidate(id);
   if (newCustomer) revalidatePath("/kunden");
-  redirect(`/buchungen/${id}`);
+  // Buchungsentwurf (nur im Browser): die Buchungsseite entfernt ihn nach der erfolgreichen Anlage – sonst unverändert
+  const draftId = formData.get("draftId");
+  redirect(isDraftId(draftId) ? `/buchungen/${id}?ausEntwurf=${draftId}` : `/buchungen/${id}`);
 }
 
 export async function updateBookingAction(id: string, _prev: FormState, formData: FormData): Promise<FormState> {

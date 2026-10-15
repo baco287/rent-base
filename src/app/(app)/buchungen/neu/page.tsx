@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 import { requireRole } from "@/lib/auth";
 import { toDateTimeInputValue } from "@/lib/time";
 import { toDateTimeInput } from "@/lib/format";
-import { Card, Content, PageHeader } from "@/components/ui";
+import { Content, PageHeader } from "@/components/ui";
+import { isDraftId } from "@/lib/booking-draft";
 import { createBookingAction } from "../actions";
-import { BookingForm } from "../booking-form";
+import { NewBookingForm } from "../new-booking-form";
 import { loadCustomerOption } from "../customer-option";
 import { loadBookingOptions } from "../options";
 import { RentalTypeSwitch, carryQuery } from "../rental-type-switch";
@@ -13,7 +14,7 @@ import { isFeatureEnabled } from "@/lib/features";
 export const metadata = { title: "Neue Buchung" };
 
 export default async function NewBookingPage({ searchParams }: PageProps<"/buchungen/neu">) {
-  const { tenant } = await requireRole("DISPO");
+  const { tenant, user } = await requireRole("DISPO");
   const sp = await searchParams;
   const { vehicles } = await loadBookingOptions(tenant.id);
   // Befehl 29: Mietart-Auswahl nur bei freigeschaltetem Unfallersatz; das Buchungsformular selbst bleibt unverändert
@@ -22,6 +23,8 @@ export default async function NewBookingPage({ searchParams }: PageProps<"/buchu
   const vehicleId = typeof sp.fahrzeug === "string" ? sp.fahrzeug : "";
   const customerId = typeof sp.kunde === "string" ? sp.kunde : "";
   const initialCustomer = await loadCustomerOption(tenant.id, customerId);
+  // Buchungsentwurf fortsetzen (?entwurf=<id>): Der Entwurf liegt nur im Browser dieses Benutzers und Mandanten
+  const resumeId = isDraftId(sp.entwurf) ? sp.entwurf : null;
 
   // Vorschlag: morgen 09:00 bis übermorgen 09:00, oder der Tag aus dem Kalender
   const start = new Date();
@@ -40,24 +43,22 @@ export default async function NewBookingPage({ searchParams }: PageProps<"/buchu
       <PageHeader title="Neue Buchung" />
       <Content>
         {accidentEnabled && <RentalTypeSwitch current="STANDARD" query={carryQuery(sp)} />}
-        <Card className="p-5 max-w-3xl">
-          <BookingForm
-            action={createBookingAction}
-            values={{
-              vehicleId,
-              customerId,
-              startAt: toDateTimeInput(start),
-              endAt: toDateTimeInput(end),
-              notes: "",
-            }}
-            vehicles={vehicles}
-            initialCustomer={initialCustomer}
-            allowNewCustomer
-            initialPayment={{ nonce: randomUUID(), defaultWhen: toDateTimeInputValue(new Date()) }}
-            submitLabel="Buchung anlegen"
-            cancelHref="/buchungen"
-          />
-        </Card>
+        <NewBookingForm
+          key={resumeId ?? "neu"}
+          scope={{ tenantId: tenant.id, userId: user.id }}
+          resumeId={resumeId}
+          action={createBookingAction}
+          values={{
+            vehicleId,
+            customerId,
+            startAt: toDateTimeInput(start),
+            endAt: toDateTimeInput(end),
+            notes: "",
+          }}
+          vehicles={vehicles}
+          initialCustomer={initialCustomer}
+          initialPayment={{ nonce: randomUUID(), defaultWhen: toDateTimeInputValue(new Date()) }}
+        />
       </Content>
     </>
   );

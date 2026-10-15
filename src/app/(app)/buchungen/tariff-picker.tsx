@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { fmtCents, toCents } from "@/lib/money";
 import type { TariffChoices } from "@/lib/tariffs";
+import type { DraftTariff } from "@/lib/booking-draft";
 import type { TariffOffer, TariffQuoteResult } from "./actions";
 
 export type TariffTotals = { totalCents: number; depositCents: number; ready: boolean };
@@ -35,6 +36,8 @@ export function TariffPicker({
   legacy,
   initial,
   onTotals,
+  restore,
+  onDraftState,
 }: {
   quote: (input: { vehicleId: string; startAt: string; endAt: string; customerId?: string | null; bookingId?: string | null }) => Promise<TariffQuoteResult>;
   vehicleId: string;
@@ -48,24 +51,28 @@ export function TariffPicker({
   legacy?: { totalCents: number; text: string; depositCents: number } | null;
   initial?: TariffChoices;
   onTotals: (t: TariffTotals) => void;
+  /** Nur neue Buchung: Auswahl aus einem gespeicherten Entwurf (Startwerte); Preis und Revision kommen trotzdem aus der aktuellen Vorschau */
+  restore?: DraftTariff | null;
+  /** Nur neue Buchung: aktuellen Stand für das Zwischenspeichern melden (auch während neu gerechnet wird) */
+  onDraftState?: (t: DraftTariff) => void;
 }) {
   // Ergebnis gehört zu genau einer Eingabe (key); passt es nicht zur aktuellen Eingabe, wird gerade neu gerechnet
   const key = JSON.stringify([vehicleId, startAt, endAt, customerId, bookingId ?? null]);
   const [data, setData] = useState<{ key: string; result: TariffQuoteResult } | null>(null);
-  const [picked, setPicked] = useState<string>("");
+  const [picked, setPicked] = useState<string>(restore?.ratePlanId ?? "");
   const seq = useRef(0);
   const prevAgreed = initial?.price.mode === "INDIVIDUAL";
-  const [priceOn, setPriceOn] = useState(initial?.price.mode === "INDIVIDUAL");
-  const [price, setPrice] = useState(initial?.price.mode === "INDIVIDUAL" ? euroText(initial.price.cents) : "");
-  const [priceReason, setPriceReason] = useState(initial?.price.mode === "INDIVIDUAL" ? initial.price.reason : "");
-  const [kmOn, setKmOn] = useState(initial?.km.mode === "INDIVIDUAL");
-  const [kmPolicy, setKmPolicy] = useState<"FREE_KILOMETERS" | "UNLIMITED">(initial?.km.mode === "INDIVIDUAL" ? initial.km.policy : "FREE_KILOMETERS");
-  const [kmPerDay, setKmPerDay] = useState(initial?.km.mode === "INDIVIDUAL" && initial.km.kmIncludedPerDay != null ? String(initial.km.kmIncludedPerDay) : "");
-  const [kmRate, setKmRate] = useState(initial?.km.mode === "INDIVIDUAL" ? euroText(initial.km.extraKmRateCents) : "");
-  const [kmReason, setKmReason] = useState(initial?.km.mode === "INDIVIDUAL" ? initial.km.reason : "");
-  const [depOn, setDepOn] = useState(initial?.deposit.mode === "INDIVIDUAL");
-  const [dep, setDep] = useState(initial?.deposit.mode === "INDIVIDUAL" ? euroText(initial.deposit.cents) : "");
-  const [depReason, setDepReason] = useState(initial?.deposit.mode === "INDIVIDUAL" ? initial.deposit.reason : "");
+  const [priceOn, setPriceOn] = useState(restore ? restore.price.on : initial?.price.mode === "INDIVIDUAL");
+  const [price, setPrice] = useState(restore ? restore.price.text : initial?.price.mode === "INDIVIDUAL" ? euroText(initial.price.cents) : "");
+  const [priceReason, setPriceReason] = useState(restore ? restore.price.reason : initial?.price.mode === "INDIVIDUAL" ? initial.price.reason : "");
+  const [kmOn, setKmOn] = useState(restore ? restore.km.on : initial?.km.mode === "INDIVIDUAL");
+  const [kmPolicy, setKmPolicy] = useState<"FREE_KILOMETERS" | "UNLIMITED">(restore ? restore.km.policy : initial?.km.mode === "INDIVIDUAL" ? initial.km.policy : "FREE_KILOMETERS");
+  const [kmPerDay, setKmPerDay] = useState(restore ? restore.km.perDay : initial?.km.mode === "INDIVIDUAL" && initial.km.kmIncludedPerDay != null ? String(initial.km.kmIncludedPerDay) : "");
+  const [kmRate, setKmRate] = useState(restore ? restore.km.rate : initial?.km.mode === "INDIVIDUAL" ? euroText(initial.km.extraKmRateCents) : "");
+  const [kmReason, setKmReason] = useState(restore ? restore.km.reason : initial?.km.mode === "INDIVIDUAL" ? initial.km.reason : "");
+  const [depOn, setDepOn] = useState(restore ? restore.deposit.on : initial?.deposit.mode === "INDIVIDUAL");
+  const [dep, setDep] = useState(restore ? restore.deposit.text : initial?.deposit.mode === "INDIVIDUAL" ? euroText(initial.deposit.cents) : "");
+  const [depReason, setDepReason] = useState(restore ? restore.deposit.reason : initial?.deposit.mode === "INDIVIDUAL" ? initial.deposit.reason : "");
   const [priceConfirm, setPriceConfirm] = useState<"" | "KEEP" | "TARIFF">("");
 
   const sameVehicle = !!bookingId && vehicleId === bookingVehicleId;
@@ -109,6 +116,22 @@ export function TariffPicker({
     onTotals({ totalCents: total, depositCents: deposit, ready });
   }, [onTotals, total, deposit, ready]);
 
+  // Zwischenspeichern: Rohwerte aus dem State, nicht aus dem DOM (während neu gerechnet wird, fehlen die Felder dort)
+  const draftRatePlanId = selected === "KEEP" || selected === "LEGACY" ? "" : selected || picked;
+  const draftRegularCents = offer && offer.ratePlanId === draftRatePlanId ? offer.regularCents : null;
+  useEffect(() => {
+    onDraftState?.({
+      ratePlanId: draftRatePlanId,
+      regularCents: draftRegularCents,
+      price: { on: priceOn, text: price, reason: priceReason },
+      km: { on: kmOn, policy: kmPolicy, perDay: kmPerDay, rate: kmRate, reason: kmReason },
+      deposit: { on: depOn, text: dep, reason: depReason },
+    });
+  }, [onDraftState, draftRatePlanId, draftRegularCents, priceOn, price, priceReason, kmOn, kmPolicy, kmPerDay, kmRate, kmReason, depOn, dep, depReason]);
+  // Hinweise beim Fortsetzen eines Entwurfs: Tarif nicht mehr angeboten bzw. regulärer Preis seit dem Speichern geändert
+  const restoredGone = !!restore?.ratePlanId && !!result && !cards.some((c) => c.value === restore.ratePlanId);
+  const restoredPriceChanged = !!restore && restore.regularCents != null && !!offer && offer.ratePlanId === restore.ratePlanId && offer.regularCents !== restore.regularCents;
+
   const diff = agreed != null ? agreed - regular : 0;
   const pct = agreed != null && regular > 0 ? `${diff >= 0 ? "+" : "−"}${Math.abs((diff / regular) * 100).toFixed(1).replace(".", ",")} %` : null;
   const days = result?.offers[0]?.days ?? result?.current?.days ?? 0;
@@ -121,6 +144,8 @@ export function TariffPicker({
       <input type="hidden" name="seenRegularCents" value={offer ? String(offer.regularCents) : ""} />
       {!vehicleId && <p className="text-sm text-ink-3">Bitte zuerst ein Fahrzeug wählen – dann erscheinen die Tarife seiner Fahrzeuggruppe.</p>}
       {vehicleId && result?.problem && cards.length === 0 && <p role="alert" className="rounded-md bg-amber-soft text-amber px-3 py-2 text-sm">{result.problem} Tarife pflegt der Inhaber unter Einstellungen → Miettarife.</p>}
+      {restoredGone && <p role="alert" className="rounded-md bg-amber-soft text-amber px-3 py-2 text-sm">Der im Entwurf gewählte Tarif wird für dieses Fahrzeug nicht mehr angeboten. Bitte Tarif und Abweichungen prüfen.</p>}
+      {restoredPriceChanged && restore?.regularCents != null && offer && <p role="alert" className="rounded-md bg-amber-soft text-amber px-3 py-2 text-sm">Der reguläre Tarifpreis hat sich seit dem Entwurf geändert: vorher {fmtCents(restore.regularCents)}, jetzt {fmtCents(offer.regularCents)}.</p>}
       {vehicleId && (loading || result) && (
         <p className="text-xs text-ink-3" aria-live="polite">{loading ? "Preise werden berechnet…" : days ? `${days} ${days === 1 ? "Miettag" : "Miettage"}${result?.discountPercent ? ` · inkl. Kundenrabatt ${result.discountPercent} %` : ""}` : ""}</p>
       )}
