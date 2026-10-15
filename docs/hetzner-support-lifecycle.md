@@ -1,5 +1,8 @@
 # Entwurf: Anfrage an den Hetzner-Support zu Lifecycle-Regeln
 
+**Ersetzt am 15.10.2026** durch den gemeinsamen Entwurf [hetzner-support-anfrage.md](hetzner-support-anfrage.md) (Bucket-Policy und
+Lifecycle, mit den Beobachtungen bis 14.10.). Dieser Entwurf bleibt als damaliger Stand stehen.
+
 **Stand 13.10.2026. Entwurf zum Absenden durch dich**, z. B. über die Hetzner Console → Support → „Neue Anfrage“
 (Kategorie Object Storage).
 

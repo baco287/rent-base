@@ -18,6 +18,19 @@ wurde dabei **nichts verändert**. Dieses Dokument enthält keine geheimen Werte
 
 ## 1. Benachrichtigungen per E-Mail (vorhandener SMTP-Anbieter)
 
+**Stand 15.10.2026 (lesend geprüft, Coolify-Datenbank mit Schreibschutz, nur Schalter):** Der E-Mail-Kanal ist **eingerichtet**.
+- SMTP an, Port 587, STARTTLS, Passwort gesetzt; Host und Absender sind gespeichert (in Coolify verschlüsselt).
+- Keine eigene Empfängerliste; Coolify schreibt an die Team-Mitglieder (1).
+- **Ereignisse an:** Deployment-Fehler, Backup-Fehler, Scheduled-Task-Fehler, Server nicht erreichbar.
+- **Ereignisse aus:** Festplattenauslastung, Backup-Erfolg, Statusänderungen.
+- Andere Kanäle (Discord, Telegram, Slack, Pushover, Webhook): aus.
+- Im Coolify-Log stehen seit dem 01.10. keine Mail-Fehler.
+- Ob die Test-Mail angekommen ist, speichert Coolify nicht; das bestätigst du.
+- Empfehlung: „Server Disk Usage“ zusätzlich einschalten (siehe unten). Für die ersten Backup-Läufe vorübergehend auch
+  „Backup Success“. Beides ist eine Änderung in Coolify und nur durch dich vorzunehmen.
+
+Die Anleitung unten gilt nur noch für eine Neueinrichtung.
+
 Geprüft: Der Server erreicht den SMTP-Server der App (`w0216162.kasserver.com`, all-inkl) auf **Port 587**; 465 und 25 sind
 bei Hetzner gesperrt. Absender `noreply@rent-base.de` wird von der App bereits erfolgreich genutzt.
 
@@ -74,6 +87,25 @@ nennen oder Screenshots ohne Zugangsdaten schicken:
 | **Security → API Tokens** | Vorhandene Tokens (sollten keine nötig sein) |
 | Konto → **Zwei-Faktor-Authentisierung** | Für jedes Konto mit Zugriff aktiv? Wiederherstellungscodes offline (siehe Abschnitt 5) |
 | Projekt → **Mitglieder** | Wer hat Zugriff, mit welcher Rolle? |
+
+**Stand 15.10.2026: von innen nicht prüfbar.**
+- Es gibt kein Hetzner-API-Token, und der Server selbst sieht seine Backups nicht.
+- Der QEMU-Gast-Agent läuft seit dem Neustart am 09.10. Sein Journal enthält aber keine Einträge zum Einfrieren des
+  Dateisystems, aus denen sich Backup-Zeitpunkte ablesen ließen.
+- Den letzten Nachweis lieferte dein Screenshot vom 04.10.: täglich gegen 02:48 UTC, 7 Stände, je rund 7 GB.
+
+**Genau das bitte in der Console prüfen:**
+1. Console → Projekt „Rent-Base“ → Server `rent-base` → Reiter **Backups**:
+   - **Schalter „Backups“ aktiviert?**
+   - **Backup-Fenster** (Uhrzeit) notieren.
+   - **Liste der Backups:**
+     - Anzahl (erwartet 7).
+     - Datum und Uhrzeit des **neuesten** Backups: erwartet heute oder gestern, gegen 02:48 UTC.
+     - Status jedes Eintrags „verfügbar“, ohne Fehler.
+     - Größe plausibel (rund 7 GB).
+   - Lücken in der Datumsfolge?
+2. Optional unter **Snapshots:** vorhandene Snapshots. Sie laufen nicht ab und kosten Speicher.
+3. Mir nur Anzahl, neuestes Datum und Uhrzeit sowie den Status nennen. Ein Screenshot ohne Zugangsdaten genügt.
 
 Hinweis: Hetzner-Serverbackups sichern das ganze Server-Image, nicht konsistent pro Datenbank. Sie ersetzen keine Datenbank-Dumps,
 sind aber der schnellste Rückweg bei einem kaputten Server.
