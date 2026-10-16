@@ -4,6 +4,7 @@ import { requireRole } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { Content } from "@/components/ui";
 import { SettingsHeader } from "../../settings-ui";
+import { rulesDeductibleHint } from "@/lib/tariff-admin";
 import { createRatePlanAction } from "../actions";
 import { TariffEditor } from "../tariff-editor";
 
@@ -25,7 +26,8 @@ export default async function NewRatePlanPage() {
             canEdit
             createKey={randomUUID()}
             groups={groups.map((g) => ({ id: g.id, name: g.name, vehicles: g._count.vehicles, defaultElsewhere: g.defaultRatePlan?.name ?? null }))}
-            initial={{ name: "", code: "", description: "", sortOrder: "0", km: { policy: "FREE_KILOMETERS", kmIncludedPerDay: "200", extraKmRate: "0,25" }, deposit: "500,00", groups: {} }}
+            initial={{ name: "", code: "", description: "", sortOrder: "0", km: { policy: "FREE_KILOMETERS", kmIncludedPerDay: "200", extraKmRate: "0,25" }, deposit: "500,00", deductible: "", groups: {} }}
+            rulesDeductibleText={rulesDeductibleHint(tenant.businessRules)}
           />
         </div>
       </Content>

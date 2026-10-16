@@ -10,6 +10,7 @@ import { db } from "@/lib/db";
 import { recordAudit, type Actor } from "@/lib/audit";
 import { DAMAGE_CASE_PRIORITY, DAMAGE_CASE_STATUS, DAMAGE_CASE_TRANSITIONS, DAMAGE_TAX_TREATMENTS, LIABILITY_STATUS, type DamageCaseStatus, type DamageTaxTreatment } from "@/lib/constants";
 import { balanceOf } from "@/lib/deposits";
+import { contractDeductibleInfo } from "@/lib/deductible";
 import { loadEffectiveDepositCents } from "@/lib/amendments";
 import { DomainError } from "@/lib/integrity";
 import { createDamageInvoiceDraft } from "@/lib/invoices";
@@ -370,7 +371,7 @@ export async function caseView(tenantId: string, caseId: string) {
     include: {
       damage: { include: { discoveredIn: { select: { id: true, type: true, number: true, bookingId: true } }, photos: { orderBy: { uploadedAt: "asc" } }, snapshots: { include: { handover: { select: { id: true, type: true, number: true, finalizedAt: true, bookingId: true } }, photos: { select: { id: true } } } } } },
       vehicle: { select: { id: true, plate: true, make: true, model: true, status: true, mileage: true, vin: true } },
-      booking: { include: { customer: { select: { id: true, type: true, companyName: true, firstName: true, lastName: true } }, contract: { select: { id: true, number: true, status: true, deductible: true, deposit: true } } } },
+      booking: { include: { customer: { select: { id: true, type: true, companyName: true, firstName: true, lastName: true } }, contract: { select: { id: true, number: true, status: true, deductible: true, deposit: true, priceSnapshot: true } } } },
       returnHandover: { select: { id: true, number: true, finalizedAt: true, mileage: true } },
       photos: { orderBy: { uploadedAt: "asc" } },
       documents: { orderBy: { createdAt: "desc" } },
@@ -404,6 +405,8 @@ export async function caseView(tenantId: string, caseId: string) {
     deposit,
     otherCharges,
     deductibleCents: c.booking?.contract?.status === "SIGNED" ? toCents(c.booking.contract.deductible) : null,
+    // Befehl 29.5: vereinbarte Selbstbeteiligung mit Herkunft (Tarif/Revision, Abweichung mit Grund) – nur Information, keine Forderung
+    deductibleInfo: contractDeductibleInfo(c.booking?.contract),
     comparison: {
       pickup: pickupSnap ? { number: pickupSnap.handover.number, marker: pickupSnap.marker, description: pickupSnap.description, photos: pickupSnap.photos.length, view: pickupSnap.view, posX: pickupSnap.posX, posY: pickupSnap.posY } : null,
       return: ret ? { number: ret.handover.number, marker: ret.marker, description: ret.description, photos: ret.photos.length, view: ret.view, posX: ret.posX, posY: ret.posY } : null,

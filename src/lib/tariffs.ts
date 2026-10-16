@@ -10,11 +10,15 @@
 // - Geld nur in ganzen Cent (lib/pricing.ts rechnet die Stufen in Cent).
 // - Sperren: Buchungen lesen den Tarif unter FOR SHARE, Tarifänderungen/Fahrzeugabweichungen sperren FOR UPDATE – eine Buchung
 //   bekommt so immer genau eine konsistente Revision samt Abweichungen, nie eine Mischung.
+// - Befehl 29.5: Selbstbeteiligung im Schadenfall aus der Revision; ohne Tarifvorgabe (ältere Revisionen, Feld leer) gilt die
+//   Geschäftsregel (Mandant → Gruppe → Fahrzeug). Beides wird bei der Buchung eingefroren. Sie ist nie Teil des Mietpreises,
+//   erzeugt keine Zahlung und keine Forderung und ist unabhängig von der Kaution.
 
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import type { Actor, AuditInput } from "@/lib/audit";
-import { TARIFF_KM_POLICIES, type TariffKmPolicy } from "@/lib/constants";
+import { resolveRules } from "@/lib/business-rules";
+import { TARIFF_KM_POLICIES, type RuleSource, type TariffKmPolicy } from "@/lib/constants";
 import { DomainError } from "@/lib/integrity";
 import { fmtCents } from "@/lib/money";
 import { calculateRentalPrice, tierLabel, totalCentsOf, type PriceBreakdown, type TierDef } from "@/lib/pricing";
@@ -25,6 +29,11 @@ type Client = Tx | typeof db;
 export type KmRule = { policy: TariffKmPolicy; kmIncludedPerDay: number | null; extraKmRateCents: number | null };
 /** Herkunft einer Kondition: Tarif (Revision), abweichend für die Fahrzeuggruppe oder für das Fahrzeug */
 export type ConditionSource = "TARIFF" | "GROUP" | "VEHICLE";
+/**
+ * Befehl 29.5: Selbstbeteiligung eines aufgelösten Tarifs. TARIFF = Wert der Revision; RULES = Revision ohne Vorgabe, Wert aus den
+ * Geschäftsregeln (ruleSource: Mandant, Gruppe, Fahrzeug oder Systemvorgabe 0 €).
+ */
+export type TariffDeductible = { cents: number; source: "TARIFF" | "RULES"; ruleSource?: RuleSource };
 
 /** Aufgelöster Tarif für ein Fahrzeug (eine Revision, alle Abweichungen angewendet). */
 export type TariffBasis = {
@@ -44,6 +53,8 @@ export type TariffBasis = {
   kmSource: ConditionSource;
   depositCents: number;
   depositSource: ConditionSource;
+  /** Befehl 29.5: null nur bei Snapshots vor 29.5 bzw. in Listen ohne Geschäftsregeln (nie beim Speichern einer Buchung) */
+  deductible: TariffDeductible | null;
 };
 
 export type TariffQuote = {
@@ -67,8 +78,27 @@ const planInclude = (groupId: string, vehicleId: string) =>
   }) satisfies Prisma.RatePlanInclude;
 type PlanWithContent = Prisma.RatePlanGetPayload<{ include: ReturnType<typeof planInclude> }>;
 
-/** Wendet Gruppe und Fahrzeugabweichung auf eine Revision an. null, wenn der Tarif für die Gruppe nicht gilt oder keine Stufe bleibt. */
-function basisOf(plan: PlanWithContent, groupId: string): TariffBasis | null {
+/**
+ * Befehl 29.5: Selbstbeteiligung laut Geschäftsregeln für ein Fahrzeug (Mandant → Gruppe → Fahrzeug; ohne Vorgabe 0 € wie bisher
+ * im Vertrag). Gilt nur, wenn die Tarifrevision keinen eigenen Wert hat.
+ */
+export function rulesDeductibleOf(tenantRules: unknown, group: { name: string; businessRules: unknown } | null, vehicle: { plate: string; businessRules: unknown }): TariffDeductible {
+  const r = resolveRules(tenantRules, group, vehicle);
+  return { cents: r.values.deductibleCents ?? 0, source: "RULES", ruleSource: r.sources.deductibleCents };
+}
+
+/** Fahrzeug samt Gruppe und Geschäftsregeln des Mandanten (für die Selbstbeteiligung ohne Tarifvorgabe). */
+async function vehicleForTariffs(client: Client, tenantId: string, vehicleId: string) {
+  const v = await client.vehicle.findFirst({ where: { id: vehicleId, tenantId }, select: { id: true, plate: true, groupId: true, businessRules: true, group: { select: { name: true, defaultRatePlanId: true, businessRules: true } }, tenant: { select: { businessRules: true } } } });
+  if (!v) return null;
+  return { ...v, rulesDeductible: rulesDeductibleOf(v.tenant.businessRules, v.group, v) };
+}
+
+/**
+ * Wendet Gruppe und Fahrzeugabweichung auf eine Revision an. null, wenn der Tarif für die Gruppe nicht gilt oder keine Stufe bleibt.
+ * rulesDeductible: Selbstbeteiligung laut Geschäftsregeln, falls die Revision keine hat (fehlt sie, bleibt sie offen – nur Listen).
+ */
+function basisOf(plan: PlanWithContent, groupId: string, rulesDeductible?: TariffDeductible): TariffBasis | null {
   const rev = plan.currentRevision;
   const gp = rev?.groups.find((g) => g.groupId === groupId);
   if (!rev || !gp) return null;
@@ -103,6 +133,7 @@ function basisOf(plan: PlanWithContent, groupId: string): TariffBasis | null {
     kmSource: km.source,
     depositCents: deposit.cents,
     depositSource: deposit.source,
+    deductible: rev.deductibleCents != null ? { cents: rev.deductibleCents, source: "TARIFF" } : rulesDeductible ?? null,
   };
 }
 
@@ -117,7 +148,7 @@ export type VehicleTariffs = {
 
 /** Aktive Tarife eines Fahrzeugs (aktuelle Revision der jeweiligen Tarife), sortiert wie in der Tarifverwaltung. */
 export async function vehicleTariffs(tenantId: string, vehicleId: string, client: Client = db): Promise<VehicleTariffs> {
-  const v = await client.vehicle.findFirst({ where: { id: vehicleId, tenantId }, select: { id: true, plate: true, groupId: true, group: { select: { name: true, defaultRatePlanId: true } } } });
+  const v = await vehicleForTariffs(client, tenantId, vehicleId);
   if (!v) throw new DomainError("Fahrzeug nicht gefunden.");
   const vehicle = { id: v.id, plate: v.plate, groupId: v.groupId, groupName: v.group?.name ?? null };
   if (!v.groupId) return { vehicle, defaultRatePlanId: null, bases: [], problem: "Dem Fahrzeug ist keine Fahrzeuggruppe zugeordnet. Miettarife gelten je Fahrzeuggruppe." };
@@ -126,7 +157,7 @@ export async function vehicleTariffs(tenantId: string, vehicleId: string, client
     include: planInclude(v.groupId, v.id),
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
   });
-  const bases = plans.map((p) => basisOf(p, v.groupId!)).filter((b): b is TariffBasis => b !== null);
+  const bases = plans.map((p) => basisOf(p, v.groupId!, v.rulesDeductible)).filter((b): b is TariffBasis => b !== null);
   const defaultRatePlanId = bases.some((b) => b.ratePlanId === v.group?.defaultRatePlanId) ? v.group!.defaultRatePlanId : bases.length === 1 ? bases[0].ratePlanId : null;
   return { vehicle, defaultRatePlanId, bases, problem: bases.length === 0 ? `Für die Fahrzeuggruppe „${v.group?.name}“ ist kein aktiver Miettarif hinterlegt.` : null };
 }
@@ -138,13 +169,13 @@ export async function vehicleTariffs(tenantId: string, vehicleId: string, client
 export async function lockTariffBasis(tx: Tx, tenantId: string, vehicleId: string, ratePlanId: string): Promise<TariffBasis> {
   const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "RatePlan" WHERE "id" = ${ratePlanId} AND "tenantId" = ${tenantId} FOR SHARE`;
   if (locked.length === 0) throw new DomainError("Miettarif nicht gefunden.");
-  const v = await tx.vehicle.findFirst({ where: { id: vehicleId, tenantId }, select: { groupId: true, group: { select: { name: true } } } });
+  const v = await vehicleForTariffs(tx, tenantId, vehicleId);
   if (!v) throw new DomainError("Fahrzeug nicht gefunden.");
   if (!v.groupId) throw new DomainError("Dem Fahrzeug ist keine Fahrzeuggruppe zugeordnet. Miettarife gelten je Fahrzeuggruppe.");
   const plan = await tx.ratePlan.findFirst({ where: { id: ratePlanId, tenantId }, include: planInclude(v.groupId, vehicleId) });
   if (!plan) throw new DomainError("Miettarif nicht gefunden.");
   if (!plan.active) throw new DomainError(`Der Miettarif „${plan.name}“ ist deaktiviert und wird für neue Buchungen nicht mehr angeboten.`);
-  const basis = basisOf(plan, v.groupId);
+  const basis = basisOf(plan, v.groupId, v.rulesDeductible);
   if (!basis) throw new DomainError(`Der Miettarif „${plan.name}“ gilt nicht für die Fahrzeuggruppe „${v.group?.name}“.`);
   return basis;
 }
@@ -182,6 +213,8 @@ export type TariffSnapshot = {
   vehicleOverrideApplied: boolean;
   km: KmRule & { source: ConditionSource };
   deposit: { cents: number; source: ConditionSource };
+  /** Befehl 29.5: Selbstbeteiligung laut Tarif (bzw. Geschäftsregel ohne Tarifvorgabe); fehlt bei Buchungen vor 29.5 */
+  deductible?: TariffDeductible;
   /** Preisstand beim letzten Übernehmen des Tarifs (Zeitraum kann sich vor dem Vertrag noch ändern; dann zählt die Buchung) */
   quotedAt: string;
   /** Abweichungen der Buchung – mit Grund, wer und wann */
@@ -189,6 +222,8 @@ export type TariffSnapshot = {
     price: ({ cents: number; regularCents: number; reason: string } & Who) | null;
     km: (KmRule & { reason: string } & Who) | null;
     deposit: ({ cents: number; reason: string } & Who) | null;
+    /** Befehl 29.5: abweichend vereinbarte Selbstbeteiligung (fehlt bei Buchungen vor 29.5) */
+    deductible?: ({ cents: number; reason: string } & Who) | null;
   };
 };
 
@@ -215,17 +250,25 @@ export function basisFromSnapshot(s: TariffSnapshot): TariffBasis {
     kmSource: s.km.source,
     depositCents: s.deposit.cents,
     depositSource: s.deposit.source,
+    deductible: s.deductible ?? null,
   };
 }
 
 export type PriceChoice = { mode: "TARIFF" } | { mode: "INDIVIDUAL"; cents: number; reason: string };
 export type KmChoice = { mode: "TARIFF" } | ({ mode: "INDIVIDUAL"; reason: string } & KmRule);
 export type DepositChoice = { mode: "TARIFF" } | { mode: "INDIVIDUAL"; cents: number; reason: string };
-export type TariffChoices = { price: PriceChoice; km: KmChoice; deposit: DepositChoice };
+export type DeductibleChoice = { mode: "TARIFF" } | { mode: "INDIVIDUAL"; cents: number; reason: string };
+/**
+ * deductible (Befehl 29.5): fehlt die Angabe (Formular ohne dieses Feld, Zeitraumänderung), bleibt eine bisherige Vereinbarung
+ * unverändert bestehen – eine Abweichung wird nur durch eine ausdrückliche Wahl gesetzt oder aufgehoben.
+ */
+export type TariffChoices = { price: PriceChoice; km: KmChoice; deposit: DepositChoice; deductible?: DeductibleChoice };
 
 export const OVERRIDE_REASON_MAX = 300;
 const MAX_PRICE_CENTS = 100_000_000; // 1 Mio. € als Plausibilitätsgrenze
 const MAX_DEPOSIT_CENTS = 10_000_000;
+/** Befehl 29.5: wie die Kaution (DB-CHECK rb_booking_deductible / rb_rateplan_revision_deductible) */
+export const MAX_DEDUCTIBLE_CENTS = 10_000_000;
 
 function reasonOf(r: string, what: string): string {
   const t = (r ?? "").trim();
@@ -245,6 +288,8 @@ export function checkKmRule(k: KmRule, label = "Kilometer"): KmRule {
 
 const sameKm = (a: KmRule | null | undefined, b: KmRule | null | undefined) => !!a && !!b && a.policy === b.policy && a.kmIncludedPerDay === b.kmIncludedPerDay && a.extraKmRateCents === b.extraKmRateCents;
 export const kmRuleText = (k: KmRule) => (k.policy === "UNLIMITED" ? "Unbegrenzte Kilometer" : `${k.kmIncludedPerDay} km je Miettag, ${fmtCents(k.extraKmRateCents ?? 0)} je Mehrkilometer`);
+/** Befehl 29.5: Herkunft der tariflichen Selbstbeteiligung in Worten (intern, nie im Kundendokument). */
+export const deductibleSourceText = (d: TariffDeductible | null | undefined) => (!d ? "laut Geschäftsregeln im Vertrag" : d.source === "TARIFF" ? "laut Miettarif" : d.ruleSource === "GROUP" ? "Geschäftsregel der Fahrzeuggruppe (Tarif ohne Vorgabe)" : d.ruleSource === "VEHICLE" ? "Geschäftsregel des Fahrzeugs (Tarif ohne Vorgabe)" : d.ruleSource === "TENANT" ? "Geschäftsregel des Vermieters (Tarif ohne Vorgabe)" : "keine Vorgabe (Tarif ohne Wert, keine Geschäftsregel)");
 
 export type BookingTariffResult = {
   /** Felder für Booking create/update (Tarif, Snapshot, Abweichungen, Kilometer/Kaution der Buchung, lesekompatible Altfelder) */
@@ -261,6 +306,9 @@ export type BookingTariffResult = {
     kmOverrideReason: string | null;
     deposit: number;
     depositOverrideReason: string | null;
+    /** Befehl 29.5: vereinbarte Selbstbeteiligung (null nur bei Snapshots vor 29.5 ohne Abweichung – dann bestimmt sie der Vertrag) */
+    deductibleCents: number | null;
+    deductibleOverrideReason: string | null;
     overrideInfo: Prisma.InputJsonValue;
     dailyRate: number;
     workWeekRate: number | null;
@@ -334,6 +382,20 @@ export function buildBookingTariff(input: {
     audits.push({ action: "BOOKING_DEPOSIT_OVERRIDDEN", amountCents: basis.depositCents, details: { ratePlan: basis.ratePlanName, tariffCents: basis.depositCents, agreedCents: basis.depositCents, previousAgreedCents: previous.agreed.deposit.cents } });
   }
 
+  // Selbstbeteiligung (Befehl 29.5): ohne ausdrückliche Wahl bleibt eine bisherige Vereinbarung bestehen; 0 € ist zulässig
+  const prevDeductible = previous?.agreed.deductible ?? null;
+  const deductibleChoice: DeductibleChoice = choices.deductible ?? (prevDeductible ? { mode: "INDIVIDUAL", cents: prevDeductible.cents, reason: prevDeductible.reason } : { mode: "TARIFF" });
+  let deductible: NonNullable<TariffSnapshot["agreed"]["deductible"]> | null = null;
+  if (deductibleChoice.mode === "INDIVIDUAL") {
+    const cents = deductibleChoice.cents;
+    if (!Number.isInteger(cents) || cents < 0 || cents > MAX_DEDUCTIBLE_CENTS) throw new DomainError("Vereinbarte Selbstbeteiligung: bitte einen Betrag ab 0,00 € angeben.");
+    const reason = reasonOf(deductibleChoice.reason, "die abweichende Selbstbeteiligung");
+    deductible = prevDeductible && prevDeductible.cents === cents && prevDeductible.reason === reason ? prevDeductible : { cents, reason, ...who };
+    if (deductible !== prevDeductible) audits.push({ action: "BOOKING_DEDUCTIBLE_OVERRIDDEN", amountCents: cents, details: { ratePlan: basis.ratePlanName, tariffCents: basis.deductible?.cents ?? null, tariffSource: deductibleSourceText(basis.deductible), agreedCents: cents, reason, previousAgreedCents: prevDeductible?.cents ?? null } });
+  } else if (prevDeductible) {
+    audits.push({ action: "BOOKING_DEDUCTIBLE_OVERRIDDEN", amountCents: basis.deductible?.cents ?? null, details: { ratePlan: basis.ratePlanName, tariffCents: basis.deductible?.cents ?? null, tariffSource: deductibleSourceText(basis.deductible), agreed: "wie Tarif", previousAgreedCents: prevDeductible.cents } });
+  }
+
   if (!previous || previous.ratePlanId !== basis.ratePlanId || previous.revisionId !== basis.revisionId || previous.groupId !== basis.groupId || previous.vehicleOverrideApplied !== basis.vehicleOverrideApplied || JSON.stringify(previous.tiers) !== JSON.stringify(basis.tiers)) {
     audits.unshift({ action: "BOOKING_TARIFF_CHANGED", amountCents: quote.regularCents, details: { ratePlan: basis.ratePlanName, revision: basis.revision, group: basis.groupName, regularCents: quote.regularCents, vehiclePrice: basis.vehicleOverrideApplied, previousRatePlan: previous?.ratePlanName ?? null, previousRevision: previous?.revision ?? null } });
   }
@@ -352,8 +414,9 @@ export function buildBookingTariff(input: {
     vehicleOverrideApplied: basis.vehicleOverrideApplied,
     km: { ...basis.km, source: basis.kmSource },
     deposit: { cents: basis.depositCents, source: basis.depositSource },
+    ...(basis.deductible ? { deductible: basis.deductible } : {}),
     quotedAt: now,
-    agreed: { price, km, deposit },
+    agreed: { price, km, deposit, deductible },
   };
   const effKm = km ?? basis.km;
   const effDeposit = deposit?.cents ?? basis.depositCents;
@@ -376,7 +439,9 @@ export function buildBookingTariff(input: {
       kmOverrideReason: km?.reason ?? null,
       deposit: effDeposit / 100,
       depositOverrideReason: deposit?.reason ?? null,
-      overrideInfo: { price: price ? { at: price.at, byId: price.byId, byName: price.byName } : null, km: km ? { at: km.at, byId: km.byId, byName: km.byName } : null, deposit: deposit ? { at: deposit.at, byId: deposit.byId, byName: deposit.byName } : null } as Prisma.InputJsonValue,
+      deductibleCents: deductible?.cents ?? basis.deductible?.cents ?? null,
+      deductibleOverrideReason: deductible?.reason ?? null,
+      overrideInfo: { price: price ? { at: price.at, byId: price.byId, byName: price.byName } : null, km: km ? { at: km.at, byId: km.byId, byName: km.byName } : null, deposit: deposit ? { at: deposit.at, byId: deposit.byId, byName: deposit.byName } : null, deductible: deductible ? { at: deductible.at, byId: deductible.byId, byName: deductible.byName } : null } as Prisma.InputJsonValue,
       // lesekompatibel (Anzeigen/Unfallersatz-Vorschläge); gerechnet wird nur aus dem Snapshot
       dailyRate: at(1) ?? 0,
       workWeekRate: at(5),
@@ -422,6 +487,7 @@ export function choicesOf(s: TariffSnapshot | null): TariffChoices {
     price: s?.agreed.price ? { mode: "INDIVIDUAL", cents: s.agreed.price.cents, reason: s.agreed.price.reason } : { mode: "TARIFF" },
     km: s?.agreed.km ? { mode: "INDIVIDUAL", policy: s.agreed.km.policy, kmIncludedPerDay: s.agreed.km.kmIncludedPerDay, extraKmRateCents: s.agreed.km.extraKmRateCents, reason: s.agreed.km.reason } : { mode: "TARIFF" },
     deposit: s?.agreed.deposit ? { mode: "INDIVIDUAL", cents: s.agreed.deposit.cents, reason: s.agreed.deposit.reason } : { mode: "TARIFF" },
+    deductible: s?.agreed.deductible ? { mode: "INDIVIDUAL", cents: s.agreed.deductible.cents, reason: s.agreed.deductible.reason } : { mode: "TARIFF" },
   };
 }
 

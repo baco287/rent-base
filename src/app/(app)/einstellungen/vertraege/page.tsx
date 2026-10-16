@@ -95,7 +95,7 @@ export default async function ContractsSettingsPage() {
           </section>
         </div>
         <p className="rounded-md bg-panel-2 px-3.5 py-2.5 text-[12.5px] text-ink-2">
-          Für Buchungen mit Miettarif gelten Kilometerregel und Kaution aus dem <Link href="/einstellungen/tarife" className="underline">Miettarif</Link>; die Geschäftsregeln gelten für ältere Buchungen ohne Tarif. Keine Regel erzeugt automatisch Rechnungen, Zusatzkosten oder Kautionsbewegungen.
+          Für Buchungen mit Miettarif gelten Kilometerregel, Kaution und Selbstbeteiligung aus dem <Link href="/einstellungen/tarife" className="underline">Miettarif</Link> (hat der Tarif keine eigene Selbstbeteiligung, gilt die Geschäftsregel); die Geschäftsregeln gelten für ältere Buchungen ohne Tarif. Keine Regel erzeugt automatisch Rechnungen, Zusatzkosten oder Kautionsbewegungen.
         </p>
       </Content>
     </>

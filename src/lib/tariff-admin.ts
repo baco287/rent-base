@@ -9,11 +9,12 @@
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { recordAudit, type Actor } from "@/lib/audit";
+import { resolveRules } from "@/lib/business-rules";
 import { DomainError } from "@/lib/integrity";
 import { fmtCents } from "@/lib/money";
 import { isUniqueViolation } from "@/lib/numbering";
 import { normalizeTiers, tierLabel, type TierDef } from "@/lib/pricing";
-import { checkKmRule, kmRuleText, type KmRule } from "@/lib/tariffs";
+import { checkKmRule, kmRuleText, MAX_DEDUCTIBLE_CENTS, type KmRule } from "@/lib/tariffs";
 
 type Tx = Prisma.TransactionClient;
 const TX = { timeout: 20_000, maxWait: 10_000 };
@@ -25,7 +26,11 @@ export type GroupContent = {
   depositCents: number | null;
   km: KmRule | null;
 };
-export type TariffContent = { km: KmRule; depositCents: number; groups: GroupContent[] };
+/**
+ * deductibleCents (Befehl 29.5): Selbstbeteiligung im Schadenfall; null/fehlend = keine Tarifvorgabe (die Geschäftsregel gilt).
+ * Teil des Revisionsinhalts – eine Änderung erzeugt eine neue Revision.
+ */
+export type TariffContent = { km: KmRule; depositCents: number; deductibleCents?: number | null; groups: GroupContent[] };
 export type TariffMeta = { name: string; code: string | null; description: string | null; sortOrder: number };
 
 const MAX_CENTS = 100_000_000;
@@ -47,10 +52,26 @@ function checkDeposit(c: number, label: string) {
   return c;
 }
 
+/** Befehl 29.5: was im Tarifeditor ohne eigene Selbstbeteiligung gilt (Standard des Vermieters aus den Geschäftsregeln). */
+export function rulesDeductibleHint(tenantRules: unknown): string {
+  const cents = resolveRules(tenantRules, null, null).values.deductibleCents;
+  return cents != null
+    ? `Leer lassen: Es gilt die Selbstbeteiligung aus den Geschäftsregeln – derzeit ${fmtCents(cents)} (Standard des Vermieters; Fahrzeuggruppen und Fahrzeuge können dort abweichen).`
+    : "Leer lassen: Es gilt die Geschäftsregel – dort ist derzeit keine Selbstbeteiligung hinterlegt (0,00 €).";
+}
+
+/** Befehl 29.5: Selbstbeteiligung des Tarifs – leer erlaubt (keine Tarifvorgabe), sonst ganze Cent ab 0 €. */
+function checkDeductible(c: number | null | undefined): number | null {
+  if (c == null) return null;
+  if (!Number.isInteger(c) || c < 0 || c > MAX_DEDUCTIBLE_CENTS) throw new DomainError("Selbstbeteiligung des Tarifs: bitte einen Betrag ab 0,00 € angeben (oder leer lassen).");
+  return c;
+}
+
 /** Prüft und normalisiert den Inhalt (Stufen je Gruppe in Cent, keine doppelte Dauer, km widerspruchsfrei, nichts negativ). */
 export function checkContent(c: TariffContent): TariffContent {
   const km = checkKmRule(c.km, "Kilometer des Tarifs");
   const depositCents = checkDeposit(c.depositCents, "Kaution des Tarifs");
+  const deductibleCents = checkDeductible(c.deductibleCents);
   const seen = new Set<string>();
   const groups = c.groups.map((g) => {
     if (seen.has(g.groupId)) throw new DomainError("Eine Fahrzeuggruppe ist doppelt zugeordnet.");
@@ -73,7 +94,7 @@ export function checkContent(c: TariffContent): TariffContent {
       km: g.km ? checkKmRule(g.km, "Kilometer der Fahrzeuggruppe") : null,
     };
   });
-  return { km, depositCents, groups: groups.sort((a, b) => a.groupId.localeCompare(b.groupId)) };
+  return { km, depositCents, deductibleCents, groups: groups.sort((a, b) => a.groupId.localeCompare(b.groupId)) };
 }
 
 const canon = (c: TariffContent) => JSON.stringify(checkContent(c));
@@ -99,13 +120,14 @@ export async function currentContent(client: Tx | typeof db, tenantId: string, r
   return {
     km: km(r),
     depositCents: r.depositCents,
+    deductibleCents: r.deductibleCents,
     groups: r.groups.map((g) => ({ groupId: g.groupId, tiers: g.tiers.map((t) => ({ days: t.durationDays, cents: t.priceCents, ...(t.label ? { label: t.label } : {}) })), depositCents: g.depositCents, km: g.kmPolicy ? km(g) : null })),
   };
 }
 
 async function insertRevision(tx: Tx, tenantId: string, ratePlanId: string, revision: number, content: TariffContent, actor: Actor, note: string | null) {
   const rev = await tx.ratePlanRevision.create({
-    data: { tenantId, ratePlanId, revision, kmPolicy: content.km.policy, kmIncludedPerDay: content.km.kmIncludedPerDay, extraKmRateCents: content.km.extraKmRateCents, depositCents: content.depositCents, note, createdById: actor.id, createdByName: actor.name },
+    data: { tenantId, ratePlanId, revision, kmPolicy: content.km.policy, kmIncludedPerDay: content.km.kmIncludedPerDay, extraKmRateCents: content.km.extraKmRateCents, depositCents: content.depositCents, deductibleCents: content.deductibleCents ?? null, note, createdById: actor.id, createdByName: actor.name },
   });
   for (const g of content.groups) {
     await tx.ratePlanGroupPrice.create({
@@ -125,7 +147,7 @@ async function insertRevision(tx: Tx, tenantId: string, ratePlanId: string, revi
 }
 
 const summary = (c: TariffContent, groupNames: Map<string, string>) =>
-  [`Kilometer: ${kmRuleText(c.km)}`, `Kaution: ${fmtCents(c.depositCents)}`, ...c.groups.map((g) => `${groupNames.get(g.groupId) ?? "Gruppe"}: ${g.tiers.map((t) => `${t.label || tierLabel(t.days)} ${fmtCents(t.cents)}`).join(", ")}${g.depositCents != null ? `, Kaution ${fmtCents(g.depositCents)}` : ""}${g.km ? `, ${kmRuleText(g.km)}` : ""}`)].join(" | ").slice(0, 1500);
+  [`Kilometer: ${kmRuleText(c.km)}`, `Kaution: ${fmtCents(c.depositCents)}`, `Selbstbeteiligung: ${c.deductibleCents != null ? fmtCents(c.deductibleCents) : "keine Tarifvorgabe (Geschäftsregel)"}`, ...c.groups.map((g) => `${groupNames.get(g.groupId) ?? "Gruppe"}: ${g.tiers.map((t) => `${t.label || tierLabel(t.days)} ${fmtCents(t.cents)}`).join(", ")}${g.depositCents != null ? `, Kaution ${fmtCents(g.depositCents)}` : ""}${g.km ? `, ${kmRuleText(g.km)}` : ""}`)].join(" | ").slice(0, 1500);
 
 async function groupNamesOf(tx: Tx, tenantId: string) {
   return new Map((await tx.vehicleGroup.findMany({ where: { tenantId }, select: { id: true, name: true } })).map((g) => [g.id, g.name]));
@@ -325,7 +347,7 @@ export async function listRatePlans(tenantId: string) {
   const plans = await db.ratePlan.findMany({
     where: { tenantId },
     orderBy: [{ active: "desc" }, { sortOrder: "asc" }, { name: "asc" }],
-    include: { currentRevision: { select: { revision: true, createdAt: true, kmPolicy: true, kmIncludedPerDay: true, extraKmRateCents: true, depositCents: true, groups: { select: { group: { select: { id: true, name: true } } } } } }, defaultForGroups: { select: { name: true } }, _count: { select: { bookings: true, vehicleOverrides: true } } },
+    include: { currentRevision: { select: { revision: true, createdAt: true, kmPolicy: true, kmIncludedPerDay: true, extraKmRateCents: true, depositCents: true, deductibleCents: true, groups: { select: { group: { select: { id: true, name: true } } } } } }, defaultForGroups: { select: { name: true } }, _count: { select: { bookings: true, vehicleOverrides: true } } },
   });
   return plans.map((p) => ({
     id: p.id,
@@ -338,6 +360,7 @@ export async function listRatePlans(tenantId: string) {
     updatedByName: p.updatedByName,
     km: p.currentRevision ? ({ policy: p.currentRevision.kmPolicy, kmIncludedPerDay: p.currentRevision.kmIncludedPerDay, extraKmRateCents: p.currentRevision.extraKmRateCents } as KmRule) : null,
     depositCents: p.currentRevision?.depositCents ?? 0,
+    deductibleCents: p.currentRevision?.deductibleCents ?? null,
     groups: (p.currentRevision?.groups ?? []).map((g) => g.group.name).sort((a, b) => a.localeCompare(b, "de")),
     defaultFor: p.defaultForGroups.map((g) => g.name),
     bookings: p._count.bookings,

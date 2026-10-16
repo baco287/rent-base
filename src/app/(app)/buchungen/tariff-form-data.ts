@@ -34,7 +34,7 @@ function euro(fd: FormData, k: string, label: string): number | { error: string 
   }
 }
 
-/** Abweichungen der Buchung: individueller Mietpreis, Kilometer, Kaution – jeweils „wie Tarif“ oder abweichend mit Grund. */
+/** Abweichungen der Buchung: individueller Mietpreis, Kilometer, Kaution, Selbstbeteiligung – jeweils „wie Tarif“ oder abweichend mit Grund. */
 export function tariffChoicesFromForm(fd: FormData): TariffChoices | { error: string } {
   let price: TariffChoices["price"] = { mode: "TARIFF" };
   if (str(fd, "priceMode") === "INDIVIDUAL") {
@@ -60,5 +60,13 @@ export function tariffChoicesFromForm(fd: FormData): TariffChoices | { error: st
     if (typeof c !== "number") return c;
     deposit = { mode: "INDIVIDUAL", cents: c, reason: str(fd, "depositReason") };
   }
-  return { price, km, deposit };
+  // Befehl 29.5: Selbstbeteiligung nur, wenn das Formular den Bereich enthält – sonst bleibt eine bisherige Vereinbarung bestehen
+  let deductible: TariffChoices["deductible"];
+  const deductibleMode = str(fd, "deductibleMode");
+  if (deductibleMode === "INDIVIDUAL") {
+    const c = euro(fd, "deductibleOverride", "Vereinbarte Selbstbeteiligung");
+    if (typeof c !== "number") return c;
+    deductible = { mode: "INDIVIDUAL", cents: c, reason: str(fd, "deductibleReason") };
+  } else if (deductibleMode === "TARIFF") deductible = { mode: "TARIFF" };
+  return { price, km, deposit, ...(deductible ? { deductible } : {}) };
 }

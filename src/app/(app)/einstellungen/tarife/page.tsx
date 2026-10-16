@@ -16,7 +16,7 @@ export default async function RatePlansPage() {
   const plans = await listRatePlans(tenant.id);
   return (
     <>
-      <SettingsHeader title="Miettarife" sub="Eigene Tarife je Fahrzeuggruppe: Preisstufen, Kilometerregel und Kaution. Der Tarif liefert den regulären Preis – je Buchung kann mit Grund abgewichen werden.">
+      <SettingsHeader title="Miettarife" sub="Eigene Tarife je Fahrzeuggruppe: Preisstufen, Kilometerregel, Kaution und Selbstbeteiligung. Der Tarif liefert den regulären Preis – je Buchung kann mit Grund abgewichen werden.">
         {canEdit && <Link href="/einstellungen/tarife/neu" className="btn btn-primary">+ Tarif anlegen</Link>}
       </SettingsHeader>
       <Content>
@@ -35,6 +35,7 @@ export default async function RatePlansPage() {
                     <div className="text-ink-2">{p.groups.length ? p.groups.join(", ") : <span className="text-amber">keine Fahrzeuggruppe zugeordnet</span>}</div>
                     {p.defaultFor.length > 0 && <div className="text-xs"><Chip tone="info">Standard</Chip> für {p.defaultFor.join(", ")}</div>}
                     <div className="text-xs text-ink-3">{p.km ? kmRuleText(p.km) : "–"} · Kaution {fmtCents(p.depositCents)}</div>
+                    <div className="text-xs text-ink-3">Selbstbeteiligung {p.deductibleCents != null ? fmtCents(p.deductibleCents) : "laut Geschäftsregeln"}</div>
                     <div className="text-xs text-ink-3">Revision {p.revision} · zuletzt geändert {fmtDateTime(p.updatedAt)}{p.updatedByName ? ` von ${p.updatedByName}` : ""}</div>
                     <div className="text-xs text-ink-3">{p.bookings} {p.bookings === 1 ? "Buchung" : "Buchungen"}{p.vehicleOverrides ? ` · ${p.vehicleOverrides} Fahrzeugpreis${p.vehicleOverrides === 1 ? "" : "e"}` : ""}</div>
                   </div>

@@ -56,7 +56,8 @@ export async function returnedWorld(label: string, opts: { damageCharge?: boolea
   const c = await ensureContractDraft(w.tenantId, w.bookingId, w.actor);
   const bk = await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } });
   // Befehl 29: Tarifbuchung – Preis, Kaution und Kilometer kommen aus der Buchung (im Vertrag nicht abweichend)
-  const tariff = bk.ratePlanId ? { deposit: Number(bk.deposit), kmIncludedPerDay: bk.kmIncludedPerDay ?? 0, extraKmRate: Number(bk.extraKmRate ?? 0), agreedTotal: bk.agreedPriceCents != null ? bk.agreedPriceCents / 100 : null, agreedTotalNote: bk.priceOverrideReason } : null;
+  // Befehl 29.5: ebenso die Selbstbeteiligung der Buchung (Tarifwert, Geschäftsregel oder Abweichung mit Grund)
+  const tariff = bk.ratePlanId ? { deposit: Number(bk.deposit), kmIncludedPerDay: bk.kmIncludedPerDay ?? 0, extraKmRate: Number(bk.extraKmRate ?? 0), agreedTotal: bk.agreedPriceCents != null ? bk.agreedPriceCents / 100 : null, agreedTotalNote: bk.priceOverrideReason, ...(bk.deductibleCents != null ? { deductible: bk.deductibleCents / 100 } : {}) } : null;
   await saveConditions(w.tenantId, c.id, { startAt: bk.startAt, endAt: bk.endAt, deposit: 500, kmIncludedPerDay: 200, extraKmRate: 0.25, deductible: 1000, fuelPolicy: "FULL_TO_FULL", fuelPolicyNote: null, fuelPricePerLiter: 1.8, agreedTotal: null, agreedTotalNote: null, pickupLocation: "Hof", returnLocation: "Hof", ...(tariff ?? {}), ...(opts.conditions ?? {}) });
   await saveContractSignature(w.tenantId, w.actor, c.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getContractContentHash(w.tenantId, c.id) });
   await finalizeContract(w.tenantId, c.id);

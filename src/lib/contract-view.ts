@@ -81,8 +81,11 @@ const row = (l: string, v: unknown, required = false): DocRow => {
 const cents = (c: number | null | undefined) => (c == null ? null : (c / 100).toLocaleString("de-DE", { style: "currency", currency: "EUR" }));
 const countryList = (codes: string[]) => codes.map((c) => COUNTRIES[c as keyof typeof COUNTRIES] ?? c).join(", ");
 
-/** Geschäftsregeln als Vertragsabschnitt: nur konkrete, eingefrorene Werte. Herkunft steht nicht im Dokument. */
-export function rulesSection(rules: ContractRules | null, contract: { kmIncludedPerDay: number; extraKmRate: unknown; fuelPolicy: string; fuelPolicyNote: string | null; deductible: unknown }, fuel: string | null | undefined, additionalDrivers: number, days: number | null): DocSection | null {
+/**
+ * Geschäftsregeln als Vertragsabschnitt: nur konkrete, eingefrorene Werte. Herkunft steht nicht im Dokument.
+ * deductibleInConditions (Befehl 29.5): die vereinbarte Selbstbeteiligung steht bereits bei den Konditionen – hier nicht doppelt.
+ */
+export function rulesSection(rules: ContractRules | null, contract: { kmIncludedPerDay: number; extraKmRate: unknown; fuelPolicy: string; fuelPolicyNote: string | null; deductible: unknown }, fuel: string | null | undefined, additionalDrivers: number, days: number | null, opts: { deductibleInConditions?: boolean } = {}): DocSection | null {
   if (!rules) return null;
   const v = rules.values;
   const cls = driveClassOf(fuel ?? "DIESEL");
@@ -101,7 +104,7 @@ export function rulesSection(rules: ContractRules | null, contract: { kmIncluded
   const rows: DocRow[] = [
     row("Kilometerregel", km),
     row(cls === "ELECTRIC" ? "Laderegel" : cls === "PHEV" ? "Tank- und Laderegel" : "Tankregelung", fuelRule),
-    row("Selbstbeteiligung", eur(contract.deductible)),
+    ...(opts.deductibleInConditions ? [] : [row("Selbstbeteiligung", eur(contract.deductible))]),
     row("Auslandsfahrten", v.abroadAllowed ? `Genehmigt für: ${countryList(v.abroadCountries)}` : "Nicht gestattet"),
     row("Rauchen im Fahrzeug", v.smokingAllowed ? "Gestattet" : "Nicht gestattet"),
     row("Tiere im Fahrzeug", label(PETS_POLICIES, v.petsPolicy)),
@@ -160,6 +163,9 @@ export function buildContractDocument(contract: ContractWithDrivers, tenant: Ten
   // keine internen Gründe im Kundendokument (regulärer Preis und Grund bleiben intern im Preis-Snapshot)
   const tariffName = p?.tariff?.ratePlanName ?? null;
   const tariffAgreed = !!p?.tariff && p.agreedTotal != null;
+  // Befehl 29.5: Selbstbeteiligung aus der Buchung (Snapshot ab 29.5) – Kaution und Selbstbeteiligung ausdrücklich als vereinbart und
+  // getrennt benannt, ohne Aussage über eine Zahlungspflicht. Ältere Verträge behalten ihre Darstellung (wie ihr archiviertes PDF).
+  const agreedDeductible = !!(p?.tariff?.deductible || p?.tariff?.agreed?.deductible);
   const unlimitedKm = rules?.values.kmPolicy === "UNLIMITED";
   const termsFormat = contract.termsText ? ((contract.termsFormat === "MARKDOWN" ? "MARKDOWN" : "PLAIN") as "MARKDOWN" | "PLAIN") : null;
 
@@ -215,10 +221,10 @@ export function buildContractDocument(contract: ContractWithDrivers, tenant: Ten
       title: "Konditionen",
       rows: [
         ...(tariffName ? [row("Miettarif", tariffName)] : []),
-        row("Kaution", noDeposit ? "keine Kaution vereinbart" : eur(contract.deposit)),
+        row(agreedDeductible ? "Vereinbarte Kaution" : "Kaution", noDeposit ? "keine Kaution vereinbart" : eur(contract.deposit)),
         ...(unlimitedKm ? [row("Kilometer", "unbegrenzt – keine Mehrkilometer")] : [row("Freikilometer", openEnd ? `${contract.kmIncludedPerDay.toLocaleString("de-DE")} km je Miettag (gesamt: Freikilometer × tatsächliche Miettage)` : `${contract.kmIncludedPerDay.toLocaleString("de-DE")} km je Tag, gesamt ${(contract.kmIncludedPerDay * days).toLocaleString("de-DE")} km`),
         row("Mehrkilometer", `${eur(contract.extraKmRate)} je km`)]),
-        row("Selbstbeteiligung", eur(contract.deductible)),
+        row(agreedDeductible ? "Vereinbarte Selbstbeteiligung im Schadenfall" : "Selbstbeteiligung", eur(contract.deductible)),
         row("Tankregelung", contract.fuelPolicy === "OTHER" ? `${label(FUEL_POLICIES, contract.fuelPolicy)}: ${contract.fuelPolicyNote ?? ""}` : label(FUEL_POLICIES, contract.fuelPolicy)),
         ...(contract.fuelPricePerLiter ? [row("Preis je fehlendem Liter", eur(contract.fuelPricePerLiter))] : []),
       ],
@@ -263,7 +269,7 @@ export function buildContractDocument(contract: ContractWithDrivers, tenant: Ten
         : null,
       deposit: noDeposit ? "keine" : eur(contract.deposit),
     },
-    rules: rulesSection(rules, contract, v.fuel, additional.length, openEnd ? null : days),
+    rules: rulesSection(rules, contract, v.fuel, additional.length, openEnd ? null : days, { deductibleInConditions: agreedDeductible }),
     individualAgreements: contract.individualAgreements?.trim() || null,
     terms: {
       version: contract.termsVersion,

@@ -47,7 +47,7 @@ export default async function DamageCasePage({ params, searchParams }: PageProps
   const chargeHints = [
     c.actualCostCents != null ? { label: "Tatsächliche Reparaturkosten", value: fmtCents(c.actualCostCents) } : null,
     c.estimatedCostCents != null ? { label: "Kostenschätzung", value: fmtCents(c.estimatedCostCents) } : null,
-    c.deductibleCents != null ? { label: "Selbstbeteiligung laut Mietvertrag", value: fmtCents(c.deductibleCents) } : null,
+    c.deductibleCents != null ? { label: "Vereinbarte Selbstbeteiligung (Mietvertrag, nur zur Information)", value: fmtCents(c.deductibleCents) } : null,
     c.deposit ? { label: "Kaution erhalten (nicht verrechnet)", value: fmtCents(c.deposit.receivedCents) } : null,
   ].filter((x): x is { label: string; value: string } => x !== null);
   const canCharge = canManage && open && c.liabilityStatus === "CUSTOMER_RESPONSIBILITY_CONFIRMED" && !!c.bookingId && c.customerChargeCents == null && !c.invoice;
@@ -156,7 +156,16 @@ export default async function DamageCasePage({ params, searchParams }: PageProps
                 <dt className="label-xs self-center">Kunde</dt><dd><Link href={`/kunden/${c.booking.customer.id}`} className="underline">{customerName(c.booking.customer)}</Link></dd>
                 <dt className="label-xs self-center">Mietvertrag</dt><dd>{c.booking.contract?.status === "SIGNED" ? c.booking.contract.number : <span className="text-ink-3">nicht abgeschlossen</span>}</dd>
                 <dt className="label-xs self-center">Mietzeitraum</dt><dd>{fmtDateTime(c.booking.actualPickupAt ?? c.booking.startAt)} – {fmtDateTime(c.booking.actualReturnAt ?? c.booking.endAt)}</dd>
-                <dt className="label-xs self-center">Selbstbeteiligung</dt><dd>{c.deductibleCents != null ? <>{fmtCents(c.deductibleCents)} <span className="text-ink-3">laut Vertragskopie, nur zur Information</span></> : "–"}</dd>
+                <dt className="label-xs self-start pt-0.5">Vereinbarte Selbstbeteiligung</dt>
+                <dd>
+                  {c.deductibleInfo ? (
+                    <>
+                      <span className="font-mono tnum font-medium">{fmtCents(c.deductibleInfo.cents)}</span> <span className="text-ink-3">{c.deductibleInfo.origin}</span>
+                      {c.deductibleInfo.reason && <span className="block text-xs text-ink-3">Grund der Abweichung: {c.deductibleInfo.reason}</span>}
+                      <span className="block text-xs text-ink-3">Laut unterschriebenem Mietvertrag, nur zur Information: erzeugt keine Forderung und verrechnet keine Kaution. Die Haftung wird in dieser Akte gesondert geprüft.</span>
+                    </>
+                  ) : "–"}
+                </dd>
                 {c.otherCharges.length > 0 && <><dt className="label-xs self-start">Zusatzkosten</dt><dd>{c.otherCharges.map((x) => <div key={x.id}>{x.description}: <span className="font-mono tnum">{Number(x.amount).toLocaleString("de-DE", { minimumFractionDigits: 2 })} €</span> <span className="text-ink-3">(bei Rückgabe bestätigt, Teil der Mietrechnung)</span></div>)}</dd></>}
               </dl>
             ) : (

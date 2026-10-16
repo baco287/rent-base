@@ -570,7 +570,11 @@ model Booking {
   kmPolicy              String? // FREE_KILOMETERS | UNLIMITED (nur Tarifbuchungen)
   kmOverrideReason      String? // gesetzt = Kilometervereinbarung weicht bewusst vom Tarif ab
   depositOverrideReason String? // gesetzt = Kaution weicht bewusst vom Tarif ab
-  overrideInfo          Json? // { price|km|deposit: { at, byId, byName } } – wer hat wann abgewichen
+  // Befehl 29.5: vereinbarte Selbstbeteiligung im Schadenfall (Tarifwert bzw. Geschäftsregel, bei der Buchung eingefroren, oder
+  // abweichend mit Grund). null = Buchung vor 29.5 – der Vertrag bestimmt sie dann wie bisher aus den Geschäftsregeln.
+  deductibleCents       Int?
+  deductibleOverrideReason String? // gesetzt = Selbstbeteiligung weicht bewusst vom Tarif ab
+  overrideInfo          Json? // { price|km|deposit|deductible: { at, byId, byName } } – wer hat wann abgewichen
   notes                 String?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
@@ -2617,6 +2621,7 @@ model RatePlanRevision {
   kmIncludedPerDay Int? // nur FREE_KILOMETERS
   extraKmRateCents Int? // nur FREE_KILOMETERS
   depositCents     Int      @default(0)
+  deductibleCents  Int? // Befehl 29.5: Selbstbeteiligung im Schadenfall; null = keine Tarifvorgabe (Geschäftsregel gilt)
   note             String?
   createdAt        DateTime @default(now())
   createdById      String?

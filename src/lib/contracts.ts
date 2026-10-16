@@ -142,8 +142,9 @@ export function contractPrice(
  * Befehl 29: Bei Tarifbuchungen ist die Buchung bis zur Unterschrift die führende Quelle für Preis, Kaution und Kilometer
  * (Abweichungen nur dort, mit Grund und Audit). Der Vertragsentwurf übernimmt diese Werte; im Vertrag selbst weichen sie
  * nicht still davon ab.
+ * Befehl 29.5: ebenso die Selbstbeteiligung (deductibleCents null = Buchung vor 29.5 → der Vertrag bestimmt sie wie bisher).
  */
-function tariffTermsOf(booking: { ratePlanId: string | null; agreedPriceCents: number | null; priceOverrideReason: string | null; kmPolicy: string | null; kmOverrideReason: string | null; tariffSnapshot: unknown }) {
+function tariffTermsOf(booking: { ratePlanId: string | null; agreedPriceCents: number | null; priceOverrideReason: string | null; kmPolicy: string | null; kmOverrideReason: string | null; tariffSnapshot: unknown; deductibleCents: number | null; deductibleOverrideReason: string | null }) {
   if (!booking.ratePlanId) return null;
   const snap = readTariffSnapshot(booking.tariffSnapshot);
   return {
@@ -151,6 +152,8 @@ function tariffTermsOf(booking: { ratePlanId: string | null; agreedPriceCents: n
     agreedTotalNote: booking.agreedPriceCents != null ? booking.priceOverrideReason : null,
     kmPolicy: (booking.kmPolicy ?? snap?.km.policy ?? "FREE_KILOMETERS") as KmRule["policy"],
     kmSource: (booking.kmOverrideReason ? "BOOKING" : "TARIFF") as RuleSource,
+    deductibleCents: booking.deductibleCents,
+    deductibleSource: (booking.deductibleOverrideReason ? "BOOKING" : snap?.deductible?.source === "RULES" ? snap.deductible.ruleSource ?? "DEFAULT" : "TARIFF") as RuleSource,
   };
 }
 /** Tarif-Kilometerregel in die Vertragsregeln (außer der Vertrag hat bewusst eine individuelle Regel mit Beschreibung). */
@@ -158,6 +161,13 @@ function withTariffKmPolicy(rules: ContractRules, terms: ReturnType<typeof tarif
   if (!terms || rules.sources.kmPolicy === "CONTRACT") return rules;
   return { ...rules, values: { ...rules.values, kmPolicy: terms.kmPolicy, kmPolicyNote: null }, sources: { ...rules.sources, kmPolicy: terms.kmSource } };
 }
+/** Befehl 29.5: die bei der Buchung vereinbarte Selbstbeteiligung (Tarif, Geschäftsregel oder Abweichung mit Grund) in die Vertragsregeln. */
+function withBookingDeductible(rules: ContractRules, terms: ReturnType<typeof tariffTermsOf>): ContractRules {
+  if (terms?.deductibleCents == null) return rules;
+  return { ...rules, values: { ...rules.values, deductibleCents: terms.deductibleCents }, sources: { ...rules.sources, deductibleCents: terms.deductibleSource } };
+}
+/** Befehl 29.5: Vertragswert der Selbstbeteiligung – aus der Buchung, sonst (Buchung vor 29.5, Altbestand) aus den Vertragsregeln. */
+const deductibleFor = (terms: ReturnType<typeof tariffTermsOf>, rules: ContractRules) => (terms?.deductibleCents != null ? terms.deductibleCents : rules.values.deductibleCents ?? 0) / 100;
 
 /** Eingefrorene Mietbedingungen für einen neuen Entwurf: aktive Fassung, sonst (Altbestand) der Mandantentext. */
 function termsForNewDraft(tenant: { rentalTermsVersion: string | null; rentalTermsText: string | null }, active: TermsRow | null) {
@@ -240,7 +250,7 @@ export async function ensureContractDraft(tenantId: string, bookingId: string, a
         const resolved = resolveFor(booking);
         const depositRule = depositFor(booking);
         const tariffTerms = tariffTermsOf(booking);
-        const rules = withTariffKmPolicy(standardKmPolicy(initialContractRules(resolved, new Date(), depositRule), booking), tariffTerms);
+        const rules = withBookingDeductible(withTariffKmPolicy(standardKmPolicy(initialContractRules(resolved, new Date(), depositRule), booking), tariffTerms), tariffTerms);
         // Befehl 29: Unfallersatz-Vertrag immer mit offenem Ende („bis zur Rückgabe“); das geplante Ende bleibt Dispositionswert der Buchung
         const contractEnd = contractEndOf(booking);
         const price = contractPrice({ ...booking, endAt: contractEnd }, contractDiscount(booking), tariffTerms?.agreedTotal ?? null, tariffTerms?.agreedTotalNote ?? null, { additionalDrivers: 0, rules: feeRules(rules) }, await accidentTariffFor(tx, tenantId, booking));
@@ -266,7 +276,7 @@ export async function ensureContractDraft(tenantId: string, bookingId: string, a
             // Befehl 20.7: Kilometervereinbarung der Buchung (sonst Fahrzeugwert) – eine Quelle bis zur Rückgabe
             kmIncludedPerDay: booking.kmIncludedPerDay ?? booking.vehicle.kmIncludedPerDay,
             extraKmRate: booking.extraKmRate ?? booking.vehicle.extraKmRate,
-            deductible: (resolved.values.deductibleCents ?? 0) / 100,
+            deductible: deductibleFor(tariffTerms, rules),
             fuelPolicy: resolved.values.fuelRule,
             conditions: rules as unknown as Prisma.InputJsonValue,
             ...terms,
@@ -336,7 +346,7 @@ export async function refreshContractDraft(tx: Tx, tenantId: string, contractId:
   if (!rules || vehicleChanged) rules = initialContractRules(resolveFor(booking), new Date(), depositRule);
   rules = standardKmPolicy(rules, booking);
   const tariffTerms = tariffTermsOf(booking);
-  rules = withTariffKmPolicy(rules, tariffTerms);
+  rules = withBookingDeductible(withTariffKmPolicy(rules, tariffTerms), tariffTerms);
   const additionalDrivers = await tx.contractDriver.count({ where: { tenantId, contractId, role: "ADDITIONAL_DRIVER" } });
   const contractEnd = contractEndOf(booking);
   // Phase E: Unfallersatz – kein abweichender Gesamtpreis; Tarifpositionen der Fallakte werden im Entwurf laufend übernommen
@@ -378,6 +388,8 @@ export async function refreshContractDraft(tx: Tx, tenantId: string, contractId:
       ...(vehicleChanged ? { deductible: (rules.values.deductibleCents ?? 0) / 100, fuelPolicy: rules.values.fuelRule, ...(accident || tariffTerms ? {} : { deposit: depositRule.cents / 100 }) } : {}),
       // Befehl 29: Tarifbuchung – Kaution und vereinbarter Preis stehen in der Buchung (Abweichungen nur dort mit Grund)
       ...(tariffTerms ? { deposit: booking.deposit, agreedTotal: tariffTerms.agreedTotal, agreedTotalNote: tariffTerms.agreedTotalNote } : {}),
+      // Befehl 29.5: Selbstbeteiligung der Buchung (Tarif, Geschäftsregel oder Abweichung mit Grund) – führende Quelle bis zur Unterschrift
+      ...(tariffTerms?.deductibleCents != null ? { deductible: tariffTerms.deductibleCents / 100 } : {}),
       // Befehl 21: Entwurf ohne Abholort übernimmt die Anschrift des Vermieters (kein falscher Hinweis „Kein Abholort“)
       ...(contract.pickupLocation == null && defaultPickupLocation(booking.tenant) ? { pickupLocation: defaultPickupLocation(booking.tenant) } : {}),
       conditions: rules as unknown as Prisma.InputJsonValue,
@@ -678,6 +690,9 @@ export async function saveConditions(tenantId: string, contractId: string, input
       if (Math.round(input.kmIncludedPerDay) !== (booking.kmIncludedPerDay ?? 0) || differs(input.extraKmRate, booking.extraKmRate))
         throw new DomainError("Die Kilometervereinbarung dieser Tarifbuchung wird in der Buchung festgelegt (Tarifregel oder abweichend mit Grund). Bitte dort ändern.");
       if (input.rules?.kmPolicy && input.rules.kmPolicy !== booking.kmPolicy) throw new DomainError("Die Kilometerregel dieser Tarifbuchung wird in der Buchung festgelegt. Bitte dort ändern.");
+      // Befehl 29.5: Selbstbeteiligung der Tarifbuchung (ab 29.5) nur in der Buchung – Tarifwert oder abweichend mit Grund
+      if (booking.deductibleCents != null && Math.round(input.deductible * 100) !== booking.deductibleCents)
+        throw new DomainError("Die Selbstbeteiligung dieser Tarifbuchung wird in der Buchung festgelegt (Tarifwert oder abweichend mit Grund). Bitte dort ändern.");
       if (booking.agreedPriceCents != null && periodChanged) throw new DomainError("Für diese Buchung ist ein individueller Mietpreis vereinbart. Den Zeitraum bitte über „Zeitraum ändern“ anpassen – dort wird über den Preis bewusst entschieden.");
     }
     // Befehl 20.9: wurde die Kaution schon bei der Buchung als erhalten dokumentiert, ist der vereinbarte Betrag fest

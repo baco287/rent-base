@@ -6,7 +6,7 @@ import { Card, Chip, Content } from "@/components/ui";
 import { SettingsHeader } from "../../settings-ui";
 import { fmtDateTime } from "@/lib/format";
 import { fmtCents } from "@/lib/money";
-import { ratePlanEditorState } from "@/lib/tariff-admin";
+import { ratePlanEditorState, rulesDeductibleHint } from "@/lib/tariff-admin";
 import { tierLabel } from "@/lib/pricing";
 import { duplicateRatePlanAction, saveRatePlanAction, setRatePlanActiveAction } from "../actions";
 import { TariffEditor, type EditorInitial } from "../tariff-editor";
@@ -32,6 +32,7 @@ export default async function RatePlanPage({ params, searchParams }: PageProps<"
     sortOrder: String(plan.sortOrder),
     km: content ? kmOf(content.km) : { policy: "FREE_KILOMETERS", kmIncludedPerDay: "", extraKmRate: "" },
     deposit: euro(content?.depositCents ?? 0),
+    deductible: euro(content?.deductibleCents),
     groups: Object.fromEntries((content?.groups ?? []).map((g) => [g.groupId, { tiers: g.tiers.map((t) => ({ days: String(t.days), price: euro(t.cents), label: t.label ?? "" })), deposit: euro(g.depositCents), km: g.km ? kmOf(g.km) : null, isDefault: s.defaultGroupIds.includes(g.groupId) }])),
   };
   const fehler = typeof sp.fehler === "string" ? sp.fehler : null;
@@ -57,6 +58,7 @@ export default async function RatePlanPage({ params, searchParams }: PageProps<"
               expectedRevisionId={plan.currentRevisionId ?? ""}
               groups={s.groups.map((g) => ({ id: g.id, name: g.name, vehicles: g._count.vehicles, defaultElsewhere: g.defaultRatePlanId && g.defaultRatePlanId !== plan.id ? "anderer Tarif" : null }))}
               initial={initial}
+              rulesDeductibleText={rulesDeductibleHint(tenant.businessRules)}
             />
           </div>
           <div className="flex flex-col gap-4 min-w-0">

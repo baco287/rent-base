@@ -36,6 +36,8 @@ const kmSchema = z.object({ policy: z.enum(["FREE_KILOMETERS", "UNLIMITED"]), km
 const contentSchema = z.object({
   km: kmSchema,
   deposit: z.string().max(14),
+  // Befehl 29.5: leer = keine Tarifvorgabe (Geschäftsregel gilt); fehlt bei älteren geöffneten Editoren
+  deductible: z.string().max(14).default(""),
   groups: z.array(z.object({
     groupId: z.string().min(1).max(64),
     tiers: z.array(z.object({ days: z.string().max(5), price: z.string().max(14), label: z.string().max(40).default("") })).max(40),
@@ -64,6 +66,7 @@ function parseContent(fd: FormData): { content: TariffContent; defaults: string[
     content: {
       km: kmOf(c.km, "Kilometer"),
       depositCents: money(c.deposit, "Kaution"),
+      deductibleCents: c.deductible.trim() ? money(c.deductible, "Selbstbeteiligung im Schadenfall") : null,
       groups: c.groups.map((g) => ({
         groupId: g.groupId,
         tiers: g.tiers.filter((t) => t.days.trim() || t.price.trim()).map((t) => ({ days: int(t.days, "Dauer einer Preisstufe"), cents: money(t.price, "Preis einer Preisstufe"), label: t.label.trim() || null })),

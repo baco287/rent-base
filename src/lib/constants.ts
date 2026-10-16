@@ -482,6 +482,7 @@ export const AUDIT_ACTIONS = {
   BOOKING_PRICE_OVERRIDE_REMOVED: "Individueller Mietpreis aufgehoben (Tarifpreis gilt)",
   BOOKING_KM_OVERRIDDEN: "Individuelle Kilometervereinbarung",
   BOOKING_DEPOSIT_OVERRIDDEN: "Individuelle Kaution vereinbart",
+  BOOKING_DEDUCTIBLE_OVERRIDDEN: "Individuelle Selbstbeteiligung vereinbart/aufgehoben",
   VEHICLE_STATUS_CHANGED: "Fahrzeugstatus manuell geändert",
   VEHICLE_MILEAGE_CORRECTED: "Kilometerstand korrigiert",
   DAMAGE_REPORTED: "Schaden ohne Protokoll erfasst",

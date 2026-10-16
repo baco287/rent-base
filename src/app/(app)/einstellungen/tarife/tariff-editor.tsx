@@ -3,6 +3,7 @@
 // Befehl 29: Tarifeditor. Ein Tarif gilt für die angehakten Fahrzeuggruppen, jede mit eigenen Preisstufen (frei wählbare Dauern
 // in ganzen Tagen). Kilometer und Kaution gelten für alle Gruppen, optional abweichend je Gruppe. Gespeichert wird als neue
 // Revision; bestehende Buchungen und Verträge behalten ihren eingefrorenen Stand.
+// Befehl 29.5: Selbstbeteiligung im Schadenfall je Tarif (leer = Geschäftsregel), getrennt von der Kaution.
 
 import { useActionState, useMemo, useState } from "react";
 import { FormError } from "@/components/ui";
@@ -20,6 +21,8 @@ export type EditorInitial = {
   sortOrder: string;
   km: KmState;
   deposit: string;
+  /** Befehl 29.5: leer = keine Tarifvorgabe (Geschäftsregel gilt) */
+  deductible: string;
   groups: Record<string, { tiers: TierRow[]; deposit: string; km: KmState | null; isDefault: boolean }>;
 };
 
@@ -42,10 +45,11 @@ function KmFields({ value, onChange, idPrefix, canEdit }: { value: KmState; onCh
   );
 }
 
-export function TariffEditor({ action, groups, initial, mode, createKey, expectedRevisionId, canEdit }: { action: (prev: TariffFormState, fd: FormData) => Promise<TariffFormState>; groups: EditorGroup[]; initial: EditorInitial; mode: "create" | "edit"; createKey?: string; expectedRevisionId?: string; canEdit: boolean }) {
+export function TariffEditor({ action, groups, initial, mode, createKey, expectedRevisionId, canEdit, rulesDeductibleText }: { action: (prev: TariffFormState, fd: FormData) => Promise<TariffFormState>; groups: EditorGroup[]; initial: EditorInitial; mode: "create" | "edit"; createKey?: string; expectedRevisionId?: string; canEdit: boolean; /** Befehl 29.5: was ohne Tarifvorgabe gilt */ rulesDeductibleText: string }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   const [km, setKm] = useState<KmState>(initial.km);
   const [deposit, setDeposit] = useState(initial.deposit);
+  const [deductible, setDeductible] = useState(initial.deductible);
   const [gs, setGs] = useState<Record<string, GroupState>>(() =>
     Object.fromEntries(groups.map((g) => {
       const i = initial.groups[g.id];
@@ -57,9 +61,10 @@ export function TariffEditor({ action, groups, initial, mode, createKey, expecte
   const content = useMemo(() => JSON.stringify({
     km,
     deposit,
+    deductible,
     groups: groups.filter((g) => gs[g.id].assigned).map((g) => ({ groupId: g.id, tiers: gs[g.id].tiers, deposit: gs[g.id].deposit, km: gs[g.id].kmOn ? gs[g.id].km : null })),
     defaults: groups.filter((g) => gs[g.id].assigned && gs[g.id].isDefault).map((g) => g.id),
-  }), [km, deposit, gs, groups]);
+  }), [km, deposit, deductible, gs, groups]);
 
   return (
     <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-4">
@@ -83,6 +88,16 @@ export function TariffEditor({ action, groups, initial, mode, createKey, expecte
         <KmFields value={km} onChange={setKm} idPrefix="km" canEdit={canEdit} />
         <label className="flex flex-col gap-1 max-w-[200px]"><span className="label-xs">Kaution €</span><input inputMode="decimal" value={deposit} onChange={(e) => setDeposit(e.target.value)} disabled={!canEdit} className="input tnum" placeholder="0,00" /></label>
         <p className="text-xs text-ink-3">Vorschlag für neue Buchungen. In einer Buchung kann mit Grund abgewichen werden (auch 0 €).</p>
+      </section>
+
+      <section className="rounded-lg border border-line p-4 flex flex-col gap-3" aria-labelledby="tarif-sb">
+        <h2 id="tarif-sb" className="font-semibold">Versicherung &amp; Selbstbeteiligung</h2>
+        <label className="flex flex-col gap-1 max-w-[260px]" htmlFor="deductible">
+          <span className="label-xs">Selbstbeteiligung im Schadenfall €</span>
+          <input id="deductible" inputMode="decimal" value={deductible} onChange={(e) => setDeductible(e.target.value)} disabled={!canEdit} className="input tnum" placeholder="leer = Geschäftsregel" aria-describedby="tarif-sb-hint tarif-sb-note" />
+        </label>
+        <p id="tarif-sb-hint" className="text-xs text-ink-3">{rulesDeductibleText} 0,00 € bedeutet: ausdrücklich keine Selbstbeteiligung. In einer Buchung kann mit Grund abgewichen werden.</p>
+        <p id="tarif-sb-note" className="rounded-md bg-panel-2 px-3 py-2 text-xs text-ink-2">Die vereinbarte Selbstbeteiligung begrenzt bzw. bestimmt nicht automatisch eine Schadenforderung. Maßgeblich sind die vertraglichen Vereinbarungen und die Prüfung des konkreten Schadenfalls. Sie ist keine Kaution und keine Mietgebühr: Sie erzeugt keine Zahlung und ändert die Kaution nicht.</p>
       </section>
 
       <section className="rounded-lg border border-line p-4 flex flex-col gap-3" aria-label="Fahrzeuggruppen und Preisstufen">

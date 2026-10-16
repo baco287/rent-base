@@ -2137,6 +2137,67 @@ await setTenantFeature({ id: admin.id, name: admin.name }, ue.tenantId, "ACCIDEN
   await endSupportSession({ id: admin.id, name: admin.name }, iSupport.id);
 }
 
+// Befehl 29.5: Selbstbeteiligung im Miettarif – Tarifverwaltung, Vertragsschritt (gesperrt), Vertrag und Schadenakte (nur Information).
+// Eigener Mandant; Funktionen per dynamischem Import, damit der Kopf dieser Datei unverändert bleibt.
+{
+  const { bookingTariffFor } = await import("../src/lib/tariffs");
+  const get = async (c: string, p: string) => { const r = await fetch(`${base}${p}`, { headers: { cookie: c }, redirect: "manual" }); return { status: r.status, html: r.status === 200 ? await plain(r) : "" }; };
+  const sbContent = (groupId: string) => ({ km: { policy: "FREE_KILOMETERS" as const, kmIncludedPerDay: 200, extraKmRateCents: 25 }, depositCents: 20000, deductibleCents: 75000, groups: [{ groupId, tiers: [{ days: 1, cents: 5900 }, { days: 7, cents: 32900 }], depositCents: null, km: null }] });
+  const applyTariff = async (x: { tenantId: string; bookingId: string; actor: { id: string; name: string } }, ratePlanId: string, deductible?: { cents: number; reason: string }) => {
+    const b = await db.booking.findUniqueOrThrow({ where: { id: x.bookingId } });
+    await db.$transaction(async (tx) => {
+      const r = await bookingTariffFor(tx, x.tenantId, x.actor, { vehicleId: b.vehicleId, ratePlanId, startAt: b.startAt, endAt: b.endAt!, discountPercent: 0, choices: { price: { mode: "TARIFF" }, km: { mode: "TARIFF" }, deposit: { mode: "TARIFF" }, ...(deductible ? { deductible: { mode: "INDIVIDUAL" as const, ...deductible } } : {}) }, previous: null });
+      await tx.booking.update({ where: { id: x.bookingId }, data: r.data });
+    });
+  };
+  let sbPlan = "";
+  const sb = await returnedWorld("smoke-sb", {
+    beforeContract: async (x) => {
+      platformTenants.push(x.tenantId);
+      await db.customer.update({ where: { id: x.customerId }, data: { discountPercent: 0 } });
+      sbPlan = (await createRatePlan(x.tenantId, x.actor, { meta: { name: "PLUS", code: null, description: null, sortOrder: 0 }, content: sbContent(x.groupId), active: true, createKey: `smoke-sb-${Date.now()}` })).id;
+      await applyTariff(x, sbPlan, { cents: 50000, reason: "Smoke Firmenkunde" });
+    },
+  });
+  const sbSession = async (role: string) => {
+    const u = await db.user.create({ data: { tenantId: sb.tenantId, email: `sb-${role.toLowerCase()}-${Date.now()}@example.test`, name: `SB ${role}`, passwordHash: "x", role } });
+    const id = randomBytes(32).toString("base64url");
+    await db.session.create({ data: { id, userId: u.id, expiresAt: new Date(Date.now() + 3600_000) } });
+    return `rb_session=${id}`;
+  };
+  const sbOwner = await sbSession("OWNER");
+  const sbYard = await sbSession("YARD");
+  const tList = await get(sbOwner, "/einstellungen/tarife");
+  report(tList.status === 200 && tList.html.includes("Selbstbeteiligung 750,00"), `${tList.status} Miettarife: Selbstbeteiligung je Tarif in der Übersicht`);
+  const tEdit = await get(sbOwner, `/einstellungen/tarife/${sbPlan}`);
+  report(tEdit.status === 200 && tEdit.html.includes("Versicherung &amp; Selbstbeteiligung") && tEdit.html.includes("Selbstbeteiligung im Schadenfall") && tEdit.html.includes('value="750,00"') && tEdit.html.includes("bestimmt nicht automatisch eine Schadenforderung"), `${tEdit.status} Tarif bearbeiten: Bereich „Versicherung & Selbstbeteiligung“ mit Wert und Hinweis`);
+  const tNew = await get(sbOwner, "/einstellungen/tarife/neu");
+  report(tNew.status === 200 && tNew.html.includes("Selbstbeteiligung im Schadenfall") && tNew.html.includes("Leer lassen"), `${tNew.status} Tarif anlegen: Selbstbeteiligung optional (leer = Geschäftsregel)`);
+  const tYard = await get(sbYard, `/einstellungen/tarife/${sbPlan}`);
+  report(tYard.status === 200 && tYard.html.includes("Selbstbeteiligung im Schadenfall") && !tYard.html.includes("Änderungen speichern"), `${tYard.status} Hof: Tarif lesbar, nicht änderbar`);
+  // unterschriebener Vertrag: vereinbarter Wert, ohne internen Grund
+  const sbContract = await get(sbOwner, `/buchungen/${sb.bookingId}/vertrag`);
+  report(sbContract.status === 200 && sbContract.html.includes("Vereinbarte Selbstbeteiligung im Schadenfall") && sbContract.html.includes("500,00") && !sbContract.html.includes("Smoke Firmenkunde"), `${sbContract.status} Vertrag: „Vereinbarte Selbstbeteiligung im Schadenfall“, kein interner Grund`);
+  // Schadenakte: vereinbarte Selbstbeteiligung mit Herkunft, keine Forderung
+  const sbDamage = await db.damage.findFirstOrThrow({ where: { tenantId: sb.tenantId, discoveredInHandoverId: sb.returnId } });
+  const { damageCase: sbCase } = await openDamageCase(sb.tenantId, sbDamage.id, sb.actor);
+  const sbCaseOwner = await get(sbOwner, `/schaeden/${sbCase.id}`);
+  report(sbCaseOwner.status === 200 && sbCaseOwner.html.includes("Vereinbarte Selbstbeteiligung") && sbCaseOwner.html.includes("500,00") && sbCaseOwner.html.includes("Tarif PLUS, Revision 1") && sbCaseOwner.html.includes("erzeugt keine Forderung"), `${sbCaseOwner.status} Schadenakte: vereinbarte Selbstbeteiligung mit Herkunft, nur zur Information`);
+  const sbCaseYard = await get(sbYard, `/schaeden/${sbCase.id}`);
+  report(sbCaseYard.status === 200 && sbCaseYard.html.includes("Vereinbarte Selbstbeteiligung"), `${sbCaseYard.status} Hof: Selbstbeteiligung in der Schadenakte sichtbar`);
+  // Vertragsentwurf einer Tarifbuchung: Feld gesperrt, Änderung nur in der Buchung
+  const sbDraftWorld = await createWorld("smoke-sb-draft2");
+  platformTenants.push(sbDraftWorld.tenantId);
+  const sbPlan2 = (await createRatePlan(sbDraftWorld.tenantId, sbDraftWorld.actor, { meta: { name: "BASIC", code: null, description: null, sortOrder: 0 }, content: sbContent(sbDraftWorld.groupId), active: true, createKey: `smoke-sb2-${Date.now()}` })).id;
+  await applyTariff(sbDraftWorld, sbPlan2);
+  await ensureContractDraft(sbDraftWorld.tenantId, sbDraftWorld.bookingId, sbDraftWorld.actor);
+  await db.user.update({ where: { id: sbDraftWorld.userId }, data: { role: "OWNER" } });
+  const sbDraftSession = randomBytes(32).toString("base64url");
+  await db.session.create({ data: { id: sbDraftSession, userId: sbDraftWorld.userId, expiresAt: new Date(Date.now() + 3600_000) } });
+  const sbStep4 = await get(`rb_session=${sbDraftSession}`, `/buchungen/${sbDraftWorld.bookingId}/vertrag?schritt=4`);
+  report(sbStep4.status === 200 && /id="deductible"[^>]*readOnly|readOnly[^>]*id="deductible"/i.test(sbStep4.html) && sbStep4.html.includes("Änderung in der Buchung mit Grund") && /id="deductible"[^>]*value="750"/.test(sbStep4.html), `${sbStep4.status} Vertragsschritt Konditionen: Selbstbeteiligung der Tarifbuchung gesperrt (laut Buchung)`);
+}
+
 const health = await fetch(`${base}/api/health`);
 const healthJson = await health.json().catch(() => ({}));
 report(health.status === 200 && healthJson.status === "ok" && healthJson.db === "ok", `${health.status} Healthcheck`);
