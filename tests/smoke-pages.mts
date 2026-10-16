@@ -2196,6 +2196,29 @@ await setTenantFeature({ id: admin.id, name: admin.name }, ue.tenantId, "ACCIDEN
   await db.session.create({ data: { id: sbDraftSession, userId: sbDraftWorld.userId, expiresAt: new Date(Date.now() + 3600_000) } });
   const sbStep4 = await get(`rb_session=${sbDraftSession}`, `/buchungen/${sbDraftWorld.bookingId}/vertrag?schritt=4`);
   report(sbStep4.status === 200 && /id="deductible"[^>]*readOnly|readOnly[^>]*id="deductible"/i.test(sbStep4.html) && sbStep4.html.includes("Änderung in der Buchung mit Grund") && /id="deductible"[^>]*value="750"/.test(sbStep4.html), `${sbStep4.status} Vertragsschritt Konditionen: Selbstbeteiligung der Tarifbuchung gesperrt (laut Buchung)`);
+  // Buchungsanlage über die Server-Aktion: Abweichung nur mit Grund, nie negativ; gespeichert getrennt von Kaution und Preis
+  const sbDraftOwner = `rb_session=${sbDraftSession}`;
+  // minutengenau wie das Formularfeld (sonst fände die Abfrage die angelegte Buchung nicht)
+  const sbStart = new Date(Math.floor((Date.now() + 40 * 86400_000) / 60_000) * 60_000);
+  const sbForm = { customerMode: "existing", customerId: sbDraftWorld.customerId, vehicleId: sbDraftWorld.vehicleId, startAt: toDateTimeInput(sbStart), endAt: toDateTimeInput(new Date(sbStart.getTime() + 2 * 86400_000)), payIntent: "NONE", ratePlanId: sbPlan2, priceMode: "TARIFF", kmMode: "TARIFF", depositMode: "TARIFF" };
+  const sbCount = (at: Date) => db.booking.count({ where: { tenantId: sbDraftWorld.tenantId, startAt: at } });
+  const sbNoReason = actionState((await callAction("/buchungen/neu", stdCreateId, sbDraftOwner, { form: { ...sbForm, deductibleMode: "INDIVIDUAL", deductibleOverride: "500,00", deductibleReason: "" } })).text);
+  report(!!sbNoReason?.error && /Grund für die abweichende Selbstbeteiligung/.test(sbNoReason.error) && (await sbCount(sbStart)) === 0, "Buchungsanlage: abweichende Selbstbeteiligung ohne Grund abgelehnt, nichts angelegt");
+  const sbNegative = actionState((await callAction("/buchungen/neu", stdCreateId, sbDraftOwner, { form: { ...sbForm, deductibleMode: "INDIVIDUAL", deductibleOverride: "-5", deductibleReason: "Smoke Grund" } })).text);
+  report(!!sbNegative?.error && /Selbstbeteiligung/.test(sbNegative.error) && !TECH.test(sbNegative.error) && (await sbCount(sbStart)) === 0, "Buchungsanlage: negative Selbstbeteiligung verständlich abgelehnt");
+  const sbCreate = await callAction("/buchungen/neu", stdCreateId, sbDraftOwner, { form: { ...sbForm, deductibleMode: "INDIVIDUAL", deductibleOverride: "500,00", deductibleReason: "Smoke Rahmenvertrag" } });
+  const sbBooking = await db.booking.findFirst({ where: { tenantId: sbDraftWorld.tenantId, startAt: sbStart } });
+  report(sbBooking?.deductibleCents === 50000 && sbBooking.deductibleOverrideReason === "Smoke Rahmenvertrag" && Number(sbBooking.deposit) === 200 && sbBooking.agreedPriceCents === null && sbCreate.redirectTo.includes(`/buchungen/${sbBooking.id}`), `${sbCreate.status} Buchungsanlage: abweichende Selbstbeteiligung mit Grund gespeichert, Kaution und Mietpreis unverändert`);
+  const sbPage = await get(sbDraftOwner, `/buchungen/${sbBooking?.id}`);
+  report(sbPage.status === 200 && sbPage.html.includes("Selbstbeteiligung im Schadenfall (keine Zahlung)") && sbPage.html.includes("500,00"), `${sbPage.status} Buchung: Selbstbeteiligung in der Preisübersicht, ausdrücklich keine Zahlung`);
+  const sbYardUser = await db.user.create({ data: { tenantId: sbDraftWorld.tenantId, email: `sb-yard2-${Date.now()}@example.test`, name: "SB Hof", passwordHash: "x", role: "YARD" } });
+  const sbYardSession = randomBytes(32).toString("base64url");
+  await db.session.create({ data: { id: sbYardSession, userId: sbYardUser.id, expiresAt: new Date(Date.now() + 3600_000) } });
+  const sbPageYard = await get(`rb_session=${sbYardSession}`, `/buchungen/${sbBooking?.id}`);
+  report(sbPageYard.status === 200 && sbPageYard.html.includes("Selbstbeteiligung im Schadenfall (keine Zahlung)") && sbPageYard.html.includes("500,00"), `${sbPageYard.status} Hof: Selbstbeteiligung der Buchung sichtbar`);
+  const sbYardStart = new Date(sbStart.getTime() + 10 * 86400_000);
+  await callAction("/buchungen/neu", stdCreateId, `rb_session=${sbYardSession}`, { form: { ...sbForm, startAt: toDateTimeInput(sbYardStart), endAt: toDateTimeInput(new Date(sbYardStart.getTime() + 2 * 86400_000)), deductibleMode: "INDIVIDUAL", deductibleOverride: "0", deductibleReason: "Hof-Versuch" } });
+  report((await sbCount(sbYardStart)) === 0, "Hof: Buchungsanlage mit abweichender Selbstbeteiligung serverseitig verweigert");
 }
 
 const health = await fetch(`${base}/api/health`);

@@ -432,6 +432,9 @@ export type TariffOffer = {
   includedKm: number | null;
   extraKmRateCents: number | null;
   depositCents: number;
+  /** Befehl 29.5: Selbstbeteiligung laut Tarif bzw. Geschäftsregel (RULES); null = bestimmt der Mietvertrag (ältere Buchung) */
+  deductibleCents: number | null;
+  deductibleSource: "TARIFF" | "RULES" | null;
   isDefault: boolean;
   priceSource: string;
 };
@@ -442,7 +445,7 @@ export type TariffQuoteResult = {
   discountPercent: number;
   problem: string | null;
   /** bestehende Tarifbuchung: eingefrorener Tarif für den Zeitraum der Buchung */
-  current: (Omit<TariffOffer, "isDefault" | "priceSource"> & { stale: boolean; agreedCents: number | null; agreedReason: string | null; kmAgreed: string | null; kmReason: string | null; depositAgreedCents: number | null; depositReason: string | null }) | null;
+  current: (Omit<TariffOffer, "isDefault" | "priceSource"> & { stale: boolean; agreedCents: number | null; agreedReason: string | null; kmAgreed: string | null; kmReason: string | null; depositAgreedCents: number | null; depositReason: string | null; deductibleAgreedCents: number | null; deductibleReason: string | null }) | null;
 };
 
 /** Preisvorschau aller aktiven Tarife eines Fahrzeugs für einen Zeitraum (OWNER/DISPO). Nichts wird gespeichert. */
@@ -464,7 +467,7 @@ export async function quoteTariffsAction(input: { vehicleId: string; startAt: st
   }
   const offers: TariffOffer[] = vt.bases.map((b) => {
     const q = quoteTariff(b, startAt, endAt, discountPercent);
-    return { ratePlanId: b.ratePlanId, revisionId: b.revisionId, revision: b.revision, name: b.ratePlanName, code: b.ratePlanCode, regularCents: q.regularCents, priceText: describePrice(q.breakdown), days: q.days, kmPolicy: b.km.policy, kmText: kmRuleText(b.km), includedKm: q.includedKm, extraKmRateCents: b.km.extraKmRateCents, depositCents: b.depositCents, isDefault: b.ratePlanId === vt.defaultRatePlanId, priceSource: priceSourceText(b) };
+    return { ratePlanId: b.ratePlanId, revisionId: b.revisionId, revision: b.revision, name: b.ratePlanName, code: b.ratePlanCode, regularCents: q.regularCents, priceText: describePrice(q.breakdown), days: q.days, kmPolicy: b.km.policy, kmText: kmRuleText(b.km), includedKm: q.includedKm, extraKmRateCents: b.km.extraKmRateCents, depositCents: b.depositCents, deductibleCents: b.deductible?.cents ?? null, deductibleSource: b.deductible?.source ?? null, isDefault: b.ratePlanId === vt.defaultRatePlanId, priceSource: priceSourceText(b) };
   });
   let current: TariffQuoteResult["current"] = null;
   if (input.bookingId) {
@@ -475,11 +478,12 @@ export async function quoteTariffsAction(input: { vehicleId: string; startAt: st
       const live = vt.bases.find((b) => b.ratePlanId === snap.ratePlanId);
       current = {
         ratePlanId: snap.ratePlanId, revisionId: snap.revisionId, revision: snap.revision, name: snap.ratePlanName, code: snap.ratePlanCode, regularCents: q.regularCents, priceText: describePrice(q.breakdown), days: q.days,
-        kmPolicy: snap.km.policy, kmText: kmRuleText(snap.km), includedKm: snap.km.policy === "UNLIMITED" ? null : q.days * (snap.km.kmIncludedPerDay ?? 0), extraKmRateCents: snap.km.extraKmRateCents, depositCents: snap.deposit.cents,
+        kmPolicy: snap.km.policy, kmText: kmRuleText(snap.km), includedKm: snap.km.policy === "UNLIMITED" ? null : q.days * (snap.km.kmIncludedPerDay ?? 0), extraKmRateCents: snap.km.extraKmRateCents, depositCents: snap.deposit.cents, deductibleCents: snap.deductible?.cents ?? null, deductibleSource: snap.deductible?.source ?? null,
         stale: !live || live.revisionId !== snap.revisionId || JSON.stringify(live.tiers) !== JSON.stringify(snap.tiers),
         agreedCents: snap.agreed.price?.cents ?? null, agreedReason: snap.agreed.price?.reason ?? null,
         kmAgreed: snap.agreed.km ? kmRuleText(snap.agreed.km) : null, kmReason: snap.agreed.km?.reason ?? null,
         depositAgreedCents: snap.agreed.deposit?.cents ?? null, depositReason: snap.agreed.deposit?.reason ?? null,
+        deductibleAgreedCents: snap.agreed.deductible?.cents ?? null, deductibleReason: snap.agreed.deductible?.reason ?? null,
       };
     }
   }

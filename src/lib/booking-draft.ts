@@ -31,6 +31,8 @@ export type DraftTariff = {
   price: { on: boolean; text: string; reason: string };
   km: { on: boolean; policy: "FREE_KILOMETERS" | "UNLIMITED"; perDay: string; rate: string; reason: string };
   deposit: { on: boolean; text: string; reason: string };
+  /** Befehl 29.5: abweichende Selbstbeteiligung; fehlt bei Entwürfen von vorher */
+  deductible?: { on: boolean; text: string; reason: string };
 };
 export type DraftPayment = {
   intent: RentalPaymentIntent;
@@ -84,6 +86,7 @@ export function sanitizeDraftData(raw: unknown): BookingDraftData {
   const tp = obj(t.price);
   const tk = obj(t.km);
   const td = obj(t.deposit);
+  const tdd = t.deductible !== undefined ? obj(t.deductible) : null;
   const p = obj(r.pay);
   const d = obj(r.dep);
   const intent: RentalPaymentIntent = typeof p.intent === "string" && Object.hasOwn(RENTAL_PAYMENT_INTENTS, p.intent) ? (p.intent as RentalPaymentIntent) : "NONE";
@@ -101,6 +104,8 @@ export function sanitizeDraftData(raw: unknown): BookingDraftData {
       price: { on: bool(tp.on), text: pattern(tp.text, AMOUNT_RE), reason: text(tp.reason, 300) },
       km: { on: bool(tk.on), policy: tk.policy === "UNLIMITED" ? "UNLIMITED" : "FREE_KILOMETERS", perDay: pattern(tk.perDay, AMOUNT_RE), rate: pattern(tk.rate, AMOUNT_RE), reason: text(tk.reason, 300) },
       deposit: { on: bool(td.on), text: pattern(td.text, AMOUNT_RE), reason: text(td.reason, 300) },
+      // Befehl 29.5: nur übernehmen, wenn der Entwurf das Feld kennt (ältere Entwürfe bleiben unverändert)
+      ...(tdd ? { deductible: { on: bool(tdd.on), text: pattern(tdd.text, AMOUNT_RE), reason: text(tdd.reason, 300) } } : {}),
     },
     pay: {
       intent,

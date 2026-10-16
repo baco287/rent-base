@@ -46,7 +46,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const { id } = await params;
   const sp = await searchParams;
 
-  const b = await db.booking.findFirst({ where: { id, tenantId: tenant.id }, include: { vehicle: true, customer: true, contract: { select: { number: true, status: true } }, handovers: { where: { correctsId: null }, select: { id: true, type: true, number: true, status: true } } } });
+  const b = await db.booking.findFirst({ where: { id, tenantId: tenant.id }, include: { vehicle: true, customer: true, contract: { select: { number: true, status: true, deductible: true } }, handovers: { where: { correctsId: null }, select: { id: true, type: true, number: true, status: true } } } });
   if (!b) notFound();
 
   // Mit unterschriebenem Vertrag sind Zeitraum, Fahrzeug und Preis festgeschrieben
@@ -78,6 +78,9 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const contractSigned = b.contract?.status === "SIGNED";
   // Befehl 25: wirksamer Vertragsstand (Vertrag + unterschriebene Nachträge) – zentral abgeleitet, hier nur angezeigt
   const effective = contractSigned ? await effectiveStateForBooking(tenant.id, b.id) : null;
+  // Befehl 29.5: vereinbarte Selbstbeteiligung (nur Anzeige, nie Teil des Mietpreises): unterschriebener Vertrag, sonst Buchung;
+  // bei Buchungen vor 29.5 legt sie erst der Mietvertrag fest
+  const deductibleText = contractSigned ? `${fmtEur(b.contract!.deductible)} (laut Mietvertrag)` : b.deductibleCents != null ? `${fmtCents(b.deductibleCents)} (${b.deductibleOverrideReason ? "individuell vereinbart" : tariffSnap?.deductible?.source === "RULES" ? "Geschäftsregel" : "laut Tarif"})` : accident ? null : "wird im Mietvertrag festgelegt";
   const pickupDraft = b.handovers.find((h) => h.type === "PICKUP" && h.status === "DRAFT");
   const pickupDone = b.handovers.find((h) => h.type === "PICKUP" && h.status === "FINALIZED");
   const returnDraft = b.handovers.find((h) => h.type === "RETURN" && h.status === "DRAFT");
@@ -302,6 +305,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                 <dt className="label-xs self-center">Abholung</dt><dd className="font-mono tnum">{fmtDateTime(b.startAt)}</dd>
                 <dt className="label-xs self-center">Rückgabe</dt><dd className="font-mono tnum">{b.endAt ? fmtDateTime(b.endAt) : accident ? "offen (bis zur Rückgabe)" : "–"}{effective?.changedBy.endAt && <span className="block text-[11px] text-ink-3 font-sans">geändert durch {effective.changedBy.endAt}</span>}</dd>
                 <dt className="label-xs self-center">Kilometer</dt><dd className="font-mono tnum">{effective ? <>{effective.kmIncludedPerDay.toLocaleString("de-DE")} km/Tag frei · {fmtEur(effective.extraKmRate)} je Mehrkilometer (laut Vertrag{effective.changedBy.km ? `, geändert durch ${effective.changedBy.km}` : ""})</> : <>{(b.kmIncludedPerDay ?? b.vehicle.kmIncludedPerDay).toLocaleString("de-DE")} km/Tag frei · {fmtEur(Number(b.extraKmRate ?? b.vehicle.extraKmRate))} je Mehrkilometer</>}</dd>
+                {deductibleText && <><dt className="label-xs self-center">Selbstbeteiligung</dt><dd><span className="font-mono tnum">{deductibleText}</span> <span className="text-xs text-ink-3">im Schadenfall, keine Zahlung</span></dd></>}
                 <dt className="label-xs self-center">Notizen</dt><dd>{b.notes || "–"}</dd>
               </dl>
             )}
@@ -354,6 +358,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                   ))}
                   <div className="flex justify-between py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>Gesamtmietpreis</span><span className="font-mono tnum">{fmtEur(effective.totalCents / 100)}</span></div>
                   <div className="flex justify-between py-1.5 text-ink-3"><span>zzgl. vereinbarte Kaution</span><span className="font-mono tnum">{fmtEur(effective.depositCents / 100)}</span></div>
+                  {deductibleText && <div className="flex justify-between gap-3 py-1.5 text-ink-3"><span>Selbstbeteiligung im Schadenfall (keine Zahlung)</span><span className="font-mono tnum text-right">{fmtEur(b.contract!.deductible)}</span></div>}
                   <p className="text-xs text-ink-3 mt-2">Mehrkilometer, Tank und weitere Positionen werden bei der Rückgabe geprüft und erscheinen dann als Zusatzkosten.</p>
                 </div>
               ) : (
@@ -368,6 +373,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                 {quote.agreedCents != null && <div className="flex justify-between py-1.5 border-b border-line-soft"><span>Regulärer Tarifpreis</span><span className="font-mono tnum">{fmtCents(quote.regularCents)}</span></div>}
                 <div className="flex justify-between py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>{quote.agreedCents != null ? "Vereinbarter Mietpreis" : "Voraussichtlich"}</span><span className="font-mono tnum">{fmtCents(quote.totalCents)}</span></div>
                 <div className="flex justify-between py-1.5 text-ink-3"><span>zzgl. Kaution</span><span className="font-mono tnum">{fmtEur(b.deposit)}</span></div>
+                {b.deductibleCents != null && <div className="flex justify-between gap-3 py-1.5 text-ink-3"><span>Selbstbeteiligung im Schadenfall (keine Zahlung)</span><span className="font-mono tnum text-right">{fmtCents(b.deductibleCents)}</span></div>}
                 <p className="text-xs text-ink-3 mt-2">Mehrkilometer, Tank und weitere Positionen werden bei der Rückgabe geprüft und erscheinen dann als Zusatzkosten.</p>
               </div>
               )}

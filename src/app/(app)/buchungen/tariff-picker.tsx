@@ -23,7 +23,8 @@ function cents(input: string): number | null {
 }
 const euroText = (c: number | null | undefined) => (c == null ? "" : (c / 100).toFixed(2).replace(".", ","));
 
-type Card = { value: string; title: string; badge?: string; price: number; priceText: string; kmText: string; includedKm: number | null; depositCents: number; note?: string; source?: string };
+/** deductibleCents (Befehl 29.5): Selbstbeteiligung laut Tarif (bzw. Geschäftsregel); null = bestimmt der Mietvertrag (ältere Buchung) */
+type Card = { value: string; title: string; badge?: string; price: number; priceText: string; kmText: string; includedKm: number | null; depositCents: number; deductibleCents: number | null; deductibleFromRules?: boolean; note?: string; source?: string };
 
 export function TariffPicker({
   quote,
@@ -73,6 +74,10 @@ export function TariffPicker({
   const [depOn, setDepOn] = useState(restore ? restore.deposit.on : initial?.deposit.mode === "INDIVIDUAL");
   const [dep, setDep] = useState(restore ? restore.deposit.text : initial?.deposit.mode === "INDIVIDUAL" ? euroText(initial.deposit.cents) : "");
   const [depReason, setDepReason] = useState(restore ? restore.deposit.reason : initial?.deposit.mode === "INDIVIDUAL" ? initial.deposit.reason : "");
+  // Befehl 29.5: abweichende Selbstbeteiligung (Startwert aus Entwurf bzw. bestehender Vereinbarung der Buchung)
+  const [dedOn, setDedOn] = useState(restore?.deductible ? restore.deductible.on : initial?.deductible?.mode === "INDIVIDUAL");
+  const [ded, setDed] = useState(restore?.deductible ? restore.deductible.text : initial?.deductible?.mode === "INDIVIDUAL" ? euroText(initial.deductible.cents) : "");
+  const [dedReason, setDedReason] = useState(restore?.deductible ? restore.deductible.reason : initial?.deductible?.mode === "INDIVIDUAL" ? initial.deductible.reason : "");
   const [priceConfirm, setPriceConfirm] = useState<"" | "KEEP" | "TARIFF">("");
 
   const sameVehicle = !!bookingId && vehicleId === bookingVehicleId;
@@ -94,9 +99,9 @@ export function TariffPicker({
   const cards: Card[] = [];
   if (result) {
     if (result.current && sameVehicle)
-      cards.push({ value: "KEEP", title: result.current.name, badge: "Tarif dieser Buchung", price: result.current.regularCents, priceText: result.current.priceText, kmText: result.current.kmText, includedKm: result.current.includedKm, depositCents: result.current.depositCents, note: result.current.stale ? `Eingefrorener Stand (Revision ${result.current.revision}); der Tarif wurde inzwischen geändert.` : `Eingefrorener Stand (Revision ${result.current.revision}).` });
-    if (legacy && sameVehicle) cards.push({ value: "LEGACY", title: "Bisherige Preisvereinbarung", badge: "ohne Tarif", price: legacy.totalCents, priceText: legacy.text, kmText: "laut Buchung", includedKm: null, depositCents: legacy.depositCents, note: "Buchung vor Einführung der Miettarife – Preise bleiben unverändert." });
-    for (const o of result.offers) cards.push({ value: o.ratePlanId, title: o.name, badge: o.isDefault ? "Standard" : undefined, price: o.regularCents, priceText: o.priceText, kmText: o.kmText, includedKm: o.includedKm, depositCents: o.depositCents, source: o.priceSource });
+      cards.push({ value: "KEEP", title: result.current.name, badge: "Tarif dieser Buchung", price: result.current.regularCents, priceText: result.current.priceText, kmText: result.current.kmText, includedKm: result.current.includedKm, depositCents: result.current.depositCents, deductibleCents: result.current.deductibleCents, deductibleFromRules: result.current.deductibleSource === "RULES", note: result.current.stale ? `Eingefrorener Stand (Revision ${result.current.revision}); der Tarif wurde inzwischen geändert.` : `Eingefrorener Stand (Revision ${result.current.revision}).` });
+    if (legacy && sameVehicle) cards.push({ value: "LEGACY", title: "Bisherige Preisvereinbarung", badge: "ohne Tarif", price: legacy.totalCents, priceText: legacy.text, kmText: "laut Buchung", includedKm: null, depositCents: legacy.depositCents, deductibleCents: null, note: "Buchung vor Einführung der Miettarife – Preise bleiben unverändert." });
+    for (const o of result.offers) cards.push({ value: o.ratePlanId, title: o.name, badge: o.isDefault ? "Standard" : undefined, price: o.regularCents, priceText: o.priceText, kmText: o.kmText, includedKm: o.includedKm, depositCents: o.depositCents, deductibleCents: o.deductibleCents, deductibleFromRules: o.deductibleSource === "RULES", source: o.priceSource });
   }
   // gültige Auswahl: eigene Wahl, sonst eingefrorener Tarif der Buchung, sonst Standard (bzw. einziger Tarif)
   const selected = cards.some((c) => c.value === picked) ? picked : cards.find((c) => c.value === "KEEP" || c.value === "LEGACY")?.value ?? result?.defaultRatePlanId ?? "";
@@ -109,6 +114,8 @@ export function TariffPicker({
   const total = selected === "LEGACY" ? legacy?.totalCents ?? 0 : agreed ?? regular;
   const tariffDeposit = card && card.depositCents >= 0 ? card.depositCents : 0;
   const deposit = depOn ? cents(dep) ?? 0 : tariffDeposit;
+  // Befehl 29.5: Selbstbeteiligung nur zur Anzeige – nie Teil des Mietpreises, keine Zahlung (geht nicht in onTotals ein)
+  const deductibleShown = selected === "LEGACY" ? null : dedOn ? cents(ded) : card?.deductibleCents ?? null;
   const changedAway = prevAgreed && selected !== "KEEP" && selected !== "";
   const ready = !!card && (!priceOn || agreed != null) && (!changedAway || !priceOn || priceConfirm === "KEEP");
 
@@ -126,8 +133,9 @@ export function TariffPicker({
       price: { on: priceOn, text: price, reason: priceReason },
       km: { on: kmOn, policy: kmPolicy, perDay: kmPerDay, rate: kmRate, reason: kmReason },
       deposit: { on: depOn, text: dep, reason: depReason },
+      deductible: { on: dedOn, text: ded, reason: dedReason },
     });
-  }, [onDraftState, draftRatePlanId, draftRegularCents, priceOn, price, priceReason, kmOn, kmPolicy, kmPerDay, kmRate, kmReason, depOn, dep, depReason]);
+  }, [onDraftState, draftRatePlanId, draftRegularCents, priceOn, price, priceReason, kmOn, kmPolicy, kmPerDay, kmRate, kmReason, depOn, dep, depReason, dedOn, ded, dedReason]);
   // Hinweise beim Fortsetzen eines Entwurfs: Tarif nicht mehr angeboten bzw. regulärer Preis seit dem Speichern geändert
   const restoredGone = !!restore?.ratePlanId && !!result && !cards.some((c) => c.value === restore.ratePlanId);
   const restoredPriceChanged = !!restore && restore.regularCents != null && !!offer && offer.ratePlanId === restore.ratePlanId && offer.regularCents !== restore.regularCents;
@@ -162,6 +170,7 @@ export function TariffPicker({
               <span className="text-xs text-ink-3">{c.priceText}</span>
               <span className="text-xs">{c.kmText}{c.includedKm != null ? ` · ${c.includedKm.toLocaleString("de-DE")} km inklusive` : ""}</span>
               {c.depositCents >= 0 && <span className="text-xs">Kaution {fmtCents(c.depositCents)}</span>}
+              {c.value !== "LEGACY" && <span className="text-xs">Selbstbeteiligung {c.deductibleCents != null ? `${fmtCents(c.deductibleCents)}${c.deductibleFromRules ? " (Geschäftsregel)" : ""}` : "laut Mietvertrag"}</span>}
               {c.source && c.source !== "Preis aus Fahrzeuggruppe" && <span className="text-[11px] text-info">{c.source}</span>}
               {c.note && <span className="text-[11px] text-ink-3">{c.note}</span>}
             </label>
@@ -174,6 +183,15 @@ export function TariffPicker({
           <div className="rounded-md bg-panel-2 p-2.5"><div className="label-xs">Regulärer Tarifpreis</div><div className="font-mono font-semibold">{fmtCents(regular)}</div></div>
           <div className="rounded-md bg-panel-2 p-2.5"><div className="label-xs">Vereinbarter Mietpreis</div><div className="font-mono font-semibold">{fmtCents(total)}</div></div>
           <div className="rounded-md bg-panel-2 p-2.5"><div className="label-xs">Abweichung</div><div className={`font-mono font-semibold ${diff !== 0 ? "text-info" : ""}`}>{agreed == null ? "–" : `${diff >= 0 ? "+" : "−"}${fmtCents(Math.abs(diff))}${pct ? ` (${pct})` : ""}`}</div></div>
+        </div>
+      )}
+      {card && selected !== "LEGACY" && (
+        <div className="rounded-md border border-line-soft px-3 py-2 flex flex-col gap-1 text-sm">
+          <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1" aria-label="Vereinbarte Werte außerhalb des Mietpreises">
+            <dt className="text-ink-2">Kaution</dt><dd className="font-mono tnum text-right">{fmtCents(deposit)}</dd>
+            <dt className="text-ink-2">Selbstbeteiligung im Schadenfall</dt><dd className="font-mono tnum text-right">{deductibleShown != null ? fmtCents(deductibleShown) : "laut Mietvertrag"}</dd>
+          </dl>
+          <p className="text-xs text-ink-3">Beides ist kein Teil des Mietpreises. Die Selbstbeteiligung ist ein Vertragswert für den Schadenfall – sie wird nicht berechnet und erzeugt keine Zahlung.</p>
         </div>
       )}
 
@@ -225,6 +243,18 @@ export function TariffPicker({
               <div className="grid grid-cols-1 sm:grid-cols-[180px_1fr] gap-3 pl-6">
                 <label className="flex flex-col gap-1"><span className="label-xs">Vereinbarte Kaution €</span><input name="depositOverride" inputMode="decimal" value={dep} onChange={(e) => setDep(e.target.value)} placeholder="0,00" required className="input tnum" /></label>
                 <label className="flex flex-col gap-1"><span className="label-xs">Grund (Pflicht)</span><input name="depositReason" value={depReason} onChange={(e) => setDepReason(e.target.value)} minLength={3} maxLength={300} required className="input" placeholder="z. B. Sondervereinbarung" /></label>
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={dedOn} onChange={(e) => setDedOn(e.target.checked)} /> Abweichende Selbstbeteiligung</label>
+            <input type="hidden" name="deductibleMode" value={dedOn ? "INDIVIDUAL" : "TARIFF"} />
+            {dedOn && (
+              <div className="grid grid-cols-1 sm:grid-cols-[180px_1fr] gap-3 pl-6">
+                <label className="flex flex-col gap-1"><span className="label-xs">Vereinbarte Selbstbeteiligung €</span><input name="deductibleOverride" inputMode="decimal" value={ded} onChange={(e) => setDed(e.target.value)} placeholder="0,00" required className="input tnum" /></label>
+                <label className="flex flex-col gap-1"><span className="label-xs">Grund für abweichende Selbstbeteiligung (Pflicht)</span><input name="deductibleReason" value={dedReason} onChange={(e) => setDedReason(e.target.value)} minLength={3} maxLength={300} required className="input" placeholder="z. B. Individuelle Vereinbarung mit Firmenkunde" /></label>
+                <p className="text-xs text-ink-3 sm:col-span-2">Gilt nur für diese Buchung und wird im Mietvertrag festgeschrieben; der Tarif bleibt unverändert. 0,00 € ist zulässig.</p>
               </div>
             )}
           </div>

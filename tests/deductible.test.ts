@@ -463,3 +463,26 @@ test("25 bestehende Abläufe: Zeitraumänderung und Speichern ohne Feld behalten
   const c = await ensureContractDraft(w.tenantId, w.bookingId, w.actor);
   assert.equal(Number(c.deductible), 500);
 });
+
+test("Buchungsmaske: Feld „Abweichende Selbstbeteiligung“ (Tarifwert ausdrücklich, Abweichung, Aufheben) und Zwischenspeichern im Entwurf", async () => {
+  const fd = (v: Record<string, string>) => { const f = new FormData(); for (const [k, x] of Object.entries(v)) f.set(k, x); return f; };
+  // die Maske schickt immer eine ausdrückliche Wahl: Tarifwert oder Abweichung mit Grund
+  const asTariff = tariffChoicesFromForm(fd({ deductibleMode: "TARIFF" }));
+  assert.deepEqual("error" in asTariff ? null : asTariff.deductible, { mode: "TARIFF" });
+  const zero = tariffChoicesFromForm(fd({ deductibleMode: "INDIVIDUAL", deductibleOverride: "0", deductibleReason: "Premiumkunde" }));
+  assert.deepEqual("error" in zero ? null : zero.deductible, { mode: "INDIVIDUAL", cents: 0, reason: "Premiumkunde" });
+  // Aufheben über die Maske: Häkchen weg → Tarifwert, Audit „wie Tarif“
+  const w = await world("sb-form");
+  const p = await plan(w, "BASIC", content(w.groupId, 150000));
+  await tariffBooking(w, p, SB(50000, "Firmenkunde"));
+  const removed = tariffChoicesFromForm(fd({ deductibleMode: "TARIFF" }));
+  await keepTariff(w, "error" in removed ? TARIFF : removed);
+  const b = await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } });
+  assert.deepEqual([b.deductibleCents, b.deductibleOverrideReason], [150000, null]);
+  // Entwurf: neue Entwürfe behalten die Angaben, ältere Entwürfe ohne das Feld bleiben unverändert, Unsinn wird verworfen
+  const { sanitizeDraftData } = await import("../src/lib/booking-draft");
+  const base = { tariff: { ratePlanId: "plan1", regularCents: 30000, price: { on: false, text: "", reason: "" }, km: { on: false, policy: "FREE_KILOMETERS", perDay: "", rate: "", reason: "" }, deposit: { on: false, text: "", reason: "" } } };
+  assert.equal(sanitizeDraftData(base).tariff.deductible, undefined, "älterer Entwurf ohne Feld");
+  assert.deepEqual(sanitizeDraftData({ tariff: { ...base.tariff, deductible: { on: true, text: "500,00", reason: "Firmenkunde" } } }).tariff.deductible, { on: true, text: "500,00", reason: "Firmenkunde" });
+  assert.deepEqual(sanitizeDraftData({ tariff: { ...base.tariff, deductible: { on: "ja", text: "<b>1</b>", reason: 5 } } }).tariff.deductible, { on: false, text: "", reason: "" });
+});
