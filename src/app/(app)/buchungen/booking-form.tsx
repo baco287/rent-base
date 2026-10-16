@@ -12,7 +12,9 @@ import { CustomerPicker } from "./customer-picker";
 import { PAYMENT_METHODS, RENTAL_PAYMENT_INTENTS, type PaymentMethod, type RentalPaymentIntent } from "@/lib/constants";
 import { fmtCents, toCents } from "@/lib/money";
 import { DRAFT_NOTES_MAX, draftSnapshot, effectivePayIntent, patchPayment, removeDraft, saveDraft, type BookingDraft, type BookingDraftData, type DraftScope, type DraftTariff } from "@/lib/booking-draft";
-import { browserDraftStorage, newDraftId, notifyDrafts, savedAtText } from "./booking-draft-store";
+import { browserDraftStorage, newDraftId, notifyDrafts, nowMs, savedAtText } from "./booking-draft-store";
+import { parseSurchargeCents } from "@/lib/abroad";
+import { AbroadSection, type AbroadState } from "./abroad-section";
 
 /** Nur bei neuer Buchung: erste Mietzahlung direkt mit erfassen. */
 export type InitialPaymentConfig = { nonce: string; defaultWhen: string };
@@ -162,7 +164,7 @@ function PaymentSection({ totalCents, depositCents, totalsReady, config, pay, on
 }
 
 export type TierRates = { workWeekRate: string | null; weeklyRate: string | null; monthlyRate: string | null };
-export type VehicleOption = { id: string; plate: string; label: string; group: string; dailyRate: string; deposit: string; kmIncludedPerDay: string; extraKmRate: string; status: string } & TierRates;
+export type VehicleOption = { id: string; plate: string; label: string; group: string; dailyRate: string; deposit: string; kmIncludedPerDay: string; extraKmRate: string; status: string; /** Freigabeliste Auslandsfahrten (Mandant → Gruppe → Fahrzeug) */ abroad: { possible: boolean; countries: string[] } } & TierRates;
 /** Treffer der Kundensuche bzw. vorbelegter Kunde: eindeutig durch Nummer + Name/Firma + Kontaktdaten. */
 export type CustomerOption = { id: string; label: string; number: string | null; context: string; blocked: boolean; discountPercent: number };
 
@@ -177,6 +179,10 @@ export type BookingFormValues = {
   choices?: TariffChoices;
   /** Buchung ohne Tarif (Altbestand): bisherige Preisvereinbarung */
   legacy?: { totalCents: number; text: string; depositCents: number } | null;
+  /** bestehende Buchung: Auslandsfahrt (allowed null = vor dieser Funktion, der Vertrag bestimmt) */
+  abroad?: { allowed: boolean | null; countries: string[]; surchargeCents: number | null };
+  /** bestehende Buchung: bereits bestätigte Mietzahlungen (Hinweis, wenn der neue Gesamtmietpreis darunter fällt) */
+  paidCents?: number;
 };
 
 export function BookingForm({
@@ -240,6 +246,12 @@ export function BookingForm({
     note: restored?.dep.note ?? "",
   }));
 
+  // Auslandsfahrt (Genehmigung, Länder, einmaliger Aufpreis): neue Buchung „nicht gestattet“ (bewusste Freigabe), sonst wie gespeichert
+  const [abroad, setAbroad] = useState<AbroadState>(() =>
+    restored?.abroad ? { on: true, countries: restored.abroad.countries, surcharge: restored.abroad.surcharge }
+    : values.abroad?.allowed ? { on: true, countries: values.abroad.countries, surcharge: euro(values.abroad.surchargeCents ?? 0) }
+    : { on: false, countries: [], surcharge: "" });
+
   // Zwischenspeichern (nur neue Buchung): Stand des Entwurfs in diesem Fenster
   const [tariffDraft, setTariffDraft] = useState<DraftTariff | null>(null);
   const onDraftState = useCallback((t: DraftTariff) => setTariffDraft((p) => (p && JSON.stringify(p) === JSON.stringify(t) ? p : t)), []);
@@ -254,8 +266,15 @@ export function BookingForm({
   const vehicle = useMemo(() => vehicles.find((v) => v.id === vehicleId), [vehicles, vehicleId]);
   const eur = (c: number) => (c / 100).toLocaleString("de-DE", { style: "currency", currency: "EUR" });
 
+  // Gesamtmietpreis = Grundmiete (Tarif bzw. Sonderpreis) + einmaliger Auslandsfahrt-Aufpreis; die Kaution bleibt unabhängig
+  const abroadVehicle = vehicle ? { plate: vehicle.plate, possible: vehicle.abroad.possible, countries: vehicle.abroad.countries } : null;
+  const abroadParsed = abroad.on ? parseSurchargeCents(abroad.surcharge) : null;
+  const abroadCents = abroadParsed && "cents" in abroadParsed ? abroadParsed.cents : 0;
+  const abroadReady = !abroad.on || (!!abroadParsed && "cents" in abroadParsed && abroad.countries.length > 0 && !!abroadVehicle?.possible && abroad.countries.every((c) => abroadVehicle.countries.includes(c)));
+  const grand: TariffTotals = { totalCents: totals.totalCents + abroadCents, depositCents: totals.depositCents, ready: totals.ready && abroadReady };
+
   // Inhalt des Entwurfs – nur Whitelist-Felder, keine Kennungen (Nonce), keine Tarifvorschau-Stände, keine Neukundendaten
-  const effPay = effectivePayIntent(pay.intent, pay.fullCheck, totals);
+  const effPay = effectivePayIntent(pay.intent, pay.fullCheck, grand);
   const draftData: BookingDraftData | null = draft
     ? {
         vehicleId,
@@ -267,8 +286,8 @@ export function BookingForm({
         tariff: tariffDraft ?? restored?.tariff ?? { ratePlanId: "", regularCents: null, price: { on: false, text: "", reason: "" }, km: { on: false, policy: "FREE_KILOMETERS", perDay: "", rate: "", reason: "" }, deposit: { on: false, text: "", reason: "" } },
         pay: {
           intent: effPay.intent,
-          amount: effPay.intent === "FULL" ? (totals.ready ? euro(totals.totalCents) : "") : effPay.intent === "PARTIAL" ? pay.amount : "",
-          fullCents: effPay.intent === "FULL" && totals.ready ? totals.totalCents : null,
+          amount: effPay.intent === "FULL" ? (grand.ready ? euro(grand.totalCents) : "") : effPay.intent === "PARTIAL" ? pay.amount : "",
+          fullCents: effPay.intent === "FULL" && grand.ready ? grand.totalCents : null,
           method: pay.method,
           paidAt: pay.paidAt,
           reference: pay.reference,
@@ -276,6 +295,7 @@ export function BookingForm({
         },
         // „Kaution jetzt erhalten“: der angezeigte Betrag ist bestätigt und wird festgehalten; sonst folgt er später der vereinbarten Kaution
         dep: { received: dep.received, amount: dep.received ? dep.amount ?? (totals.ready && totals.depositCents > 0 ? euro(totals.depositCents) : null) : null, method: dep.method, occurredAt: dep.occurredAt, reference: dep.reference, note: dep.note },
+        ...(abroad.on ? { abroad: { on: true as const, countries: abroad.countries, surcharge: abroad.surcharge } } : {}),
       }
     : null;
   const dirty = !!draftData && touched && draftSnapshot(draftData) !== savedSnap;
@@ -294,7 +314,7 @@ export function BookingForm({
       setDraftNote({ tone: "bad", text: "Die Notizen sind für einen Entwurf zu lang – bitte kürzen." });
       return;
     }
-    const res = saveDraft(browserDraftStorage(), draft.scope, { id: draftId, knownRev, data: draftData, newId: newDraftId, now: Date.now() });
+    const res = saveDraft(browserDraftStorage(), draft.scope, { id: draftId, knownRev, data: draftData, newId: newDraftId, now: nowMs() });
     if (!res.ok) {
       setDraftNote({ tone: "bad", text: "Zwischenspeichern ist in diesem Browser nicht möglich (z. B. privates Fenster oder gesperrter Speicher)." });
       return;
@@ -325,7 +345,7 @@ export function BookingForm({
 
   function discardDraftNow() {
     if (!draft || !draftId || pending) return;
-    removeDraft(browserDraftStorage(), draft.scope, draftId, Date.now());
+    removeDraft(browserDraftStorage(), draft.scope, draftId, nowMs());
     notifyDrafts();
     setDraftId(null);
     setKnownRev(0);
@@ -415,6 +435,13 @@ export function BookingForm({
         restore={restored?.tariff ?? null}
         onDraftState={draft ? onDraftState : undefined}
       />
+      <AbroadSection
+        value={abroad}
+        onChange={(v) => { setAbroad(v); markTouched(); }}
+        vehicle={abroadVehicle}
+        legacy={!!values.bookingId && values.abroad?.allowed === null}
+        error={abroadParsed && "error" in abroadParsed && abroad.surcharge.trim() !== "" ? abroadParsed.error : null}
+      />
       <Field label="Notizen" htmlFor="notes" full>
         {/* Bearbeiten (ohne Entwurf) unverändert unkontrolliert; nur die neue Buchung führt die Notizen für das Zwischenspeichern mit */}
         {draft ? (
@@ -432,11 +459,16 @@ export function BookingForm({
 
       <div className="md:col-span-2 rounded-lg bg-panel-2 px-4 py-3 text-sm flex flex-wrap gap-x-6 gap-y-1 tnum">
         <span>Mietpreis: <b>{totals.ready ? eur(totals.totalCents) : "–"}</b></span>
+        {abroad.on && abroadCents > 0 && <span>+ Auslandsfahrt-Aufpreis (einmalig): <b>{eur(abroadCents)}</b></span>}
+        {abroad.on && abroadCents > 0 && <span>= Gesamtmietpreis: <b>{grand.ready ? eur(grand.totalCents) : "–"}</b></span>}
         <span className="text-ink-3">zzgl. Kaution {totals.ready ? eur(totals.depositCents) : "–"}</span>
         {vehicle && <span className="text-ink-3">Fahrzeug {vehicle.plate}</span>}
       </div>
+      {values.bookingId && values.paidCents != null && values.paidCents > 0 && grand.ready && values.paidCents > grand.totalCents && (
+        <p role="status" className="md:col-span-2 -mt-1 text-xs text-amber bg-amber-soft rounded-md px-3 py-2">Bereits gezahlt: {eur(values.paidCents)}. Das ist mehr als der neue Gesamtmietpreis ({eur(grand.totalCents)}); nach dem Speichern sind {eur(values.paidCents - grand.totalCents)} zu viel erfasst – Erstattung oder Guthaben über den Bereich „Mietzahlung“.</p>
+      )}
 
-      {initialPayment && <PaymentSection totalCents={totals.totalCents} depositCents={totals.depositCents} totalsReady={totals.ready} config={initialPayment} pay={pay} onPay={setPay} dep={dep} onDep={setDep} footer={draftBar} />}
+      {initialPayment && <PaymentSection totalCents={grand.totalCents} depositCents={totals.depositCents} totalsReady={grand.ready} config={initialPayment} pay={pay} onPay={setPay} dep={dep} onDep={setDep} footer={draftBar} />}
 
       <FormError error={state?.error} />
       <div className="md:col-span-2 flex items-center gap-2 mt-1">

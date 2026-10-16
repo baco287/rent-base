@@ -358,7 +358,7 @@ export async function bookingTimeline(tenantId: string, bookingId: string, limit
 }
 
 type TimelineScope = { customerId: string } | { bookingId: string };
-const TARIFF_TIMELINE_ACTIONS = ["BOOKING_TARIFF_CHANGED", "BOOKING_PRICE_OVERRIDDEN", "BOOKING_PRICE_OVERRIDE_REMOVED", "BOOKING_KM_OVERRIDDEN", "BOOKING_DEPOSIT_OVERRIDDEN"];
+const TARIFF_TIMELINE_ACTIONS = ["BOOKING_TARIFF_CHANGED", "BOOKING_PRICE_OVERRIDDEN", "BOOKING_PRICE_OVERRIDE_REMOVED", "BOOKING_KM_OVERRIDDEN", "BOOKING_DEPOSIT_OVERRIDDEN", "BOOKING_ABROAD_CHANGED"];
 
 /** Zeitleiste aus gespeicherten Zeitstempeln (Buchung, Vertrag, Protokolle, Belege, Zahlungen, Kaution, Auszahlungen, Nachträge, Storno, Mails). */
 async function timelineFor(tenantId: string, scope: TimelineScope, limit: number, view: AccidentBillingView = {}): Promise<TimelineEntry[]> {
@@ -406,6 +406,10 @@ async function timelineFor(tenantId: string, scope: TimelineScope, limit: number
     if (a.action === "BOOKING_PRICE_OVERRIDE_REMOVED") e.push({ key: `bpr-${a.id}`, at: a.createdAt, kind: "Buchung", title: `Individueller Mietpreis aufgehoben – Tarifpreis ${fmt(t.regularCents ?? 0)}`, detail: no, href });
     if (a.action === "BOOKING_KM_OVERRIDDEN") e.push({ key: `bko-${a.id}`, at: a.createdAt, kind: "Buchung", title: `Kilometer: ${t.agreed ?? ""} (Tarif: ${t.tariff ?? ""})`, detail: `${no}${t.reason ? ` · Grund: ${t.reason}` : ""}`, href });
     if (a.action === "BOOKING_DEPOSIT_OVERRIDDEN") e.push({ key: `bdo-${a.id}`, at: a.createdAt, kind: "Kaution", title: `Kaution ${fmt(t.agreedCents ?? 0)} vereinbart (Tarif: ${fmt(t.tariffCents ?? 0)})`, detail: `${no}${t.reason ? ` · Grund: ${t.reason}` : ""}`, href });
+    if (a.action === "BOOKING_ABROAD_CHANGED") {
+      const ab = (a.details ?? {}) as { allowed?: boolean; countries?: string; surchargeCents?: number | null };
+      e.push({ key: `bab-${a.id}`, at: a.createdAt, kind: "Buchung", title: ab.allowed ? `Auslandsfahrt gestattet: ${ab.countries ?? ""} · ${(ab.surchargeCents ?? 0) > 0 ? `Aufpreis einmalig ${fmt(ab.surchargeCents ?? 0)}` : "ohne Aufpreis"}` : "Auslandsfahrt nicht gestattet", detail: no, href });
+    }
   }
   for (const a of amendments) {
     const href = `/buchungen/${a.bookingId}/nachtrag/${a.id}`;

@@ -16,7 +16,7 @@ import { sendCancellationConfirmation } from "@/lib/cancellation-mail";
 import { ensureCancellationDocument } from "@/lib/documents";
 import { runCancellationFollowUp } from "@/lib/followup";
 import { fmtCents, toCents } from "@/lib/money";
-import { DomainError } from "@/lib/integrity";
+import { DomainError, isImmutableError } from "@/lib/integrity";
 import { getStorage } from "@/lib/storage";
 import { parseLocalDateTime } from "@/lib/time";
 import { PAYMENT_METHODS, RENTAL_PAYMENT_INTENTS, type RentalPaymentIntent } from "@/lib/constants";
@@ -28,6 +28,8 @@ import { describePrice } from "@/lib/pricing";
 import { bookingQuote } from "@/lib/booking-price";
 import { bookingTariffFor, choicesOf, keepBookingTariff, kmRuleText, priceSourceText, quoteTariff, readTariffSnapshot, vehicleTariffs, type BookingTariffResult, type TariffChoices } from "@/lib/tariffs";
 import { isDraftId } from "@/lib/booking-draft";
+import { bookingAbroadData, bookingAbroadIssue, countryNames, normalizeCountries, parseAbroadForm, type AbroadChoice } from "@/lib/abroad";
+import { resolveRules } from "@/lib/business-rules";
 import { tariffChoicesFromForm, tariffSelectionFromForm } from "./tariff-form-data";
 
 export type FormState = { error?: string } | undefined;
@@ -107,6 +109,28 @@ function revalidate(id?: string) {
   if (id) revalidatePath(`/buchungen/${id}`);
 }
 
+/**
+ * Auslandsfahrt der Buchung: Länder nur aus der Freigabeliste des Fahrzeugs (Mandant → Gruppe → Fahrzeug, Mandant aus der Sitzung,
+ * Fahrzeug mandantengeprüft). Liefert die Spaltenwerte; ein Verstoß wird als verständliche Meldung abgelehnt.
+ */
+async function checkedAbroadData(client: Pick<typeof db, "vehicle">, tenant: { id: string; businessRules: unknown }, vehicleId: string, choice: Extract<AbroadChoice, { present: true }>) {
+  if (!choice.allowed) return bookingAbroadData(choice);
+  const v = await client.vehicle.findFirst({ where: { id: vehicleId, tenantId: tenant.id }, select: { plate: true, businessRules: true, group: { select: { name: true, businessRules: true } } } });
+  if (!v) throw new DomainError("Fahrzeug nicht gefunden.");
+  const issue = bookingAbroadIssue(choice, resolveRules(tenant.businessRules, v.group, v).values, { rentalType: "STANDARD", plate: v.plate });
+  if (issue) throw new DomainError(issue);
+  return bookingAbroadData(choice);
+}
+const abroadAudit = (data: { abroadAllowed: boolean; abroadCountries: string[]; abroadSurchargeCents: number | null }) => ({ allowed: data.abroadAllowed, countries: countryNames(data.abroadCountries), surchargeCents: data.abroadSurchargeCents });
+/** Datenbank-Sicherheitsnetz (z. B. Vertrag inzwischen unterschrieben) als verständliche Meldung statt Serverfehler – je Trigger. */
+const ABROAD_LOCKED = "Die Auslandsfahrt ist mit dem unterschriebenen Mietvertrag festgeschrieben. Änderungen laufen über einen Nachtrag.";
+function lockedMessage(e: unknown): string {
+  const msg = String((e as { message?: string })?.message ?? "");
+  if (msg.includes("Auslandsfahrt ist mit dem Mietvertrag festgeschrieben")) return ABROAD_LOCKED;
+  const m = /RB_IMMUTABLE: ([^\n"]+)/.exec(msg);
+  return m ? `${m[1].trim().replace(/[.;]$/, "")}. Bitte die Seite neu laden.` : "Die Buchung wurde inzwischen festgeschrieben. Bitte die Seite neu laden.";
+}
+
 async function validateRefs(tenantId: string, vehicleId: string, customerId: string | undefined) {
   const [vehicle, customer] = await Promise.all([
     db.vehicle.findFirst({ where: { id: vehicleId, tenantId } }),
@@ -135,6 +159,9 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
   if (selection.mode !== "PLAN") return { error: "Bitte einen Miettarif wählen." };
   const choices = tariffChoicesFromForm(formData);
   if ("error" in choices) return choices;
+  // Auslandsfahrt (Genehmigung, Länder, einmaliger Aufpreis); ohne Bereich (z. B. alter Browser-Tab) bleibt sie offen → Vertrag
+  const abroad = parseAbroadForm(formData);
+  if ("error" in abroad) return abroad;
 
   // Kunde direkt in der Buchung anlegen: Kundendaten kommen mit Präfix "c_"
   const newCustomer = formData.get("customerMode") === "new";
@@ -163,13 +190,15 @@ export async function createBookingAction(_prev: FormState, formData: FormData):
     const discount = customerData ? customerData.discountPercent ?? 0 : refs.customer?.discountPercent ?? 0;
     const tariff = await bookingTariffFor(tx, tenant.id, actor, { vehicleId: d.vehicleId, ratePlanId: selection.ratePlanId, startAt: d.startAt, endAt: d.endAt, discountPercent: discount, choices, previous: null, seenRevisionId: selection.seenRevisionId, seenRegularCents: selection.seenRegularCents });
     if (dep.input && tariff.data.deposit <= 0) return { error: "Kaution: Ohne vereinbarte Kaution (Betrag 0) kann kein Eingang dokumentiert werden." };
+    const abroadData = abroad.present ? await checkedAbroadData(tx, tenant, d.vehicleId, abroad) : null;
     const customerId = customerData ? (await tx.customer.create({ data: { tenantId: tenant.id, number: await nextCustomerNumber(tx, tenant.id), ...customerData } })).id : d.customerId!;
     const number = await nextBookingNumber(tx, tenant.id, d.startAt);
     const b = await tx.booking.create({
-      data: { tenantId: tenant.id, number, vehicleId: d.vehicleId, customerId, startAt: d.startAt, endAt: d.endAt, notes: d.notes ?? null, ...tariff.data },
+      data: { tenantId: tenant.id, number, vehicleId: d.vehicleId, customerId, startAt: d.startAt, endAt: d.endAt, notes: d.notes ?? null, ...tariff.data, ...(abroadData ?? {}) },
     });
     id = b.id;
     for (const a of tariff.audits) await recordAudit(tx, tenant.id, actor, { ...a, bookingId: b.id });
+    if (abroadData?.abroadAllowed) await recordAudit(tx, tenant.id, actor, { action: "BOOKING_ABROAD_CHANGED", bookingId: b.id, amountCents: abroadData.abroadSurchargeCents, details: abroadAudit(abroadData) });
     // Erste Mietzahlung in derselben Transaktion: wird sie abgelehnt (z. B. Überzahlung), entsteht auch keine Buchung
     if (pay.input) await insertRentalPayment(tx, tenant.id, { id: user.id, name: user.name }, b.id, pay.input, { expectFull: pay.intent === "FULL" });
     // Befehl 20.9: Kautionseingang in derselben Transaktion über die bestehende Kautionserfassung – vereinbart ist die Kaution der
@@ -195,6 +224,8 @@ export async function updateBookingAction(id: string, _prev: FormState, formData
   if ("error" in selection) return selection;
   const choices = tariffChoicesFromForm(formData);
   if ("error" in choices) return choices;
+  const abroad = parseAbroadForm(formData);
+  if ("error" in abroad) return abroad;
 
   const existing = await db.booking.findFirst({ where: { id, tenantId: tenant.id } });
   if (!existing) return { error: "Buchung nicht gefunden." };
@@ -241,15 +272,28 @@ export async function updateBookingAction(id: string, _prev: FormState, formData
       const conflict = await depositAgreedAmountConflict(tx, tenant.id, id, Math.round(tariff.data.deposit * 100));
       if (conflict) return { error: conflict };
     }
-    await tx.booking.update({ where: { id }, data: { vehicleId: d.vehicleId, customerId: d.customerId!, notes: d.notes ?? null, ...(tariff?.data ?? {}) } });
+    // Auslandsfahrt: Altbestand (null) bleibt ohne bewusste Freigabe beim Vertrag; geprüft wird nur, was sich ändert (bzw. bei
+    // Fahrzeugwechsel) – eine inzwischen verkleinerte Freigabeliste blockiert sonst keine anderen Änderungen
+    let abroadData: ReturnType<typeof bookingAbroadData> | null = null;
+    // Fahrzeugwechsel ohne Bereich (z. B. alter Browser-Tab): genehmigte Länder trotzdem gegen das neue Fahrzeug prüfen
+    if (!abroad.present && vehicleChanged && existing.abroadAllowed === true)
+      await checkedAbroadData(tx, tenant, d.vehicleId, { present: true, allowed: true, countries: normalizeCountries(existing.abroadCountries), surchargeCents: existing.abroadSurchargeCents ?? 0 });
+    if (abroad.present && !(existing.abroadAllowed === null && !abroad.allowed)) {
+      const next = bookingAbroadData(abroad);
+      const changed = next.abroadAllowed !== existing.abroadAllowed || next.abroadCountries.join() !== normalizeCountries(existing.abroadCountries).join() || next.abroadSurchargeCents !== existing.abroadSurchargeCents;
+      if (changed || (vehicleChanged && next.abroadAllowed)) abroadData = await checkedAbroadData(tx, tenant, d.vehicleId, abroad);
+      if (!changed) abroadData = null;
+    }
+    await tx.booking.update({ where: { id }, data: { vehicleId: d.vehicleId, customerId: d.customerId!, notes: d.notes ?? null, ...(tariff?.data ?? {}), ...(abroadData ?? {}) } });
     for (const a of tariff?.audits ?? []) await recordAudit(tx, tenant.id, actor, { ...a, bookingId: id });
+    if (abroadData) await recordAudit(tx, tenant.id, actor, { action: "BOOKING_ABROAD_CHANGED", bookingId: id, amountCents: abroadData.abroadSurchargeCents, details: abroadAudit(abroadData) });
     // ein Vertragsentwurf übernimmt Preis, Kaution und Kilometer der Buchung (führende Quelle bis zur Unterschrift)
     if (contract?.status === "DRAFT") {
       const c = await tx.rentalContract.findFirst({ where: { bookingId: id, tenantId: tenant.id }, select: { id: true } });
       if (c) await refreshContractDraft(tx, tenant.id, c.id);
     }
     return undefined;
-  }).catch((e) => (e instanceof DomainError ? { error: e.message } : Promise.reject(e)));
+  }).catch((e) => (e instanceof DomainError ? { error: e.message } : isImmutableError(e) ? { error: lockedMessage(e) } : Promise.reject(e)));
   if (result?.error) return result;
 
   revalidate(id);
@@ -374,7 +418,7 @@ export async function sendCancellationAction(id: string, _prev: CancelState, for
   }
 }
 
-export type PeriodPreviewResult = { error: string | null; before: { range: string; days: number; price: string }; after: { range: string; days: number; price: string; diff: string } | null; paid: string; overpaid: boolean; /** Befehl 29: individuell vereinbarter Preis → Entscheidung Pflicht */ agreed: { price: string; reason: string } | null; tariffName: string | null };
+export type PeriodPreviewResult = { error: string | null; before: { range: string; days: number; price: string }; after: { range: string; days: number; price: string; diff: string; /** Grundmiete ohne Auslandsfahrt-Aufpreis */ rent: string } | null; paid: string; overpaid: boolean; /** Befehl 29: individuell vereinbarter Preis → Entscheidung Pflicht */ agreed: { price: string; reason: string } | null; tariffName: string | null; /** einmaliger Auslandsfahrt-Aufpreis (bleibt unverändert); null = keiner */ abroad: string | null };
 
 /** Befehl 28: Zeitraum vor der Vertragsunterschrift – Vorschau (alt/neu, Preis, Verfügbarkeit). */
 export async function previewPeriodChangeAction(id: string, formData: FormData): Promise<PeriodPreviewResult> {
@@ -384,11 +428,13 @@ export async function previewPeriodChangeAction(id: string, formData: FormData):
   return {
     error: p.error,
     before: { range: range(p.before.startAt, p.before.endAt), days: p.before.days, price: fmtCents(p.before.priceCents) },
-    after: p.after ? { range: range(p.after.startAt, p.after.endAt), days: p.after.days, price: fmtCents(p.after.priceCents), diff: `${p.after.priceCents - p.before.priceCents >= 0 ? "+" : "−"}${fmtCents(Math.abs(p.after.priceCents - p.before.priceCents))}` } : null,
+    after: p.after ? { range: range(p.after.startAt, p.after.endAt), days: p.after.days, price: fmtCents(p.after.priceCents), rent: fmtCents(p.after.rentCents), diff: `${p.after.priceCents - p.before.priceCents >= 0 ? "+" : "−"}${fmtCents(Math.abs(p.after.priceCents - p.before.priceCents))}` } : null,
     paid: fmtCents(p.paidCents),
-    overpaid: !!p.after && p.paidCents > (p.agreed ? p.agreed.cents : p.after.priceCents),
+    // Vergleich immer mit dem Gesamtpreis: Grundmiete (vereinbart bzw. neu) + einmaliger Auslandsfahrt-Aufpreis
+    overpaid: !!p.after && p.paidCents > (p.agreed ? p.agreed.cents + p.abroadSurchargeCents : p.after.priceCents),
     agreed: p.agreed ? { price: fmtCents(p.agreed.cents), reason: p.agreed.reason } : null,
     tariffName: p.tariffName,
+    abroad: p.abroadSurchargeCents > 0 ? fmtCents(p.abroadSurchargeCents) : null,
   };
 }
 

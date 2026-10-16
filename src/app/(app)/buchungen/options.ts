@@ -1,6 +1,6 @@
 import "server-only";
 import { db } from "@/lib/db";
-import { resolveDeposit } from "@/lib/business-rules";
+import { resolveDeposit, resolveRules } from "@/lib/business-rules";
 import { defaultTariffsForVehicles } from "@/lib/tariffs";
 import type { VehicleOption } from "./booking-form";
 
@@ -41,6 +41,11 @@ export async function loadBookingOptions(tenantId: string): Promise<{ vehicles: 
         kmIncludedPerDay: t ? String(t.km.policy === "UNLIMITED" ? 0 : t.km.kmIncludedPerDay ?? 0) : String(v.kmIncludedPerDay),
         extraKmRate: t ? eur(t.km.extraKmRateCents ?? 0) : v.extraKmRate.toString().replace(".", ","),
         status: v.status,
+        // Auslandsfahrt: Freigabeliste des Vermieters für dieses Fahrzeug (Mandant → Gruppe → Fahrzeug); der Server prüft erneut
+        abroad: (() => {
+          const r = resolveRules(tenant.businessRules, v.group, v).values;
+          return { possible: r.abroadAllowed, countries: r.abroadAllowed ? [...r.abroadCountries].sort() : [] };
+        })(),
       };
     }),
   };

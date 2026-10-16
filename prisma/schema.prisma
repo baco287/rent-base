@@ -574,6 +574,12 @@ model Booking {
   // abweichend mit Grund). null = Buchung vor 29.5 – der Vertrag bestimmt sie dann wie bisher aus den Geschäftsregeln.
   deductibleCents       Int?
   deductibleOverrideReason String? // gesetzt = Selbstbeteiligung weicht bewusst vom Tarif ab
+  // Auslandsfahrt: Genehmigung, Länder und EINMALIGER Aufpreis – bei der Buchung festgelegt, bis zur Unterschrift führend (wie
+  // Tarifpreis/Kaution). null = Buchung vor dieser Funktion: die Auslandsfahrt bestimmt wie bisher der Vertrag (Schritt 4).
+  // Der Aufpreis ist nie Teil von Tarif, regularPriceCents, agreedPriceCents oder tariffSnapshot (eigene Position, kein Rabatt).
+  abroadAllowed         Boolean?
+  abroadCountries       String[]  @default([])
+  abroadSurchargeCents  Int?
   overrideInfo          Json? // { price|km|deposit|deductible: { at, byId, byName } } – wer hat wann abgewichen
   notes                 String?
   createdAt             DateTime  @default(now())

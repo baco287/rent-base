@@ -12,6 +12,7 @@ import { DomainError } from "@/lib/integrity";
 import { fmtCents, type Cents } from "@/lib/money";
 import { rentalDays } from "@/lib/pricing";
 import { bookingQuote } from "@/lib/booking-price";
+import { abroadSurchargeOf } from "@/lib/abroad";
 import { basisFromSnapshot, buildBookingTariff, choicesOf, readTariffSnapshot, type TariffChoices } from "@/lib/tariffs";
 
 const TX = { timeout: 20_000, maxWait: 10_000 };
@@ -20,8 +21,11 @@ export type PeriodChangePreview = {
   /** endAt null = offenes Mietende (Unfallersatz; Änderung dort nur in der Fallakte) */
   before: { startAt: Date; endAt: Date | null; days: number; priceCents: Cents };
   /** priceCents = neuer regulärer Preis (Tarif aus dem Buchungs-Snapshot bzw. Altfelder) */
-  after: { startAt: Date; endAt: Date; days: number; priceCents: Cents } | null;
+  /** priceCents = Gesamtpreis (Grundmiete + Auslandsfahrt-Aufpreis); rentCents = Grundmiete */
+  after: { startAt: Date; endAt: Date; days: number; priceCents: Cents; rentCents: Cents } | null;
   paidCents: Cents;
+  /** einmaliger Auslandsfahrt-Aufpreis der Buchung (bleibt bei der Zeitraumänderung unverändert) */
+  abroadSurchargeCents: Cents;
   /** Befehl 29: individuell vereinbarter Preis der Buchung – dann ist eine bewusste Preisentscheidung Pflicht */
   agreed: { cents: Cents; reason: string } | null;
   /** Name des Miettarifs (null = Buchung ohne Tarif) */
@@ -32,11 +36,11 @@ export type PeriodChangePreview = {
 /** Befehl 29: Preisentscheidung bei einer Zeitraumänderung mit individuell vereinbartem Preis (nie still überschreiben). */
 export type PeriodPriceDecision = { mode: "KEEP" } | { mode: "TARIFF" } | { mode: "INDIVIDUAL"; cents: number; reason: string };
 
-type BookingForPeriod = { id: string; status: string; rentalType: string; startAt: Date; endAt: Date | null; vehicleId: string; dailyRate: unknown; workWeekRate: unknown; weeklyRate: unknown; monthlyRate: unknown; tariffSnapshot: unknown; agreedPriceCents: number | null; customer: { discountPercent: number } };
+type BookingForPeriod = { id: string; status: string; rentalType: string; startAt: Date; endAt: Date | null; vehicleId: string; dailyRate: unknown; workWeekRate: unknown; weeklyRate: unknown; monthlyRate: unknown; tariffSnapshot: unknown; agreedPriceCents: number | null; abroadAllowed: boolean | null; abroadSurchargeCents: number | null; customer: { discountPercent: number } };
 
 // Befehl 29: zentrale Buchungspreisfunktion – Tarifbuchungen aus ihrem eingefrorenen Snapshot, sonst Altfelder
 const quoteOf = (b: BookingForPeriod, startAt: Date, endAt: Date) => bookingQuote(b, startAt, endAt, b.customer.discountPercent);
-/** regulärer Preis für einen Zeitraum */
+/** regulärer Preis für einen Zeitraum (Grundmiete, ohne Auslandsfahrt-Aufpreis) */
 const priceOf = (b: BookingForPeriod, startAt: Date, endAt: Date): Cents => quoteOf(b, startAt, endAt).regularCents;
 
 function rule(b: { status: string; rentalType: string }, contract: { status: string; number: string | null } | null): string | null {
@@ -61,12 +65,13 @@ export async function previewBookingPeriodChange(tenantId: string, bookingId: st
     else if (!(endAt > startAt)) error = "Die Rückgabe muss nach der Abholung liegen.";
     else if (startAt.getTime() === b.startAt.getTime() && endAt.getTime() === b.endAt?.getTime()) error = "Der Zeitraum ist unverändert.";
     else {
-      after = { startAt, endAt, days: rentalDays(startAt, endAt), priceCents: priceOf(b, startAt, endAt) };
+      // Gesamtpreis wie „Bisher“: Grundmiete + einmaliger Auslandsfahrt-Aufpreis (bleibt bei einer Zeitraumänderung unverändert)
+      after = { startAt, endAt, days: rentalDays(startAt, endAt), priceCents: priceOf(b, startAt, endAt) + abroadSurchargeOf(b), rentCents: priceOf(b, startAt, endAt) };
       const conflicts = await findConflicts(db, tenantId, b.vehicleId, startAt, endAt, b.id);
       if (conflicts.length > 0) error = `Das Fahrzeug ist ab ${fmtDateTime(conflicts[0].startAt)} bereits für Buchung ${conflicts[0].number} vorgesehen.`;
     }
   }
-  return { before, after, paidCents: paid._sum.amountCents ?? 0, agreed, tariffName: tariff?.ratePlanName ?? null, error };
+  return { before, after, paidCents: paid._sum.amountCents ?? 0, agreed, tariffName: tariff?.ratePlanName ?? null, abroadSurchargeCents: abroadSurchargeOf(b), error };
 }
 
 export async function changeBookingPeriod(tenantId: string, actor: Actor, bookingId: string, input: { startAt: Date; endAt: Date; reason: string; priceDecision?: PeriodPriceDecision | null }): Promise<{ startAt: Date; endAt: Date }> {
@@ -120,6 +125,8 @@ export async function changeBookingPeriod(tenantId: string, actor: Actor, bookin
       priceAfter = built.data.agreedPriceCents ?? built.data.regularPriceCents;
       for (const a of built.audits) if (a.action !== "BOOKING_TARIFF_CHANGED") await recordAudit(tx, tenantId, actor, { ...a, bookingId: b.id, details: { ...(a.details ?? {}), context: "Zeitraumänderung" } });
     }
+    // Auslandsfahrt-Aufpreis: einmalig, bleibt bei einer Zeitraumänderung stehen (vorher und nachher im Gesamtpreis enthalten)
+    priceAfter += abroadSurchargeOf(b);
     await tx.booking.update({ where: { id: b.id }, data: { startAt: input.startAt, endAt: input.endAt, ...tariffData } });
     // ein Vertragsentwurf übernimmt den neuen Zeitraum (wie beim Öffnen des Vertrags); ein unterschriebener Vertrag ist ausgeschlossen
     if (b.contract?.status === "DRAFT") await refreshContractDraft(tx, tenantId, b.contract.id);

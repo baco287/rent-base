@@ -9,6 +9,7 @@ import Link from "next/link";
 import { Card } from "@/components/ui";
 import { fmtCents } from "@/lib/money";
 import { localInputText, pruneExpiredDrafts, removeDraft, restoreTargets, type BookingDraft, type DraftScope } from "@/lib/booking-draft";
+import { countryNames } from "@/lib/abroad";
 import { BookingForm, type BookingFormValues, type CustomerOption, type InitialPaymentConfig, type VehicleOption } from "./booking-form";
 import type { FormState } from "./actions";
 import { browserDraftStorage, draftsOf, localNowInput, notifyDrafts, savedAtText, useDraftsRaw } from "./booking-draft-store";
@@ -105,6 +106,7 @@ export function NewBookingForm({ scope, resumeId, action, values, vehicles, init
                     <div className="font-medium tnum">{(d.vehicleId && plateOf(d.vehicleId)) || "Ohne Fahrzeug"} · {localInputText(d.startAt)} – {localInputText(d.endAt)}</div>
                     <div className="text-xs text-ink-3">
                       Gespeichert {savedAtText(d.savedAt)} · Miete {payText(d)} · Kaution {depText(d)}
+                      {d.abroad ? ` · Ausland ${countryNames(d.abroad.countries)}${d.abroad.surcharge ? ` (+${d.abroad.surcharge} €)` : ""}` : ""}
                       {d.customerMode === "new" ? " · Neuer Kunde (Daten nicht gespeichert)" : d.customerId ? " · Kunde gewählt" : ""}
                     </div>
                   </div>

@@ -28,6 +28,8 @@ import { createAmendmentAction } from "./nachtrag/actions";
 import { BookingForm } from "../booking-form";
 import { BookingDraftCleanup } from "../booking-draft-cleanup";
 import { isDraftId } from "@/lib/booking-draft";
+import { abroadSummary, countryNames } from "@/lib/abroad";
+import { rentalPaymentSummary } from "@/lib/rental-payments";
 import { customerOptionOf } from "../customer-option";
 import { loadBookingOptions } from "../options";
 import { DocumentsPanel } from "./dokumente/documents-panel";
@@ -287,7 +289,10 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                   // Befehl 29: eingefrorener Tarif und bisherige Abweichungen; Buchungen ohne Tarif behalten ihre Altpreise
                   bookingId: b.id,
                   choices: choicesOf(readTariffSnapshot(b.tariffSnapshot)),
-                  legacy: b.ratePlanId || !b.endAt ? null : (() => { const q = bookingQuote(b, b.startAt, b.endAt!, b.customer.discountPercent); return { totalCents: q.totalCents, text: describePrice(q.breakdown), depositCents: Math.round(Number(b.deposit) * 100) }; })(),
+                  // Grundmiete ohne Auslandsfahrt-Aufpreis – den rechnet das Formular einmal dazu
+                  legacy: b.ratePlanId || !b.endAt ? null : (() => { const q = bookingQuote(b, b.startAt, b.endAt!, b.customer.discountPercent); return { totalCents: q.rentCents, text: describePrice(q.breakdown), depositCents: Math.round(Number(b.deposit) * 100) }; })(),
+                  abroad: { allowed: b.abroadAllowed, countries: b.abroadCountries, surchargeCents: b.abroadSurchargeCents },
+                  paidCents: (await rentalPaymentSummary(tenant.id, b.id)).paidCents,
                 }}
                 vehicles={vehicles}
                 initialCustomer={initialCustomer}
@@ -306,6 +311,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                 <dt className="label-xs self-center">Rückgabe</dt><dd className="font-mono tnum">{b.endAt ? fmtDateTime(b.endAt) : accident ? "offen (bis zur Rückgabe)" : "–"}{effective?.changedBy.endAt && <span className="block text-[11px] text-ink-3 font-sans">geändert durch {effective.changedBy.endAt}</span>}</dd>
                 <dt className="label-xs self-center">Kilometer</dt><dd className="font-mono tnum">{effective ? <>{effective.kmIncludedPerDay.toLocaleString("de-DE")} km/Tag frei · {fmtEur(effective.extraKmRate)} je Mehrkilometer (laut Vertrag{effective.changedBy.km ? `, geändert durch ${effective.changedBy.km}` : ""})</> : <>{(b.kmIncludedPerDay ?? b.vehicle.kmIncludedPerDay).toLocaleString("de-DE")} km/Tag frei · {fmtEur(Number(b.extraKmRate ?? b.vehicle.extraKmRate))} je Mehrkilometer</>}</dd>
                 {deductibleText && <><dt className="label-xs self-center">Selbstbeteiligung</dt><dd><span className="font-mono tnum">{deductibleText}</span> <span className="text-xs text-ink-3">im Schadenfall, keine Zahlung</span></dd></>}
+                {abroadSummary(b) && <><dt className="label-xs self-center">Auslandsfahrten</dt><dd>{abroadSummary(b)}{contractSigned && <span className="block text-[11px] text-ink-3">laut Mietvertrag festgeschrieben</span>}</dd></>}
                 <dt className="label-xs self-center">Notizen</dt><dd>{b.notes || "–"}</dd>
               </dl>
             )}
@@ -352,7 +358,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
               ) : effective ? (
                 <div className="p-4 text-sm flex flex-col">
                   <div className="text-xs text-ink-3 pb-1">laut Mietvertrag {b.contract!.number}{effective.amendments.length ? ` und Nachtrag ${effective.amendments.map((a) => a.number).join(", ")}` : ""}</div>
-                  <div className="flex justify-between py-1.5 border-b border-line-soft"><span>Mietpreis laut Vertrag</span><span className="font-mono tnum">{fmtEur(effective.original.totalCents / 100)}</span></div>
+                  <div className="flex justify-between py-1.5 border-b border-line-soft"><span>Mietpreis laut Vertrag{b.abroadAllowed && (b.abroadSurchargeCents ?? 0) > 0 ? <span className="block text-xs text-ink-3">inkl. Auslandsfahrt-Aufpreis {fmtCents(b.abroadSurchargeCents ?? 0)} (einmalig)</span> : null}</span><span className="font-mono tnum">{fmtEur(effective.original.totalCents / 100)}</span></div>
                   {effective.amendments.filter((a) => a.priceDeltaCents).map((a) => (
                     <div key={a.id} className="flex justify-between py-1.5 border-b border-line-soft"><span>Nachtrag {a.number}</span><span className="font-mono tnum">{(a.priceDeltaCents ?? 0) > 0 ? "+" : "−"}{fmtEur(Math.abs(a.priceDeltaCents ?? 0) / 100)}</span></div>
                   ))}
@@ -371,7 +377,15 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                   <div className="flex justify-between py-1.5 border-b border-line-soft"><span>Rabatt {price.discountPercent} %</span><span className="font-mono tnum">−{fmtEur(price.discountAmount)}</span></div>
                 )}
                 {quote.agreedCents != null && <div className="flex justify-between py-1.5 border-b border-line-soft"><span>Regulärer Tarifpreis</span><span className="font-mono tnum">{fmtCents(quote.regularCents)}</span></div>}
-                <div className="flex justify-between py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>{quote.agreedCents != null ? "Vereinbarter Mietpreis" : "Voraussichtlich"}</span><span className="font-mono tnum">{fmtCents(quote.totalCents)}</span></div>
+                {quote.abroadSurchargeCents > 0 ? (
+                  <>
+                    <div className="flex justify-between py-1.5 border-b border-line-soft"><span>{quote.agreedCents != null ? "Vereinbarter Mietpreis" : "Mietpreis"}</span><span className="font-mono tnum">{fmtCents(quote.rentCents)}</span></div>
+                    <div className="flex justify-between gap-3 py-1.5 border-b border-line-soft"><span>Auslandsfahrt-Aufpreis (einmalig, {countryNames(b.abroadCountries)})</span><span className="font-mono tnum">{fmtCents(quote.abroadSurchargeCents)}</span></div>
+                    <div className="flex justify-between py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>{quote.agreedCents != null ? "Gesamtmietpreis" : "Voraussichtlich gesamt"}</span><span className="font-mono tnum">{fmtCents(quote.totalCents)}</span></div>
+                  </>
+                ) : (
+                  <div className="flex justify-between py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>{quote.agreedCents != null ? "Vereinbarter Mietpreis" : "Voraussichtlich"}</span><span className="font-mono tnum">{fmtCents(quote.totalCents)}</span></div>
+                )}
                 <div className="flex justify-between py-1.5 text-ink-3"><span>zzgl. Kaution</span><span className="font-mono tnum">{fmtEur(b.deposit)}</span></div>
                 {b.deductibleCents != null && <div className="flex justify-between gap-3 py-1.5 text-ink-3"><span>Selbstbeteiligung im Schadenfall (keine Zahlung)</span><span className="font-mono tnum text-right">{fmtCents(b.deductibleCents)}</span></div>}
                 <p className="text-xs text-ink-3 mt-2">Mehrkilometer, Tank und weitere Positionen werden bei der Rückgabe geprüft und erscheinen dann als Zusatzkosten.</p>

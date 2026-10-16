@@ -11,6 +11,7 @@ import type { ContractPriceSnapshot, CustomerSnapshot, VehicleSnapshot } from "@
 import { parseTerms, type TermsBlock } from "@/lib/terms-markdown";
 import { APP_TIME_ZONE } from "@/lib/time";
 import { accidentPricePreview, contractTariffItems } from "@/lib/accident-pricing";
+import { ABROAD_SURCHARGE_KEY } from "@/lib/abroad";
 
 export type DocRow = { label: string; value: string; missing?: boolean };
 export type DocSection = { key: string; title: string; rows: DocRow[] };
@@ -85,7 +86,7 @@ const countryList = (codes: string[]) => codes.map((c) => COUNTRIES[c as keyof t
  * Geschäftsregeln als Vertragsabschnitt: nur konkrete, eingefrorene Werte. Herkunft steht nicht im Dokument.
  * deductibleInConditions (Befehl 29.5): die vereinbarte Selbstbeteiligung steht bereits bei den Konditionen – hier nicht doppelt.
  */
-export function rulesSection(rules: ContractRules | null, contract: { kmIncludedPerDay: number; extraKmRate: unknown; fuelPolicy: string; fuelPolicyNote: string | null; deductible: unknown }, fuel: string | null | undefined, additionalDrivers: number, days: number | null, opts: { deductibleInConditions?: boolean } = {}): DocSection | null {
+export function rulesSection(rules: ContractRules | null, contract: { kmIncludedPerDay: number; extraKmRate: unknown; fuelPolicy: string; fuelPolicyNote: string | null; deductible: unknown }, fuel: string | null | undefined, additionalDrivers: number, days: number | null, opts: { deductibleInConditions?: boolean; /** Auslandsfahrt-Aufpreis laut Buchung (Vertragsposition), sonst null */ abroadSurchargeCents?: number | null } = {}): DocSection | null {
   if (!rules) return null;
   const v = rules.values;
   const cls = driveClassOf(fuel ?? "DIESEL");
@@ -105,7 +106,7 @@ export function rulesSection(rules: ContractRules | null, contract: { kmIncluded
     row("Kilometerregel", km),
     row(cls === "ELECTRIC" ? "Laderegel" : cls === "PHEV" ? "Tank- und Laderegel" : "Tankregelung", fuelRule),
     ...(opts.deductibleInConditions ? [] : [row("Selbstbeteiligung", eur(contract.deductible))]),
-    row("Auslandsfahrten", v.abroadAllowed ? `Genehmigt für: ${countryList(v.abroadCountries)}` : "Nicht gestattet"),
+    row("Auslandsfahrten", v.abroadAllowed ? `Genehmigt für: ${countryList(v.abroadCountries)}${rules.sources.abroadAllowed === "BOOKING" ? (opts.abroadSurchargeCents ? ` · Aufpreis einmalig ${cents(opts.abroadSurchargeCents)} (im Gesamtmietpreis enthalten)` : " · ohne Aufpreis") : ""}` : "Nicht gestattet"),
     row("Rauchen im Fahrzeug", v.smokingAllowed ? "Gestattet" : "Nicht gestattet"),
     row("Tiere im Fahrzeug", label(PETS_POLICIES, v.petsPolicy)),
     row("Zusatzfahrer", v.additionalDriversAllowed ? `${additionalDrivers} eingetragen, ${fee}` : "Nicht vorgesehen"),
@@ -262,14 +263,14 @@ export function buildContractDocument(contract: ContractWithDrivers, tenant: Ten
       agreed: !tariffAgreed && p?.agreedTotal != null ? { text: `Abweichend vereinbart${p.agreedTotalNote ? `: ${p.agreedTotalNote}` : ""}`, amount: eur(p.agreedTotal) } : null,
       extras: tariffView
         ? tariffView.oneOffLines.map((l) => ({ text: `${l.label} (${l.detail})`, amount: cents(l.cents)! }))
-        : (p?.extras ?? []).map((e) => ({ text: `${e.quantity} × ${e.label} zu ${eur(e.unitPrice)}`, amount: eur(e.amount) })),
+        : (p?.extras ?? []).map((e) => ({ text: e.key === ABROAD_SURCHARGE_KEY ? e.label : `${e.quantity} × ${e.label} zu ${eur(e.unitPrice)}`, amount: eur(e.amount) })),
       total: tariffView ? "nach tatsächlicher Mietdauer" : eur(contract.totalAmount),
       totalNote: tariffView
         ? `Gesamtmietpreis = tatsächliche Miettage × ${cents(tariffView.perDayCents)}${tariffView.oneOffCents > 0 ? ` + ${cents(tariffView.oneOffCents)} einmalig` : ""}. Miettage zählen ab der Fahrzeugübergabe bis zur Rückgabe; abgerechnet wird nach der Rückgabe.`
         : null,
       deposit: noDeposit ? "keine" : eur(contract.deposit),
     },
-    rules: rulesSection(rules, contract, v.fuel, additional.length, openEnd ? null : days, { deductibleInConditions: agreedDeductible }),
+    rules: rulesSection(rules, contract, v.fuel, additional.length, openEnd ? null : days, { deductibleInConditions: agreedDeductible, abroadSurchargeCents: (p?.extras ?? []).filter((e) => e.key === ABROAD_SURCHARGE_KEY).reduce((a, e) => a + Math.round(e.amount * 100), 0) || null }),
     individualAgreements: contract.individualAgreements?.trim() || null,
     terms: {
       version: contract.termsVersion,

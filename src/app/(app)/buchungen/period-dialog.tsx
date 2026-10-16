@@ -42,16 +42,17 @@ export function PeriodChangeDialog({ action, preview, startAt, endAt }: { action
             <div className={`rounded-md p-3 text-sm flex flex-col gap-1 ${result.error ? "bg-bad-soft text-bad" : "border-2 border-brand bg-panel"}`}>
               {result.error ? <p role="alert">{result.error}</p> : null}
               <div className="flex justify-between gap-3"><span className="text-ink-2">Bisher</span><span className="font-mono tnum text-right">{result.before.range}<span className="block text-xs">{result.before.days} Tage · {result.before.price}</span></span></div>
-              {result.after && <div className="flex justify-between gap-3"><span className="text-ink-2">Neu</span><span className="font-mono tnum text-right font-semibold">{result.after.range}<span className="block text-xs font-normal">{result.after.days} Tage · {result.agreed ? "neuer regulärer Tarifpreis" : "Preisvorschlag"} {result.after.price}{result.agreed ? "" : ` (${result.after.diff})`}</span></span></div>}
+              {result.after && <div className="flex justify-between gap-3"><span className="text-ink-2">Neu</span><span className="font-mono tnum text-right font-semibold">{result.after.range}<span className="block text-xs font-normal">{result.after.days} Tage · {result.agreed ? "neuer regulärer Tarifpreis" : "Preisvorschlag"} {result.agreed ? result.after.rent : result.after.price}{result.agreed ? "" : ` (${result.after.diff})`}</span></span></div>}
+              {result.after && result.abroad && <p className="text-xs text-ink-2">{result.agreed ? "Zzgl." : "Enthält"} Auslandsfahrt-Aufpreis {result.abroad} (einmalig, bleibt unverändert).</p>}
               {result.after && result.agreed && (
                 <div role="group" aria-label="Preisentscheidung" className="mt-1 rounded-md bg-amber-soft text-ink px-3 py-2 flex flex-col gap-1.5">
                   <span className="text-amber font-medium">Für diese Buchung wurde ein individueller Preis vereinbart: {result.agreed.price} („{result.agreed.reason}“). Bitte bewusst entscheiden:</span>
                   <label className="flex items-center gap-2"><input type="radio" name="priceDecision" value="KEEP" checked={decision === "KEEP"} onChange={() => setDecision("KEEP")} /> Individuellen Preis beibehalten ({result.agreed.price})</label>
-                  <label className="flex items-center gap-2"><input type="radio" name="priceDecision" value="TARIFF" checked={decision === "TARIFF"} onChange={() => setDecision("TARIFF")} /> Neuen Tarifpreis übernehmen ({result.after.price})</label>
+                  <label className="flex items-center gap-2"><input type="radio" name="priceDecision" value="TARIFF" checked={decision === "TARIFF"} onChange={() => setDecision("TARIFF")} /> Neuen Tarifpreis übernehmen ({result.after.rent})</label>
                   <label className="flex items-center gap-2"><input type="radio" name="priceDecision" value="INDIVIDUAL" checked={decision === "INDIVIDUAL"} onChange={() => setDecision("INDIVIDUAL")} /> Neuen individuellen Preis festlegen</label>
                   {decision === "INDIVIDUAL" && (
                     <div className="grid grid-cols-1 sm:grid-cols-[140px_1fr] gap-2 pl-6">
-                      <input name="newPrice" inputMode="decimal" value={newPrice} onChange={(e) => setNewPrice(e.target.value)} placeholder="0,00" aria-label="Neuer Mietpreis in Euro" className="input tnum" />
+                      <input name="newPrice" inputMode="decimal" value={newPrice} onChange={(e) => setNewPrice(e.target.value)} placeholder="0,00" aria-label={result.abroad ? "Neuer Mietpreis in Euro, ohne Auslandsfahrt-Aufpreis" : "Neuer Mietpreis in Euro"} title={result.abroad ? "Ohne Auslandsfahrt-Aufpreis – er wird zusätzlich berechnet" : undefined} className="input tnum" />
                       <input name="newPriceReason" value={newPriceReason} onChange={(e) => setNewPriceReason(e.target.value)} placeholder="Grund (Pflicht)" aria-label="Grund für den neuen Preis" maxLength={300} className="input" />
                     </div>
                   )}

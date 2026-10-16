@@ -11,6 +11,7 @@ import { startPickupAction } from "../uebergabe/actions";
 import { DRIVER_ROLES, FUELS, RULE_SOURCES, VEHICLE_STATUS, driveClassOf, type Fuel, type VehicleStatus } from "@/lib/constants";
 import { sourceText, type RuleKey } from "@/lib/business-rules";
 import { readTariffSnapshot } from "@/lib/tariffs";
+import { abroadSummary } from "@/lib/abroad";
 import { ContractTermsText } from "@/components/terms-view";
 import { customerName, fmtDate, fmtDateTime, fmtEur, fmtInt, toDateInput, toDateTimeInput } from "@/lib/format";
 import { Card, Chip, Content, Field, PageHeader, Plate } from "@/components/ui";
@@ -356,6 +357,7 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
                         driveClass: driveClassOf(v.fuel),
                       }}
                       kmLocked={tariffLocked}
+                      abroadLocked={!accident && booking.abroadAllowed != null ? abroadSummary(booking) : null}
                       driverFeeNote={accident ? "Beim Unfallersatz gilt keine Zusatzfahrer-Gebühr aus den Geschäftsregeln. Kosten für Zusatzfahrer nur als Position im Tarif der Fallakte." : undefined}
                     />
                     <Field label="Preis je fehlendem Liter € (optional)" htmlFor="fuelPricePerLiter"><input id="fuelPricePerLiter" name="fuelPricePerLiter" inputMode="decimal" defaultValue={dec(contract.fuelPricePerLiter)} className="input tnum" /></Field>
@@ -368,7 +370,7 @@ export default async function ContractPage({ params, searchParams }: PageProps<"
                         <input type="hidden" name="agreedTotalNote" value={booking.priceOverrideReason ?? ""} />
                       </div>
                     )}
-                    {!accident && !tariffLocked && <Field label="Abweichend vereinbarter Gesamtmietpreis € (optional)" htmlFor="agreedTotal" hint="Leer lassen, dann gilt die Berechnung rechts"><input id="agreedTotal" name="agreedTotal" inputMode="decimal" defaultValue={dec(contract.agreedTotal)} className="input tnum" /></Field>}
+                    {!accident && !tariffLocked && <Field label="Abweichend vereinbarter Gesamtmietpreis € (optional)" htmlFor="agreedTotal" hint={booking.abroadAllowed && (booking.abroadSurchargeCents ?? 0) > 0 ? "Leer lassen, dann gilt die Berechnung rechts. Ohne Auslandsfahrt-Aufpreis – der wird zusätzlich berechnet." : "Leer lassen, dann gilt die Berechnung rechts"}><input id="agreedTotal" name="agreedTotal" inputMode="decimal" defaultValue={dec(contract.agreedTotal)} className="input tnum" /></Field>}
                     {!accident && !tariffLocked && <Field label="Begründung für den abweichenden Preis" htmlFor="agreedTotalNote"><input id="agreedTotalNote" name="agreedTotalNote" defaultValue={contract.agreedTotalNote ?? ""} className="input" placeholder="z. B. Sonderpreis Stammkunde" /></Field>}
                     <Field label="Interne Notiz (erscheint nicht im Vertrag)" htmlFor="internalNote" full><textarea id="internalNote" name="internalNote" defaultValue={contract.internalNote ?? ""} rows={2} className="input" /></Field>
                   </div>

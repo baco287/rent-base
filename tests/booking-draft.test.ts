@@ -259,6 +259,16 @@ test("Vollständig bezahlt nie still mit anderem Betrag: geänderter oder unbeka
   assert.deepEqual(effectivePayIntent("PARTIAL", 30000, { ready: true, totalCents: 32000 }), { intent: "PARTIAL", mismatch: false });
 });
 
+test("Auslandsfahrt im Entwurf: nur „gestattet“ wird gespeichert, Länder geprüft und sortiert; ältere Entwürfe vergleichen gleich", () => {
+  const s = new MemoryStorage();
+  const d = saveNew(s, data({ abroad: { on: true, countries: ["CH", "AT", "XX", "OTHER", "AT"], surcharge: "49,00" } }));
+  assert.deepEqual(d.abroad, { on: true, countries: ["AT", "CH"], surcharge: "49,00" });
+  assert.deepEqual(readDrafts(s, A, NOW)[0].abroad, { on: true, countries: ["AT", "CH"], surcharge: "49,00" });
+  assert.equal(sanitizeDraftData({ ...data(), abroad: { on: false, countries: ["AT"], surcharge: "9" } }).abroad, undefined, "nicht gestattet = kein Block");
+  assert.equal(sanitizeDraftData({ ...data(), abroad: { on: true, countries: [], surcharge: "-5x" } }).abroad?.surcharge, "", "ungültiger Betrag wird leer");
+  assert.equal(draftSnapshot(data()), draftSnapshot({ ...data(), abroad: { on: false, countries: [], surcharge: "" } } as unknown as BookingDraftData), "kein falsches „Ungespeicherte Änderungen“");
+});
+
 test("Hilfsfunktionen: Kennung, Anzeige, Vergleichswert", () => {
   assert.ok(isDraftId("00000000-0000-4000-8000-000000000001"));
   for (const bad of ["", "kurz", "a/b-12345678", "x".repeat(65), null, 5]) assert.ok(!isDraftId(bad));
@@ -270,7 +280,9 @@ test("Hilfsfunktionen: Kennung, Anzeige, Vergleichswert", () => {
 
 test("9/10: Zwischenspeichern bleibt im Browser – keine Server-Aktion, kein fetch, Knopf ist kein Absende-Knopf", async () => {
   const lib = await src("src/lib/booking-draft.ts");
-  assert.deepEqual(lib.match(/^import .*$/gm), ['import { PAYMENT_METHODS, RENTAL_PAYMENT_INTENTS, type PaymentMethod, type RentalPaymentIntent } from "@/lib/constants";'], "reine Logik, keine DB/Server-Importe");
+  assert.deepEqual((lib.match(/^import .* from "([^"]+)";$/gm) ?? []).map((l) => /from "([^"]+)"/.exec(l)![1]), ["@/lib/constants", "@/lib/abroad"], "reine Logik, keine DB/Server-Importe");
+  const abroadLib = await src("src/lib/abroad.ts");
+  assert.deepEqual((abroadLib.match(/^import .* from "([^"]+)";$/gm) ?? []).map((l) => /from "([^"]+)"/.exec(l)![1]), ["@/lib/constants", "@/lib/money"], "Auslandsfahrt-Logik ebenfalls rein (auch im Browser nutzbar)");
   for (const f of ["src/lib/booking-draft.ts", "src/app/(app)/buchungen/booking-draft-store.ts", "src/app/(app)/buchungen/new-booking-form.tsx", "src/app/(app)/buchungen/booking-draft-cleanup.tsx"]) {
     const s = await src(f);
     assert.ok(!/fetch\(|"use server"|@\/lib\/db|prisma/.test(s), `${f}: nichts an den Server`);

@@ -57,3 +57,8 @@ export function localNowInput(): string {
 export function savedAtText(ms: number): string {
   return new Date(ms).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
+
+/** Aktuelle Zeit in Millisekunden (nur in Ereignis-Handlern aufrufen, nie beim Rendern). */
+export function nowMs(): number {
+  return Date.now();
+}

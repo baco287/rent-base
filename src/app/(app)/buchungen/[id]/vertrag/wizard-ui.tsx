@@ -166,7 +166,7 @@ export type RuleFieldValues = {
  * Geschäftsregeln im Schritt Konditionen: jedes Feld zeigt seine Herkunft (Text vom Server); abhängige Felder erscheinen nur bei Bedarf.
  * driverFeeNote (Befehl 29 Phase E, Unfallersatz): statt Zusatzfahrer-Preisregel nur ein Hinweis – die Gebühr aus den Regeln gilt dort nicht.
  */
-export function RuleFields({ v, sources, driverFeeNote, kmLocked = false }: { v: RuleFieldValues; sources: Record<string, string>; driverFeeNote?: string; /** Befehl 29: Tarifbuchung – Kilometerregel aus der Buchung */ kmLocked?: boolean }) {
+export function RuleFields({ v, sources, driverFeeNote, kmLocked = false, abroadLocked = null }: { v: RuleFieldValues; sources: Record<string, string>; driverFeeNote?: string; /** Befehl 29: Tarifbuchung – Kilometerregel aus der Buchung */ kmLocked?: boolean; /** Auslandsfahrt laut Buchung (Genehmigung, Länder, Aufpreis) – hier nur Anzeige */ abroadLocked?: string | null }) {
   const source = (key: string): ReactNode => (sources[key] ? <span className="text-[11px] text-ink-3">Quelle: {sources[key]}</span> : null);
   const [kmPolicy, setKmPolicy] = useState(v.kmPolicy);
   const [fuelPolicy, setFuelPolicy] = useState(v.fuelPolicy);
@@ -198,6 +198,13 @@ export function RuleFields({ v, sources, driverFeeNote, kmLocked = false }: { v:
         <label className="flex items-center gap-2 text-sm py-2"><input type="checkbox" name="smokingAllowed" value="1" defaultChecked={v.smokingAllowed} /> Rauchen gestattet</label>
         {source("smokingAllowed")}
       </div>
+      {abroadLocked ? (
+        <div className="md:col-span-2 flex flex-col gap-1 rounded-lg bg-panel-2 p-3 text-sm">
+          <span className="label-xs">Auslandsfahrten</span>
+          <span>{abroadLocked}</span>
+          <span className="text-[11px] text-ink-3">laut Buchung – Änderung in der Buchung · Quelle: Buchung</span>
+        </div>
+      ) : (
       <div className="md:col-span-2 flex flex-col gap-1.5 rounded-lg bg-panel-2 p-3">
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="abroadAllowed" value="1" checked={abroad} onChange={(e) => setAbroad(e.target.checked)} disabled={!v.abroadPossible} /> Auslandsfahrten gestattet {source("abroadAllowed")}</label>
         {!v.abroadPossible && <span className="text-xs text-ink-3">Nach den Geschäftsregeln des Vermieters sind Auslandsfahrten nicht vorgesehen. Eine Freigabe braucht zuerst die Einstellung (Inhaber).</span>}
@@ -208,6 +215,7 @@ export function RuleFields({ v, sources, driverFeeNote, kmLocked = false }: { v:
           </div>
         )}
       </div>
+      )}
       {driverFeeNote ? <div className="flex flex-col gap-1"><span className="label-xs">Zusatzfahrer-Kosten</span><span className="text-sm text-ink-2 py-1">{driverFeeNote}</span></div> : <>
       <Field label="Zusatzfahrer-Preisregel" htmlFor="additionalDriverFeeType" hint={v.additionalDriversAllowed ? "Erscheint als eigene Position im Vertrag, nie im Basispreis." : "Zusatzfahrer sind für dieses Fahrzeug nicht vorgesehen."}>
         <select id="additionalDriverFeeType" name="additionalDriverFeeType" value={feeType} onChange={(e) => setFeeType(e.target.value)} className="input" disabled={!v.additionalDriversAllowed}>{Object.entries(ADDITIONAL_DRIVER_FEE_TYPES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>

@@ -2,9 +2,12 @@
 // Zeitraum ändern, Vertragsentwurf). Tarifbuchungen rechnen ausschließlich aus ihrem eingefrorenen Tarif-Snapshot (nie aus dem
 // Live-Tarif), Buchungen ohne Tarif (Altbestand) aus ihren eingefrorenen Altfeldern – beide über dieselbe zentrale Preisfunktion.
 // Ein individuell vereinbarter Preis (Booking.agreedPriceCents, 0 € zulässig) ersetzt den regulären Preis, ohne ihn zu verlieren.
+// Auslandsfahrt: ein EINMALIGER Aufpreis (Booking.abroadSurchargeCents) kommt zur Grundmiete hinzu – auch zu einem Sonderpreis,
+// ohne Kundenrabatt. Er wird nur hier (vor dem Vertrag) bzw. im Vertrag als eigene Position (extras) addiert, nie doppelt.
 
 import { calculateRentalPrice, rateCardFrom, totalCentsOf, type PriceBreakdown } from "@/lib/pricing";
 import { readTariffSnapshot, type TariffSnapshot } from "@/lib/tariffs";
+import { abroadSurchargeOf } from "@/lib/abroad";
 
 export type BookingPriceSource = {
   dailyRate: unknown;
@@ -13,6 +16,10 @@ export type BookingPriceSource = {
   monthlyRate?: unknown;
   tariffSnapshot?: unknown;
   agreedPriceCents?: number | null;
+  // Pflicht, damit keine Abfrage den Auslandsfahrt-Aufpreis still weglässt
+  rentalType: string;
+  abroadAllowed: boolean | null;
+  abroadSurchargeCents: number | null;
 };
 
 export type BookingQuote = {
@@ -24,7 +31,11 @@ export type BookingQuote = {
   regularCents: number;
   /** individuell vereinbarter Preis; null = regulärer Preis gilt */
   agreedCents: number | null;
-  /** gilt für die Buchung: vereinbart, sonst regulär */
+  /** Grundmiete der Buchung: vereinbart, sonst regulär (ohne Auslandsfahrt-Aufpreis) */
+  rentCents: number;
+  /** einmaliger Auslandsfahrt-Aufpreis (0 = keiner) */
+  abroadSurchargeCents: number;
+  /** gilt für die Buchung: Grundmiete + Auslandsfahrt-Aufpreis */
   totalCents: number;
 };
 
@@ -33,7 +44,9 @@ export function bookingQuote(b: BookingPriceSource, start: Date, end: Date, disc
   const breakdown = tariff ? calculateRentalPrice({ start, end, tiers: tariff.tiers, discountPercent }) : calculateRentalPrice({ start, end, rates: rateCardFrom(b), discountPercent });
   const regularCents = totalCentsOf(breakdown);
   const agreedCents = tariff && b.agreedPriceCents != null ? b.agreedPriceCents : null;
-  return { source: tariff ? "TARIFF" : "LEGACY", tariff, breakdown, days: breakdown.days, regularCents, agreedCents, totalCents: agreedCents ?? regularCents };
+  const rentCents = agreedCents ?? regularCents;
+  const abroadSurchargeCents = abroadSurchargeOf(b);
+  return { source: tariff ? "TARIFF" : "LEGACY", tariff, breakdown, days: breakdown.days, regularCents, agreedCents, rentCents, abroadSurchargeCents, totalCents: rentCents + abroadSurchargeCents };
 }
 
 /** Abweichung eines vereinbarten Preises vom regulären Preis (absolut und in Prozent, Prozent nur bei regulärem Preis > 0). */

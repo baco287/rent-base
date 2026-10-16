@@ -460,6 +460,7 @@ export const AUDIT_ACTIONS = {
   BOOKING_CANCELLED: "Buchung storniert",
   // Befehl 28: Storno mit Geldbezug und Mietänderungen
   BOOKING_PERIOD_CHANGED: "Buchungszeitraum geändert (vor Vertrag)",
+  BOOKING_ABROAD_CHANGED: "Auslandsfahrt der Buchung festgelegt/geändert (Länder, einmaliger Aufpreis)",
   CANCELLATION_FEE_CREATED: "Stornogebühr berechnet",
   RENTAL_PAYMENT_REFUND_CREATED: "Mietvorauszahlung erstattet (Storno)",
   RENTAL_PAYMENT_TO_CREDIT: "Mietvorauszahlung als Kundenguthaben belassen (Storno)",

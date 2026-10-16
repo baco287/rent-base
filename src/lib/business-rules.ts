@@ -7,6 +7,7 @@
 
 import { COUNTRIES, type AdditionalDriverFeeType, type KmPolicy, type LateReturnRule, type OutOfHoursReturn, type PetsPolicy, type RuleSource } from "@/lib/constants";
 import { contentHash } from "@/lib/integrity";
+import { abroadRuleIssues } from "@/lib/abroad";
 
 export type FuelRule = "FULL_TO_FULL" | "SAME_LEVEL" | "MINIMUM_LEVEL" | "INCLUDED" | "OTHER";
 
@@ -320,12 +321,8 @@ export function adoptDefaults(current: ContractRules, resolved: ResolvedRules, n
 export function contractRuleIssues(rules: ContractRules, resolved: ResolvedRules, ctx: { driveClass: "COMBUSTION" | "ELECTRIC" | "PHEV"; additionalDrivers: number }): string[] {
   const v = rules.values;
   const issues: string[] = [];
-  if (v.abroadAllowed) {
-    if (!resolved.values.abroadAllowed) issues.push("Auslandsfahrten sind nach den Geschäftsregeln nicht vorgesehen. Eine Freigabe im Vertrag braucht zuerst die Einstellung des Vermieters.");
-    const outside = v.abroadCountries.filter((c) => !resolved.values.abroadCountries.includes(c));
-    if (outside.length) issues.push(`Ausland: ${outside.map((c) => COUNTRIES[c as keyof typeof COUNTRIES] ?? c).join(", ")} ist nicht in der Freigabeliste des Vermieters.`);
-    if (v.abroadCountries.length === 0) issues.push("Ausland: Bitte die konkret genehmigten Länder auswählen.");
-  }
+  // Auslandsfahrt: legt die Buchung sie fest (Herkunft BOOKING), wird sie dort geändert – gleiche Grenzen, Hinweis auf die Buchung
+  issues.push(...abroadRuleIssues(v, resolved.values, rules.sources.abroadAllowed === "BOOKING" ? "BOOKING" : "CONTRACT"));
   if (v.kmPolicy === "INDIVIDUAL" && !v.kmPolicyNote) issues.push("Bitte die individuelle Kilometerregel beschreiben.");
   if (v.fuelRule === "MINIMUM_LEVEL") {
     if (ctx.driveClass !== "ELECTRIC" && v.fuelMinimumEighths == null) issues.push("Tankregel „Mindestfüllstand“: bitte den Mindestfüllstand in Achteln angeben.");

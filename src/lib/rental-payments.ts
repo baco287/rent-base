@@ -39,7 +39,7 @@ export type RentalPaymentSummary = PaymentSummary & {
   blockedReason: string | null;
 };
 
-const bookingSelect = { id: true, tenantId: true, status: true, rentalType: true, startAt: true, endAt: true, actualPickupAt: true, actualReturnAt: true, dailyRate: true, workWeekRate: true, weeklyRate: true, monthlyRate: true, tariffSnapshot: true, agreedPriceCents: true, customer: { select: { discountPercent: true } }, contract: { select: { status: true, totalAmount: true, amendments: SIGNED_AMENDMENTS_SELECT } } } as const;
+const bookingSelect = { id: true, tenantId: true, status: true, rentalType: true, startAt: true, endAt: true, actualPickupAt: true, actualReturnAt: true, dailyRate: true, workWeekRate: true, weeklyRate: true, monthlyRate: true, tariffSnapshot: true, agreedPriceCents: true, abroadAllowed: true, abroadSurchargeCents: true, customer: { select: { discountPercent: true } }, contract: { select: { status: true, totalAmount: true, amendments: SIGNED_AMENDMENTS_SELECT } } } as const;
 type BookingForTotal = Prisma.BookingGetPayload<{ select: typeof bookingSelect }>;
 
 /**
@@ -47,7 +47,7 @@ type BookingForTotal = Prisma.BookingGetPayload<{ select: typeof bookingSelect }
  * Befehl 29: Unfallersatz hat keinen Vertragsgesamtpreis (offenes Ende) – der Wert ist immer eine Schätzung: Tagessatz × Miettage
  * bis zum geplanten Ende, bei offenem Ende bis zur Rückgabe bzw. bis jetzt (bisheriger Mietwert).
  */
-export function expectedRentalCents(b: Pick<BookingForTotal, "rentalType" | "status" | "startAt" | "endAt" | "actualPickupAt" | "actualReturnAt" | "dailyRate" | "workWeekRate" | "weeklyRate" | "monthlyRate" | "tariffSnapshot" | "agreedPriceCents" | "customer" | "contract">): { cents: Cents; source: "CONTRACT" | "ESTIMATE" } {
+export function expectedRentalCents(b: Pick<BookingForTotal, "rentalType" | "status" | "startAt" | "endAt" | "actualPickupAt" | "actualReturnAt" | "dailyRate" | "workWeekRate" | "weeklyRate" | "monthlyRate" | "tariffSnapshot" | "agreedPriceCents" | "abroadAllowed" | "abroadSurchargeCents" | "customer" | "contract">): { cents: Cents; source: "CONTRACT" | "ESTIMATE" } {
   if (b.rentalType === "ACCIDENT_REPLACEMENT") {
     // der Tagessatz ist der im Fall vereinbarte Unfallersatz-Satz; ein Kundenrabatt gilt dafür nicht (wie in der Unfallersatz-Rechnung)
     const price = calculateRentalPrice({ start: b.actualPickupAt ?? b.startAt, end: pricingEnd(b), rates: { dailyRate: Number(b.dailyRate) }, strategy: "DAILY_ONLY" });

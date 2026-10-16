@@ -8,9 +8,11 @@
 //   Zahlung einer neuen Buchung still verschlucken (Duplikatsuche je Mandant und Kennung).
 // - Stände der Tarifvorschau (seenRevisionId/seenRegularCents): Sie kommen immer aus der aktuellen Vorschau.
 // - Daten eines neuen Kunden (Ausweis, Führerschein, Geburtsdatum, Anschrift …) und Name/Kontakt bestehender Kunden – nur die ID.
+// Auslandsfahrt (Genehmigung, Länder, Aufpreis-Text) ist nicht sensibel; der Server prüft sie bei der Anlage erneut.
 // Getrennt je Mandant und Benutzer (eigener Schlüssel, Prüfung beim Lesen), mehrere Entwürfe nebeneinander, nach Ablauf verworfen.
 
 import { PAYMENT_METHODS, RENTAL_PAYMENT_INTENTS, type PaymentMethod, type RentalPaymentIntent } from "@/lib/constants";
+import { MAX_ABROAD_COUNTRIES, normalizeCountries } from "@/lib/abroad";
 
 export const DRAFT_VERSION = 1;
 export const DRAFT_KEY_PREFIX = "rb.buchung.entwurf.";
@@ -55,7 +57,10 @@ export type BookingDraftData = {
   tariff: DraftTariff;
   pay: DraftPayment;
   dep: DraftDeposit;
+  /** Auslandsfahrt gestattet (Länder, Aufpreis als Text); fehlt = nicht gestattet bzw. Entwurf von vorher */
+  abroad?: DraftAbroad;
 };
+export type DraftAbroad = { on: true; countries: string[]; surcharge: string };
 export type BookingDraft = BookingDraftData & { v: typeof DRAFT_VERSION; id: string; tenantId: string; userId: string; savedAt: number; rev: number };
 
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -89,6 +94,7 @@ export function sanitizeDraftData(raw: unknown): BookingDraftData {
   const tdd = t.deductible !== undefined ? obj(t.deductible) : null;
   const p = obj(r.pay);
   const d = obj(r.dep);
+  const ab = obj(r.abroad);
   const intent: RentalPaymentIntent = typeof p.intent === "string" && Object.hasOwn(RENTAL_PAYMENT_INTENTS, p.intent) ? (p.intent as RentalPaymentIntent) : "NONE";
   const customerMode = r.customerMode === "new" ? "new" : "existing";
   return {
@@ -126,6 +132,8 @@ export function sanitizeDraftData(raw: unknown): BookingDraftData {
       reference: text(d.reference, 120),
       note: text(d.note, 500),
     },
+    // nur „gestattet“ wird gespeichert – der Standard (nicht gestattet) fehlt, damit ältere Entwürfe gleich verglichen werden
+    ...(bool(ab.on) ? { abroad: { on: true as const, countries: normalizeCountries(Array.isArray(ab.countries) ? ab.countries : []).slice(0, MAX_ABROAD_COUNTRIES), surcharge: pattern(ab.surcharge, AMOUNT_RE) } } : {}),
   };
 }
 

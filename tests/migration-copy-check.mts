@@ -21,8 +21,9 @@ async function tables(db: PrismaClient): Promise<string[]> {
   return rows.map((r) => r.table_name);
 }
 
-// Spalten, die Befehl 29 hinzufügt – für den Vorher/Nachher-Vergleich ausgeklammert
-const NEW_COLUMNS: Record<string, string[]> = { Booking: ["rentalType"] };
+// Spalten, die die zu prüfenden Migrationen hinzufügen – für den Vorher/Nachher-Vergleich ausgeklammert
+// (Befehl 29: rentalType; 29.5: Selbstbeteiligung; Auslandsfahrt Stufe 1: Genehmigung, Länder, Aufpreis)
+const NEW_COLUMNS: Record<string, string[]> = { Booking: ["rentalType", "deductibleCents", "deductibleOverrideReason", "abroadAllowed", "abroadCountries", "abroadSurchargeCents"], RatePlanRevision: ["deductibleCents"] };
 
 if (mode === "copy") {
   const src = client(a), dst = client(b);

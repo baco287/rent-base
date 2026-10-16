@@ -22,6 +22,7 @@ import { EXTRA_CHARGE_TYPES, INVOICE_ITEM_SOURCES, INVOICE_STATUS, INVOICE_UNITS
 import type { CustomerSnapshot, VehicleSnapshot } from "@/lib/contracts";
 import { DomainError, contentHash, sha256 } from "@/lib/integrity";
 import { centsToDecimalString, fmtCents, fmtRate, lineAmounts, summarize, toBasisPoints, toCents, toHundredths, type Cents } from "@/lib/money";
+import { ABROAD_SURCHARGE_KEY } from "@/lib/abroad";
 import { isUniqueViolation, nextInvoiceNumber, withNumberRetry } from "@/lib/numbering";
 import { rentalDays } from "@/lib/pricing";
 import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed, accidentCaseEvent, assertAccidentCaseOpen, assertAccidentInvoiceCaseOpen } from "@/lib/accident-replacement-events";
@@ -250,7 +251,7 @@ export async function ensureInvoiceDraft(tenantId: string, bookingId: string, ac
     const days = rentalDays(contract.startAt, contractEnd);
 
     // Eigene Vertragspositionen (z. B. Zusatzfahrer) erscheinen getrennt; der Mietpreis ist der Vertragsbetrag ohne diese Positionen.
-    const priceSnap = contract.priceSnapshot as { extras?: { label: string; quantity: number; unitPrice: number; amount: number }[]; extrasTotal?: number } | null;
+    const priceSnap = contract.priceSnapshot as { extras?: { key?: string; label: string; quantity: number; unitPrice: number; amount: number }[]; extrasTotal?: number } | null;
     const extras = priceSnap?.extras ?? [];
     const extrasTotal = extras.reduce((a, e) => a + Math.round(e.amount * 100), 0);
     // Befehl 25: Preiserhöhungen aus Nachträgen sind eigene Positionen (Abrechnungsbezug amendmentId); Preisminderungen können
@@ -262,7 +263,9 @@ export async function ensureInvoiceDraft(tenantId: string, bookingId: string, ac
     if (rentalCents < 0) {
       let rest = -rentalCents;
       rentalCents = 0;
-      for (let i = extraAmounts.length - 1; i >= 0 && rest > 0; i--) { const take = Math.min(extraAmounts[i], rest); extraAmounts[i] -= take; rest -= take; }
+      // feste Reihenfolge: übrige Vertragspositionen von hinten, der Auslandsfahrt-Aufpreis zuletzt (Bestand ohne ihn: wie bisher)
+      const order = [...extras.keys()].reverse().sort((a, b) => Number(extras[a].key === ABROAD_SURCHARGE_KEY) - Number(extras[b].key === ABROAD_SURCHARGE_KEY));
+      for (const i of order) { if (rest <= 0) break; const take = Math.min(extraAmounts[i], rest); extraAmounts[i] -= take; rest -= take; }
     }
     const periodNote = contract.amended.changedBy.endAt ? ` und Nachtrag ${contract.amended.changedBy.endAt}` : "";
     const reductionNote = reductionTotal < 0 ? ` (Preisminderung ${fmtCents(reductionTotal)} laut Nachtrag berücksichtigt)` : "";

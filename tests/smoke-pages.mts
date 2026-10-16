@@ -203,6 +203,7 @@ const pages: [string, string][] = [
   ["/buchungen/neu", "Teilweise bezahlt"],
   ["/buchungen/neu", "Kaution jetzt erhalten"],
   ["/buchungen/neu", ">Zwischenspeichern</button>"],
+  ["/buchungen/neu", "Auslandsfahrten gestattet"],
   [`/buchungen/${w.bookingId}`, "Mietvertrag fortsetzen"],
   [`/buchungen/${w.bookingId}`, "Gesamtpreis (voraussichtlich)"],
   [`/buchungen/${w.bookingId}`, "Noch keine Mietzahlung erfasst"],
@@ -1642,6 +1643,26 @@ report(stdBooking?.rentalType === "STANDARD" && stdBooking.endAt !== null && Num
   report(fromDraft.includes("Buchung aus dem Entwurf angelegt"), "Buchungsseite nach Anlage aus Entwurf: Entwurf wird im Browser entfernt");
   const resume = await plain(await fetch(`${base}/buchungen/neu?entwurf=${draftId}`, { headers: { cookie: ueDispo } }));
   report(resume.includes("Entwurf wird geladen") && !resume.includes(">Zwischenspeichern</button>"), "Neue Buchung ?entwurf=…: Entwurf wird erst im Browser geladen");
+}
+// Auslandsfahrt bei der Buchungsanlage (Stufe 1): Genehmigung, Länder nur aus der Freigabeliste, einmaliger Aufpreis – über die
+// echte Anlage-Aktion; die Freigabe prüft der Server (Mandantenregeln aus der Sitzung)
+{
+  const t0 = await db.tenant.findUniqueOrThrow({ where: { id: ue.tenantId }, select: { businessRules: true } });
+  await db.tenant.update({ where: { id: ue.tenantId }, data: { businessRules: { ...((t0.businessRules ?? {}) as Record<string, unknown>), abroadAllowed: true, abroadCountries: ["AT", "CH"] } } });
+  const at = (days: number) => new Date(stdStart.getTime() + days * 86400_000);
+  const form = (d: number, extra: Record<string, string>) => ({ ...stdTariffForm, startAt: toDateTimeInput(at(d)), endAt: toDateTimeInput(at(d + 2)), abroadSection: "1", ...extra });
+  const ok = await callAction("/buchungen/neu", stdCreateId, ueDispo, { form: form(20, { abroadAllowed: "1", abroadCountries: "AT", abroadSurcharge: "49,00" }) });
+  const okB = await db.booking.findFirst({ where: { tenantId: ue.tenantId, vehicleId: ueV3.id, startAt: at(20) } });
+  report(okB?.abroadAllowed === true && okB.abroadCountries.join() === "AT" && okB.abroadSurchargeCents === 4900 && ok.redirectTo.includes(`/buchungen/${okB.id}`), `${ok.status} Auslandsfahrt bei der Buchungsanlage: Österreich, Aufpreis 49 € gespeichert`);
+  const okPage = await plain(await fetch(`${base}/buchungen/${okB?.id}`, { headers: { cookie: ueDispo } }));
+  report(okPage.includes("Auslandsfahrt-Aufpreis (einmalig, Österreich)") && okPage.includes("Voraussichtlich gesamt") && okPage.includes("Auslandsfahrten gestattet"), "Buchungsseite: Mietpreis, Auslandsfahrt-Aufpreis und Gesamtmietpreis getrennt; Bereich im Bearbeiten-Formular");
+  const foreign = actionState((await callAction("/buchungen/neu", stdCreateId, ueDispo, { form: form(25, { abroadAllowed: "1", abroadCountries: "FR", abroadSurcharge: "10" }) })).text);
+  report(!!foreign?.error && /Frankreich ist für HB-UE 901 nicht in der Freigabeliste/.test(foreign.error) && (await db.booking.count({ where: { tenantId: ue.tenantId, vehicleId: ueV3.id, startAt: at(25) } })) === 0, "Auslandsfahrt: nicht freigegebenes Land abgelehnt, nichts angelegt");
+  const negative = actionState((await callAction("/buchungen/neu", stdCreateId, ueDispo, { form: form(30, { abroadAllowed: "1", abroadCountries: "AT", abroadSurcharge: "-5" }) })).text);
+  report(!!negative?.error && /nicht negativ/.test(negative.error), "Auslandsfahrt: negativer Aufpreis abgelehnt");
+  await callAction("/buchungen/neu", stdCreateId, ueDispo, { form: form(35, {}) });
+  const offB = await db.booking.findFirst({ where: { tenantId: ue.tenantId, vehicleId: ueV3.id, startAt: at(35) } });
+  report(offB?.abroadAllowed === false && offB.abroadSurchargeCents === null && offB.abroadCountries.length === 0, "Auslandsfahrt nicht gestattet (Standard bei neuer Buchung): kein Aufpreis");
 }
 // Befehl 29: Tarifseiten, Rechte (serverseitig) und Anzeige
 {

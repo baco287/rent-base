@@ -161,9 +161,11 @@ const accidentConditionsSchema = conditionsSchema.omit({ startAt: true, endAt: t
 export async function saveConditionsStepAction(bookingId: string, _prev: StepState, formData: FormData): Promise<StepState> {
   const { tenant, contract, actor } = await context(bookingId);
   const back = formData.get("nav") === "back";
-  const booking = await db.booking.findFirst({ where: { id: bookingId, tenantId: tenant.id }, select: { rentalType: true, startAt: true } });
+  const booking = await db.booking.findFirst({ where: { id: bookingId, tenantId: tenant.id }, select: { rentalType: true, startAt: true, abroadAllowed: true } });
   if (!booking) redirect("/buchungen");
   const accident = booking.rentalType === "ACCIDENT_REPLACEMENT";
+  // Auslandsfahrt laut Buchung: im Vertrag nur angezeigt (keine Formularfelder) – nicht als „nicht gestattet“ überschreiben
+  const abroadFromBooking = !accident && booking.abroadAllowed != null;
   const parsedAccident = accident ? accidentConditionsSchema.safeParse(Object.fromEntries(formData)) : null;
   const parsed = accident
     ? parsedAccident!.success ? { success: true as const, data: { ...parsedAccident!.data, startAt: booking.startAt, endAt: null, agreedTotal: undefined, agreedTotalNote: undefined } } : { success: false as const, error: parsedAccident!.error }
@@ -180,7 +182,7 @@ export async function saveConditionsStepAction(bookingId: string, _prev: StepSta
         kmPolicy: d.kmPolicy ?? "FREE_KILOMETERS", kmPolicyNote: d.kmPolicyNote ?? null,
         fuelMinimumEighths: d.fuelPolicy === "MINIMUM_LEVEL" ? d.fuelMinimumEighths ?? null : null,
         batteryMinimumPercent: d.fuelPolicy === "MINIMUM_LEVEL" ? d.batteryMinimumPercent ?? null : null,
-        abroadAllowed: !!d.abroadAllowed, abroadCountries: d.abroadAllowed ? abroadCountries : [],
+        ...(abroadFromBooking ? {} : { abroadAllowed: !!d.abroadAllowed, abroadCountries: d.abroadAllowed ? abroadCountries : [] }),
         smokingAllowed: !!d.smokingAllowed, petsPolicy: d.petsPolicy ?? "BY_APPROVAL",
         // Unfallersatz: Preisregel nur übernehmen, wenn das Formular sie enthält (dort ausgeblendet; sonst entstünde stillschweigend „kostenlos“). Standard unverändert.
         ...(!accident || formData.has("additionalDriverFeeType") ? { additionalDriverFeeType: d.additionalDriverFeeType ?? "FREE", additionalDriverFeeCents: d.additionalDriverFeeType && d.additionalDriverFeeType !== "FREE" ? Math.round((d.additionalDriverFeeCents ?? 0) * 100) : 0 } : {}),

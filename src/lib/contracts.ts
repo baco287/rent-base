@@ -30,6 +30,7 @@ import { buildStorageKey } from "@/lib/storage";
 import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed, assertAccidentCaseOpen } from "@/lib/accident-replacement-events";
 import { freezeTariff, type ContractAccidentTariff, type ContractTariffItem } from "@/lib/accident-pricing";
 import { readTariffSnapshot, type KmRule, type TariffSnapshot } from "@/lib/tariffs";
+import { ABROAD_SURCHARGE_KEY, abroadLabel, normalizeCountries } from "@/lib/abroad";
 
 type Tx = Prisma.TransactionClient;
 const TX = { timeout: 20_000, maxWait: 10_000 };
@@ -89,8 +90,8 @@ export function snapshotVehicle(v: Prisma.VehicleGetPayload<{ include: { group: 
 }
 export type VehicleSnapshot = ReturnType<typeof snapshotVehicle>;
 
-/** Eigene Preisposition neben dem Mietpreis, z. B. Zusatzfahrer. Nie im Basispreis versteckt. */
-export type PriceExtra = { key: "ADDITIONAL_DRIVER"; label: string; quantity: number; unitPrice: number; amount: number };
+/** Eigene Preisposition neben dem Mietpreis, z. B. Zusatzfahrer oder Auslandsfahrt-Aufpreis. Nie im Basispreis versteckt. */
+export type PriceExtra = { key: "ADDITIONAL_DRIVER" | typeof ABROAD_SURCHARGE_KEY; label: string; quantity: number; unitPrice: number; amount: number };
 /**
  * openEnd (Befehl 29): Unfallersatz-Vertrag ohne Mietende – es gibt keinen Gesamtpreis, nur den Tagessatz (rates). Tage,
  * Positionen und Summen sind 0; die Abrechnung entsteht erst aus der tatsächlichen Mietdauer (lib/accident-replacement).
@@ -115,7 +116,7 @@ export function contractPrice(
   discountPercent: number,
   agreedTotal: number | null,
   agreedTotalNote: string | null,
-  extrasInput?: { additionalDrivers: number; rules: Pick<BusinessRules, "additionalDriverFeeType" | "additionalDriverFeeCents"> | null },
+  extrasInput?: { additionalDrivers: number; rules: Pick<BusinessRules, "additionalDriverFeeType" | "additionalDriverFeeCents"> | null; /** einmaliger Auslandsfahrt-Aufpreis laut Buchung (0 € = keine Position) */ abroad?: { cents: number; label: string } | null },
   /** Phase E: Unfallersatz-Tarif der Fallakte (nur bei offenem Ende); null = kein Tarif bekannt (Standardmiete) */
   accidentTariff?: readonly ContractTariffItem[] | null,
 ): ContractPriceSnapshot {
@@ -132,6 +133,8 @@ export function contractPrice(
     const fee = additionalDriverFee(extrasInput.rules, extrasInput.additionalDrivers, price.days);
     if (fee) extras.push({ key: "ADDITIONAL_DRIVER", label: fee.label, quantity: fee.quantity, unitPrice: fee.unitCents / 100, amount: fee.amountCents / 100 });
   }
+  // Auslandsfahrt-Aufpreis: einmalig (Menge 1), ohne Kundenrabatt, zusätzlich zu Grund- bzw. Sonderpreis – nie im Basispreis
+  if (extrasInput?.abroad && extrasInput.abroad.cents > 0) extras.push({ key: ABROAD_SURCHARGE_KEY, label: extrasInput.abroad.label, quantity: 1, unitPrice: extrasInput.abroad.cents / 100, amount: extrasInput.abroad.cents / 100 });
   const extrasTotal = Math.round(extras.reduce((a, e) => a + e.amount * 100, 0)) / 100;
   const base = agreedTotal ?? price.total;
   const frozenTariff: ContractTariff | undefined = tariff ? { ...tariff, regularCents: price.totalCents ?? Math.round(price.total * 100) } : undefined;
@@ -166,6 +169,20 @@ function withBookingDeductible(rules: ContractRules, terms: ReturnType<typeof ta
   if (terms?.deductibleCents == null) return rules;
   return { ...rules, values: { ...rules.values, deductibleCents: terms.deductibleCents }, sources: { ...rules.sources, deductibleCents: terms.deductibleSource } };
 }
+/**
+ * Auslandsfahrt: Legt die Buchung sie fest (Standardmiete, abroadAllowed gesetzt), ist sie bis zur Unterschrift führend – der
+ * Vertragsentwurf übernimmt Genehmigung und Länder mit Herkunft BOOKING, auch nach Fahrzeugwechsel oder „Standardwerte
+ * übernehmen“. abroadAllowed null = Buchung vor dieser Funktion: der Vertrag bestimmt die Auslandsfahrt wie bisher (Schritt 4).
+ */
+type BookingAbroad = { rentalType: string; abroadAllowed: boolean | null; abroadCountries: string[]; abroadSurchargeCents: number | null };
+export const bookingLeadsAbroad = (b: BookingAbroad) => b.rentalType === "STANDARD" && b.abroadAllowed != null;
+function withBookingAbroad(rules: ContractRules, b: BookingAbroad): ContractRules {
+  if (!bookingLeadsAbroad(b)) return rules;
+  return { ...rules, values: { ...rules.values, abroadAllowed: !!b.abroadAllowed, abroadCountries: b.abroadAllowed ? normalizeCountries(b.abroadCountries) : [] }, sources: { ...rules.sources, abroadAllowed: "BOOKING", abroadCountries: "BOOKING" } };
+}
+/** Vertragsposition „Auslandsfahrt-Aufpreis“ laut Buchung (nur bei gestatteter Auslandsfahrt; 0 € ergibt keine Position). */
+const abroadExtraFor = (b: BookingAbroad) => (bookingLeadsAbroad(b) && b.abroadAllowed ? { cents: b.abroadSurchargeCents ?? 0, label: abroadLabel(normalizeCountries(b.abroadCountries)) } : null);
+
 /** Befehl 29.5: Vertragswert der Selbstbeteiligung – aus der Buchung, sonst (Buchung vor 29.5, Altbestand) aus den Vertragsregeln. */
 const deductibleFor = (terms: ReturnType<typeof tariffTermsOf>, rules: ContractRules) => (terms?.deductibleCents != null ? terms.deductibleCents : rules.values.deductibleCents ?? 0) / 100;
 
@@ -250,10 +267,10 @@ export async function ensureContractDraft(tenantId: string, bookingId: string, a
         const resolved = resolveFor(booking);
         const depositRule = depositFor(booking);
         const tariffTerms = tariffTermsOf(booking);
-        const rules = withBookingDeductible(withTariffKmPolicy(standardKmPolicy(initialContractRules(resolved, new Date(), depositRule), booking), tariffTerms), tariffTerms);
+        const rules = withBookingAbroad(withBookingDeductible(withTariffKmPolicy(standardKmPolicy(initialContractRules(resolved, new Date(), depositRule), booking), tariffTerms), tariffTerms), booking);
         // Befehl 29: Unfallersatz-Vertrag immer mit offenem Ende („bis zur Rückgabe“); das geplante Ende bleibt Dispositionswert der Buchung
         const contractEnd = contractEndOf(booking);
-        const price = contractPrice({ ...booking, endAt: contractEnd }, contractDiscount(booking), tariffTerms?.agreedTotal ?? null, tariffTerms?.agreedTotalNote ?? null, { additionalDrivers: 0, rules: feeRules(rules) }, await accidentTariffFor(tx, tenantId, booking));
+        const price = contractPrice({ ...booking, endAt: contractEnd }, contractDiscount(booking), tariffTerms?.agreedTotal ?? null, tariffTerms?.agreedTotalNote ?? null, { additionalDrivers: 0, rules: feeRules(rules), abroad: abroadExtraFor(booking) }, await accidentTariffFor(tx, tenantId, booking));
         const terms = termsForNewDraft(booking.tenant, await activeTermsVersion(tx, tenantId));
         const number = await nextContractNumber(tx, tenantId, booking.startAt);
         const contract = await tx.rentalContract.create({
@@ -346,7 +363,7 @@ export async function refreshContractDraft(tx: Tx, tenantId: string, contractId:
   if (!rules || vehicleChanged) rules = initialContractRules(resolveFor(booking), new Date(), depositRule);
   rules = standardKmPolicy(rules, booking);
   const tariffTerms = tariffTermsOf(booking);
-  rules = withBookingDeductible(withTariffKmPolicy(rules, tariffTerms), tariffTerms);
+  rules = withBookingAbroad(withBookingDeductible(withTariffKmPolicy(rules, tariffTerms), tariffTerms), booking);
   const additionalDrivers = await tx.contractDriver.count({ where: { tenantId, contractId, role: "ADDITIONAL_DRIVER" } });
   const contractEnd = contractEndOf(booking);
   // Phase E: Unfallersatz – kein abweichender Gesamtpreis; Tarifpositionen der Fallakte werden im Entwurf laufend übernommen
@@ -354,7 +371,7 @@ export async function refreshContractDraft(tx: Tx, tenantId: string, contractId:
   // Befehl 29: Tarifbuchung → vereinbarter Preis aus der Buchung (führende Quelle bis zur Unterschrift)
   const agreedTotal = accident ? null : tariffTerms ? tariffTerms.agreedTotal : toNumber(contract.agreedTotal);
   const agreedTotalNote = accident ? null : tariffTerms ? tariffTerms.agreedTotalNote : contract.agreedTotalNote;
-  const price = contractPrice({ ...booking, endAt: contractEnd }, contractDiscount(booking), agreedTotal, agreedTotalNote, { additionalDrivers, rules: feeRules(rules) }, await accidentTariffFor(tx, tenantId, booking));
+  const price = contractPrice({ ...booking, endAt: contractEnd }, contractDiscount(booking), agreedTotal, agreedTotalNote, { additionalDrivers, rules: feeRules(rules), abroad: abroadExtraFor(booking) }, await accidentTariffFor(tx, tenantId, booking));
   // Mietbedingungen: ein versionierter Entwurf wechselt nie von selbst. Ohne Fassung (Altbestand, noch nicht bestätigt)
   // wird die aktive Fassung übernommen; ohne veröffentlichte Fassung gilt weiter der bisherige Mandantentext.
   const featureActive = await termsFeatureActive(tx, tenantId);
@@ -695,6 +712,16 @@ export async function saveConditions(tenantId: string, contractId: string, input
         throw new DomainError("Die Selbstbeteiligung dieser Tarifbuchung wird in der Buchung festgelegt (Tarifwert oder abweichend mit Grund). Bitte dort ändern.");
       if (booking.agreedPriceCents != null && periodChanged) throw new DomainError("Für diese Buchung ist ein individueller Mietpreis vereinbart. Den Zeitraum bitte über „Zeitraum ändern“ anpassen – dort wird über den Preis bewusst entschieden.");
     }
+    // Auslandsfahrt: legt die Buchung sie fest, wird sie dort geändert (Genehmigung, Länder, Aufpreis) – nicht still im Vertrag.
+    // Gleichlautende Werte werden ignoriert (keine falschen Audits), abweichende abgelehnt.
+    let ruleInput = input.rules ?? {};
+    if (bookingLeadsAbroad(booking) && ("abroadAllowed" in ruleInput || "abroadCountries" in ruleInput)) {
+      const allowed = ruleInput.abroadAllowed ?? booking.abroadAllowed;
+      const countries = normalizeCountries(ruleInput.abroadCountries ?? booking.abroadCountries);
+      if (allowed !== booking.abroadAllowed || (allowed && countries.join() !== normalizeCountries(booking.abroadCountries).join()))
+        throw new DomainError("Auslandsfahrten werden in der Buchung festgelegt (Genehmigung, Länder und Aufpreis). Bitte dort ändern.");
+      ruleInput = Object.fromEntries(Object.entries(ruleInput).filter(([k]) => k !== "abroadAllowed" && k !== "abroadCountries"));
+    }
     // Befehl 20.9: wurde die Kaution schon bei der Buchung als erhalten dokumentiert, ist der vereinbarte Betrag fest
     const depositConflict = await depositAgreedAmountConflict(tx, tenantId, booking.id, Math.round(input.deposit * 100));
     if (depositConflict) throw new DomainError(depositConflict);
@@ -705,7 +732,7 @@ export async function saveConditions(tenantId: string, contractId: string, input
     const resolved = resolveFor(withContext);
     let rules = readContractRules(c.conditions) ?? initialContractRules(resolved);
     const changes: { key: string; from: unknown; to: unknown }[] = [];
-    const applied = applyContractOverrides(rules, resolved, { ...(input.rules ?? {}), fuelRule: input.fuelPolicy });
+    const applied = applyContractOverrides(rules, resolved, { ...ruleInput, fuelRule: input.fuelPolicy });
     rules = applied.rules;
     // Befehl 21: „individuell“ ist im Vertrag immer eine bewusste Wahl – auch wenn die Vorgabe des Vermieters gleich lautet.
     // Sie bleibt deshalb erhalten (keine stille Rückkehr zur Standardregel) und braucht die Beschreibung.
@@ -802,6 +829,14 @@ async function collectIssues(tx: Tx, tenantId: string, contractId: string, opts:
     if (!price || !(price.days > 0) || !Array.isArray(price.lines) || price.lines.length === 0) err("PRICE", "PRICE_INVALID", "Die Preisberechnung ist unvollständig.");
     else if (!(price.finalTotal >= 0) || Math.abs(price.finalTotal - Number(c.totalAmount)) > 0.005) err("PRICE", "PRICE_MISMATCH", "Der Gesamtpreis passt nicht zur Berechnung.");
     if (price && price.finalTotal === 0) issues.push({ area: "PRICE", code: "PRICE_ZERO", severity: "warning", message: "Der Mietpreis beträgt 0 €." });
+    // Auslandsfahrt laut Buchung: genau eine Position in Höhe des Aufpreises (0 € = keine), Genehmigung und Länder wie gebucht
+    if (price && bookingLeadsAbroad(booking)) {
+      const items = (price.extras ?? []).filter((e) => e.key === ABROAD_SURCHARGE_KEY);
+      const expected = booking.abroadAllowed ? booking.abroadSurchargeCents ?? 0 : 0;
+      if (items.length > 1 || items.reduce((a, e) => a + Math.round(e.amount * 100), 0) !== expected) err("PRICE", "PRICE_MISMATCH", "Der Auslandsfahrt-Aufpreis im Vertrag passt nicht zur Buchung. Bitte die Seite neu laden.");
+      if (rules && (rules.values.abroadAllowed !== booking.abroadAllowed || (booking.abroadAllowed && normalizeCountries(rules.values.abroadCountries).join() !== normalizeCountries(booking.abroadCountries).join())))
+        err("CONDITIONS", "ABROAD_MISMATCH", "Die Auslandsfahrt im Vertrag passt nicht zur Buchung. Bitte die Seite neu laden.");
+    }
   }
 
   // Konditionen
