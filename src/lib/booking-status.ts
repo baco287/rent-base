@@ -20,7 +20,7 @@
 import { db } from "@/lib/db";
 import type { Actor } from "@/lib/audit";
 import type { BookingStage, BookingStatus } from "@/lib/constants";
-import { cancelBooking } from "@/lib/cancellation";
+import { cancelBooking, type DriverCopyFile } from "@/lib/cancellation";
 import { DomainError } from "@/lib/integrity";
 import { assertAccidentCaseOpen } from "@/lib/accident-replacement-events";
 
@@ -81,15 +81,17 @@ export { CANCELLATION_REASON_MAX, cancellationCheck } from "@/lib/cancellation";
  * Die Zeile wird gesperrt, damit ein gleichzeitiger Übergabeabschluss und ein Storno nacheinander laufen.
  * Befehl 27: CANCELLED nur mit Grund und Benutzer (opts), Prüfung „Geld hängt an der Buchung“ unter der Sperre, Audit.
  */
-export async function changeBookingStatus(tenantId: string, bookingId: string, target: "ACTIVE" | "RETURNED" | "CANCELLED", opts: { actor?: Actor; reason?: string } = {}): Promise<{ orphanedStorageKeys: string[] }> {
+type StatusChangeFiles = { orphanedStorageKeys: string[]; driverCopyFiles: DriverCopyFile[] };
+
+export async function changeBookingStatus(tenantId: string, bookingId: string, target: "ACTIVE" | "RETURNED" | "CANCELLED", opts: { actor?: Actor; reason?: string } = {}): Promise<StatusChangeFiles> {
   const pre = await changeBookingStatusIn(tenantId, bookingId, target, opts);
   if (pre) return pre;
   // Befehl 28: Storno ohne Geldentscheidungen über den zentralen Abschluss; hängt Geld an der Buchung, verlangt er eine Entscheidung (Storno-Assistent)
   const res = await cancelBooking(tenantId, opts.actor!, bookingId, { reason: opts.reason ?? "" });
-  return { orphanedStorageKeys: res.orphanedStorageKeys };
+  return { orphanedStorageKeys: res.orphanedStorageKeys, driverCopyFiles: res.driverCopyFiles };
 }
 
-async function changeBookingStatusIn(tenantId: string, bookingId: string, target: "ACTIVE" | "RETURNED" | "CANCELLED", opts: { actor?: Actor; reason?: string }): Promise<{ orphanedStorageKeys: string[] } | null> {
+async function changeBookingStatusIn(tenantId: string, bookingId: string, target: "ACTIVE" | "RETURNED" | "CANCELLED", opts: { actor?: Actor; reason?: string }): Promise<StatusChangeFiles | null> {
   return db.$transaction(async (tx) => {
     // Befehl 29 Phase E: geschlossener Unfallersatzfall – kein Statuswechsel (vor der Buchungssperre: Fall → Buchung)
     await assertAccidentCaseOpen(tx, tenantId, bookingId);
@@ -114,6 +116,6 @@ async function changeBookingStatusIn(tenantId: string, bookingId: string, target
     const pickup = await tx.handover.count({ where: { tenantId, bookingId: booking.id, type: "PICKUP", status: "FINALIZED" } });
     if (pickup > 0) throw new DomainError("Zu dieser Miete gibt es ein Übergabeprotokoll. Die Rücknahme läuft deshalb über das Rückgabeprotokoll.");
     await tx.booking.update({ where: { id: booking.id }, data: { status: "RETURNED", actualReturnAt: new Date() } });
-    return { orphanedStorageKeys: [] };
+    return { orphanedStorageKeys: [], driverCopyFiles: [] };
   });
 }

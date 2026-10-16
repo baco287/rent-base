@@ -10,7 +10,7 @@ import { db } from "@/lib/db";
 import { DomainError, isImmutableError } from "@/lib/integrity";
 import { authorizeKeyDrop, cancelKeyDrop, revokeKeyDropLink, sendKeyDropLink } from "@/lib/key-drop";
 import { discardEmptyReturnDraft } from "@/lib/handovers";
-import { requestBaseUrl } from "@/lib/request-url";
+import { appBaseUrl } from "@/lib/app-url";
 import { parseLocalDateTime } from "@/lib/time";
 
 export type KeyDropState = { error?: string; ok?: string } | undefined;
@@ -50,7 +50,7 @@ export async function sendKeyDropLinkAction(bookingId: string, keyDropId: string
   await requireFeature("KEY_DROP");
   try {
     await ownKeyDrop(tenant.id, bookingId, keyDropId);
-    const res = await sendKeyDropLink(tenant.id, { id: user.id, name: user.name }, keyDropId, { nonce: String(fd.get("nonce") ?? ""), baseUrl: await requestBaseUrl() });
+    const res = await sendKeyDropLink(tenant.id, { id: user.id, name: user.name }, keyDropId, { nonce: String(fd.get("nonce") ?? ""), baseUrl: appBaseUrl() });
     refresh(bookingId);
     if (res.status === "DUPLICATE") return { ok: "Diese Anfrage wurde bereits verarbeitet. Es wurde nichts doppelt verschickt." };
     if (res.status === "FAILED") return { error: `Die Rückgabe-Mail konnte nicht versendet werden: ${res.error ?? "unbekannter Fehler"}` };

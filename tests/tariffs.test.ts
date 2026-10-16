@@ -357,6 +357,20 @@ test("44 Rennen: zwei Standardtarife gleichzeitig – die Gruppe hat danach gena
   assert.ok(!g2.defaultRatePlan || g2.defaultRatePlan.active, "Standard ist immer aktiv");
 });
 
+test("44b Rennen wiederholt: Deaktivieren ∥ als Standard setzen – nie ein deaktivierter Standard, Historie passt", async () => {
+  const w = await world("t29-race-default-repeat");
+  for (let i = 0; i < 10; i++) {
+    const p = await plan(w, `Rennen ${i}`);
+    const [off, def] = await Promise.allSettled([setRatePlanActive(w.tenantId, OWNER(w), p, false), setGroupDefaultRatePlan(w.tenantId, OWNER(w), w.groupId, p)]);
+    assert.equal(off.status, "fulfilled", `Runde ${i}: Deaktivieren gelingt immer`);
+    const g = await db.vehicleGroup.findUniqueOrThrow({ where: { id: w.groupId }, include: { defaultRatePlan: true } });
+    assert.ok(!g.defaultRatePlan || g.defaultRatePlan.active, `Runde ${i}: Standard ist immer aktiv`);
+    // Entweder wurde der Standard abgelehnt (Tarif schon deaktiviert) oder vorher gesetzt und mit der Deaktivierung wieder aufgehoben
+    if (def.status === "rejected") assert.match(String((def.reason as Error).message), /deaktivierter Tarif/);
+    else assert.equal(g.defaultRatePlanId, null, `Runde ${i}: Standard mit der Deaktivierung aufgehoben`);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Migration der Altpreise (SQL der Migration, beschränkt auf einen Testmandanten)
 // ---------------------------------------------------------------------------

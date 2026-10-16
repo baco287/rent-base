@@ -71,6 +71,18 @@ export function zonedDayStartPlus(d: Date, days: number): Date {
   return parseLocalDateTime(`${wall.getUTCFullYear()}-${two(wall.getUTCMonth() + 1)}-${two(wall.getUTCDate())}T00:00`)!;
 }
 
+/**
+ * Derselbe Zeitpunkt auf der Uhr n Kalendertage später (in der Anwendungszeitzone), nicht n × 24 Stunden: über eine
+ * Zeitumstellung hinweg bleibt der Kalendertag richtig (z. B. Abschluss 20.10. 00:30 + 14 Tage → 03.11. 00:30, nicht 02.11. 23:30).
+ * Liegt die Uhrzeit am Zieltag in der Umstellungslücke, gilt die nächste gültige Uhrzeit (wie parseLocalDateTime).
+ */
+export function zonedPlusDays(d: Date, days: number): Date {
+  const z = zonedParts(d);
+  const wall = new Date(Date.UTC(z.year, z.month - 1, z.day + days));
+  const at = parseLocalDateTime(`${wall.getUTCFullYear()}-${two(wall.getUTCMonth() + 1)}-${two(wall.getUTCDate())}T${two(z.hour)}:${two(z.minute)}:${two(z.second)}`)!;
+  return new Date(at.getTime() + d.getUTCMilliseconds());
+}
+
 /** Halboffenes Tagesintervall [start, end) des Kalendertags von d in der Anwendungszeitzone. */
 export function zonedDayRange(d: Date): { start: Date; end: Date } {
   return { start: zonedDayStart(d), end: zonedDayStartPlus(d, 1) };

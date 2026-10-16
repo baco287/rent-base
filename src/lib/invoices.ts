@@ -28,7 +28,7 @@ import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed, accidentCaseEvent, as
 import { contractTariffItems } from "@/lib/accident-pricing";
 import { overlayAmendments } from "@/lib/amendments";
 import { linkRentalPaymentsToInvoice, lockUnlinkedRentalPayments } from "@/lib/rental-payment-link";
-import { APP_TIME_ZONE } from "@/lib/time";
+import { APP_TIME_ZONE, zonedPlusDays } from "@/lib/time";
 
 type Tx = Prisma.TransactionClient;
 const TX = { timeout: 20_000, maxWait: 10_000 };
@@ -1603,8 +1603,9 @@ export async function finalizeInvoiceIn(tx: Tx, tenantId: string, invoiceId: str
     companySnapshot = companySnapshotOf(tenant) as unknown as Prisma.InputJsonValue;
     issueDate = now;
   }
-  // Zahlungsziel läuft ab dem Abschluss der jeweiligen Fassung (bei einer Berichtigung ab dem Berichtigungsdatum)
-  const paymentDueDate = draft.paymentTermDays != null ? new Date(now.getTime() + draft.paymentTermDays * 86400_000) : null;
+  // Zahlungsziel läuft ab dem Abschluss der jeweiligen Fassung (bei einer Berichtigung ab dem Berichtigungsdatum);
+  // gezählt in Berliner Kalendertagen, nicht in 24-Stunden-Blöcken (sonst verschiebt eine Zeitumstellung den Fälligkeitstag)
+  const paymentDueDate = draft.paymentTermDays != null ? zonedPlusDays(now, draft.paymentTermDays) : null;
   const sealedBase = await tx.invoiceVersion.update({
     where: { id: draft.id },
     data: { issueDate, correctionDate: draft.versionNo > 1 ? now : null, paymentDueDate, companySnapshot },

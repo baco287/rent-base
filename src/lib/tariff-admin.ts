@@ -244,6 +244,9 @@ export async function setGroupDefaultRatePlan(tenantId: string, actor: Actor, gr
     if (rows[0].defaultRatePlanId === ratePlanId) return { changed: false };
     let planName: string | null = null;
     if (ratePlanId) {
+      // Tarif sperren, bevor „aktiv“ und Zuordnung geprüft werden: FOR KEY SHARE ist die Stufe, die das Setzen des Standards über den
+      // Fremdschlüssel ohnehin nimmt. Deaktivieren und neue Revision (lockPlan, FOR UPDATE) laufen so vorher oder nachher, nie dazwischen.
+      await tx.$queryRaw`SELECT "id" FROM "RatePlan" WHERE "id" = ${ratePlanId} AND "tenantId" = ${tenantId} FOR KEY SHARE`;
       const plan = await tx.ratePlan.findFirst({ where: { id: ratePlanId, tenantId }, select: { name: true, active: true, currentRevisionId: true } });
       if (!plan) throw new DomainError("Miettarif nicht gefunden.");
       if (!plan.active) throw new DomainError("Ein deaktivierter Tarif kann nicht Standardtarif sein.");

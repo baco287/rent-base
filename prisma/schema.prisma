@@ -764,7 +764,7 @@ model Handover {
   vehicleId  String
   contractId String?
   type       String // PICKUP | RETURN
-  status     String  @default("DRAFT") // DRAFT | FINALIZED
+  status     String  @default("DRAFT") // DRAFT | FINALIZED | DISCARDED (Übergabe-Entwurf mit Prüfdaten beim Storno verworfen)
   number     String // z. B. UP-2026-0001 (Übergabe), RP-2026-0001 (Rückgabe)
 
   employeeId   String?
@@ -800,6 +800,9 @@ model Handover {
   startedAt   DateTime  @default(now())
   finalizedAt DateTime?
   contentHash String? // sha256 über den versiegelten Inhalt
+  // Verworfen statt gelöscht: Prüfvermerke verweisen auf den Entwurf und werden nie gelöscht (nur Übergaben, nur mit Grund)
+  discardedAt   DateTime?
+  discardReason String?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 

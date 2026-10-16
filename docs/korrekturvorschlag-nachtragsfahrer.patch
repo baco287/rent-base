@@ -1,0 +1,185 @@
+diff --git a/src/app/(app)/buchungen/[id]/uebergabe/page.tsx b/src/app/(app)/buchungen/[id]/uebergabe/page.tsx
+index a4ffe03..6695556 100644
+--- a/src/app/(app)/buchungen/[id]/uebergabe/page.tsx
++++ b/src/app/(app)/buchungen/[id]/uebergabe/page.tsx
+@@ -33,7 +33,7 @@ import { loadHandoverContext } from "@/lib/document-data";
+ import { PhotoUploader } from "./photo-uploader";
+ import { ReadingsIssueList } from "./readings-issues";
+ import { DriverVerificationSection } from "./driver-verification-panel";
+-import { driverCheckSummaries } from "@/lib/driver-verification";
++import { DRIVER_AMENDMENT_STATUS, driverCheckSummaries, isEffectiveDriver } from "@/lib/driver-verification";
+ import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed } from "@/lib/accident-replacement-events";
+ 
+ export const metadata = { title: "Übergabe" };
+@@ -45,7 +45,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
+ 
+   const b = await db.booking.findFirst({
+     where: { id, tenantId: tenant.id },
+-    include: { vehicle: { include: { group: true } }, customer: true, contract: { include: { drivers: true } }, handovers: { where: { type: "PICKUP", correctsId: null }, orderBy: { createdAt: "desc" }, take: 1 } },
++    include: { vehicle: { include: { group: true } }, customer: true, contract: { include: { drivers: { include: DRIVER_AMENDMENT_STATUS } } }, handovers: { where: { type: "PICKUP", correctsId: null }, orderBy: { createdAt: "desc" }, take: 1 } },
+   });
+   if (!b) notFound();
+   const stage = bookingStage(b, b.contract);
+@@ -145,7 +145,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/b
+                   <dt className="text-ink-3">Mietvertrag</dt><dd className="font-medium"><Link href={`/buchungen/${b.id}/vertrag`} className="hover:underline">{b.contract?.number}</Link></dd>
+                   <dt className="text-ink-3">Mieter</dt><dd className="font-medium">{customerName(b.customer)}</dd>
+                   <dt className="text-ink-3">Fahrer</dt><dd className="font-medium">{primaryDriver ? `${primaryDriver.firstName} ${primaryDriver.lastName}` : "–"}</dd>
+-                  <dt className="text-ink-3">Zusatzfahrer</dt><dd>{b.contract?.drivers.filter((d) => d.role === "ADDITIONAL_DRIVER").map((d) => `${d.firstName} ${d.lastName}`).join(", ") || "keine"}</dd>
++                  <dt className="text-ink-3">Zusatzfahrer</dt><dd>{b.contract?.drivers.filter((d) => d.role === "ADDITIONAL_DRIVER" && isEffectiveDriver(d)).map((d) => `${d.firstName} ${d.lastName}`).join(", ") || "keine"}</dd>
+                   <dt className="text-ink-3">Geplante Abholung</dt><dd className="font-mono tnum">{fmtDateTime(b.startAt)}</dd>
+                   <dt className="text-ink-3">{b.rentalType === "ACCIDENT_REPLACEMENT" ? "Mietende" : "Geplante Rückgabe"}</dt><dd className="font-mono tnum">{b.rentalType === "ACCIDENT_REPLACEMENT" ? <>offen (bis zur Rückgabe){b.endAt ? <span className="block text-xs text-ink-3 font-sans">geplant {fmtDateTime(b.endAt)} – nur Disposition</span> : null}</> : fmtDateTime(b.endAt)}</dd>
+                   <dt className="text-ink-3">Telefon</dt><dd>{b.customer.phone || "–"}</dd>
+diff --git a/src/lib/contract-view.ts b/src/lib/contract-view.ts
+index f8f19e9..0a1884c 100644
+--- a/src/lib/contract-view.ts
++++ b/src/lib/contract-view.ts
+@@ -121,6 +121,13 @@ export function rulesSection(rules: ContractRules | null, contract: { kmIncluded
+ }
+ 
+ type ContractWithDrivers = Prisma.RentalContractGetPayload<{ include: { drivers: true } }>;
++
++/**
++ * Fahrer, die zum unterschriebenen Vertrag gehören: Grundlage für Prüfsumme, Vertragsansicht und Vertrags-PDF.
++ * Fahrer aus Nachträgen (addedByAmendmentId) stehen im jeweiligen Nachtrag, nie im Originalvertrag. Wer aktuell
++ * fahren darf, ergibt sich erst aus Vertrag und unterschriebenen Nachträgen (isEffectiveDriver in driver-verification).
++ */
++export const ORIGINAL_CONTRACT_DRIVERS = { where: { addedByAmendmentId: null }, orderBy: [{ role: "desc" }, { createdAt: "asc" }] } satisfies Prisma.RentalContract$driversArgs;
+ export type TenantLike = { name: string; street: string | null; zip: string | null; city: string | null; phone: string | null; email: string | null; website?: string | null; logoStorageKey?: string | null; logoChecksum?: string | null };
+ type SignatureLike = { id: string; role: string; signerName: string; signedAt: Date };
+ 
+diff --git a/src/lib/contracts.ts b/src/lib/contracts.ts
+index 198b85d..dfe7e1c 100644
+--- a/src/lib/contracts.ts
++++ b/src/lib/contracts.ts
+@@ -22,7 +22,7 @@ import { depositAgreedAmountConflict, linkDepositToContract } from "@/lib/deposi
+ import { checkCustomer, checkDriver, errorsOf, type Issue } from "@/lib/contract-checks";
+ import { driveClassOf, type RuleSource } from "@/lib/constants";
+ import { DomainError, assertContractDraft, contentHash, sha256 } from "@/lib/integrity";
+-import { landlordFromTenant } from "@/lib/contract-view";
++import { ORIGINAL_CONTRACT_DRIVERS, landlordFromTenant } from "@/lib/contract-view";
+ import { isUniqueViolation, nextContractNumber, withNumberRetry } from "@/lib/numbering";
+ import { calculateRentalPrice, rateCardFrom, toNumber, type PriceBreakdown } from "@/lib/pricing";
+ import { activeTermsVersion, termsFeatureActive, type TermsRow } from "@/lib/rental-terms";
+@@ -394,7 +394,8 @@ export async function refreshContractDraft(tx: Tx, tenantId: string, contractId:
+ // ---------------------------------------------------------------------------
+ 
+ async function loadContract(tx: Tx, tenantId: string, contractId: string) {
+-  const c = await tx.rentalContract.findFirst({ where: { id: contractId, tenantId }, include: { drivers: { orderBy: [{ role: "desc" }, { createdAt: "asc" }] } } });
++  // Grundlage für Prüfsumme, Unterschriften und Vertragsdokument: nur der Inhalt, der unterschrieben wurde
++  const c = await tx.rentalContract.findFirst({ where: { id: contractId, tenantId }, include: { drivers: ORIGINAL_CONTRACT_DRIVERS } });
+   if (!c) throw new DomainError("Vertrag nicht gefunden.");
+   return c;
+ }
+diff --git a/src/lib/document-data.ts b/src/lib/document-data.ts
+index e664a77..d25d7e8 100644
+--- a/src/lib/document-data.ts
++++ b/src/lib/document-data.ts
+@@ -6,7 +6,7 @@
+ import type { Prisma } from "@prisma/client";
+ import { db } from "@/lib/db";
+ import { REQUIRED_PHOTO_CATEGORIES, recipientRoleOf } from "@/lib/constants";
+-import { buildContractDocument, landlordOf, type ContractDocumentData, type TenantLike } from "@/lib/contract-view";
++import { ORIGINAL_CONTRACT_DRIVERS, buildContractDocument, landlordOf, type ContractDocumentData, type TenantLike } from "@/lib/contract-view";
+ import type { CustomerSnapshot, VehicleSnapshot } from "@/lib/contracts";
+ import { buildHandoverDocument, type DocKeyDrop, type HandoverContext, type HandoverDocumentData } from "@/lib/handover-view";
+ import { keyDropCustomerRows } from "@/lib/key-drop-document";
+@@ -37,7 +37,7 @@ function validSignatures(rows: SignatureRow[], sealedHash: string | null): Signa
+ export type ContractData = { doc: ContractDocumentData; bookingId: string; contractId: string; sourceHash: string; signatureImages: Map<string, Uint8Array> };
+ 
+ export async function loadContractDocumentData(tenantId: string, contractId: string): Promise<ContractData> {
+-  const contract = await db.rentalContract.findFirst({ where: { id: contractId, tenantId }, include: { drivers: { orderBy: [{ role: "desc" }, { createdAt: "asc" }] } } });
++  const contract = await db.rentalContract.findFirst({ where: { id: contractId, tenantId }, include: { drivers: ORIGINAL_CONTRACT_DRIVERS } });
+   if (!contract) throw new DomainError("Vertrag nicht gefunden.");
+   if (contract.status !== "SIGNED" || !contract.contentHash) throw new DomainError("Ein Vertrags-PDF gibt es erst, wenn der Mietvertrag abgeschlossen ist.");
+   const tenant = await db.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: TENANT_FIELDS });
+diff --git a/src/lib/driver-verification.ts b/src/lib/driver-verification.ts
+index 18ead8a..adbd982 100644
+--- a/src/lib/driver-verification.ts
++++ b/src/lib/driver-verification.ts
+@@ -70,12 +70,21 @@ export type RequiredDriver = {
+   licenseValidUntil: Date | null;
+ };
+ 
++/** Für isEffectiveDriver mitzuladen: Status der Nachträge, die den Fahrer aufgenommen oder herausgenommen haben. */
++export const DRIVER_AMENDMENT_STATUS = { addedBy: { select: { status: true } }, removedBy: { select: { status: true } } } as const;
++
++/**
++ * Befehl 25: wirksam ist ein Fahrer, wenn er im Vertrag stand oder durch einen unterschriebenen Nachtrag aufgenommen wurde,
++ * und kein unterschriebener Nachtrag ihn herausgenommen hat. Fahrer eines Nachtrag-Entwurfs werden erst mit dessen Unterschrift wirksam.
++ */
++export function isEffectiveDriver(r: { addedByAmendmentId: string | null; removedByAmendmentId: string | null; addedBy?: { status: string } | null; removedBy?: { status: string } | null }): boolean {
++  return (!r.addedByAmendmentId || r.addedBy?.status === "SIGNED") && !(r.removedByAmendmentId && r.removedBy?.status === "SIGNED");
++}
++
+ /** Fahrer, die laut finalisiertem Vertrag geprüft werden müssen: Hauptfahrer und alle Zusatzfahrer (nie aus Customer abgeleitet). */
+ export async function requiredDriversFor(tenantId: string, contractId: string, client: Tx | typeof db = db): Promise<RequiredDriver[]> {
+-  // Befehl 25: nur wirksame Fahrer – durch einen unterschriebenen Nachtrag aufgenommene zählen, herausgenommene nicht;
+-  // Fahrer eines Nachtrag-Entwurfs werden erst mit dessen Unterschrift wirksam
+-  const rows = (await client.contractDriver.findMany({ where: { tenantId, contractId }, orderBy: [{ role: "asc" }, { createdAt: "asc" }], include: { addedBy: { select: { status: true } }, removedBy: { select: { status: true } } } }))
+-    .filter((r) => (!r.addedByAmendmentId || r.addedBy?.status === "SIGNED") && !(r.removedByAmendmentId && r.removedBy?.status === "SIGNED"));
++  const rows = (await client.contractDriver.findMany({ where: { tenantId, contractId }, orderBy: [{ role: "asc" }, { createdAt: "asc" }], include: DRIVER_AMENDMENT_STATUS }))
++    .filter(isEffectiveDriver);
+   return rows.map((r) => ({
+     contractDriverId: r.id,
+     role: r.role as "PRIMARY_DRIVER" | "ADDITIONAL_DRIVER",
+@@ -706,7 +715,7 @@ export async function pickupDriverCheckStatus(tenantId: string, bookingIds: stri
+   const out = new Map<string, PickupDriverCheckStatus>();
+   if (bookingIds.length === 0) return out;
+   const [contracts, handovers] = await Promise.all([
+-    db.rentalContract.findMany({ where: { tenantId, bookingId: { in: bookingIds }, status: "SIGNED" }, select: { id: true, bookingId: true, _count: { select: { drivers: true } } } }),
++    db.rentalContract.findMany({ where: { tenantId, bookingId: { in: bookingIds }, status: "SIGNED" }, select: { id: true, bookingId: true, drivers: { select: { addedByAmendmentId: true, removedByAmendmentId: true, ...DRIVER_AMENDMENT_STATUS } } } }),
+     db.handover.findMany({ where: { tenantId, bookingId: { in: bookingIds }, type: "PICKUP", correctsId: null, status: "DRAFT" }, select: { id: true, bookingId: true }, orderBy: { createdAt: "desc" } }),
+   ]);
+   const handoverByBooking = new Map<string, string>();
+@@ -719,7 +728,7 @@ export async function pickupDriverCheckStatus(tenantId: string, bookingIds: stri
+     const handoverId = handoverByBooking.get(c.bookingId) ?? null;
+     const rows = handoverId ? [...latestByDriver.values()].filter((v) => v.handoverId === handoverId) : [];
+     out.set(c.bookingId, {
+-      required: c._count.drivers,
++      required: c.drivers.filter(isEffectiveDriver).length,
+       confirmed: rows.filter((v) => v.status === "CONFIRMED").length,
+       blocked: rows.filter((v) => v.status === "BLOCKED").length,
+       manualReviewOpen: rows.filter((v) => v.manualReviewRequired && v.manualReviewConfirmed !== true && v.status !== "CONFIRMED").length,
+diff --git a/tests/amendments.test.ts b/tests/amendments.test.ts
+index c99c9b8..67ec365 100644
+--- a/tests/amendments.test.ts
++++ b/tests/amendments.test.ts
+@@ -15,10 +15,11 @@ import {
+ } from "../src/lib/amendments";
+ import { buildAmendmentDocument, loadAmendmentDocumentData } from "../src/lib/amendment-document";
+ import { composeAmendmentMail, sendAmendment } from "../src/lib/amendment-mail";
+-import { ensureContractDraft, finalizeContract, getContractContentHash, saveConditions, saveContractSignature } from "../src/lib/contracts";
++import { ensureContractDraft, finalizeContract, getContractContentHash, saveConditions, saveContractSignature, verifyContract } from "../src/lib/contracts";
++import { loadContractDocumentData } from "../src/lib/document-data";
+ import { depositView, recordDepositReceived, securityDepositFinancials } from "../src/lib/deposits";
+ import { ensureAmendmentDocument, listBookingDocuments } from "../src/lib/documents";
+-import { driverVerificationOverview, requiredDriversFor, verifyDriverInOneStep } from "../src/lib/driver-verification";
++import { driverVerificationOverview, pickupDriverCheckStatus, requiredDriversFor, verifyDriverInOneStep } from "../src/lib/driver-verification";
+ import { finalizeHandover, getHandoverContentHash, saveHandoverSignature, startHandover, updateHandoverDraft } from "../src/lib/handovers";
+ import { contentHash } from "../src/lib/integrity";
+ import { fmtCents } from "../src/lib/money";
+@@ -662,3 +663,24 @@ test("describeChanges: Darstellung alt/neu für alle Änderungsarten", () => {
+   assert.match(ch[0].note!, /2 Tage/);
+   assert.equal(ch[4].before, "Hof");
+ });
++
++test("Nachtragsfahrer verändern weder Prüfsumme noch Vertragsdokument des unterschriebenen Vertrags", async () => {
++  const w = await signedWorld("nachtrag-fahrer-hash");
++  assert.equal((await verifyContract(w.tenantId, w.contractId)).intact, true);
++
++  const a = await draft(w, "fahrer-hash");
++  const d = await addAmendmentDriver(w.tenantId, w.actor, a.id, DRIVER);
++  // Entwurf: Originalvertrag unverändert, der neue Fahrer ist noch nicht wirksam
++  assert.equal((await verifyContract(w.tenantId, w.contractId)).intact, true, "ein Nachtrag-Entwurf ändert die Prüfsumme des Vertrags nicht");
++  assert.equal((await loadContractDocumentData(w.tenantId, w.contractId)).doc.additionalDrivers.length, 0, "Vertrags-PDF ohne Entwurfsfahrer");
++  assert.equal((await requiredDriversFor(w.tenantId, w.contractId)).length, 1);
++  assert.equal((await pickupDriverCheckStatus(w.tenantId, [w.bookingId])).get(w.bookingId)?.required, 1);
++
++  // Unterschrieben (nach der vorgeschriebenen Fahrerprüfung): Fahrer wirksam, der Originalvertrag bleibt, wie er unterschrieben wurde
++  await verifyDriverInOneStep(w.tenantId, w.actor, { amendmentId: a.id }, d.id, CHECK);
++  await signed(w, a.id);
++  assert.equal((await verifyContract(w.tenantId, w.contractId)).intact, true, "auch nach dem Nachtrag ist der Vertrag intakt");
++  assert.equal((await loadContractDocumentData(w.tenantId, w.contractId)).doc.additionalDrivers.length, 0, "der neue Fahrer steht im Nachtrag, nicht im Originalvertrag");
++  assert.equal((await requiredDriversFor(w.tenantId, w.contractId)).length, 2);
++  assert.equal((await pickupDriverCheckStatus(w.tenantId, [w.bookingId])).get(w.bookingId)?.required, 2);
++});

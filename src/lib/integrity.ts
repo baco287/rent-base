@@ -64,6 +64,7 @@ export function contentHash(value: unknown): string {
 }
 
 export function assertHandoverDraft(h: { status: string; number: string }) {
+  if (h.status === "DISCARDED") throw new ImmutableError(`Das Protokoll ${h.number} wurde mit dem Storno der Buchung verworfen und kann nicht mehr bearbeitet werden.`);
   if (h.status !== "DRAFT") throw new ImmutableError(`Das Protokoll ${h.number} ist finalisiert und kann nicht mehr geändert werden. Korrekturen nur über ein Nachtragsprotokoll.`);
 }
 

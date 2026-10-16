@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { db } from "../src/lib/db";
 import { addCaseNote, blockVehicleForCase, caseCounts, caseView, changeCaseStatus, chargeCustomer, closeCase, listCases, openDamageCase, registerCaseDocument, registerCasePhoto, releaseVehicleForCase, reopenCase, setCaseCosts, setLiability } from "../src/lib/damage-cases";
 import { balanceOf } from "../src/lib/deposits";
+import { reportDamage } from "../src/lib/damages";
 import { DomainError, sha256 } from "../src/lib/integrity";
 import { discardInvoiceDraft, ensureInvoiceDraft, finalizeInvoice, getInvoiceState, listVersions, startInvoiceEdit, updateInvoiceDraft, verifyInvoice } from "../src/lib/invoices";
 import { loadInvoiceDocumentData } from "../src/lib/document-data";
@@ -89,6 +90,18 @@ test("Parallel: fünf gleichzeitige Eröffnungen desselben Schadens ergeben gena
   assert.equal(ids.size, 1);
   assert.equal(results.filter((r) => r.created).length, 1);
   assert.equal(await db.damageCase.count({ where: { tenantId: w.tenantId } }), 1);
+});
+
+test("Parallel: gleichzeitige Eröffnung verschiedener Schäden vergibt eindeutige, lückenlose Aktennummern", async () => {
+  const w = await createWorld("case-number-race");
+  tenants.push(w.tenantId);
+  const damages = [];
+  for (let i = 0; i < 5; i++) damages.push(await reportDamage(w.tenantId, w.actor, { vehicleId: w.vehicleId, view: "FRONT", posX: 0.1 + i * 0.15, posY: 0.5, kind: "CHIP", description: `Steinschlag ${i + 1}` }));
+  const results = await Promise.all(damages.map((d) => openDamageCase(w.tenantId, d.id, w.actor)));
+  assert.equal(results.filter((r) => r.created).length, 5);
+  const numbers = results.map((r) => r.damageCase.caseNumber).sort();
+  assert.equal(new Set(numbers).size, 5, `eindeutig: ${numbers.join(", ")}`);
+  assert.deepEqual(numbers.map((n) => Number(n.slice(-6))), [1, 2, 3, 4, 5], "lückenlos ab 1");
 });
 
 test("Statusworkflow: nur zentrale Übergänge, Schließen mit Grund, Wiederöffnen mit Grund, geschlossene Akte nicht bearbeitbar", async () => {

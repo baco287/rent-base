@@ -149,7 +149,13 @@ test("Race: veralteter Entwurf, veraltete Unterschrift und gleichzeitiges Storno
   const after = await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } });
   const handover = await db.handover.findFirst({ where: { id: p.id } });
   if (after.status === "ACTIVE") { assert.equal(r[1].status, "rejected"); assert.equal(handover?.status, "FINALIZED"); }
-  else { assert.equal(after.status, "CANCELLED"); assert.equal(r[0].status, "rejected"); assert.equal(handover, null, "Entwurf beim Storno verworfen"); }
+  else {
+    assert.equal(after.status, "CANCELLED"); assert.equal(r[0].status, "rejected");
+    // Fahrer geprüft: der Entwurf wird nicht gelöscht, sondern verworfen – Prüfvermerke bleiben, Bestandteile sind entfernt
+    assert.equal(handover?.status, "DISCARDED", "Entwurf beim Storno verworfen");
+    assert.ok((await db.driverVerification.count({ where: { handoverId: p.id } })) > 0, "Prüfvermerke bleiben als Nachweis");
+    assert.equal(await db.photo.count({ where: { handoverId: p.id } }), 0, "Fotos des Entwurfs entfernt");
+  }
 });
 
 test("Statusmaschine und Storno je Phase", async () => {

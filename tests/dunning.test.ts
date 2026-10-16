@@ -27,6 +27,7 @@ import { renderDunningPdf } from "../src/lib/pdf/dunning-pdf";
 import { renderInvoicePdf } from "../src/lib/pdf/invoice-pdf";
 import { loadInvoiceDocumentData } from "../src/lib/document-data";
 import { getStorage, type StorageDriver } from "../src/lib/storage";
+import { parseLocalDateTime, toDateInputValue, zonedDayStartPlus, zonedDaysBetween, zonedParts, zonedPlusDays } from "../src/lib/time";
 import { purgeTenants } from "./helpers";
 import { returnedWorld } from "./rental-flow";
 
@@ -49,9 +50,9 @@ class FakeTransport implements MailTransport {
   async send(m: MailMessage) { this.sent.push(m); return { messageId: `<fake-${this.sent.length}@test>` }; }
 }
 
-const DAY = 86_400_000;
 const at = new Date(Date.now() - 60_000);
-const T = (days: number) => new Date(Date.now() + days * DAY);
+/** Jetzt + n Berliner Kalendertage zur selben Uhrzeit (nicht n × 24 h, sonst kippt der Tag nachts über eine Zeitumstellung). */
+const T = (days: number) => zonedPlusDays(new Date(), days);
 const year = new Date().getFullYear();
 let keySeq = 0;
 const key = (p = "k") => `${p}-${Date.now().toString(36)}-${++keySeq}-dunning`;
@@ -130,11 +131,42 @@ test("Salden (6–10): Guthaben statt Forderung, Rückführung/Auszahlung erzeug
   assert.equal((await receivableOf(b.w.tenantId, b.invoiceId))!.principalOpenCents, 50_000, "Storno der Kautionsverrechnung erhöht die Forderung");
 });
 
+/** Nächste Zeitumstellung in Berlin nach `from`: letzter Sonntag im März (Beginn der Sommerzeit) bzw. im Oktober (Ende). */
+function nextSwitch(from: Date, month: 3 | 10): Date {
+  for (let y = from.getUTCFullYear(); ; y++) {
+    const last = new Date(Date.UTC(y, month, 0));
+    const sunday = new Date(Date.UTC(y, month - 1, last.getUTCDate() - last.getUTCDay(), 12));
+    if (sunday > from) return sunday;
+  }
+}
+
+test("Zeitumstellung: Mahnfrist zählt Berliner Kalendertage – Herbst 00:30 und Frühjahr 23:30, unabhängig von der Uhrzeit des Testlaufs", async () => {
+  for (const [label, month, wall] of [["Herbst", 10, "00:30"], ["Frühjahr", 3, "23:30"]] as const) {
+    const { w, invoiceId } = await billed(`dn-dst-${month}`);
+    const due = (await db.invoice.findUniqueOrThrow({ where: { id: invoiceId }, include: { currentVersion: true } })).currentVersion!.paymentDueDate!;
+    // drei Tage vor der nächsten Umstellung (nach der Fälligkeit), zur kritischen Uhrzeit: die Frist von 7 Tagen überspannt die Umstellung
+    const day = zonedPlusDays(nextSwitch(zonedPlusDays(due, 5), month), -3);
+    const now = parseLocalDateTime(`${toDateInputValue(day)}T${wall}`)!;
+    await updateDunningSettings(w.tenantId, w.actor, { paymentTermDays: 14, reminderDays: 7, firstDays: 7, secondDays: 7, feesEnabled: false, firstFeeCents: 0, secondFeeCents: 0 });
+    const n = await issue(w, invoiceId, 1, now);
+    const deadline = n.notice.deadlineAt;
+    assert.equal(zonedDaysBetween(now, deadline), 7, `${label}: Fristtag genau 7 Kalendertage nach dem ${toDateInputValue(now)} ${wall}, ist ${toDateInputValue(deadline)}`);
+    assert.deepEqual([zonedParts(deadline).hour, zonedParts(deadline).minute], [zonedParts(now).hour, zonedParts(now).minute], `${label}: gleiche Uhrzeit am Fristtag`);
+    assert.notEqual(deadline.getTime() - now.getTime(), 7 * 86_400_000, `${label}: die Frist überspannt die Umstellung (sonst prüft der Test nichts)`);
+    // Fristablauf nach Kalendertag: am Fristtag läuft die Frist noch, ab dem Folgetag ist die nächste Stufe möglich
+    await deliver(w, n.notice.id);
+    const lastMinute = parseLocalDateTime(`${toDateInputValue(deadline)}T23:59`)!;
+    assert.equal((await receivableOf(w.tenantId, invoiceId, { now: lastMinute }))!.next.kind, "WAIT_DEADLINE", `${label}: am Fristtag 23:59 läuft die Frist`);
+    const following = (await receivableOf(w.tenantId, invoiceId, { now: zonedDayStartPlus(deadline, 1) }))!.next;
+    assert.deepEqual([following.kind, following.kind === "CREATE" ? following.level : null], ["CREATE", 2], `${label}: am Folgetag 00:00 ist die 1. Mahnung möglich`);
+  }
+});
+
 test("Fälligkeit (11–15): nicht fällig / überfällig / bezahlt; Teilzahlung vor Fälligkeit; Regeländerung wirkt nicht rückwirkend; ohne Zahlungsziel keine Mahnstufe", async () => {
   const { w, invoiceId } = await billed("dn-due");
   const inv = await db.invoice.findUniqueOrThrow({ where: { id: invoiceId }, include: { currentVersion: true } });
   const due = inv.currentVersion!.paymentDueDate!;
-  assert.ok(Math.abs(due.getTime() - (inv.currentVersion!.finalizedAt!.getTime() + 14 * DAY)) < 1000, "Fälligkeit beim Abschluss versiegelt");
+  assert.equal(due.getTime(), zonedPlusDays(inv.currentVersion!.finalizedAt!, 14).getTime(), "Fälligkeit beim Abschluss versiegelt: 14 Berliner Kalendertage nach dem Abschluss");
   const r0 = (await receivableOf(w.tenantId, invoiceId))!;
   assert.deepEqual([r0.status, r0.daysOverdue, r0.next.kind], ["NOT_DUE", 0, "WAIT_DUE"]);
   await pay(w, invoiceId, "100");

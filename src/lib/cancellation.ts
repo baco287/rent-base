@@ -29,6 +29,7 @@ import { fmtCents, lineAmounts, toBasisPoints, toCents, type Cents } from "@/lib
 import { isUniqueViolation, withNumberRetry } from "@/lib/numbering";
 import { createPayoutIn, type PayoutInput, type SourceRef } from "@/lib/payouts";
 import { prepaymentBalance, rentalPaymentSummary } from "@/lib/rental-payments";
+import { getStorage, type StorageDriver } from "@/lib/storage";
 
 type Tx = Prisma.TransactionClient;
 type Client = Tx | typeof db;
@@ -54,21 +55,94 @@ export async function cancelContractOf(tx: Tx, tenantId: string, bookingId: stri
   return contract;
 }
 
-/** Übergabe-Entwürfe verwerfen (finalisierte Protokolle gibt es bei RESERVED nicht). Liefert Speicherschlüssel verworfener Fotos. */
-export async function discardHandoverDrafts(tx: Tx, tenantId: string, bookingId: string): Promise<string[]> {
-  const drafts = await tx.handover.findMany({ where: { tenantId, bookingId, status: "DRAFT" }, select: { id: true } });
-  const keys: string[] = [];
+/** Grund am verworfenen Übergabe-Entwurf: fester Text, der Stornogrund steht an der Buchung (keine Kopie von Freitext). */
+export const HANDOVER_DISCARD_REASON = "Mit dem Storno der Buchung verworfen";
+/** Löschgrund der Ausweis- und Führerscheinkopien eines verworfenen Entwurfs: der Zweck entfällt mit dem Storno. */
+export const COPY_DELETION_REASON_CANCELLED = "Buchung storniert";
+
+export type DriverCopyFile = { copyId: string; storageKey: string };
+export type DiscardedDrafts = { photoKeys: string[]; driverCopyFiles: DriverCopyFile[] };
+
+/**
+ * Übergabe-Entwürfe beim Storno verwerfen (finalisierte Protokolle gibt es bei RESERVED nicht). Fotos, Unterschriften, Zusatzkosten,
+ * Checkliste und Schadenkopien werden gelöscht. Ohne Prüfdaten wird der Entwurf wie bisher gelöscht. Mit Fahrerprüfung bleibt er als
+ * DISCARDED stehen: Prüfvermerke werden nie gelöscht und verweisen fest auf ihn; seine Ausweis- und Führerscheinkopien werden als
+ * gelöscht markiert. Die Dateien (Fotos, Kopien) entfernt removeCancellationFiles erst nach dem Commit – bei einem Rollback bleiben sie.
+ */
+export async function discardHandoverDrafts(tx: Tx, tenantId: string, bookingId: string, actor: Actor): Promise<DiscardedDrafts> {
+  const drafts = await tx.handover.findMany({ where: { tenantId, bookingId, status: "DRAFT" }, select: { id: true, number: true } });
+  const photoKeys: string[] = [];
+  const driverCopyFiles: DriverCopyFile[] = [];
   for (const d of drafts) {
     const photos = await tx.photo.findMany({ where: { tenantId, handoverId: d.id }, select: { id: true, storageKey: true } });
-    keys.push(...photos.map((p) => p.storageKey));
+    photoKeys.push(...photos.map((p) => p.storageKey));
     await tx.photo.deleteMany({ where: { tenantId, handoverId: d.id } });
     await tx.signature.deleteMany({ where: { tenantId, handoverId: d.id } });
     await tx.extraCharge.deleteMany({ where: { tenantId, handoverId: d.id } });
     await tx.handoverChecklistItem.deleteMany({ where: { tenantId, handoverId: d.id } });
     await tx.handoverDamage.deleteMany({ where: { tenantId, handoverId: d.id } });
-    await tx.handover.delete({ where: { id: d.id } });
+    const verifications = await tx.driverVerification.count({ where: { tenantId, handoverId: d.id } });
+    const copies = await tx.driverDocumentCopy.findMany({ where: { tenantId, handoverId: d.id }, select: { id: true, storageKey: true, deletionStatus: true } });
+    if (verifications === 0 && copies.length === 0) {
+      await tx.handover.delete({ where: { id: d.id } });
+      continue;
+    }
+    const now = new Date();
+    const active = copies.filter((c) => c.deletionStatus === "ACTIVE");
+    for (const c of active) {
+      await tx.driverDocumentCopy.update({ where: { id: c.id }, data: { deletionStatus: "DELETED", deletedAt: now, deletedById: actor.id, deletedByName: actor.name, deletionReason: COPY_DELETION_REASON_CANCELLED } });
+      await recordAudit(tx, tenantId, actor, { action: "DRIVER_DOCUMENT_DELETED", bookingId, details: { copyId: c.id, reason: COPY_DELETION_REASON_CANCELLED } });
+      driverCopyFiles.push({ copyId: c.id, storageKey: c.storageKey });
+    }
+    await tx.handover.update({ where: { id: d.id }, data: { status: "DISCARDED", discardedAt: now, discardReason: HANDOVER_DISCARD_REASON } });
+    await recordAudit(tx, tenantId, actor, { action: "HANDOVER_DRAFT_DISCARDED", bookingId, details: { handoverNumber: d.number, verifications, deletedCopies: active.length } });
   }
-  return keys;
+  return { photoKeys, driverCopyFiles };
+}
+
+export type FileRemovalFailure = { kind: "PHOTO" | "DRIVER_COPY"; storageKey: string; copyId: string | null };
+
+/**
+ * Nach dem Storno (nach dem Commit): Dateien verworfener Fotos und gelöschter Ausweis-/Führerscheinkopien entfernen. Jede Datei bis
+ * zu drei Versuche. Was dann noch scheitert, steht im Audit-Log (Art, Speicherschlüssel, bei Kopien die Id) und im Fehlerprotokoll –
+ * zum gezielten Nachholen mit derselben Funktion. Das Storno bleibt gültig, die Datenbank ist bereits konsistent; nichts wird geworfen.
+ */
+export async function removeCancellationFiles(
+  tenantId: string,
+  actor: Actor | null,
+  bookingId: string,
+  files: { orphanedStorageKeys: string[]; driverCopyFiles: DriverCopyFile[] },
+  opts: { storage?: StorageDriver; attempts?: number; pauseMs?: number } = {},
+): Promise<{ removed: number; failed: FileRemovalFailure[] }> {
+  const storage = opts.storage ?? getStorage();
+  const attempts = Math.max(1, opts.attempts ?? 3);
+  const pauseMs = opts.pauseMs ?? 200;
+  const items: FileRemovalFailure[] = [
+    ...files.orphanedStorageKeys.map((storageKey) => ({ kind: "PHOTO" as const, storageKey, copyId: null })),
+    ...files.driverCopyFiles.map((c) => ({ kind: "DRIVER_COPY" as const, storageKey: c.storageKey, copyId: c.copyId })),
+  ];
+  let removed = 0;
+  const failed: FileRemovalFailure[] = [];
+  for (const item of items) {
+    let error: unknown = null;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        await storage.remove(item.storageKey);
+        error = null;
+        break;
+      } catch (e) {
+        error = e ?? new Error("unbekannter Fehler");
+        if (i < attempts - 1) await new Promise((r) => setTimeout(r, pauseMs * (i + 1)));
+      }
+    }
+    if (error === null) { removed++; continue; }
+    failed.push(item);
+    const message = String((error as { message?: string })?.message ?? error).slice(0, 200);
+    console.error(`[storno] Datei nicht entfernt (${item.kind}${item.copyId ? ` ${item.copyId}` : ""}): ${item.storageKey}: ${message}`);
+    await db.$transaction((tx) => recordAudit(tx, tenantId, actor, { action: "STORAGE_FILE_REMOVAL_FAILED", bookingId, details: { kind: item.kind, storageKey: item.storageKey, copyId: item.copyId, error: message } }))
+      .catch((e) => console.error(`[storno] Fehlschlag nicht protokolliert: ${String((e as Error)?.message ?? e).slice(0, 200)}`));
+  }
+  return { removed, failed };
 }
 
 // ---------------------------------------------------------------------------
@@ -116,10 +190,11 @@ export async function cancellationOverview(tenantId: string, bookingId: string, 
     },
   });
   if (!b) throw new DomainError("Buchung nicht gefunden.");
-  const [summary, pre, handoverDrafts, invoiceRows] = await Promise.all([
+  const [summary, pre, handoverDrafts, draftsWithChecks, invoiceRows] = await Promise.all([
     rentalPaymentSummary(tenantId, bookingId, client),
     prepaymentBalance(tenantId, bookingId, client),
     client.handover.count({ where: { tenantId, bookingId, status: "DRAFT" } }),
+    client.handover.count({ where: { tenantId, bookingId, status: "DRAFT", OR: [{ driverVerifications: { some: {} } }, { driverDocumentCopies: { some: {} } }] } }),
     client.invoice.findMany({ where: { tenantId, bookingId, documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, select: { id: true, number: true, kind: true, status: true, currentVersion: { select: { grossTotal: true } } } }),
   ]);
   const finalized = invoiceRows.filter((i) => i.status === "FINALIZED" && i.currentVersion);
@@ -139,7 +214,8 @@ export async function cancellationOverview(tenantId: string, bookingId: string, 
   const contractState = !b.contract ? "NONE" : (b.contract.status as CancellationOverview["contract"]["state"]);
   if (b.contract?.status === "SIGNED") warnings.push(`Für diese Buchung wurde bereits ein Mietvertrag erstellt (${b.contract.number}). Der unterschriebene Mietvertrag bleibt unverändert archiviert; er wird als zur stornierten Buchung gehörend gekennzeichnet.`);
   else if (b.contract?.status === "DRAFT") warnings.push("Der Mietvertragsentwurf wird verworfen.");
-  if (handoverDrafts > 0) warnings.push("Ein begonnener Übergabe-Entwurf wird verworfen.");
+  if (draftsWithChecks > 0) warnings.push("Ein begonnener Übergabe-Entwurf wird verworfen. Erfasste Fahrerprüfungen bleiben als Nachweis erhalten; Ausweis- und Führerscheinkopien werden gelöscht.");
+  else if (handoverDrafts > 0) warnings.push("Ein begonnener Übergabe-Entwurf wird verworfen.");
   const openAmendments = b.contractAmendments.filter((a) => a.status === "DRAFT" || a.status === "AGREED");
   if (openAmendments.some((a) => a.status === "AGREED")) warnings.push("Eine vereinbarte, noch nicht unterschriebene Vertragsänderung wird zurückgenommen; die Fahrzeugreservierung entfällt.");
   else if (openAmendments.length > 0) warnings.push("Ein offener Nachtrag-Entwurf wird verworfen.");
@@ -315,7 +391,10 @@ export type CancellationResult = {
   feeInvoiceId: string | null;
   feeVersionId: string | null;
   payoutIds: string[];
+  /** Fotos verworfener Entwürfe: Dateien nach dem Commit entfernen (removeCancellationFiles) */
   orphanedStorageKeys: string[];
+  /** als gelöscht markierte Ausweis-/Führerscheinkopien: Dateien nach dem Commit entfernen (removeCancellationFiles) */
+  driverCopyFiles: DriverCopyFile[];
 };
 
 function customerOf(contractSnapshot: unknown, customer: { number: string | null; type: string; companyName: string | null; firstName: string; lastName: string; street: string | null; zip: string | null; city: string | null; country: string | null; email: string | null }) {
@@ -340,7 +419,7 @@ async function existingResult(tenantId: string, key: string): Promise<Cancellati
   if (!b) return null;
   const fee = await db.invoice.findFirst({ where: { tenantId, bookingId: b.id, kind: "CANCELLATION_FEE", documentType: "INVOICE" }, select: { id: true, currentVersionId: true } });
   const payouts = await db.payout.findMany({ where: { tenantId, bookingId: b.id, idempotencyKey: { startsWith: key } }, select: { id: true } });
-  return { bookingId: b.id, created: false, snapshot: b.cancellationSnapshot as unknown as CancellationSnapshot, feeInvoiceId: fee?.id ?? null, feeVersionId: fee?.currentVersionId ?? null, payoutIds: payouts.map((p) => p.id), orphanedStorageKeys: [] };
+  return { bookingId: b.id, created: false, snapshot: b.cancellationSnapshot as unknown as CancellationSnapshot, feeInvoiceId: fee?.id ?? null, feeVersionId: fee?.currentVersionId ?? null, payoutIds: payouts.map((p) => p.id), orphanedStorageKeys: [], driverCopyFiles: [] };
 }
 
 const payoutInputOf = (p: PayoutChoice, amountCents: Cents, key: string, now: Date): PayoutInput => ({
@@ -381,7 +460,7 @@ export async function cancelBooking(tenantId: string, actor: Actor, bookingId: s
 
     // 1) Vertrag, Übergabe-Entwürfe, offene Nachträge
     const contract = await cancelContractOf(tx, tenantId, bookingId);
-    const orphanedStorageKeys = await discardHandoverDrafts(tx, tenantId, bookingId);
+    const { photoKeys: orphanedStorageKeys, driverCopyFiles } = await discardHandoverDrafts(tx, tenantId, bookingId, actor);
     const open = ov.amendments.filter((a) => a.status === "DRAFT" || a.status === "AGREED");
     for (const a of open) await discardAmendmentIn(tx, tenantId, actor, a.id, `Buchung storniert: ${reason}`.slice(0, 500));
 
@@ -467,7 +546,7 @@ export async function cancelBooking(tenantId: string, actor: Actor, bookingId: s
         warnings: ov.warnings.length, discardedAmendments: open.length,
       },
     });
-    return { bookingId, created: true, snapshot, feeInvoiceId: feeInvoice?.id ?? null, feeVersionId: feeInvoice?.versionId ?? null, payoutIds, orphanedStorageKeys } satisfies CancellationResult;
+    return { bookingId, created: true, snapshot, feeInvoiceId: feeInvoice?.id ?? null, feeVersionId: feeInvoice?.versionId ?? null, payoutIds, orphanedStorageKeys, driverCopyFiles } satisfies CancellationResult;
   }, TX);
   try {
     const res = await withNumberRetry(run);

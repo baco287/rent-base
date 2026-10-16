@@ -37,17 +37,21 @@ export function isUniqueViolation(e: unknown, field?: string): boolean {
   return Array.isArray(target) ? target.includes(field) : String(target ?? "").includes(field);
 }
 
+/** Felder, in denen fortlaufende Nummern je Mandant vergeben werden (eindeutiger Index zusammen mit tenantId). */
+export type NumberField = "number" | "caseNumber" | "maintenanceNumber";
+
 /**
  * Führt eine Anlage mit fortlaufender Nummer aus und wiederholt sie, wenn zwei gleichzeitige Anfragen
- * dieselbe Nummer gezogen haben. Die Eindeutigkeit selbst sichert der Datenbank-Index.
+ * dieselbe Nummer gezogen haben. Die Eindeutigkeit selbst sichert der Datenbank-Index. Wiederholt wird nur bei einer
+ * Kollision auf dem Nummernfeld, das die Anlage vergibt (Standard "number"); jede andere Eindeutigkeit geht an den Aufrufer.
  */
-export async function withNumberRetry<T>(fn: () => Promise<T>, attempts = 6): Promise<T> {
+export async function withNumberRetry<T>(fn: () => Promise<T>, field: NumberField = "number", attempts = 6): Promise<T> {
   let lastError: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
       return await fn();
     } catch (e) {
-      if (!isUniqueViolation(e, "number")) throw e;
+      if (!isUniqueViolation(e, field)) throw e;
       lastError = e;
       await new Promise((r) => setTimeout(r, 15 * (i + 1) + Math.random() * 25));
     }

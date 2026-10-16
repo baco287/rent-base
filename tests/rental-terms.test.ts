@@ -315,6 +315,24 @@ test("Archivieren während eines Entwurfs: Abschluss mit archivierter Fassung wi
   assert.ok(row3.termsAcknowledgedHash === null || row3.termsAcknowledgedHash === `${row3.rentalTermsVersionId}:${row3.termsHash}`);
 });
 
+test("Wettlauf wiederholt: Kenntnisnahme ∥ Fassungswechsel – die Kenntnisnahme passt am Ende immer zur Fassung oder fehlt", async () => {
+  for (let i = 0; i < 25; i++) {
+    const w = await world(`terms-ack-race-${i}`);
+    const v1 = await publish(w);
+    const c = await ensureContractDraft(w.tenantId, w.bookingId, w.actor);
+    const d = await createNextVersion(w.tenantId, v1.id, w.actor);
+    await updateTermsDraft(w.tenantId, d.id, w.actor, { title: "AGB", content: `${TEXT}\nRunde ${i}.\n` });
+    const v2 = await publishTermsVersion(w.tenantId, d.id, w.actor, { confirmed: true });
+    const [ack, adopt] = await Promise.allSettled([acknowledgeTerms(w.tenantId, c.id, w.actor, { confirmed: true }), adoptTermsVersion(w.tenantId, c.id, w.actor, null)]);
+    assert.equal(adopt.status, "fulfilled", `Runde ${i}: der Wechsel gelingt immer`);
+    const row = await db.rentalContract.findUniqueOrThrow({ where: { id: c.id } });
+    assert.equal(row.rentalTermsVersionId, v2.id, `Runde ${i}: neue Fassung zugeordnet`);
+    assert.ok(row.termsAcknowledgedHash === null || row.termsAcknowledgedHash === `${row.rentalTermsVersionId}:${row.termsHash}`, `Runde ${i}: Kenntnisnahme ${row.termsAcknowledgedHash} passt nicht zur Fassung ${row.rentalTermsVersionId}:${row.termsHash}`);
+    // Kam die Kenntnisnahme nach dem Wechsel, gilt sie für die neue Fassung; kam sie davor, hat der Wechsel sie zurückgesetzt
+    if (ack.status === "fulfilled" && row.termsAcknowledgedHash !== null) assert.equal(row.termsAcknowledgedHash, `${v2.id}:${v2.checksum}`);
+  }
+});
+
 test("Altbestand: ohne veröffentlichte Fassung gilt der bisherige Mandantentext; Verträge davor bekommen keine erfundene Fassung", async () => {
   const w = await world("terms-legacy");
   const c = await ensureContractDraft(w.tenantId, w.bookingId, w.actor);

@@ -2,6 +2,12 @@
 // Zeitzone formatiert oder geparst wird (Sicherheitsnetz; die eigentliche Regel steht in lib/time.ts).
 export async function register() {
   if (!process.env.TZ) process.env.TZ = "Europe/Berlin";
+  // Ohne gültige APP_URL scheitern Einladungen, Passwort-Reset und Rückgabelinks. Früh und deutlich im Log melden.
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { appUrlStatus } = await import("@/lib/app-url");
+    const appUrl = appUrlStatus();
+    if (!appUrl.ok) console.error(`[Konfiguration] ${appUrl.message}`);
+  }
   // Tägliche Behördenfristen-Erinnerung: in Produktion an (AUTHORITY_REMINDERS=off schaltet ab), lokal nur mit =on
   const flag = process.env.AUTHORITY_REMINDERS?.trim().toLowerCase();
   const enabled = process.env.NODE_ENV === "production" ? flag !== "off" : flag === "on";

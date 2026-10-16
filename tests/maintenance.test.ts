@@ -10,8 +10,10 @@ import { openDamageCase } from "../src/lib/damage-cases";
 import { DomainError, sha256 } from "../src/lib/integrity";
 import { adoptCostsIntoDamageCase, archiveVehicleDocument, blockVehicleForMaintenance, cancelMaintenance, changeMaintenanceStatus, completeMaintenance, createMaintenance, createPlan, documentMileage, fleetDues, linkDamageCase, linkDamageDocument, listMaintenance, maintenanceCounts, maintenanceView, registerVehicleDocument, releaseVehicleAfterMaintenance, setMaintenanceCosts, setPlanActive, updateMaintenance, updatePlan, vehicleMaintenanceOverview } from "../src/lib/maintenance";
 import { buildStorageKey } from "../src/lib/storage";
+import { addNewDamage, finalizeHandover, startHandover, updateHandoverDraft } from "../src/lib/handovers";
+import { REQUIRED_PHOTO_CATEGORIES } from "../src/lib/constants";
 import { berlinDay, createWorld, purgeTenants, type World } from "./helpers";
-import { returnedWorld } from "./rental-flow";
+import { answerAll, photo, pickedUpWorld, returnedWorld, sign } from "./rental-flow";
 
 const tenants: string[] = [];
 after(async () => { await purgeTenants(tenants); await db.$disconnect(); });
@@ -219,6 +221,76 @@ test("Wettläufe: gleichzeitige Anlage, gleichzeitiger Abschluss, Sperren/Freige
   const r4 = created[3].record;
   await Promise.all([documentMileage(w.tenantId, r4.id, w.actor, "50300"), documentMileage(w.tenantId, created[4].record.id, w.actor, "50200")]);
   assert.equal((await db.vehicle.findUniqueOrThrow({ where: { id: w.vehicleId } })).mileage, 50_300);
+});
+
+const kmOf = (s: string) => Number(s.replace(/\./g, ""));
+
+test("Kilometer wiederholt parallel (Wartung): das Fahrzeug behält den höchsten Wert, Historie und Hinweise nennen den gespeicherten Stand", async () => {
+  const w = await world("maint-km-repeat");
+  for (let i = 0; i < 8; i++) {
+    const base = (await db.vehicle.findUniqueOrThrow({ where: { id: w.vehicleId } })).mileage;
+    const recs = await Promise.all([0, 1, 2].map((k) => createMaintenance(w.tenantId, w.actor, { vehicleId: w.vehicleId, type: "OTHER", title: `Runde ${i}.${k}` })));
+    const values = [base + 300, base + 100, base + 200];
+    // beide Wege, die den Fahrzeugstand fortschreiben: Kilometer dokumentieren und Abschluss mit Kilometerstand
+    const results = await Promise.all([
+      documentMileage(w.tenantId, recs[0].record.id, w.actor, String(values[0])),
+      completeMaintenance(w.tenantId, recs[1].record.id, w.actor, { completedAt: new Date(), mileage: String(values[1]) }),
+      documentMileage(w.tenantId, recs[2].record.id, w.actor, String(values[2])),
+    ]);
+    const stored = (await db.vehicle.findUniqueOrThrow({ where: { id: w.vehicleId } })).mileage;
+    assert.equal(stored, base + 300, `Runde ${i}: der höchste Wert bleibt, ein niedrigerer überschreibt ihn nie`);
+    // Vorgänge behalten ihren dokumentierten Servicewert (historischer Wert, unabhängig vom Fahrzeugstand)
+    results.forEach((r, k) => assert.equal(r.record.mileageAtService, values[k], `Runde ${i}: Servicewert ${values[k]} am Vorgang`));
+    // Fahrzeughistorie: ein Kilometer-Ereignis nur für tatsächlich fortgeschriebene Werte, darunter der gespeicherte Stand
+    const descriptions = recs.map((r) => `Kilometerstand aus Wartungsvorgang ${r.record.maintenanceNumber}`);
+    const events = await db.vehicleEvent.findMany({ where: { tenantId: w.tenantId, vehicleId: w.vehicleId, type: "MILEAGE", description: { in: descriptions } }, select: { mileage: true } });
+    assert.ok(events.some((e) => e.mileage === stored), `Runde ${i}: der gespeicherte Stand steht in der Historie`);
+    for (let k = 0; k < 3; k++) {
+      const written = events.some((e) => e.mileage === values[k]);
+      const below = results[k].warnings.find((x) => x.includes("liegt unter dem aktuellen Fahrzeugstand"));
+      assert.ok(written !== Boolean(below), `Runde ${i}, ${values[k]} km: entweder fortgeschrieben (Historie) oder Hinweis – nie beides, nie keins`);
+      if (below) {
+        // der Hinweis nennt den tatsächlich gespeicherten Stand, nicht den beim Lesen veralteten
+        const named = kmOf(below.match(/Fahrzeugstand \(([\d.]+) km\)/)![1]);
+        assert.ok(named > values[k] && values.includes(named), `Runde ${i}: Hinweis nennt ${named} km, gespeichert war mindestens ein höherer Wert dieser Runde`);
+      }
+    }
+  }
+});
+
+test("Kilometer wiederholt parallel (Rückgabe ∥ Wartung): der höhere Wert bleibt, egal wer zuletzt schreibt", async () => {
+  // Die Wartung startet je Runde 15 ms später: die Runden tasten das Fenster des Abschlusses zwischen Lesen des Fahrzeugs und
+  // Fortschreiben des Kilometerstands ab. Meist meldet die Wartung den höheren Wert (der darf nie verloren gehen).
+  for (let i = 0; i < 12; i++) {
+    const w = await pickedUpWorld(`maint-km-return-${i}`);
+    tenants.push(w.tenantId);
+    const r = await startHandover(w.tenantId, w.bookingId, "RETURN", w.actor);
+    await updateHandoverDraft(w.tenantId, r.id, { mileage: 47_210, fuelLevelEighths: 7 });
+    // neue Schäden: der Abschluss arbeitet zwischen Lesen des Fahrzeugs und Fortschreiben des Kilometerstands länger
+    for (let d = 0; d < 3; d++) {
+      const dmg = await addNewDamage(w.tenantId, r.id, { view: "LEFT", posX: 0.2 + d * 0.2, posY: 0.5, kind: "SCRATCH", severity: "MINOR", description: `Kratzer ${d + 1}, bei Rückgabe` });
+      await photo(w, r.id, "DAMAGE", dmg.id);
+    }
+    for (const cat of REQUIRED_PHOTO_CATEGORIES) await photo(w, r.id, cat);
+    await answerAll(w, r.id);
+    await sign(w, r.id);
+    const m = await createMaintenance(w.tenantId, w.actor, { vehicleId: w.vehicleId, type: "OTHER", title: `Werkstatt ${i}` });
+    const maintenanceKm = i % 4 === 3 ? 47_100 : 47_300;
+    const later = (ms: number) => new Promise((res) => setTimeout(res, ms));
+    const [fin, doc] = await Promise.allSettled([finalizeHandover(w.tenantId, r.id, w.actor), later(i * 15).then(() => documentMileage(w.tenantId, m.record.id, w.actor, String(maintenanceKm)))]);
+    assert.equal(fin.status, "fulfilled", `Runde ${i}: Rückgabe abgeschlossen ${fin.status === "rejected" ? String((fin.reason as Error).message).slice(0, 200) : ""}`);
+    assert.equal(doc.status, "fulfilled", `Runde ${i}: Kilometer dokumentiert`);
+    const stored = (await db.vehicle.findUniqueOrThrow({ where: { id: w.vehicleId } })).mileage;
+    assert.equal(stored, Math.max(47_210, maintenanceKm), `Runde ${i}: Rückgabe 47.210, Wartung ${maintenanceKm} – der höhere Wert bleibt`);
+    // Die Rückgabe dokumentiert ihren abgelesenen Wert in der Historie (wie bisher), der Fahrzeugstand sinkt dadurch nie
+    assert.equal(await db.vehicleEvent.count({ where: { tenantId: w.tenantId, handoverId: r.id, type: "MILEAGE", mileage: 47_210 } }), 1);
+    const below = doc.status === "fulfilled" ? doc.value.warnings.find((x) => x.includes("liegt unter dem aktuellen Fahrzeugstand")) : undefined;
+    if (maintenanceKm < 47_210) {
+      // Die Wartung meldet den niedrigeren Wert nur dann als „unter dem Fahrzeugstand“, wenn die Rückgabe schon gespeichert war;
+      // kam sie zuerst, hat sie kurz fortgeschrieben und die Rückgabe danach erhöht. Nennt sie einen Stand, dann den gespeicherten.
+      if (below) assert.equal(kmOf(below.match(/Fahrzeugstand \(([\d.]+) km\)/)![1]), 47_210);
+    } else assert.equal(below, undefined, `Runde ${i}: der höhere Wartungswert ist nie „unter dem Fahrzeugstand“`);
+  }
 });
 
 // ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ import { platformActivateUser, platformDeactivateUser, setPlatformRole } from "@
 import { setTenantFeature } from "@/lib/features";
 import { upsertSubscription } from "@/lib/subscriptions";
 import { DomainError } from "@/lib/integrity";
-import { requestBaseUrl } from "@/lib/request-url";
+import { appBaseUrl } from "@/lib/app-url";
 import { db } from "@/lib/db";
 import { SUPPORT_COOKIE, SESSION_DAYS, PLANS, PLATFORM_ROLES, SUBSCRIPTION_STATUS, isFeatureKey, type PlanKey, type PlatformRole, type SubscriptionStatus } from "@/lib/constants";
 
@@ -50,7 +50,7 @@ export async function createTenantAction(_prev: AdminState, formData: FormData):
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   let tenantId: string;
   try {
-    const tenant = await createTenantByPlatform(actorOf(user), { ...parsed.data, baseUrl: await requestBaseUrl() });
+    const tenant = await createTenantByPlatform(actorOf(user), { ...parsed.data, baseUrl: appBaseUrl() });
     tenantId = tenant.id;
   } catch (e) {
     if (e instanceof DomainError) return { error: e.message };
@@ -84,7 +84,7 @@ export async function reactivateTenantAction(_prev: AdminState, formData: FormDa
 
 export async function resendOwnerInvitationAction(tenantId: string, invitationId: string) {
   const { user } = await requirePlatform("USER_MANAGE");
-  await resendInvitation(tenantId, actorOf(user), invitationId, await requestBaseUrl());
+  await resendInvitation(tenantId, actorOf(user), invitationId, appBaseUrl());
   refresh();
 }
 
@@ -100,7 +100,7 @@ export async function resendInvitationPlatformAction(_prev: AdminState, formData
   const tenantId = String(formData.get("tenantId") ?? "");
   const invitationId = String(formData.get("invitationId") ?? "");
   return run(async () => {
-    await resendInvitation(tenantId, actorOf(user), invitationId, await requestBaseUrl());
+    await resendInvitation(tenantId, actorOf(user), invitationId, appBaseUrl());
     return "Einladung erneut gesendet.";
   });
 }

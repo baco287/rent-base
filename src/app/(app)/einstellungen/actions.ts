@@ -8,7 +8,7 @@ import { requireRole } from "@/lib/auth";
 import { ROLES, type Role } from "@/lib/constants";
 import { createInvitation, resendInvitation, revokeInvitation } from "@/lib/invitations";
 import { activateUser, changeUserRole, deactivateUser } from "@/lib/tenant-users";
-import { requestBaseUrl } from "@/lib/request-url";
+import { appBaseUrl } from "@/lib/app-url";
 import { DomainError } from "@/lib/integrity";
 
 export type FormState = { error?: string; ok?: string } | undefined;
@@ -54,7 +54,7 @@ export async function inviteUserAction(_prev: FormState, formData: FormData): Pr
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   const d = parsed.data;
   try {
-    await createInvitation(tenant.id, { id: me.id, name: me.name }, { email: d.email, role: d.role as Role, baseUrl: await requestBaseUrl() });
+    await createInvitation(tenant.id, { id: me.id, name: me.name }, { email: d.email, role: d.role as Role, baseUrl: appBaseUrl() });
   } catch (e) {
     if (e instanceof DomainError) return { error: e.message };
     throw e;
@@ -65,7 +65,7 @@ export async function inviteUserAction(_prev: FormState, formData: FormData): Pr
 
 export async function resendInvitationAction(invitationId: string) {
   const { tenant, user: me } = await requireRole("OWNER");
-  await resendInvitation(tenant.id, { id: me.id, name: me.name }, invitationId, await requestBaseUrl());
+  await resendInvitation(tenant.id, { id: me.id, name: me.name }, invitationId, appBaseUrl());
   revalidatePath("/einstellungen/mitarbeiter");
 }
 
