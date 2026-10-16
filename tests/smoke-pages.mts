@@ -1166,6 +1166,8 @@ report(amRangesHtml.includes("Präfix Nachträge") && amRangesHtml.includes("NT-
 
   const krForm = await plain(await fetch(`${base}/fahrzeuge/${krVeh.id}?tab=stammdaten`, { headers: { cookie: dnCookie } }));
   report(krForm.includes("Tankgröße (Liter)") && krForm.includes('value="40"'), "Fahrzeugformular: Tankgröße (Liter) gepflegt");
+  const krNew = await plain(await fetch(`${base}/fahrzeuge/neu`, { headers: { cookie: dnCookie } }));
+  report(krNew.includes("Fahrzeuggruppe") && !krNew.includes("Tankgröße (Liter)"), "Neues Fahrzeug: ohne Tankgröße (unter „Bearbeiten“ weiter nachtragbar)");
   const krFile = await plain(await fetch(`${base}/fahrzeuge/${krVeh.id}?tab=schaeden`, { headers: { cookie: dnCookie } }));
   report(krFile.includes("+ Schaden erfassen"), "Fahrzeugakte: „+ Schaden erfassen“");
   const krFileYard = await plain(await fetch(`${base}/fahrzeuge/${krVeh.id}?tab=schaeden`, { headers: { cookie: `rb_session=${dnYardSession}` } }));
@@ -1249,7 +1251,10 @@ report(amRangesHtml.includes("Präfix Nachträge") && amRangesHtml.includes("NT-
   const ea = (await createAmendmentDraft(dnWorld.tenantId, dnWorld.actor, { bookingId: ext.bookingId, nonce: `smoke-ext-${Date.now()}` })).amendment;
   await updateAmendmentDraft(dnWorld.tenantId, dnWorld.actor, ea.id, { newEndAt: new Date(extB.endAt!.getTime() + 86400_000) });
   const eaDraft = await plain(await fetch(`${base}/buchungen/${ext.bookingId}/nachtrag/${ea.id}`, { headers: { cookie: dnCookie } }));
-  report(eaDraft.includes("Telefonisch / extern vereinbart?") && eaDraft.includes("Als vereinbart speichern – Fahrzeug reservieren"), "Nachtrag: „Als vereinbart speichern“ für Zeitraumänderung");
+  // Paket 1: Zustimmungsart statt „Als vereinbart speichern“ – vor Ort unterschrieben oder telefonisch bestätigt (sofort wirksam)
+  report(eaDraft.includes("3. Zustimmung des Mieters") && eaDraft.includes("Wie hat der Mieter der Änderung zugestimmt?") && eaDraft.includes("Vor Ort unterschrieben") && eaDraft.includes("Telefonisch bestätigt") && eaDraft.includes("Nachtrag unterschreiben und wirksam machen") && !eaDraft.includes("Als vereinbart speichern"), "Nachtrag: Zustimmungsart wählbar (vor Ort / telefonisch), „Als vereinbart speichern“ entfällt");
+  const eaPhone = await plain(await fetch(`${base}/buchungen/${ext.bookingId}/nachtrag/${ea.id}?zustimmung=telefon`, { headers: { cookie: dnCookie } }));
+  report(eaPhone.includes("Ich bestätige, dass der Mieter dieser Änderung telefonisch zugestimmt hat.") && eaPhone.includes("Telefonische Zustimmung dokumentieren und Nachtrag wirksam machen") && !eaPhone.includes("Nachtrag unterschreiben und wirksam machen"), "Nachtrag telefonisch: Mitarbeiterbestätigung statt Unterschriftsfeld");
   await agreeAmendment(dnWorld.tenantId, dnWorld.actor, ea.id, { channel: "PHONE", note: "Smoke-Anruf" });
   const extPage = await plain(await fetch(`${base}/buchungen/${ext.bookingId}`, { headers: { cookie: dnCookie } }));
   report(extPage.includes("Vertragsänderung vereinbart – Unterschrift fehlt") && extPage.includes("Unterschrift nachholen"), "Buchung: „Vertragsänderung vereinbart – Unterschrift fehlt“ + „Unterschrift nachholen“");

@@ -248,6 +248,33 @@ export async function signAmendmentAction(bookingId: string, amendmentId: string
 }
 
 /**
+ * Paket 1: „Telefonisch bestätigt“ – der Mieter hat der Änderung am Telefon zugestimmt; statt seiner Unterschrift dokumentiert der
+ * Mitarbeiter die Zustimmung (ausdrückliche Bestätigung, angezeigter Inhalt). Nur Inhaber/Disposition (context), alle Prüfungen in
+ * lib/amendments.signAmendment. Danach wie beim Unterschreiben: PDF, Seiten neu laden.
+ */
+export async function confirmAmendmentByPhoneAction(bookingId: string, amendmentId: string, _prev: AmendmentState, formData: FormData): Promise<AmendmentState> {
+  const { tenant, actor } = await context();
+  try {
+    await signAmendment(tenant.id, actor, amendmentId, {
+      phoneConsent: { confirmed: formData.get("confirmed") === "1", seenHash: String(formData.get("seenHash") ?? ""), note: String(formData.get("note") ?? "") },
+    });
+  } catch (e) {
+    refresh(bookingId, amendmentId);
+    return asState(e);
+  }
+  try {
+    await ensureAmendmentDocument(tenant.id, amendmentId, actor.id);
+  } catch (e) {
+    console.error("[amendment] PDF nach telefonischer Zustimmung nicht erzeugt", e instanceof Error ? e.message : e);
+  }
+  refresh(bookingId, amendmentId);
+  revalidatePath("/buchungen");
+  revalidatePath("/heute");
+  revalidatePath("/dispo");
+  redirect(`${page(bookingId, amendmentId)}?wirksam=1`);
+}
+
+/**
  * Befehl 28: „Telefonisch/extern vereinbart“ – die Änderung des Mietzeitraums reserviert das Fahrzeug sofort; vertraglich wirksam
  * (Preis, Rechnung, Kaution) wird sie erst mit der nachgeholten Unterschrift.
  */

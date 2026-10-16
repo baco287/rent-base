@@ -8,6 +8,7 @@
 // Abweichungen wie bisher. Die getrennten Schritte „Identität speichern“ / „Führerschein speichern“ gibt es nur noch
 // für den Ausnahmefall (etwas stimmt nicht überein).
 import { Card, Chip } from "@/components/ui";
+import { ShellIcon } from "@/components/shell-icons";
 import { DRIVER_ROLES, DRIVER_VERIFICATION_STATUS, IDENTITY_DOCUMENT_TYPES, type DriverRole, type DriverVerificationStatus, type IdentityDocumentType } from "@/lib/constants";
 import { DRIVER_BLOCKER_LABELS, driverVerificationOverview, listDriverDocumentCopies, type DriverVerificationView } from "@/lib/driver-verification";
 import { fmtDate, fmtDateTime } from "@/lib/format";
@@ -95,25 +96,40 @@ function DriverCard({ bookingId, handoverId, view, role, copies, mode }: { booki
                 <ul className="list-disc pl-5">{blockers.map((b) => <li key={b}>{b}</li>)}</ul>
               </div>
             )}
-            <DriverCheckForm action={verifyDriverAction.bind(null, bookingId, handoverId, view.driver.contractDriverId)} driverName={name} requiredClass={view.requiredLicenseClass} defaultDocumentType={v?.identityDocumentType ?? null} defaults={licenseDefaults} />
-            {canUpdateCustomer && v?.deviatesFromCustomer && <UpdateCustomerLicenseButton action={updateCustomerLicenseAction.bind(null, bookingId, v.id)} />}
-
-            <details className="rounded-md border border-line-soft">
-              <summary className="cursor-pointer px-3 py-2.5 text-sm text-ink-2">Dokumentkopie aufnehmen (optional)</summary>
-              <div className="p-3 pt-0 flex flex-col gap-2">
+            {/* Paket 1: Fotos von Ausweis/Führerschein deutlich erkennbar und VOR der Bestätigung – danach ist keine Kopie mehr
+                möglich. Weiterhin freiwillig; Upload, Kamera, Zustimmung und Speicherung unverändert (DriverDocumentUploader). */}
+            <details className="group/fotos rounded-lg border border-brand/25 bg-brand-soft/40">
+              <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden flex items-center gap-3 px-3.5 py-3 select-none rounded-lg hover:bg-brand-soft/70">
+                <span aria-hidden="true" className="grid place-items-center h-9 w-9 shrink-0 rounded-full bg-brand text-brand-ink"><ShellIcon name="camera" size={18} /></span>
+                <span className="flex-1 min-w-0">
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold text-[14px] text-ink">Dokumente fotografieren</span>
+                    <Chip>optional</Chip>
+                    {idCopies.length + licCopies.length > 0 && <Chip tone="good">{idCopies.length + licCopies.length} {idCopies.length + licCopies.length === 1 ? "Foto" : "Fotos"}</Chip>}
+                  </span>
+                  <span className="block text-xs text-ink-2 mt-0.5">Ausweis und Führerschein als Dokumentkopie aufnehmen – freiwillig, keine Voraussetzung für die Prüfung der Originale.</span>
+                </span>
+                <ShellIcon name="chevron-down" size={18} className="shrink-0 text-ink-3 transition-transform group-open/fotos:rotate-180" />
+              </summary>
+              <div className="px-3.5 pb-3.5 flex flex-col gap-2">
                 {v ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <DriverDocumentUploader handoverId={handoverId} verificationId={v.id} contractDriverId={view.driver.contractDriverId} documentKind="IDENTITY" copies={idCopies} editable />
-                    <DriverDocumentUploader handoverId={handoverId} verificationId={v.id} contractDriverId={view.driver.contractDriverId} documentKind="LICENSE" copies={licCopies} editable />
-                  </div>
+                  <>
+                    <p className="text-xs text-ink-3">Fotos bitte vor dem Bestätigen aufnehmen – nach der Bestätigung ist keine Kopie mehr möglich. Am Handy öffnet sich die Kamera.</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <DriverDocumentUploader handoverId={handoverId} verificationId={v.id} contractDriverId={view.driver.contractDriverId} documentKind="IDENTITY" copies={idCopies} editable />
+                      <DriverDocumentUploader handoverId={handoverId} verificationId={v.id} contractDriverId={view.driver.contractDriverId} documentKind="LICENSE" copies={licCopies} editable />
+                    </div>
+                  </>
                 ) : (
                   <>
-                    <p className="text-xs text-ink-3">Eine Kopie ist freiwillig und ersetzt die Originalprüfung nicht. Sie wird vor dem Bestätigen aufgenommen.</p>
-                    <StartDriverVerificationButton action={startDriverVerificationAction.bind(null, bookingId, handoverId, view.driver.contractDriverId)} label="Kopie vorbereiten" />
+                    <p className="text-xs text-ink-3">Eine Kopie ist freiwillig und ersetzt die Originalprüfung nicht. Sie wird vor dem Bestätigen aufgenommen; dafür wird die Prüfung dieses Fahrers begonnen.</p>
+                    <StartDriverVerificationButton action={startDriverVerificationAction.bind(null, bookingId, handoverId, view.driver.contractDriverId)} label="Fotoaufnahme starten" />
                   </>
                 )}
               </div>
             </details>
+            <DriverCheckForm action={verifyDriverAction.bind(null, bookingId, handoverId, view.driver.contractDriverId)} driverName={name} requiredClass={view.requiredLicenseClass} defaultDocumentType={v?.identityDocumentType ?? null} defaults={licenseDefaults} />
+            {canUpdateCustomer && v?.deviatesFromCustomer && <UpdateCustomerLicenseButton action={updateCustomerLicenseAction.bind(null, bookingId, v.id)} />}
 
             {v && (
               <details className="rounded-md border border-line-soft">

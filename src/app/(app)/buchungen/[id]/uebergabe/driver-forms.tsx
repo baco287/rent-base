@@ -6,6 +6,7 @@ import { useActionState, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FormError } from "@/components/ui";
 import { DocumentThumb } from "@/components/document-thumb";
+import { ShellIcon } from "@/components/shell-icons";
 import { submitWithoutReset } from "@/components/submit-without-reset";
 import { COUNTRIES, IDENTITY_DOCUMENT_TYPES, LICENSE_CLASSES } from "@/lib/constants";
 import type { DriverState } from "./driver-actions";
@@ -331,9 +332,10 @@ export function DriverDocumentUploader({ handoverId, verificationId, contractDri
             </label>
           )}
           {error && <p role="alert" className="text-bad bg-bad-soft rounded-md px-3 py-2 text-xs">{error}</p>}
-          <input ref={input} type="file" accept="image/*" capture="environment" className="sr-only" onChange={(e) => upload(e.target.files)} aria-label="Dokument aufnehmen" />
+          {/* Paket 1: Kameraaufnahme deutlich benennen – Technik unverändert (Kamera am Handy über capture, sonst Dateiauswahl) */}
+          <input ref={input} type="file" accept="image/*" capture="environment" className="sr-only" onChange={(e) => upload(e.target.files)} aria-label={`${documentKind === "IDENTITY" ? "Ausweis" : "Führerschein"} fotografieren`} />
           <button type="button" onClick={() => input.current?.click()} disabled={busy || (requiresConsent && !consent)} className="btn justify-center !py-2.5">
-            {busy ? "Wird hochgeladen…" : "Dokument aufnehmen"}
+            {busy ? "Wird hochgeladen…" : <><ShellIcon name="camera" size={17} />{documentKind === "IDENTITY" ? "Ausweis" : "Führerschein"} fotografieren ({side === "FRONT" ? "Vorderseite" : "Rückseite"})</>}
           </button>
         </>
       )}

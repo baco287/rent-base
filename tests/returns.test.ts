@@ -381,3 +381,52 @@ test("Rückgabe-PDF aus dem Snapshot mit neutraler Schadenformulierung, E-Mail m
   assert.equal(await readDocumentFile(other.tenantId, doc.id, storage), null);
   await assert.rejects(() => ensureReturnDocument(other.tenantId, r.id, null, { storage }), /Protokoll nicht gefunden/);
 });
+
+test("Paket 1 (4.1): Rückgabe – „Nein“ an Bestandspunkten ohne Pflicht-Bemerkung; mit Bemerkung gespeichert; Ja/Nicht zutreffend wie bisher; Zustandspunkte behalten die Pflicht", async () => {
+  const a = await activeWorld("ret-note-optional", { vehicle: { status: "AVAILABLE" } });
+  const r = await startHandover(a.w.tenantId, a.w.bookingId, "RETURN", a.w.actor);
+  await updateHandoverDraft(a.w.tenantId, r.id, { mileage: 45_900, fuelLevelEighths: 8 });
+  for (const cat of REQUIRED_PHOTO_CATEGORIES) await photo(a.w, r.id, cat);
+  // Zustandspunkt „Reifen“ mit „Nein“ ohne Bemerkung: weiterhin Pflicht
+  await answerAll(a.w, r.id, { keys_returned: { result: "2" }, warning_triangle: { result: "NO" }, safety_vest: { result: "NO", note: "Weste fehlt, Kunde bringt sie morgen" }, documents: { result: "NA" }, tires: { result: "NO" } });
+  let issues = (await getHandoverState(a.w.tenantId, r.id)).issues;
+  const notes = issues.filter((i) => i.code === "CHECKLIST_NOTE");
+  assert.equal(notes.length, 1, JSON.stringify(notes));
+  assert.match(notes[0].message, /Reifen/, "nur der Zustandspunkt verlangt eine Bemerkung");
+  // fehlender Gegenstand bleibt als Hinweis „Auffällig“ sichtbar
+  assert.ok(issues.some((i) => i.code === "CHECKLIST_ATTENTION" && i.message.includes("Warndreieck")), "„Nein“ wird weiter als Auffälligkeit ausgewiesen");
+  await answerAll(a.w, r.id, { keys_returned: { result: "2" }, warning_triangle: { result: "NO" }, safety_vest: { result: "NO", note: "Weste fehlt, Kunde bringt sie morgen" }, documents: { result: "NA" }, tires: { result: "NO", note: "Profil vorne links unter 2 mm" } });
+  issues = (await getHandoverState(a.w.tenantId, r.id)).issues;
+  assert.equal(issues.filter((i) => i.code === "CHECKLIST_NOTE").length, 0);
+  // serverseitiger Abschluss ohne Bemerkung beim Warndreieck
+  await sign(a.w, r.id);
+  const done = await finalizeHandover(a.w.tenantId, r.id, a.w.actor);
+  assert.equal(done.status, "FINALIZED");
+  const items = new Map((await db.handoverChecklistItem.findMany({ where: { tenantId: a.w.tenantId, handoverId: r.id } })).map((i) => [i.itemKey, i]));
+  assert.equal(items.get("warning_triangle")!.result, "NO"); assert.equal(items.get("warning_triangle")!.note, null, "„Nein“ ohne Bemerkung gespeichert");
+  assert.equal(items.get("safety_vest")!.result, "NO"); assert.equal(items.get("safety_vest")!.note, "Weste fehlt, Kunde bringt sie morgen", "Bemerkung bleibt gespeichert");
+  assert.equal(items.get("documents")!.result, "NA");
+  assert.equal(items.get("first_aid")!.result, "YES");
+  // Protokoll-PDF zeigt „NEIN“ auch ohne Bemerkung
+  const data = await loadHandoverDocumentData(a.w.tenantId, r.id);
+  const pdf = await renderHandoverPdf(data.doc, { sketchSvg: await loadSketchSvg(data.sketch), photos: new Map(), signatures: data.signatureImages });
+  assert.ok(JSON.stringify(pdf.trace).includes("NEIN"), "„Nein“ im Rückgabeprotokoll");
+});
+
+test("Paket 1 (4.1): die Bemerkungspflicht der Übergabe bleibt unverändert; Liste der Bestandspunkte", async () => {
+  const { RETURN_NOTE_OPTIONAL_ON_NO } = await import("../src/lib/constants");
+  assert.deepEqual([...RETURN_NOTE_OPTIONAL_ON_NO].sort(), ["charging_cable", "documents", "first_aid", "parcel_shelf", "safety_vest", "warning_triangle"]);
+  for (const k of ["interior_checked", "exterior_checked", "tires", "lights", "unusually_dirty"]) assert.ok(!RETURN_NOTE_OPTIONAL_ON_NO.has(k), `${k} behält die Pflicht`);
+  await ready;
+  const w = await createWorld("pickup-note-still-required");
+  tenants.push(w.tenantId);
+  const c = await ensureContractDraft(w.tenantId, w.bookingId, w.actor);
+  const bk = await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } });
+  await saveConditions(w.tenantId, c.id, { startAt: bk.startAt, endAt: bk.endAt, deposit: 500, kmIncludedPerDay: 200, extraKmRate: 0.25, deductible: 1000, fuelPolicy: "FULL_TO_FULL", fuelPolicyNote: null, fuelPricePerLiter: null, agreedTotal: null, agreedTotalNote: null, pickupLocation: "Hof", returnLocation: "Hof" });
+  await saveContractSignature(w.tenantId, w.actor, c.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getContractContentHash(w.tenantId, c.id) });
+  await finalizeContract(w.tenantId, c.id);
+  const p = await startHandover(w.tenantId, w.bookingId, "PICKUP", w.actor);
+  await answerAll(w, p.id, { keys: { result: "2" }, warning_triangle: { result: "NO" } });
+  const issues = (await getHandoverState(w.tenantId, p.id)).issues;
+  assert.ok(issues.some((i) => i.code === "CHECKLIST_NOTE" && i.message.includes("Warndreieck")), "Übergabe: „Nein“ verlangt weiterhin eine Bemerkung");
+});

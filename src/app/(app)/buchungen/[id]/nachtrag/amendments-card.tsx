@@ -43,7 +43,7 @@ export async function AmendmentsCard({ tenantId, bookingId, role, supportMode, l
               <li key={a.id} className="py-2 flex flex-wrap items-center gap-x-3 gap-y-1">
                 <Link href={`/buchungen/${bookingId}/nachtrag/${a.id}`} className="font-mono tnum font-medium hover:underline">{a.number ?? "Entwurf"}</Link>
                 <span>{a.status === "SIGNED" && a.sequenceNo ? `${a.sequenceNo}. Nachtrag` : "Nachtrag"} · {amendmentKindsLabel(a)}</span>
-                <Chip tone={tone[a.status as AmendmentStatus] ?? "grey"}>{AMENDMENT_STATUS[a.status as AmendmentStatus] ?? a.status}</Chip>
+                <Chip tone={tone[a.status as AmendmentStatus] ?? "grey"}>{a.status === "SIGNED" && (a.snapshot as { consent?: unknown } | null)?.consent ? "Telefonisch bestätigt" : AMENDMENT_STATUS[a.status as AmendmentStatus] ?? a.status}</Chip>
                 <span className="text-ink-3 text-xs">{a.status === "AGREED" && a.agreedAt ? `vereinbart ${fmtDateTime(a.agreedAt)}${a.newEndAt ? ` · reserviert bis ${fmtDateTime(a.newEndAt)}` : ""}` : a.status === "SIGNED" && a.signedAt ? `wirksam seit ${fmtDateTime(a.signedAt)}` : a.status === "DISCARDED" && a.discardedAt ? `verworfen ${fmtDate(a.discardedAt)}` : `angelegt ${fmtDate(a.createdAt)}`}</span>
                 {a.status === "SIGNED" && (a.documents[0] ? <a href={`/api/documents/${a.documents[0].id}`} target="_blank" rel="noopener noreferrer" className="text-xs underline">PDF</a> : <span className="text-xs text-ink-3">PDF noch nicht erzeugt</span>)}
                 {a.status === "SIGNED" && (a.emailLogs[0] ? <Chip tone="good">versendet {fmtDate(a.emailLogs[0].sentAt ?? new Date())}</Chip> : <Chip>nicht versendet</Chip>)}

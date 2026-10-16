@@ -19,7 +19,7 @@ import { balanceOf } from "@/lib/deposits";
 import { contractKmPolicy, loadEffectiveContract, loadEffectiveDepositCents } from "@/lib/amendments";
 import { extraMileageCharge, mileagePeriod } from "@/lib/extra-charges";
 import { fmtCents } from "@/lib/money";
-import { DAMAGE_KINDS, DAMAGE_SEVERITY, DAMAGE_VIEWS, PHOTO_CATEGORIES, REQUIRED_PHOTO_CATEGORIES, RETURN_ATTENTION_ON_YES, VISIBLE_DAMAGE_STATUS, energyRequirements, type HandoverType } from "@/lib/constants";
+import { DAMAGE_KINDS, DAMAGE_SEVERITY, DAMAGE_VIEWS, PHOTO_CATEGORIES, REQUIRED_PHOTO_CATEGORIES, RETURN_ATTENTION_ON_YES, RETURN_NOTE_OPTIONAL_ON_NO, VISIBLE_DAMAGE_STATUS, energyRequirements, type HandoverType } from "@/lib/constants";
 import { DomainError, assertHandoverDraft, contentHash, sha256 } from "@/lib/integrity";
 import { nextHandoverNumber } from "@/lib/numbering";
 import { ALLOWED_PHOTO_TYPES, MAX_PHOTO_BYTES, assertKeyBelongsToTenant, buildStorageKey } from "@/lib/storage";
@@ -790,7 +790,9 @@ async function collectIssues(tx: Tx, tenantId: string, handoverId: string, opts:
   // Checkliste
   const open = h.checklistItems.filter((c) => c.required && !c.result);
   if (open.length > 0) err("CHECKLIST", "CHECKLIST_OPEN", `Es fehlen noch ${open.length} Pflichtpunkte der Checkliste, zuerst: ${open[0].label}`);
-  for (const c of h.checklistItems.filter((x) => isAttention(x) && !x.note)) err("CHECKLIST", "CHECKLIST_NOTE", `Checkliste „${c.label}“: bitte kurz notieren, was aufgefallen ist.`);
+  // Paket 1: bei der Rückgabe ist „Nein“ an einem Bestandspunkt ohne Bemerkung ausreichend dokumentiert (RETURN_NOTE_OPTIONAL_ON_NO)
+  const noteOptional = (x: { itemKey: string; result: string | null }) => h.type === "RETURN" && x.result === "NO" && RETURN_NOTE_OPTIONAL_ON_NO.has(x.itemKey);
+  for (const c of h.checklistItems.filter((x) => isAttention(x) && !x.note && !noteOptional(x))) err("CHECKLIST", "CHECKLIST_NOTE", `Checkliste „${c.label}“: bitte kurz notieren, was aufgefallen ist.`);
 
   // Befehl 20.6: Bei kontaktloser Rückgabe ersetzt die Kundenmeldung die Anwesenheitsunterschrift – ausschließlich für die Abgabe.
   // Ohne Kundenmeldung nur mit dokumentiertem Ausnahmegrund (beim Start gesetzt).

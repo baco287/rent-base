@@ -10,14 +10,15 @@ import { AMENDMENT_AGREED_CHANNELS, AMENDMENT_HELP, AMENDMENT_STATUS, DRIVER_ROL
 import { getAmendmentState, type AmendmentSnapshot } from "@/lib/amendments";
 import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed } from "@/lib/accident-replacement-events";
 import { DRIVER_BLOCKER_LABELS, driverVerificationOverview } from "@/lib/driver-verification";
-import { fmtDate, fmtDateTime, toDateTimeInput } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtTime, toDateTimeInput } from "@/lib/format";
 import { fmtCents } from "@/lib/money";
 import { toDateInputValue } from "@/lib/time";
 import { DriverFields, emptyDriver } from "../../vertrag/contract-parts";
 import { FinalizeForm, InlineForm, SignatureForm } from "../../vertrag/wizard-ui";
 import { DriverCheckForm, RepeatVerificationForm } from "../../uebergabe/driver-forms";
-import { addAmendmentDriverAction, agreeAmendmentAction, createAmendmentDocumentAction, discardAmendmentAction, withdrawAgreedAmendmentAction, dropAmendmentDriverAction, removeAmendmentSignatureAction, repeatAmendmentDriverAction, saveAmendmentChangesAction, saveAmendmentSignatureAction, sendAmendmentAction, setDriverRemovalAction, signAmendmentAction, verifyAmendmentDriverAction } from "../actions";
+import { addAmendmentDriverAction, confirmAmendmentByPhoneAction, createAmendmentDocumentAction, discardAmendmentAction, withdrawAgreedAmendmentAction, dropAmendmentDriverAction, removeAmendmentSignatureAction, repeatAmendmentDriverAction, saveAmendmentChangesAction, saveAmendmentSignatureAction, sendAmendmentAction, setDriverRemovalAction, signAmendmentAction, verifyAmendmentDriverAction } from "../actions";
 import { ChangesForm, ConfirmForm, MessageForm } from "../amendment-forms";
+import { PhoneConsentForm } from "../phone-consent-form";
 
 export const metadata = { title: "Nachtrag zum Mietvertrag" };
 
@@ -49,10 +50,10 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
     const recipient = snap.customer.email?.trim() || null;
     return (
       <>
-        <PageHeader title={`Nachtrag ${a.number}`} sub={<>{snap.sequenceNo}. Nachtrag zum Mietvertrag {a.contract.number} · Buchung {b.number} · <Chip tone="good">Unterschrieben und wirksam</Chip></>}>{back}</PageHeader>
+        <PageHeader title={`Nachtrag ${a.number}`} sub={<>{snap.sequenceNo}. Nachtrag zum Mietvertrag {a.contract.number} · Buchung {b.number} · <Chip tone="good">{snap.consent ? "Telefonisch bestätigt und wirksam" : "Unterschrieben und wirksam"}</Chip></>}>{back}</PageHeader>
         <Content>
           {hint}
-          {sp.wirksam === "1" && <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Der Nachtrag ist unterschrieben und wirksam. Buchung, Rückgabe, Kaution und Abrechnung verwenden ab jetzt den neuen Stand. Es wurde nichts versendet.</p>}
+          {sp.wirksam === "1" && <p className="rounded-md bg-good-soft text-good px-3.5 py-2.5 text-sm font-medium">Der Nachtrag ist {snap.consent ? "telefonisch bestätigt" : "unterschrieben"} und wirksam. Buchung, Rückgabe, Kaution und Abrechnung verwenden ab jetzt den neuen Stand. Es wurde nichts versendet.</p>}
           <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-4 items-start">
             <div className="flex flex-col gap-4 min-w-0">
               <Card title="Geänderte Vereinbarungen" right={<span className="text-xs text-ink-3">wirksam seit {fmtDateTime(new Date(snap.signedAt))}</span>}>
@@ -69,8 +70,14 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
                   <div><dt className="text-ink-3">Fahrer</dt><dd>{snap.after.drivers.map((d) => `${d.name}${d.role === "PRIMARY_DRIVER" ? " (Hauptfahrer)" : ""}`).join(", ")}</dd></div>
                 </dl>
               </Card>
-              <Card title="Unterschriften">
+              <Card title={snap.consent ? "Zustimmung des Mieters" : "Unterschriften"}>
                 <ul className="p-4 text-sm flex flex-col gap-1">
+                  {snap.consent && (
+                    <li>
+                      Telefonische Zustimmung des Mieters am <b>{fmtDate(new Date(snap.consent.at))}</b> um <b>{fmtTime(new Date(snap.consent.at))} Uhr</b>, dokumentiert durch <b>{snap.consent.byName}</b>. Eine Unterschrift des Mieters liegt zu diesem Nachtrag nicht vor.
+                      {snap.consent.note && <span className="block text-xs text-ink-3 pt-0.5">Notiz: {snap.consent.note}</span>}
+                    </li>
+                  )}
                   {snap.signatures.map((s) => <li key={s.role}>{s.role === "RENTER" ? "Mieter" : "Vermieter"}: <b>{s.signerName}</b> · {fmtDateTime(new Date(s.signedAt))}</li>)}
                   <li className="text-xs text-ink-3 pt-1">Wirksam gemacht von {snap.signedByName} · Prüfsumme <span className="font-mono break-all">{a.contentHash}</span></li>
                 </ul>
@@ -135,9 +142,9 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
   const fullCheckFor = typeof sp.pruefung === "string" ? sp.pruefung : null;
   // Befehl 28: vorab vereinbart (Unterschrift ausstehend) – Inhalt fest, Fahrzeug reserviert, vertraglich erst mit Unterschrift
   const agreed = a.status === "AGREED";
-  const periodChange = !!a.newEndAt || !!a.newStartAt;
-  const agreeErrors = errors.filter((i) => i.code !== "SIGNATURE" && i.code !== "SIGNATURE_STALE");
-  const canAgree = mayEdit && a.status === "DRAFT" && periodChange && addedDrivers.length === 0 && removedDrivers.length === 0 && agreeErrors.length === 0;
+  // Paket 1: Zustimmungsart – vor Ort unterschrieben (bestehender Ablauf) oder telefonisch bestätigt (ohne Mieter-Unterschrift)
+  const consentMode = sp.zustimmung === "telefon" ? "telefon" : "vor-ort";
+  const driverChange = addedDrivers.length > 0 || removedDrivers.length > 0;
 
   return (
     <>
@@ -259,60 +266,57 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
             </Card>
             <Card title="Prüfung" right={<Chip tone={errors.length ? "amber" : "good"}>{errors.length ? `${errors.length} offen` : "bereit"}</Chip>}>
               <ul className="p-4 text-sm flex flex-col gap-1.5">
-                {errors.length === 0 && <li className="text-good">Alle Voraussetzungen erfüllt. Der Nachtrag kann unterschrieben werden.</li>}
+                {errors.length === 0 && <li className="text-good">Alle Voraussetzungen erfüllt. Der Nachtrag kann wirksam gemacht werden.</li>}
                 {issues.map((i) => <li key={i.code} className={i.severity === "error" ? "text-bad" : "text-amber"}>{i.message}</li>)}
               </ul>
             </Card>
             <div id="unterschrift" className="scroll-mt-20">
-              <Card title="3. Unterschrift">
+              <Card title="3. Zustimmung des Mieters">
                 <div className="p-4 flex flex-col gap-4 text-sm">
-                  {!readyToSign && <p className="text-ink-3">Unterschrieben wird erst, wenn alle Prüfpunkte erfüllt sind.</p>}
-                  {readyToSign && mayEdit && (
-                    <>
-                      {renterSig ? (
-                        <div className="flex flex-wrap items-center gap-2"><Chip tone="good">Mieter unterschrieben</Chip><span>{renterSig.signerName} · {fmtDateTime(renterSig.signedAt)}</span><form action={removeAmendmentSignatureAction.bind(null, id, a.id, "RENTER")}><button className="btn !py-1">Entfernen</button></form></div>
-                      ) : (
-                        <SignatureForm action={saveAmendmentSignatureAction.bind(null, id, a.id)} role="RENTER" defaultName={renterName} seenHash={hash} />
-                      )}
-                      <details className="rounded-md border border-line-soft">
-                        <summary className="cursor-pointer px-3 py-2.5 text-ink-2">Unterschrift Vermieter (optional)</summary>
-                        <div className="p-3 pt-1">
-                          {employeeSig ? (
-                            <div className="flex flex-wrap items-center gap-2"><Chip tone="good">Vermieter unterschrieben</Chip><span>{employeeSig.signerName}</span><form action={removeAmendmentSignatureAction.bind(null, id, a.id, "EMPLOYEE")}><button className="btn !py-1">Entfernen</button></form></div>
-                          ) : (
-                            <SignatureForm action={saveAmendmentSignatureAction.bind(null, id, a.id)} role="EMPLOYEE" defaultName={user.name} seenHash={hash} />
-                          )}
-                        </div>
-                      </details>
-                    </>
-                  )}
                   {mayEdit && (
-                    <FinalizeForm action={signAmendmentAction.bind(null, id, a.id)} disabled={!canFinalize} reason={!renterSig ? "Die Unterschrift des Mieters fehlt." : undefined} label="Nachtrag unterschreiben und wirksam machen" pendingLabel="Nachtrag wird wirksam gemacht…" />
+                    <div className="flex flex-col gap-2">
+                      <span className="label-xs">Wie hat der Mieter der Änderung zugestimmt?</span>
+                      <nav aria-label="Art der Zustimmung" className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <Link href={`?zustimmung=vor-ort#unterschrift`} replace scroll={false} aria-current={consentMode === "vor-ort" ? "page" : undefined} className={`btn justify-center !py-2.5 ${consentMode === "vor-ort" ? "!bg-brand !text-brand-ink !border-brand" : ""}`}>Vor Ort unterschrieben</Link>
+                        <Link href={`?zustimmung=telefon#unterschrift`} replace scroll={false} aria-current={consentMode === "telefon" ? "page" : undefined} className={`btn justify-center !py-2.5 ${consentMode === "telefon" ? "!bg-brand !text-brand-ink !border-brand" : ""}`}>Telefonisch bestätigt</Link>
+                      </nav>
+                    </div>
                   )}
+                  {!readyToSign && <p className="text-ink-3">Wirksam gemacht wird erst, wenn alle Prüfpunkte erfüllt sind.</p>}
+                  {consentMode === "vor-ort" || !mayEdit ? (
+                    <>
+                      {readyToSign && mayEdit && (
+                        <>
+                          {renterSig ? (
+                            <div className="flex flex-wrap items-center gap-2"><Chip tone="good">Mieter unterschrieben</Chip><span>{renterSig.signerName} · {fmtDateTime(renterSig.signedAt)}</span><form action={removeAmendmentSignatureAction.bind(null, id, a.id, "RENTER")}><button className="btn !py-1">Entfernen</button></form></div>
+                          ) : (
+                            <SignatureForm action={saveAmendmentSignatureAction.bind(null, id, a.id)} role="RENTER" defaultName={renterName} seenHash={hash} />
+                          )}
+                          <details className="rounded-md border border-line-soft">
+                            <summary className="cursor-pointer px-3 py-2.5 text-ink-2">Unterschrift Vermieter (optional)</summary>
+                            <div className="p-3 pt-1">
+                              {employeeSig ? (
+                                <div className="flex flex-wrap items-center gap-2"><Chip tone="good">Vermieter unterschrieben</Chip><span>{employeeSig.signerName}</span><form action={removeAmendmentSignatureAction.bind(null, id, a.id, "EMPLOYEE")}><button className="btn !py-1">Entfernen</button></form></div>
+                              ) : (
+                                <SignatureForm action={saveAmendmentSignatureAction.bind(null, id, a.id)} role="EMPLOYEE" defaultName={user.name} seenHash={hash} />
+                              )}
+                            </div>
+                          </details>
+                        </>
+                      )}
+                      {mayEdit && (
+                        <FinalizeForm action={signAmendmentAction.bind(null, id, a.id)} disabled={!canFinalize} reason={!renterSig ? "Die Unterschrift des Mieters fehlt." : undefined} label="Nachtrag unterschreiben und wirksam machen" pendingLabel="Nachtrag wird wirksam gemacht…" />
+                      )}
+                    </>
+                  ) : driverChange ? (
+                    <p className="text-amber">Fahreränderungen werden nicht telefonisch wirksam – sie brauchen die Fahrerprüfung mit Originalen und die Unterschrift vor Ort.</p>
+                  ) : readyToSign ? (
+                    <PhoneConsentForm action={confirmAmendmentByPhoneAction.bind(null, id, a.id)} seenHash={hash} renterName={renterName} employeeName={user.name} />
+                  ) : null}
                   <p className="text-xs text-ink-3">Mit dem Wirksamwerden erhält der Nachtrag seine Nummer, der Inhalt wird versiegelt, Buchung und Kaution übernehmen den neuen Stand. Es wird nichts automatisch bezahlt, erstattet oder versendet.</p>
                 </div>
               </Card>
             </div>
-            {mayEdit && a.status === "DRAFT" && periodChange && (
-              <Card title="Telefonisch / extern vereinbart?">
-                <div className="p-4 flex flex-col gap-2 text-sm">
-                  <p className="text-ink-3">Wenn der Kunde die Änderung des Mietzeitraums bereits zugesagt hat (z. B. am Telefon), aber noch nicht unterschreiben kann: als <b>vereinbart</b> speichern. Das Fahrzeug wird sofort reserviert; Preis und Rechnung ändern sich erst mit der Unterschrift.</p>
-                  {canAgree ? (
-                    <MessageForm action={agreeAmendmentAction.bind(null, id, a.id)} submitLabel="Als vereinbart speichern – Fahrzeug reservieren" pendingLabel="Wird gespeichert…" className="btn btn-primary">
-                      <label className="flex flex-col gap-1"><span className="label-xs">Vereinbart</span>
-                        <select name="channel" required defaultValue="" className="input">
-                          <option value="" disabled>bitte wählen</option>
-                          {Object.entries(AMENDMENT_AGREED_CHANNELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-                        </select>
-                      </label>
-                      <label className="flex flex-col gap-1"><span className="label-xs">Notiz (optional)</span><input name="note" maxLength={500} className="input" placeholder="z. B. Anruf 15:05, Kunde bestätigt Verlängerung bis morgen 18:00" /></label>
-                    </MessageForm>
-                  ) : (
-                    <p className="text-amber">{addedDrivers.length || removedDrivers.length ? "Fahreränderungen werden nicht vorab vereinbart." : agreeErrors.length ? `Erst möglich, wenn die Prüfung bestanden ist: ${agreeErrors[0].message}` : "Bitte zuerst die Änderung speichern."}</p>
-                  )}
-                </div>
-              </Card>
-            )}
             {mayEdit && agreed && (
               <Card title="Vereinbarte Änderung zurücknehmen">
                 <div className="p-4 flex flex-col gap-2 text-sm">

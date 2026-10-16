@@ -14,10 +14,12 @@ import { sendBusinessMail } from "@/lib/tenant-mail";
 
 export const AMENDMENT_MAIL_TEMPLATE = "CONTRACT_AMENDMENT";
 
-export function composeAmendmentMail(f: { number: string; contractNumber: string; bookingNumber: string; changes: string[]; recipientName: string; landlordName: string; landlordContact: string }) {
+export function composeAmendmentMail(f: { number: string; contractNumber: string; bookingNumber: string; changes: string[]; recipientName: string; landlordName: string; landlordContact: string; /** Paket 1: telefonisch bestätigt statt unterschrieben */ phoneConsent?: boolean }) {
   const subject = `Nachtrag ${f.number} zum Mietvertrag ${f.contractNumber}`;
   const body = [
-    `anbei erhalten Sie den unterschriebenen Nachtrag ${f.number} zu Ihrem Mietvertrag ${f.contractNumber} (Buchung ${f.bookingNumber}).`,
+    f.phoneConsent
+      ? `anbei erhalten Sie den Nachtrag ${f.number} zu Ihrem Mietvertrag ${f.contractNumber} (Buchung ${f.bookingNumber}), dem Sie telefonisch zugestimmt haben.`
+      : `anbei erhalten Sie den unterschriebenen Nachtrag ${f.number} zu Ihrem Mietvertrag ${f.contractNumber} (Buchung ${f.bookingNumber}).`,
     `Geänderte Vereinbarungen: ${f.changes.join(", ")}.`,
     "Alle übrigen Vereinbarungen des Mietvertrags bleiben unverändert bestehen.",
   ];
@@ -41,7 +43,7 @@ export async function sendAmendment(tenantId: string, actor: Actor | null, amend
   if (!isValidEmail(recipient)) throw new DomainError("Zum Mieter ist im Vertrag keine gültige E-Mail-Adresse hinterlegt. Bitte das PDF anders übermitteln.");
   const { document: doc } = await ensureAmendmentDocument(tenantId, a.id, actor?.id ?? null, { storage: opts.storage });
   const tenant = await db.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { name: true, phone: true, email: true } });
-  const mail = composeAmendmentMail({ number: a.number, contractNumber: data.doc.contract.number, bookingNumber: data.doc.bookingNumber, changes: data.doc.changes.map((c) => c.label), recipientName: data.doc.customer.name, landlordName: tenant.name, landlordContact: [tenant.phone, tenant.email].filter(Boolean).join(" · ") });
+  const mail = composeAmendmentMail({ number: a.number, contractNumber: data.doc.contract.number, bookingNumber: data.doc.bookingNumber, changes: data.doc.changes.map((c) => c.label), phoneConsent: !!data.doc.consent, recipientName: data.doc.customer.name, landlordName: tenant.name, landlordContact: [tenant.phone, tenant.email].filter(Boolean).join(" · ") });
   const resend = (await db.emailLog.count({ where: { tenantId, amendmentId: a.id, status: "SENT" } })) > 0;
   const { log, created } = await claimEmail({ tenantId, bookingId: a.bookingId, amendmentId: a.id, recipient: recipient!, subject: mail.subject, template: AMENDMENT_MAIL_TEMPLATE, attachments: [{ documentId: doc.id, fileName: doc.fileName, checksum: doc.checksum, version: doc.version, type: doc.type }], trigger: "MANUAL", createdById: actor?.id ?? null, idempotencyKey: `${AMENDMENT_MAIL_TEMPLATE}:${a.id}:${doc.id}v${doc.version}:manual:${opts.nonce}` });
   if (!created) return { status: "DUPLICATE", log, resend };

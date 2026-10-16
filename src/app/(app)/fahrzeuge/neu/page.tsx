@@ -21,7 +21,7 @@ export default async function NewVehiclePage({ searchParams }: PageProps<"/fahrz
       <PageHeader title="Neues Fahrzeug" sub={preset ? `Gruppe ${preset.name}` : undefined} />
       <Content>
         <Card className="p-5 max-w-3xl">
-          <VehicleForm action={createVehicleAction} values={values} groups={groups} submitLabel="Fahrzeug anlegen" cancelHref="/fahrzeuge" />
+          <VehicleForm action={createVehicleAction} values={values} groups={groups} submitLabel="Fahrzeug anlegen" cancelHref="/fahrzeuge" withTankCapacity={false} />
         </Card>
       </Content>
     </>

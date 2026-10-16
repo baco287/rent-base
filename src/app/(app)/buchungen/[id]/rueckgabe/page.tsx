@@ -13,7 +13,7 @@ import { KeyDropExceptionForm, ReturnTimeOverrideForm } from "./key-drop-parts";
 import { keyDropFindingsForHandover } from "@/lib/document-data";
 import { toDateTimeInputValue } from "@/lib/time";
 import { storageStatus } from "@/lib/storage";
-import { FUELS, PHOTO_CATEGORIES, REQUIRED_PHOTO_CATEGORIES, energyRequirements, type Fuel, type PhotoCategory } from "@/lib/constants";
+import { FUELS, PHOTO_CATEGORIES, REQUIRED_PHOTO_CATEGORIES, RETURN_NOTE_OPTIONAL_ON_NO, energyRequirements, type Fuel, type PhotoCategory } from "@/lib/constants";
 import { customerName, fmtDateTime, fmtEur, fmtInt } from "@/lib/format";
 import { BookingStageChip, Card, Chip, Content, Field, PageHeader, Plate } from "@/components/ui";
 import { FinalizeForm, SignatureForm, StepForm, WizardProgress } from "../vertrag/wizard-ui";
@@ -431,7 +431,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
                             ))}
                           </div>
                         )}
-                        {c.answerType !== "TEXT" && <input name={`n_${c.id}`} defaultValue={c.note ?? ""} className="input" placeholder="Bemerkung, Pflicht bei einer Auffälligkeit" aria-label={`Bemerkung zu ${c.label}`} />}
+                        {c.answerType !== "TEXT" && <input name={`n_${c.id}`} defaultValue={c.note ?? ""} className="input" placeholder={RETURN_NOTE_OPTIONAL_ON_NO.has(c.itemKey) ? "Bemerkung (optional)" : "Bemerkung, Pflicht bei einer Auffälligkeit"} aria-label={`Bemerkung zu ${c.label}`} />}
                       </li>
                     );
                   })}

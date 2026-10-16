@@ -379,7 +379,7 @@ async function timelineFor(tenantId: string, scope: TimelineScope, limit: number
     db.authorityCase.findMany({ where: { tenantId, ...(byCustomer ? { driverCustomerId: customerId! } : { bookingId: bookingId! }) }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, caseNumber: true, createdAt: true, authorityName: true } }),
     db.emailLog.findMany({ where: { tenantId, status: "SENT", ...(byCustomer ? { OR: [{ booking: { customerId: customerId! } }, { payout: { customerId: customerId! } }, { bookingId: null, invoiceVersion: { invoice: { customerId: customerId! } } }, { bookingId: null, dunningNotice: { customerId: customerId! } }] } : { bookingId: bookingId! }), ...hideMails(view) }, orderBy: { sentAt: "desc" }, take: limit, select: { id: true, sentAt: true, createdAt: true, subject: true, bookingId: true, payoutId: true } }),
     // Befehl 28: Nachträge mit Vereinbarung, Unterschrift und Zurücknahme
-    db.contractAmendment.findMany({ where: { tenantId, status: { in: ["AGREED", "SIGNED", "DISCARDED"] }, ...viaBooking }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, bookingId: true, number: true, status: true, newEndAt: true, newStartAt: true, agreedAt: true, agreedChannel: true, signedAt: true, discardedAt: true, discardReason: true, booking: { select: { number: true } } } }),
+    db.contractAmendment.findMany({ where: { tenantId, status: { in: ["AGREED", "SIGNED", "DISCARDED"] }, ...viaBooking }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, bookingId: true, number: true, status: true, snapshot: true, newEndAt: true, newStartAt: true, agreedAt: true, agreedChannel: true, signedAt: true, discardedAt: true, discardReason: true, booking: { select: { number: true } } } }),
   ]);
   // Befehl 28: Zeitraumänderungen vor dem Vertrag und bewusst stehen gelassenes Guthaben stehen nur im Audit (keine Doppelhaltung)
   const bookingIds = bookings.map((b) => b.id);
@@ -411,7 +411,7 @@ async function timelineFor(tenantId: string, scope: TimelineScope, limit: number
     const href = `/buchungen/${a.bookingId}/nachtrag/${a.id}`;
     const period = a.newEndAt ? `Rückgabe bis ${dateTimeText(a.newEndAt)}` : a.newStartAt ? `Abholung ${dateTimeText(a.newStartAt)}` : null;
     if (a.agreedAt) e.push({ key: `na-${a.id}`, at: a.agreedAt, kind: "Nachtrag", title: `Vertragsänderung vereinbart (${a.agreedChannel === "PHONE" ? "telefonisch" : "vorab"}) · Buchung ${a.booking.number}`, detail: [period, "Unterschrift ausstehend"].filter(Boolean).join(" · "), href });
-    if (a.status === "SIGNED" && a.signedAt) e.push({ key: `ns-${a.id}`, at: a.signedAt, kind: "Nachtrag", title: `Nachtrag ${a.number} unterschrieben · Buchung ${a.booking.number}`, detail: period, href });
+    if (a.status === "SIGNED" && a.signedAt) e.push({ key: `ns-${a.id}`, at: a.signedAt, kind: "Nachtrag", title: `Nachtrag ${a.number} ${(a.snapshot as { consent?: unknown } | null)?.consent ? "telefonisch bestätigt" : "unterschrieben"} · Buchung ${a.booking.number}`, detail: period, href });
     if (a.status === "DISCARDED" && a.discardedAt && a.agreedAt) e.push({ key: `nd-${a.id}`, at: a.discardedAt, kind: "Nachtrag", title: `Vereinbarte Vertragsänderung zurückgenommen · Buchung ${a.booking.number}`, detail: a.discardReason, href });
   }
   for (const c of contracts) if (c.status === "SIGNED" && c.signedAt) e.push({ key: `c-${c.id}`, at: c.signedAt, kind: "Vertrag", title: `Mietvertrag ${c.number} abgeschlossen`, detail: null, href: `/buchungen/${c.bookingId}/vertrag` });

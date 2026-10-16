@@ -55,12 +55,15 @@ export function VehicleForm({
   groups,
   submitLabel,
   cancelHref,
+  withTankCapacity = true,
 }: {
   action: (prev: FormState, fd: FormData) => Promise<FormState>;
   values: VehicleFormValues;
   groups: GroupOption[];
   submitLabel: string;
   cancelHref: string;
+  /** Paket 1: beim Anlegen ohne Tankgröße (bleibt unter „Fahrzeug bearbeiten“ optional nachtragbar) */
+  withTankCapacity?: boolean;
 }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   const [groupId, setGroupId] = useState(values.groupId);
@@ -120,7 +123,7 @@ export function VehicleForm({
           <input id="mileageCorrectionReason" name="mileageCorrectionReason" required minLength={3} maxLength={300} className="input" placeholder="z. B. Tippfehler bei der Erfassung" />
         </Field>
       )}
-      {fuel !== "ELEKTRO" && (
+      {withTankCapacity && fuel !== "ELEKTRO" && (
         <Field label="Tankgröße (Liter)" htmlFor="tankCapacityLiters" hint="Für die Berechnung fehlenden Kraftstoffs bei der Rückgabe">
           <input id="tankCapacityLiters" name="tankCapacityLiters" type="number" min={5} max={300} step={1} inputMode="numeric" defaultValue={v.tankCapacityLiters} className="input tnum" placeholder="z. B. 70" />
         </Field>

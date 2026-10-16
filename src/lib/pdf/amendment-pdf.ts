@@ -11,7 +11,7 @@ export async function renderAmendmentPdf(data: AmendmentDocumentData, signatureI
     title: data.title,
     number: data.number,
     landlord: { name: data.company.fullName, address: data.company.addressLines.join(", "), contact: data.company.contact, logoImage: logo },
-    footerNote: { label: "Prüfsumme des unterschriebenen Nachtragsinhalts (SHA-256)", value: data.contentHash },
+    footerNote: { label: data.consent ? "Prüfsumme des versiegelten Nachtragsinhalts (SHA-256)" : "Prüfsumme des unterschriebenen Nachtragsinhalts (SHA-256)", value: data.contentHash },
   });
 
   pdf.documentTitle(`${data.title} ${data.number}`, [
@@ -47,8 +47,14 @@ export async function renderAmendmentPdf(data: AmendmentDocumentData, signatureI
   pdf.gap(4);
   pdf.paragraph(data.closing, { size: 9.5, gapAfter: 10 });
 
+  // Paket 1: telefonische Zustimmung – ausdrücklich ausgewiesen statt einer Mieter-Unterschrift
+  if (data.consent) {
+    pdf.sectionTitle("Zustimmung des Mieters");
+    pdf.paragraph(data.consent.text, { size: 9.5, gapAfter: data.consent.note ? 3 : 8 });
+    if (data.consent.note) pdf.paragraph(`Notiz: ${data.consent.note}`, { size: 8.5, color: COLORS.ink3, gapAfter: 8 });
+  }
   drawSignatures(pdf, data.signatures, signatureImages);
-  if (data.signatures.length === 0) pdf.paragraph("Keine Unterschrift zum versiegelten Inhalt vorhanden.", { size: 8.5, color: COLORS.ink3 });
+  if (data.signatures.length === 0 && !data.consent) pdf.paragraph("Keine Unterschrift zum versiegelten Inhalt vorhanden.", { size: 8.5, color: COLORS.ink3 });
 
   const foot = [data.company.fullName, data.company.addressLines.join(", "), data.company.contact, data.company.taxLine, data.company.footer].filter(Boolean).join(" · ");
   pdf.gap(6);

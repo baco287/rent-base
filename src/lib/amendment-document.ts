@@ -4,7 +4,7 @@
 import { db } from "@/lib/db";
 import type { LogoRef } from "@/lib/branding-ref";
 import type { AmendmentSnapshot } from "@/lib/amendments";
-import { fmtDate, fmtDateTime } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtTime } from "@/lib/format";
 import { DomainError } from "@/lib/integrity";
 import { fmtCents } from "@/lib/money";
 
@@ -24,6 +24,8 @@ export type AmendmentDocumentData = {
   /** Stand nach diesem Nachtrag (nur die geänderten Kerndaten, zur Orientierung) */
   after: { endAt: string; total: string; km: string; deposit: string; returnLocation: string; drivers: string[] };
   signatures: { id: string; role: string; roleLabel: string; signerName: string; signedAt: string; imageUrl: string }[];
+  /** Paket 1: telefonische Zustimmung statt Mieter-Unterschrift (aus dem versiegelten Snapshot) */
+  consent: { text: string; note: string | null } | null;
   closing: string;
   contentHash: string;
 };
@@ -63,6 +65,9 @@ export function buildAmendmentDocument(s: AmendmentSnapshot, hash: string, signa
       drivers: s.after.drivers.map((x) => `${x.name}${x.role === "PRIMARY_DRIVER" ? " (Hauptfahrer)" : ""}`),
     },
     signatures: signatures.map((x) => ({ id: x.id, role: x.role, roleLabel: x.role === "RENTER" ? "Mieter" : "Vermieter", signerName: x.signerName, signedAt: fmtDateTime(x.signedAt), imageUrl: `/api/signatures/${x.id}` })),
+    consent: s.consent
+      ? { text: `Telefonische Zustimmung des Mieters am ${fmtDate(new Date(s.consent.at))} um ${fmtTime(new Date(s.consent.at))} Uhr, dokumentiert durch ${s.consent.byName}. Eine Unterschrift des Mieters liegt zu diesem Nachtrag nicht vor.`, note: s.consent.note }
+      : null,
     closing: CLOSING,
     contentHash: hash,
   };

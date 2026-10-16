@@ -632,6 +632,8 @@ function vehicleRef(snapshot: unknown) {
 
 export type AmendmentSnapshot = {
   agreed?: { at: string; channel: string | null; byName: string | null; note: string | null };
+  /** Paket 1: telefonische Zustimmung des Mieters statt Unterschrift – vom Mitarbeiter dokumentiert (wer, wann, Notiz) */
+  consent?: { method: "PHONE"; at: string; byName: string; note: string | null };
   startBefore?: string;
   startAfter?: string;
   v: 1; number: string; sequenceNo: number; signedAt: string;
@@ -647,11 +649,22 @@ export type AmendmentSnapshot = {
   createdByName: string | null; signedByName: string;
 };
 
+/** Paket 1: telefonische Zustimmung des Mieters (siehe signAmendment). */
+export type AmendmentPhoneConsent = { confirmed: boolean; seenHash: string; note?: string | null };
+
 /**
  * Wirksamwerden: unter Sperren (Buchung → Vertrag → Fahrzeug) erneut prüfen, Nummer vergeben, Snapshot versiegeln, Buchung
  * und Kaution materialisieren, Audit je Änderung. Idempotent: ein bereits unterschriebener Nachtrag wird unverändert zurückgegeben.
+ *
+ * Paket 1: `phoneConsent` – der Mieter hat telefonisch zugestimmt und kann nicht vor Ort unterschreiben. Ersetzt AUSSCHLIESSLICH die
+ * Mieter-Unterschrift: der Mitarbeiter bestätigt ausdrücklich, der angezeigte Inhalt muss dem aktuellen entsprechen, Fahreränderungen
+ * bleiben ausgeschlossen (Originalprüfung vor Ort). Alle übrigen Prüfungen, Nummer, Snapshot, Übernahme in Buchung/Kaution und Audit
+ * laufen unverändert; Mitarbeiter und Zeitpunkt stehen im versiegelten Snapshot, in signedById/signedAt und im Audit.
  */
-export async function signAmendment(tenantId: string, actor: Actor, amendmentId: string, opts: { now?: Date } = {}): Promise<{ amendment: AmendmentRow; created: boolean }> {
+export async function signAmendment(tenantId: string, actor: Actor, amendmentId: string, opts: { now?: Date; phoneConsent?: AmendmentPhoneConsent } = {}): Promise<{ amendment: AmendmentRow; created: boolean }> {
+  const phone = opts.phoneConsent ?? null;
+  if (phone && !phone.confirmed) throw new DomainError("Bitte bestätigen, dass der Mieter dieser Änderung telefonisch zugestimmt hat.");
+  const phoneNote = phone?.note?.replace(/<[^>]*>/g, "").trim().slice(0, 500) || null;
   const pre = await db.contractAmendment.findFirst({ where: { id: amendmentId, tenantId }, select: { status: true } });
   if (!pre) throw new DomainError("Nachtrag nicht gefunden.");
   if (pre.status === "SIGNED") return { amendment: (await db.contractAmendment.findUniqueOrThrow({ where: { id: amendmentId } })), created: false };
@@ -669,12 +682,16 @@ export async function signAmendment(tenantId: string, actor: Actor, amendmentId:
     if (a.status === "SIGNED") return { amendment: a, created: false };
     assertDraft(a);
     const eff = applyAmendments(a.contract, a.contract.drivers, a.contract.amendments);
+    if (phone) {
+      if (a.contract.drivers.some((d) => d.addedByAmendmentId === a.id || d.removedByAmendmentId === a.id)) throw new DomainError("Fahreränderungen werden nicht telefonisch wirksam – sie brauchen die Fahrerprüfung mit Originalen und die Unterschrift vor Ort.");
+      if (contentHash(signedContent(a, eff)) !== phone.seenHash) throw new DomainError("Der Nachtrag wurde seit der Anzeige geändert. Bitte die Zusammenfassung erneut prüfen und die telefonische Zustimmung dann bestätigen.");
+    }
     // Verlängerung: Verfügbarkeit erneut unter der Fahrzeugsperre prüfen (zwischen Vorschau und Unterschrift kann eine Buchung entstanden sein)
     if (a.newEndAt || a.newStartAt) {
       const { conflicts } = await assertVehicleBookable(tx, tenantId, a.booking.vehicleId, a.newStartAt ?? eff.startAt, a.newEndAt ?? a.booking.endAt, a.bookingId);
       if (conflicts.length > 0) throw new DomainError(`Verlängerung nicht möglich. Das Fahrzeug ist ab ${fmtDateTime(conflicts[0].startAt)} bereits für Buchung ${conflicts[0].number} vorgesehen.`);
     }
-    const problems = (await collectIssues(tx, tenantId, a, { requireSignature: true, now })).filter((i) => i.severity === "error");
+    const problems = (await collectIssues(tx, tenantId, a, { requireSignature: !phone, now })).filter((i) => i.severity === "error");
     if (problems.length > 0) throw new DomainError(problems.length === 1 ? problems[0].message : `${problems[0].message} (und ${problems.length - 1} weitere Punkte)`);
 
     const hash = contentHash(signedContent(a, eff));
@@ -694,11 +711,13 @@ export async function signAmendment(tenantId: string, actor: Actor, amendmentId:
       before: { endAt: iso(eff.endAt), totalCents: eff.totalCents, kmIncludedPerDay: eff.kmIncludedPerDay, extraKmRate: eff.extraKmRate, kmPolicy: eff.kmPolicy, depositCents: eff.depositCents, returnLocation: eff.returnLocation, drivers: eff.drivers.map(driverName) },
       after: { endAt: iso(after.endAt), totalCents: after.totalCents, kmIncludedPerDay: after.kmIncludedPerDay, extraKmRate: after.extraKmRate, kmPolicy: after.kmPolicy, depositCents: after.depositCents, returnLocation: after.returnLocation, drivers: afterDrivers.map(driverName) },
       changes, priceProposalCents: a.priceProposalCents,
-      signatures: a.signatures.map((s) => ({ role: s.role, signerName: s.signerName, signedAt: s.signedAt.toISOString() })),
+      // bei telefonischer Zustimmung nur Unterschriften zu genau diesem Inhalt (z. B. die optionale des Vermieters)
+      signatures: a.signatures.filter((s) => !phone || s.contentHash === hash).map((s) => ({ role: s.role, signerName: s.signerName, signedAt: s.signedAt.toISOString() })),
       createdByName: a.createdByName, signedByName: actor.name,
       // Befehl 28: vorab vereinbart (telefonisch o. ä.) – Zeitpunkt und Weg der Vereinbarung bleiben im versiegelten Nachtrag
       ...(a.agreedAt ? { agreed: { at: a.agreedAt.toISOString(), channel: a.agreedChannel, byName: a.agreedByName, note: a.agreedNote } } : {}),
       ...(a.newStartAt ? { startBefore: eff.startAt.toISOString(), startAfter: a.newStartAt.toISOString() } : {}),
+      ...(phone ? { consent: { method: "PHONE" as const, at: now.toISOString(), byName: actor.name, note: phoneNote } } : {}),
     };
     const row = await tx.contractAmendment.update({ where: { id: a.id }, data: { status: "SIGNED", number, sequenceNo, snapshot: snapshot as unknown as Prisma.InputJsonValue, contentHash: hash, signedAt: now, signedById: actor.id, signedByName: actor.name } });
 
@@ -709,7 +728,8 @@ export async function signAmendment(tenantId: string, actor: Actor, amendmentId:
       await tx.securityDeposit.updateMany({ where: { tenantId, bookingId: a.bookingId }, data: { expectedAmountCents: a.newDepositCents } });
     }
     const base = { bookingId: a.bookingId, details: { amendmentId: a.id, number, contractNumber: a.contract.number } };
-    await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_SIGNED", ...base, amountCents: a.priceDeltaCents ?? null, details: { ...base.details, sequenceNo, changes: changes.map((c) => c.kind).join(", "), wasAgreed: a.status === "AGREED", agreedAt: a.agreedAt?.toISOString() ?? null } });
+    if (phone) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_PHONE_CONSENT", ...base, details: { ...base.details, consentAt: now.toISOString(), documentedBy: actor.name, note: phoneNote } });
+    await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_SIGNED", ...base, amountCents: a.priceDeltaCents ?? null, details: { ...base.details, sequenceNo, changes: changes.map((c) => c.kind).join(", "), wasAgreed: a.status === "AGREED", agreedAt: a.agreedAt?.toISOString() ?? null, consent: phone ? "PHONE" : "SIGNATURE" } });
     if (a.newEndAt || a.newStartAt) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_PERIOD_CHANGED", ...base, details: { ...base.details, before: iso(eff.endAt), after: iso(a.newEndAt ?? eff.endAt), startBefore: a.newStartAt ? eff.startAt.toISOString() : null, startAfter: a.newStartAt?.toISOString() ?? null } });
     if (a.priceDeltaCents) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_PRICE_CHANGED", ...base, amountCents: a.priceDeltaCents, details: { ...base.details, before: eff.totalCents, delta: a.priceDeltaCents, after: after.totalCents, proposal: a.priceProposalCents, reason: a.priceReason } });
     if (a.newKmIncludedPerDay != null || a.newExtraKmRate != null || a.newKmPolicy) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_KM_CHANGED", ...base, details: { ...base.details, before: `${eff.kmPolicy} · ${eff.kmIncludedPerDay} km/Tag · ${eff.extraKmRate} €/km`, after: `${after.kmPolicy} · ${after.kmIncludedPerDay} km/Tag · ${after.extraKmRate} €/km` } });

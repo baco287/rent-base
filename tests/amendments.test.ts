@@ -662,3 +662,118 @@ test("describeChanges: Darstellung alt/neu für alle Änderungsarten", () => {
   assert.match(ch[0].note!, /2 Tage/);
   assert.equal(ch[4].before, "Hof");
 });
+
+// ---------------------------------------------------------------------------
+// Paket 1: telefonische Zustimmung statt Mieter-Unterschrift (A–F)
+// ---------------------------------------------------------------------------
+
+test("Paket 1 A/C: vor Ort bleibt Unterschrift Pflicht; telefonisch ohne ausdrückliche Bestätigung wird nichts wirksam", async () => {
+  await ready;
+  const w = await signedWorld("amend-phone-ac");
+  const c = await db.rentalContract.findUniqueOrThrow({ where: { id: w.contractId } });
+  const a = await draft(w, "pac");
+  await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusDays(c.endAt!, 1) });
+  // A: bestehender Ablauf unverändert – ohne Mieter-Unterschrift kein Wirksamwerden
+  await assert.rejects(() => signAmendment(w.tenantId, w.actor, a.id), /Unterschrift des Mieters fehlt/);
+  // C: telefonisch, Mitarbeiterbestätigung fehlt
+  const hash = await getAmendmentContentHash(w.tenantId, a.id);
+  await assert.rejects(() => signAmendment(w.tenantId, w.actor, a.id, { phoneConsent: { confirmed: false, seenHash: hash } }), /telefonisch zugestimmt/);
+  const still = await db.contractAmendment.findUniqueOrThrow({ where: { id: a.id } });
+  assert.equal(still.status, "DRAFT"); assert.equal(still.number, null);
+  assert.equal((await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } })).endAt!.getTime(), c.endAt!.getTime(), "Buchung unverändert");
+  assert.equal(await db.auditLog.count({ where: { tenantId: w.tenantId, action: { in: ["AMENDMENT_SIGNED", "AMENDMENT_PHONE_CONSENT"] } } }), 0);
+  // A: vor Ort unterschrieben – wie bisher wirksam, ohne Zustimmungsvermerk
+  const s = await signed(w, a.id);
+  assert.equal(s.status, "SIGNED");
+  const snap = s.snapshot as { consent?: unknown; signatures: unknown[] };
+  assert.equal(snap.consent, undefined); assert.equal(snap.signatures.length, 1);
+  const audit = await db.auditLog.findFirstOrThrow({ where: { tenantId: w.tenantId, action: "AMENDMENT_SIGNED" } });
+  assert.equal((audit.details as { consent?: string }).consent, "SIGNATURE");
+});
+
+test("Paket 1 B/D/E: telefonisch bestätigt – ohne Unterschrift wirksam, Mitarbeiter und Zeitpunkt dokumentiert, Buchung/Preis/Kaution übernommen, PDF und Mail weisen es aus", async () => {
+  await ready;
+  const w = await signedWorld("amend-phone-bde");
+  const c = await db.rentalContract.findUniqueOrThrow({ where: { id: w.contractId } });
+  const a = await draft(w, "pbde");
+  const newEnd = plusDays(c.endAt!, 2);
+  const row = await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: newEnd, newDepositCents: 70000 });
+  await updateAmendmentDraft(w.tenantId, w.actor, a.id, { priceDeltaCents: row.priceProposalCents });
+  const hash = await getAmendmentContentHash(w.tenantId, a.id);
+  assert.equal(await db.signature.count({ where: { tenantId: w.tenantId, amendmentId: a.id } }), 0, "keine Unterschrift vorhanden");
+  const at = new Date("2026-10-07T10:05:00Z");
+  const res = await signAmendment(w.tenantId, w.actor, a.id, { now: at, phoneConsent: { confirmed: true, seenHash: hash, note: "Anruf <b>12:05</b>, Kunde bestätigt" } });
+  assert.equal(res.created, true);
+  // B: wirksam, versiegelt, nummeriert – ohne Unterschrift
+  const s = await db.contractAmendment.findUniqueOrThrow({ where: { id: a.id } });
+  assert.equal(s.status, "SIGNED"); assert.match(s.number!, /^NT-\d{4}-\d{6}$/); assert.equal(s.sequenceNo, 1);
+  assert.equal(s.contentHash, hash);
+  // D: Mitarbeiter und Zeitpunkt
+  assert.equal(s.signedById, w.actor.id); assert.equal(s.signedByName, w.actor.name); assert.equal(s.signedAt!.getTime(), at.getTime());
+  const snap = s.snapshot as { consent?: { method: string; at: string; byName: string; note: string | null }; signatures: unknown[] };
+  assert.deepEqual(snap.consent, { method: "PHONE", at: at.toISOString(), byName: w.actor.name, note: "Anruf 12:05, Kunde bestätigt" });
+  assert.equal(snap.signatures.length, 0);
+  const consentAudit = await db.auditLog.findFirstOrThrow({ where: { tenantId: w.tenantId, action: "AMENDMENT_PHONE_CONSENT" } });
+  assert.equal(consentAudit.userId, w.actor.id); assert.equal(consentAudit.userName, w.actor.name);
+  assert.equal((consentAudit.details as { consentAt: string }).consentAt, at.toISOString());
+  assert.equal(((await db.auditLog.findFirstOrThrow({ where: { tenantId: w.tenantId, action: "AMENDMENT_SIGNED" } })).details as { consent: string }).consent, "PHONE");
+  // E: Vertragsänderung korrekt wirksam – Buchung, Gesamtpreis, Kaution
+  const bk = await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } });
+  assert.equal(bk.endAt!.getTime(), newEnd.getTime());
+  assert.equal(Number(bk.deposit), 700);
+  const st = await effectiveContractState(w.tenantId, w.contractId);
+  assert.equal(st.endAt!.getTime(), newEnd.getTime());
+  assert.equal(st.totalCents, Math.round(Number(c.totalAmount) * 100) + row.priceProposalCents!);
+  assert.equal(st.depositCents, 70000);
+  const sd = await db.securityDeposit.findFirst({ where: { tenantId: w.tenantId, bookingId: w.bookingId } });
+  if (sd) assert.equal(sd.expectedAmountCents, 70000, "Kautionszeile übernimmt die vereinbarte Kaution");
+  // PDF-Daten und Mail weisen die telefonische Zustimmung aus (keine Unterschrift vorgetäuscht)
+  const docData = await loadAmendmentDocumentData(w.tenantId, a.id);
+  assert.match(docData.doc.consent!.text, /^Telefonische Zustimmung des Mieters am 07\.10\.2026 um 12:05 Uhr, dokumentiert durch /);
+  assert.equal(docData.doc.signatures.length, 0);
+  const pdf = await renderAmendmentPdf(docData.doc, docData.signatureImages);
+  assert.ok(pdf.bytes.length > 1000);
+  const pdfText = JSON.stringify(pdf.trace);
+  assert.ok(pdfText.includes("Telefonische Zustimmung des Mieters"), "PDF enthält den Zustimmungsvermerk");
+  assert.ok(!pdfText.includes("Keine Unterschrift zum versiegelten Inhalt"));
+  const mail = composeAmendmentMail({ number: s.number!, contractNumber: c.number!, bookingNumber: "B", changes: ["Mietzeitraum"], recipientName: "Erika", landlordName: "X", landlordContact: "", phoneConsent: true });
+  assert.match(mail.text, /dem Sie telefonisch zugestimmt haben/); assert.doesNotMatch(mail.text, /unterschriebenen Nachtrag/);
+  // idempotent wie beim Unterschreiben
+  const again = await signAmendment(w.tenantId, w.actor, a.id, { phoneConsent: { confirmed: true, seenHash: hash } });
+  assert.equal(again.created, false);
+  assert.equal(await db.auditLog.count({ where: { tenantId: w.tenantId, action: "AMENDMENT_PHONE_CONSENT" } }), 1);
+});
+
+test("Paket 1 F: telefonisch gelten alle übrigen Prüfungen – veralteter Inhalt, Verfügbarkeit, Fahreränderung; vereinbarte Änderung telefonisch wirksam", async () => {
+  await ready;
+  const w = await signedWorld("amend-phone-f");
+  const c = await db.rentalContract.findUniqueOrThrow({ where: { id: w.contractId } });
+  // veralteter Inhalt
+  const a = await draft(w, "pf");
+  await updateAmendmentDraft(w.tenantId, w.actor, a.id, { newEndAt: plusDays(c.endAt!, 3) });
+  await assert.rejects(() => signAmendment(w.tenantId, w.actor, a.id, { phoneConsent: { confirmed: true, seenHash: "0".repeat(64) } }), /seit der Anzeige geändert/);
+  // Verfügbarkeit: Folgebuchung auf demselben Fahrzeug blockiert auch den telefonischen Weg
+  const other = await db.booking.create({ data: { tenantId: w.tenantId, number: "T-TEL-FOLGE", vehicleId: w.vehicleId, customerId: w.customerId, startAt: plusDays(c.endAt!, 1), endAt: plusDays(c.endAt!, 5), dailyRate: 89, deposit: 0 } });
+  const h = await getAmendmentContentHash(w.tenantId, a.id);
+  await assert.rejects(() => signAmendment(w.tenantId, w.actor, a.id, { phoneConsent: { confirmed: true, seenHash: h } }), /T-TEL-FOLGE/);
+  assert.equal((await db.contractAmendment.findUniqueOrThrow({ where: { id: a.id } })).status, "DRAFT");
+  assert.equal((await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } })).endAt!.getTime(), c.endAt!.getTime(), "Buchung unverändert");
+  await db.booking.delete({ where: { id: other.id } });
+  // Fahreränderung: nie telefonisch
+  await discardAmendment(w.tenantId, w.actor, a.id);
+  const d = await draft(w, "pfd");
+  await addAmendmentDriver(w.tenantId, w.actor, d.id, DRIVER);
+  const dh = await getAmendmentContentHash(w.tenantId, d.id);
+  await assert.rejects(() => signAmendment(w.tenantId, w.actor, d.id, { phoneConsent: { confirmed: true, seenHash: dh } }), /Fahreränderungen werden nicht telefonisch wirksam/);
+  await discardAmendment(w.tenantId, w.actor, d.id);
+  // bereits vereinbarte Änderung (Befehl 28, AGREED) telefonisch wirksam machen
+  const { agreeAmendment } = await import("../src/lib/amendments");
+  const g = await draft(w, "pfg");
+  await updateAmendmentDraft(w.tenantId, w.actor, g.id, { newEndAt: plusDays(c.endAt!, 1) });
+  await agreeAmendment(w.tenantId, w.actor, g.id, { channel: "PHONE", note: "vorab" });
+  const gs = await signAmendment(w.tenantId, w.actor, g.id, { phoneConsent: { confirmed: true, seenHash: await getAmendmentContentHash(w.tenantId, g.id) } });
+  assert.equal(gs.amendment.status, "SIGNED");
+  const gsnap = gs.amendment.snapshot as { agreed?: unknown; consent?: { method: string } };
+  assert.ok(gsnap.agreed, "vorherige Vereinbarung bleibt im Snapshot"); assert.equal(gsnap.consent?.method, "PHONE");
+  assert.equal((await db.booking.findUniqueOrThrow({ where: { id: w.bookingId } })).endAt!.getTime(), plusDays(c.endAt!, 1).getTime());
+});

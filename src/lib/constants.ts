@@ -379,6 +379,12 @@ export type DocumentType = keyof typeof DOCUMENT_TYPES;
 
 /** Checklistenpunkte, bei denen "Ja" die Auffälligkeit ist (sonst "Nein" bzw. "Nicht in Ordnung"). */
 export const RETURN_ATTENTION_ON_YES = new Set(["unusually_dirty"]);
+/**
+ * Paket 1: Bei der RÜCKGABE dokumentiert „Nein“ bei diesen Bestandspunkten bereits, dass der Gegenstand fehlt – eine Bemerkung
+ * ist dort freiwillig. Zustandspunkte (Innenraum, Außen, Reifen, Beleuchtung, „ungewöhnlich verschmutzt“) und die Übergabe
+ * behalten die Pflicht. Eigene Mandantenvorlagen sind über dieselben Schlüssel erfasst.
+ */
+export const RETURN_NOTE_OPTIONAL_ON_NO = new Set(["documents", "warning_triangle", "safety_vest", "first_aid", "parcel_shelf", "charging_cable"]);
 
 export const INVOICE_STATUS = { DRAFT: "Entwurf", FINALIZED: "Abgeschlossen", CANCELLED: "Storniert", CREDITED: "Gutgeschrieben" } as const;
 // Phase 17: Belegarten. Gutschrift und Stornobeleg sind eigene Belege mit eigener Nummer und Wirkung „Minderung“ auf eine Rechnung.
@@ -506,6 +512,7 @@ export const AUDIT_ACTIONS = {
   AMENDMENT_CREATED: "Nachtrag angelegt",
   AMENDMENT_DISCARDED: "Nachtrag verworfen",
   AMENDMENT_SIGNED: "Nachtrag unterschrieben und wirksam",
+  AMENDMENT_PHONE_CONSENT: "Telefonische Zustimmung zum Nachtrag dokumentiert",
   AMENDMENT_PERIOD_CHANGED: "Nachtrag: Mietdauer geändert",
   AMENDMENT_PRICE_CHANGED: "Nachtrag: Preis geändert",
   AMENDMENT_KM_CHANGED: "Nachtrag: Kilometervereinbarung geändert",

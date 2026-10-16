@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import type { NavIcon } from "@/lib/navigation";
 
-export type ShellIconName = NavIcon | "search" | "plus" | "menu" | "close" | "logout" | "collapse" | "expand" | "chevron-down";
+export type ShellIconName = NavIcon | "search" | "plus" | "menu" | "close" | "logout" | "collapse" | "expand" | "chevron-down" | "camera";
 
 const PATHS: Record<ShellIconName, ReactNode> = {
   today: <><rect x="3.5" y="3.5" width="7" height="8" rx="1.5" /><rect x="13.5" y="3.5" width="7" height="5" rx="1.5" /><rect x="13.5" y="11.5" width="7" height="9" rx="1.5" /><rect x="3.5" y="14.5" width="7" height="6" rx="1.5" /></>,
@@ -27,6 +27,7 @@ const PATHS: Record<ShellIconName, ReactNode> = {
   collapse: <path d="m11 17-5-5 5-5M18 17l-5-5 5-5" />,
   expand: <path d="m13 17 5-5-5-5M6 17l5-5-5-5" />,
   "chevron-down": <path d="m6 9 6 6 6-6" />,
+  camera: <><path d="M3.5 8.5a2 2 0 0 1 2-2h2.2l1.6-2.2h5.4l1.6 2.2h2.2a2 2 0 0 1 2 2v9.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" /><circle cx="12" cy="13" r="3.5" /></>,
 };
 
 export function ShellIcon({ name, size = 18, className }: { name: ShellIconName; size?: number; className?: string }) {
