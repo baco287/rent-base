@@ -140,8 +140,8 @@ export async function checkLifecycle({ client, out = console.log }) {
   return deviations.length ? 1 : 0;
 }
 
-// Direkter Aufruf über die Standardeingabe (siehe oben); beim Import in einem lokalen Test nicht.
-if (!process.argv[1] || import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Direkter Aufruf über die Standardeingabe (`node -`, dann ist argv[1] "-") oder als Datei; beim Import in einem lokalen Test nicht.
+if (!process.argv[1] || process.argv[1] === "-" || import.meta.url === pathToFileURL(process.argv[1]).href) {
   const env = process.env;
   if (env.TEST_S3_BUCKET !== BUCKET) {
     console.log(`ABBRUCH: Zugangsdatei nennt nicht ${BUCKET}`);
