@@ -1,6 +1,6 @@
 # Offene Voraussetzungen für produktive Backups
 
-**Stand 15.10.2026** (ergänzt um Benachrichtigungen, [backup-vergleich.md](backup-vergleich.md), [backup-erster-lauf.md](backup-erster-lauf.md) und [hetzner-support-anfrage.md](hetzner-support-anfrage.md)). Grundlage ist der Übergangsweg ([backup-uebergang.md](backup-uebergang.md)): Projektschlüssel, Object Lock
+**Stand 15.10.2026** (ergänzt um Benachrichtigungen, [backup-vergleich.md](backup-vergleich.md), [backup-erster-lauf.md](backup-erster-lauf.md) und [hetzner-support-anfrage.md](hetzner-support-anfrage.md)). Den Plan für das erste PostgreSQL-Backup enthält [backup-plan-postgres.md](backup-plan-postgres.md). Grundlage ist der Übergangsweg ([backup-uebergang.md](backup-uebergang.md)): Projektschlüssel, Object Lock
 COMPLIANCE 30 Tage und ein Prüflauf. Noch ist kein produktiver Bucket angelegt und kein Backup aktiv. Außer dem
 Hetzner-Serverbackup gibt es keine Sicherung.
 
@@ -16,7 +16,7 @@ Legende: ✅ erledigt · ◻ offen · ◆ Entscheidung
 | ◻ | Hetzner: Projekt, Bucket `rent-base-backup` in hel1 mit Object Lock, drei Schlüssel (A1). Ob der Name frei ist, zeigt sich beim Anlegen | offen | du |
 | ✅ | Einrichtungs- und Prüfskripte auf dem Server (A2), Prüfsummen gleich dem Repository | 14.10. | ich |
 | ✅ | Vortest der Skripte gegen Hetzner ([backup-prod-vortest.md](backup-prod-vortest.md)): alle Prüfungen wie erwartet; das echte Setzen von Sperre und Lifecycle nur im Trockenlauf | 14.10. | ich |
-| ◻ | **Lifecycle belegen:** Den Ablauf hat die Regel ausgeführt, mit rund 2 Tagen Verzögerung. Ob alte Fassungen endgültig entfernt werden, zeigt die lesende Prüfung am 16.10. | offen | ich, auf Anordnung |
+| ◻ | **Lifecycle belegen:** Den Ablauf hat die Regel ausgeführt, mit rund 2 Tagen Verzögerung. Die alte Fassung war am 16.10. 07:27 UTC noch da: nach S3-Regeln seit 16.10. 00:00 UTC überfällig, bei der einmal beobachteten Verzögerung voraussichtlich um den 18.10. Nächste lesende Prüfung ab 18.10., auf Anordnung; danach Entscheidung über den Aufräumlauf ([backup-plan-postgres.md](backup-plan-postgres.md), Abschnitt 1) | offen | ich, auf Anordnung |
 | ◻ | **Aufräumweg, falls das nicht wirkt:** nur ein Konzept ([backup-aufraeumen-konzept.md](backup-aufraeumen-konzept.md)), nicht umgesetzt | offen | ich, mit Freigabe |
 | ◻ | **Löschfristen rechtlich bestätigen und ins Löschkonzept** ([backup-strategie.md](backup-strategie.md)): Dumps etwa 33–38 Tage (überwacht bis rund 40), legitim gelöschte Fotos und Ausweiskopien etwa 15–33 Tage | offen | du |
 | ◻ | Auftragsverarbeitungsvertrag mit Hetzner im Konto prüfen | offen | du |

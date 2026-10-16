@@ -340,3 +340,52 @@ dem Test-Admin-Schlüssel aus `/root/backup-test.env`.
   - Das **FAIL vom 13.10. bleibt in jedem Fall bestehen.**
 - **Abweichung außerhalb von `rb-test/lc/` oder an den Einstellungen** (Exit 1): sofort stoppen und berichten, nichts weiter tun.
 - **Nicht lesbar** (Exit 2): berichten.
+
+## Lifecycle-Prüfung 16.10.2026 (07:27 UTC, nur lesend)
+
+**Freigabe** vom 16.10.2026. Ausgeführt mit [`scripts/backup-test-lc-check.mjs`](../scripts/backup-test-lc-check.mjs), Stand Commit
+`fa21c20` (SHA-256 `d5f50ed0…`), im Wegwerf-Container aus dem App-Image `c19300d`, mit dem Test-Admin-Schlüssel. Nur
+lesende Anfragen; nichts geschrieben oder gelöscht, keine Schlüssel ausgegeben.
+
+**Vorher ein Fehlstart:** Der erste Aufruf um 07:26:07 UTC endete nach 2 Sekunden still mit Exit 0, ohne Ausgabe.
+- **Ursache:** Beim Start über die Standardeingabe (`node -`) ist `argv[1]` gleich „-“. Die Startbedingung erkannte das nicht,
+  deshalb lief gar nichts; es wurde keine Anfrage gesendet.
+- **Behoben** in `fa21c20`. Gegenüber der vorbereiteten Fassung (`0daede6`) ist nur die Startbedingung geändert (2 Zeilen); die
+  Anfragen sind unverändert.
+- **Lokal geprüft:**
+  - Ohne Zugangsdaten bricht der Start über die Standardeingabe jetzt wie vorgesehen ab (Exit 2).
+  - Die 10 Szenarien und die Prüfung „nur lesende Anfragen“ bestehen weiterhin.
+  - Diese Fälle importieren das Skript und hätten den Fehlstart nicht bemerkt; deshalb gilt künftig Exit 0 nur zusammen mit der
+    Zeile „Ergebnis: …“.
+- **Danach** lief die eigentliche Prüfung von 07:27:19 bis 07:27:22 UTC, Exit 0.
+
+| Prüfung | Ergebnis |
+|---|---|
+| Isolation | PASS: nur `rent-base-backup-test` sichtbar |
+| Versionierung | PASS: Enabled |
+| Standard-Sperre | PASS: COMPLIANCE 1 Tag, unverändert |
+| Lifecycle-Regel | PASS: nur `rb-test-ablauf` (`rb-test/lc/`), unverändert |
+| Bucket-Policy | PASS: keine |
+| Bucket-ACL | PASS: 1 Eintrag, nur der Besitzer |
+| Offene Teil-Uploads | PASS: 0 |
+| Übrige Testobjekte | PASS: alle 14 Schlüssel außerhalb von `rb-test/lc/` unverändert (15 Fassungen, 4 Löschmarker); Bucket gesamt 16 Fassungen, 5 Löschmarker wie am 14.10. |
+| Neue Löschmarker außerhalb von `rb-test/lc/` | PASS: keine (4 wie am 14.10.) |
+| **Alte Fassung von `rb-test/lc/ablauf.txt` endgültig entfernt?** | **Nein, noch da** (Fassung vom 10.10. 11:13 UTC) |
+| **Löschmarker vom 14.10. 01:30 UTC** | **noch vorhanden** |
+
+**Bewertung des Entfernens der alten Fassung (`NoncurrentVersionExpiration`, 1 Tag):**
+- **Nach S3-Regeln fällig seit 16.10.2026, 00:00 UTC:** Löschmarker 14.10. 01:30, plus 1 Tag, aufgerundet auf die nächste
+  Mitternacht UTC. Gemessen daran ist es bei der Prüfung rund 7,5 Stunden überfällig.
+- **Gemessen an Hetzners bisherigem Verhalten:** Beim Ablauf lag die Wirkung 49,5 Stunden nach der S3-Fälligkeit (Lauf gegen
+  01:30 UTC). Mit derselben Verzögerung wäre das Entfernen um den **18.10.2026 gegen 01:30 UTC** zu erwarten.
+- **Einordnung: NOCH NICHT BELEGT (offen), kein PASS.**
+  - Nach S3-Regeln ist das Entfernen seit 16.10. 00:00 UTC überfällig.
+  - Bei derselben Verzögerung wie beim Ablauf, einmal beobachtet (49,5 h), wäre es voraussichtlich um den 18.10. gegen 01:30 UTC
+    zu erwarten. Das ist eine Schätzung, keine Untergrenze: Hetzner kann früher, später oder gar nicht entfernen.
+- Das **FAIL vom 13.10. bleibt bestehen.**
+- Eine weitere lesende Prüfung ist ab dem **18.10., etwa 06:00 UTC** sinnvoll, auf Anordnung.
+- **Berichtigung:** Die Angaben vom 14.10. „frühestens ab dem 15.10.“ und „eher ab dem 16./17.10.“ (oben) sind ersetzt.
+  Richtig ist: nach S3-Regeln fällig ab 16.10. 00:00 UTC (Löschmarker 14.10. 01:30 plus 1 Tag, aufgerundet auf Mitternacht
+  UTC), bei der beobachteten Verzögerung um den 18.10.
+
+**Unerwartete Änderungen:** keine.

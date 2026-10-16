@@ -1,6 +1,6 @@
 # Entwurf: Anfrage an den Hetzner-Support (Bucket-Policy für Schlüssel aus anderem Projekt, Lifecycle-Verzögerung)
 
-**Stand 15.10.2026. Entwurf zum Absenden durch dich**, über die Hetzner Console → Support → „Neue Anfrage“, Kategorie Object
+**Stand 16.10.2026. Entwurf zum Absenden durch dich**, über die Hetzner Console → Support → „Neue Anfrage“, Kategorie Object
 Storage. Ersetzt den früheren Entwurf [hetzner-support-lifecycle.md](hetzner-support-lifecycle.md).
 
 **Vor dem Absenden ergänzen:**
@@ -71,6 +71,7 @@ Anfragen mit dem Schlüssel aus Projekt 16367501, jeweils **einmal** gesendet, i
 | **P4** | `PUT …/<RUN>w/db/probe.txt`, 45 Byte; Kopfzeilen `x-amz-checksum-crc32` und `x-amz-sdk-checksum-algorithm: CRC32`, signierter Payload, kein `aws-chunked` | **403 AccessDenied** |
 | P5 | `PUT …/<RUN>w/files/probe.txt`, 45 Byte, `Content-MD5`, signierter Payload | 200 |
 | **P6** | Multipart unter `…/<RUN>w/db/teile.bin`: `POST ?uploads` lieferte eine UploadId; danach `PUT ?partNumber=1&uploadId=…` (5 MiB) und `?partNumber=2` (1 MiB) mit `Content-MD5`, dann `POST ?uploadId=…` | Start **200**, danach **403 AccessDenied**. Welcher Schritt abgewiesen wurde, haben wir leider nicht einzeln aufgezeichnet |
+| P7 | `GET …/<RUN>w/db/teile.bin` | nicht gesendet: Folge von P6, es entstand kein Objekt |
 | **P9** | `DELETE …/<RUN>w/files/probe.txt`, ohne `versionId`, ohne Bypass-Kopfzeile; erwartet war ein Löschmarker | **403 AccessDenied** |
 | P10 | `PUT …/<RUN>aussen.txt`, außerhalb von `w/`, nicht freigegeben | 403 (erwartet) |
 | **M3** | `mc cp` einer 17-MiB-Datei nach `…/<RUN>w/coolify/pg-dump.dmp` | Upload-Start gelang (eine unvollständige Multipart-Upload blieb zurück), danach „Insufficient permissions“ |
@@ -80,10 +81,10 @@ Anfragen mit dem Schlüssel aus Projekt 16367501, jeweils **einmal** gesendet, i
   CRC32-Kopfzeilen, Multipart mit Content-MD5, Löschmarker, `mc cp` mit 20 MB.
 - **`GetBucketLocation`** beantwortet der Bucket-Projekt-Schlüssel am 14.10. um 11:48 UTC in 10 von 10 Versuchen mit `hel1`,
   im Pfad- und im Subdomain-Stil.
-- **Gemeinsamer Nenner:** In jedem abgewiesenen Fall lief eine vergleichbare Anfrage desselben Schlüssels kurz davor oder danach
-  durch:
-  - dieselbe Aktion: `CreateMultipartUpload` und `PutObject` unter `w/db/`, beides `s3:PutObject`
-  - oder dieselbe Policy-Anweisung: `GetBucketObjectLockConfiguration` neben `GetBucketLocation`
+- **Vergleichbare Anfragen, die im selben Lauf gelangen:**
+  - Für P4, P6 und M3 gelang eine Anfrage mit derselben Aktion: `CreateMultipartUpload` unter `w/db/`, `s3:PutObject`.
+  - Für P2 gelang eine Anfrage aus derselben Policy-Anweisung, mit anderer Aktion: `GetBucketObjectLockConfiguration`.
+  - Für P9 gab es im Lauf kein gelungenes Gegenstück.
 - **Ohne Policy** wies der Bucket den Schlüssel erwartungsgemäß vollständig ab, vorher und nachher.
 
 **Unsere Fragen:**
@@ -122,11 +123,14 @@ Anfragen mit dem Schlüssel aus Projekt 16367501, jeweils **einmal** gesendet, i
 | 11.10. 21:2x, 12.10. 12:07, 13.10. 18:57 | 1 Fassung, kein Löschmarker |
 | **14.10. 01:30** | **Löschmarker gesetzt** (laut `LastModified` des Markers); die alte Fassung ist noch da |
 | 14.10. 07:18 und 12:07 | unverändert: Löschmarker und alte Fassung |
+| 16.10. 07:27 | unverändert: Löschmarker und alte Fassung |
 
 **Erwartet:**
 - Nach S3-Semantik wäre der Löschmarker ab dem 12.10. um 00:00 UTC fällig gewesen. Gesetzt wurde er rund 49,5 Stunden später.
-- Das endgültige Entfernen der alten Fassung (`NoncurrentVersionExpiration`, 1 Tag) wäre ab dem 15.10. fällig.
-- *Stand der Nachprüfung am 16.10.:* `<nach der Prüfung ergänzen>`
+- Das endgültige Entfernen der alten Fassung (`NoncurrentVersionExpiration`, 1 Tag ab dem Löschmarker vom 14.10. 01:30 UTC) wäre
+  nach S3-Semantik ab dem 16.10. 00:00 UTC fällig.
+- **Stand am 16.10.2026, 07:27 UTC:** Die alte Fassung ist weiterhin vorhanden, ebenso der Löschmarker. Nach S3-Regeln wäre sie
+  seit dem 16.10. um 00:00 UTC fällig gewesen.
 
 **Unsere Fragen:**
 1. Wie oft und zu welchen Zeiten werden Lifecycle-Regeln verarbeitet? Ist eine Verzögerung von rund zwei Tagen nach Fälligkeit

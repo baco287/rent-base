@@ -383,7 +383,8 @@ verlängerte Sperren oder ein gesperrter fremder Bucket):
     als Repository-Secret; GitHub meldet fehlgeschlagene Läufe per E-Mail;
   - oder ein Totmann-Dienst wie Healthchecks.io (braucht ein Konto).
 - **Legal Holds** prüft der Prüflauf nicht; das kostete eine Anfrage je Fassung und Tag.
-- **Lifecycle im Test:** Ob `NoncurrentVersionExpiration` alte Fassungen wirklich entfernt, zeigt sich ab dem 15.10.
+- **Lifecycle im Test:** Ob `NoncurrentVersionExpiration` alte Fassungen wirklich entfernt, ist offen: nach S3-Regeln fällig seit
+  16.10. 00:00 UTC, am 16.10. 07:27 UTC noch nicht geschehen ([backup-test-bucket.md](backup-test-bucket.md)).
   - Wirkt sie nicht, meldet der volle Prüflauf überfällige Dumps ab etwa Tag 39 nach dem ersten Backup.
   - Dann braucht es den Aufräumlauf aus [backup-aufraeumen-konzept.md](backup-aufraeumen-konzept.md), angepasst an den
     Projektschlüssel.
