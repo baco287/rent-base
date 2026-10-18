@@ -2242,6 +2242,186 @@ await setTenantFeature({ id: admin.id, name: admin.name }, ue.tenantId, "ACCIDEN
   report((await sbCount(sbYardStart)) === 0, "Hof: Buchungsanlage mit abweichender Selbstbeteiligung serverseitig verweigert");
 }
 
+// Befehl 29.6: Mietvertragsassistent im Kartenlayout (Stepper, Vertragsübersicht, Aktionsleiste) – eigene Mandanten und Buchungen,
+// die gemeinsame Welt bleibt unberührt. Prüft Erreichbarkeit, Navigation, Validierung, Speichern & weiter, Zurück, Kundenübernahme,
+// Fahrerprüfung, Anzeige von Fahrzeug/Zeitraum/Tarif, interne Gründe nur in Schritt 4, Kaution/Selbstbeteiligung getrennt,
+// vollständige Konditionen-Formulare, Auslandsfahrt, Zusatzfahrer, Zusammenfassung, Unterschrift, Rollen, Mandanten, Mobil-Markup.
+{
+  const { fmtDateTime, fmtEur } = await import("../src/lib/format");
+  const { setWizardStep, setOtherDriver } = await import("../src/lib/contracts");
+  const { bookingTariffFor } = await import("../src/lib/tariffs");
+  const get = async (c: string, p: string) => { const r = await fetch(`${base}${p}`, { headers: { cookie: c }, redirect: "manual" }); return { status: r.status, location: r.headers.get("location") ?? "", html: r.status === 200 ? await plain(r) : "" }; };
+  /** das umschließende <form …>…</form> eines Markers (Formulare sind nie verschachtelt) */
+  const formWith = (html: string, marker: string) => { const at = html.indexOf(marker); if (at < 0) return ""; const s = html.lastIndexOf("<form", at); const e = html.indexOf("</form>", at); return s >= 0 && e > at ? html.slice(s, e + 7) : ""; };
+  const countName = (html: string, n: string) => html.split(`name="${n}"`).length - 1;
+  /** Server-HTML ohne Skripte (React fügt nach Formularen ein kleines Skript ein; die Flight-Daten stehen in Skripten) */
+  const domOf = (html: string) => html.replace(/<script[\s\S]*?<\/script>/g, "");
+  /** nur die Hauptspalte: ohne aufklappbare Übersicht und ohne Seitenleiste (beide enthalten dieselben Texte) */
+  const mainOf = (html: string) => domOf(html).replace(/<details class="card group[\s\S]*?<\/details>/, "").split('<aside aria-label="Vertragsübersicht"')[0]!;
+  /** ausgewählte Fahrer-Option, unabhängig von der Attributreihenfolge */
+  const driverModeChecked = (html: string) => [...html.matchAll(/<input[^>]*name="driverMode"[^>]*>/g)].find((m) => /\schecked=""/.test(m[0]))?.[0].match(/value="(\w+)"/)?.[1] ?? "";
+  const DAY = 86400_000;
+  const session = async (tenantId: string, role: string) => {
+    const u = await db.user.create({ data: { tenantId, email: `v296-${role.toLowerCase()}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}@example.test`, name: `V296 ${role}`, passwordHash: "x", role } });
+    const id = randomBytes(32).toString("base64url");
+    await db.session.create({ data: { id, userId: u.id, expiresAt: new Date(Date.now() + 3600_000) } });
+    return { cookie: `rb_session=${id}`, actor: { id: u.id, name: u.name } };
+  };
+
+  // Mandant ohne Mietbedingungen, Auslandsfahrten AT/CH/FR erlaubt; Altbuchung (ohne Tarif) mit Rabatt
+  const vw = await createWorld("smoke-296");
+  platformTenants.push(vw.tenantId);
+  await db.tenant.update({ where: { id: vw.tenantId }, data: { rentalTermsText: null, rentalTermsVersion: null, businessRules: { abroadAllowed: true, abroadCountries: ["AT", "CH", "FR"], deductibleCents: 100000 } } });
+  const owner = await session(vw.tenantId, "OWNER");
+  const dispo = await session(vw.tenantId, "DISPO");
+  const yard = await session(vw.tenantId, "YARD");
+  const vUrl = (bookingId: string) => `/buchungen/${bookingId}/vertrag`;
+  const altContract = await ensureContractDraft(vw.tenantId, vw.bookingId, owner.actor);
+  const alt = vUrl(vw.bookingId);
+
+  // 2: frischer Entwurf – nur Schritt 1 erreichbar (keine Links auf spätere Schritte)
+  const fresh1 = await get(owner.cookie, `${alt}?schritt=1`);
+  report(fresh1.status === 200 && fresh1.html.includes("Schritt 1 von 7") && !fresh1.html.includes(`href="${alt}?schritt=2"`) && fresh1.html.includes('aria-current="step"'), `${fresh1.status} 29.6 Navigation: frischer Entwurf ohne Links auf spätere Schritte`);
+  // 3/4: Schritt 1 – required nur an Vor-/Nachname, Speichern & weiter speichert die gesendeten Felder und führt zu Schritt 2
+  const custForm = formWith(fresh1.html, 'name="firstName"');
+  report([...custForm.matchAll(/<(?:input|select|textarea)[^>]*\srequired=""[^>]*>/g)].map((m) => /name="(\w+)"/.exec(m[0])?.[1]).sort().join(",") === "firstName,lastName" && custForm.includes('class="contents"') && custForm.includes("data-action-bar"), "29.6 Schritt 1: Pflichtfelder wie bisher (nur Vor- und Nachname), Formular mit Aktionsleiste");
+  const idCustomer = boundIdOf(fresh1.html, "saveCustomerStepAction");
+  // legacyNumber wird bewusst nicht geprüft (bekannter Altfehler E3: compact sendet das Feld nicht, die Aktion setzt es auf null)
+  const custSent = { type: "PRIVATE", firstName: "Erika", lastName: "Muster", phone: "0421 296296", email: "erika296@example.test", street: "Weg 29", zip: "28195", city: "Bremen", country: "DE", birthDate: "1985-03-12", birthPlace: "Bremen", nationality: "deutsch", idType: "PERSONALAUSWEIS", idNumber: "L01X00T47", idIssuedBy: "Stadt Bremen", idIssuedAt: "", idValidUntil: "2031-01-01", licenseNumber: "B072RRE2I55", licenseClass: "B", licenseIssuedBy: "", licenseIssuedAt: "2005-06-01", licenseValidUntil: "2033-06-01", nav: "next" };
+  const save1 = await callAction(alt, idCustomer, owner.cookie, { bound: [vw.bookingId], form: custSent });
+  const cust1 = await db.customer.findUniqueOrThrow({ where: { id: vw.customerId } });
+  report(save1.redirectTo.includes("schritt=2") && cust1.phone === "0421 296296" && cust1.street === "Weg 29" && cust1.birthPlace === "Bremen" && cust1.idIssuedBy === "Stadt Bremen", `${save1.status} 29.6 Schritt 1: „Speichern & weiter“ speichert die gesendeten Kundenfelder und führt zu Schritt 2`);
+  const after1 = await get(owner.cookie, `${alt}?schritt=2`);
+  report(after1.html.includes(`href="${alt}?schritt=1"`) && after1.html.includes(`href="${alt}?schritt=2"`) && !after1.html.includes(`href="${alt}?schritt=3"`), "29.6 Navigation: nach Schritt 1 ist Schritt 2 erreichbar, Schritt 3 noch nicht");
+  // 7: Fahrer – Moduswahl als Fieldset, Fahrerfelder im gesperrten Fieldset, Chip aus dem gespeicherten Stand
+  report(after1.html.includes("Mieter fährt selbst") && after1.html.includes("<legend") && /<fieldset disabled=""[^>]*>[\s\S]*?name="d_firstName"/.test(after1.html) && after1.html.includes("gültig am Mietbeginn") && countName(formWith(after1.html, 'name="driverMode"'), "d_customerId") === 1, "29.6 Schritt 2: Mieter fährt selbst, Fahrerfelder gesperrt, Fahrerprüfung „gültig am Mietbeginn“, d_customerId genau einmal");
+  const idDriver = boundIdOf(after1.html, "saveDriverStepAction");
+  const save2 = await callAction(alt, idDriver, owner.cookie, { bound: [vw.bookingId], form: { driverMode: "RENTER", nav: "next" } });
+  report(save2.redirectTo.includes("schritt=3"), `${save2.status} 29.6 Schritt 2: „Speichern & weiter“ führt zu Schritt 3`);
+  // 6: Kundenübernahme – eigener Kunde wird vorbelegt, fremder (anderer Mandant) ignoriert; GET-Formular nur mit schritt/vonKunde
+  const otherCust = await db.customer.create({ data: { tenantId: vw.tenantId, number: "K-29601", firstName: "Fritz", lastName: "Fahrer", street: "Weg 3", zip: "28195", city: "Bremen", country: "DE", birthDate: new Date("1990-01-01"), licenseNumber: "F296", licenseClass: "B", licenseIssuedAt: new Date("2010-01-01"), licenseValidUntil: new Date("2035-01-01") } });
+  const pick2 = await get(owner.cookie, `${alt}?schritt=2&vonKunde=${otherCust.id}`);
+  const getForm = formWith(pick2.html, 'name="vonKunde"');
+  report(new RegExp(`name="d_customerId" value="${otherCust.id}"`).test(pick2.html) && driverModeChecked(pick2.html) === "OTHER" && getForm.includes('method="get"') && [...getForm.matchAll(/ name="(\w+)"/g)].map((m) => m[1]).sort().join(",") === "schritt,vonKunde", "29.6 Schritt 2: Fahrer aus bestehendem Kunden übernommen (GET nur schritt/vonKunde)");
+  const pickForeign = await get(owner.cookie, `${alt}?schritt=2&vonKunde=${w.customerId}`);
+  report(pickForeign.status === 200 && pickForeign.html.includes('name="d_customerId" value=""') && driverModeChecked(pickForeign.html) === "RENTER", "29.6 Mandantentrennung: Kunde eines anderen Mandanten wird nicht übernommen");
+  // 8: Schritt 3 – Fahrzeug und Zeitraum aus dem Vertrag, Preisstufen ohne Tarif
+  const c3 = await db.rentalContract.findUniqueOrThrow({ where: { id: altContract.id } });
+  const s3 = await get(owner.cookie, `${alt}?schritt=3`);
+  const v296 = await db.vehicle.findUniqueOrThrow({ where: { id: vw.vehicleId } });
+  report(s3.html.includes(v296.plate) && s3.html.includes(fmtDateTime(c3.startAt)) && s3.html.includes(fmtDateTime(c3.endAt)) && s3.html.includes("Preisstufen (ohne Tarif)") && s3.html.includes("ohne Miettarif (Altbuchung)") && s3.html.includes("Das Fahrzeug ist vermietbar und im Zeitraum frei"), "29.6 Schritt 3: Kennzeichen, Mietbeginn, Rückgabe, Preisstufen ohne Tarif, Übersicht „ohne Miettarif“");
+  // 12/13 + Konditionen-Formular (Altbuchung): jeder Name genau einmal, Auslandsfahrt per Häkchen
+  await setWizardStep(vw.tenantId, altContract.id, 4);
+  const s4 = await get(owner.cookie, `${alt}?schritt=4`);
+  const f4 = formWith(s4.html, 'name="rulesPresent"');
+  const STD_NAMES = ["startAt", "endAt", "pickupLocation", "returnLocation", "agreedTotal", "agreedTotalNote", "deposit", "deductible", "kmPolicy", "kmIncludedPerDay", "extraKmRate", "fuelPolicy", "fuelPricePerLiter", "petsPolicy", "smokingAllowed", "abroadAllowed", "additionalDriverFeeType", "individualAgreements", "internalNote", "rulesPresent"];
+  report(STD_NAMES.every((n) => countName(f4, n) === 1) && countName(f4, "nav") === 2 && f4.includes("Auslandsfahrten gestattet") && s4.html.includes("So entsteht der Mietpreis"), `29.6 Schritt 4 (Altbuchung): alle Konditionen genau einmal im Formular, nav zweimal, Auslandsfahrt per Häkchen (${STD_NAMES.filter((n) => countName(f4, n) !== 1).join(",") || "ok"})`);
+  report(["startAt", "endAt", "deposit", "deductible", "kmIncludedPerDay", "extraKmRate"].every((n) => new RegExp(`<input id="${n}"[^>]*required=""[^>]*name="${n}"`).test(f4)) && /value="back" formNoValidate=""/.test(f4), "29.6 Schritt 4: Pflichtfelder wie bisher, „Zurück“ ohne Browser-Validierung");
+  // 3: Validierung – Rückgabe vor Mietbeginn: Fehler statt Weiterleitung; 5: Zurück mit ungültigen Daten → Schritt 3 ohne Speichern
+  const idCond = boundIdOf(s4.html, "saveConditionsStepAction");
+  const condBase = { startAt: toDateTimeInput(c3.startAt), endAt: toDateTimeInput(new Date(c3.startAt.getTime() - DAY)), pickupLocation: "Hof", returnLocation: "", deposit: "500", deductible: "1000", kmIncludedPerDay: "200", extraKmRate: "0,25", fuelPolicy: "FULL_TO_FULL", rulesPresent: "1", kmPolicy: "FREE_KILOMETERS", petsPolicy: "BY_APPROVAL", additionalDriverFeeType: "FREE" };
+  const badSave = await callAction(alt, idCond, owner.cookie, { bound: [vw.bookingId], form: { ...condBase, nav: "next" } });
+  const badState = actionState(badSave.text);
+  const backSave = await callAction(alt, idCond, owner.cookie, { bound: [vw.bookingId], form: { ...condBase, deposit: "-5", nav: "back" } });
+  const c3b = await db.rentalContract.findUniqueOrThrow({ where: { id: altContract.id } });
+  report(!!badState?.error && !badSave.redirectTo && backSave.redirectTo.includes("schritt=3") && c3b.endAt?.getTime() === c3.endAt?.getTime() && Number(c3b.deposit) === Number(c3.deposit), `${badSave.status} 29.6 Schritt 4: Rückgabe vor Mietbeginn abgelehnt; „Zurück“ mit ungültigen Daten führt zu Schritt 3 ohne Speichern`);
+  // 10 (Altbuchung): abweichender Preis mit Notiz steht im Vertrag; Übersicht nur kurz
+  await saveConditions(vw.tenantId, altContract.id, { startAt: c3.startAt, endAt: c3.endAt, deposit: 500, kmIncludedPerDay: 200, extraKmRate: 0.25, deductible: 1000, fuelPolicy: "FULL_TO_FULL", agreedTotal: 444, agreedTotalNote: "Smoke-296 Sonderpreis", pickupLocation: "Hof", rules: { kmPolicy: "FREE_KILOMETERS", abroadAllowed: true, abroadCountries: ["AT", "CH"], smokingAllowed: false, petsPolicy: "BY_APPROVAL", additionalDriverFeeType: "FREE", additionalDriverFeeCents: 0 } } as never, owner.actor);
+  // 14: Zusatzfahrer über die Aktion
+  await setWizardStep(vw.tenantId, altContract.id, 5);
+  const s5add = await get(owner.cookie, `${alt}?schritt=5&zusatzfahrer=1`);
+  const idAdd = boundIdOf(s5add.html, "addDriverAction");
+  const addRes = await callAction(alt, idAdd, owner.cookie, { bound: [vw.bookingId], form: { a_customerId: "", a_firstName: "Zoe", a_lastName: "Zusatz", a_birthDate: "1991-05-05", a_country: "DE", a_street: "Weg 5", a_zip: "28195", a_city: "Bremen", a_licenseNumber: "Z296", a_licenseClass: "B", a_licenseIssuedAt: "2012-01-01", a_licenseValidUntil: "2034-01-01", a_licenseCountry: "DE", a_licenseIssuedBy: "" } });
+  const s5 = await get(owner.cookie, `${alt}?schritt=5`);
+  report(s5add.html.includes("Zusatzfahrer hinzufügen") && countName(formWith(s5add.html, 'name="a_firstName"'), "a_customerId") === 1 && s5.html.includes("Zoe Zusatz") && s5.html.includes('aria-label="Zusatzfahrer Zoe Zusatz entfernen"') && s5.html.includes(">Entfernen<"), `${addRes.status} 29.6 Schritt 5: Zusatzfahrer per Aktion aufgenommen, Zeile mit Entfernen (benannt)`);
+  await setWizardStep(vw.tenantId, altContract.id, 7);
+  const docAlt = await db.rentalContract.findUniqueOrThrow({ where: { id: altContract.id } });
+  const s6 = await get(owner.cookie, `${alt}?schritt=6`);
+  const totalAlt = fmtEur(docAlt.totalAmount);
+  report(s6.html.includes("Abweichend vereinbart: Smoke-296 Sonderpreis") && s6.html.includes("Gesamtmietpreis (brutto)") && s6.html.includes("Kilometer &amp; Nutzung") && s6.html.includes("Weitere Vertragskonditionen") && s6.html.includes("Zoe") && s6.html.includes(totalAlt) && s6.html.includes("Bereit zur Unterschrift?"), "29.6 Schritt 6: Vertrag als Karten (Notiz zum abweichenden Preis wie im Dokument), Gesamtmietpreis, Bereitschaft");
+  // 11/17: Übersicht – Gesamtmietpreis aus dem Vertrag, Kaution und Selbstbeteiligung außerhalb; gleicher Betrag in Karte C und Übersicht
+  const s4b = await get(owner.cookie, `${alt}?schritt=4`);
+  report(s4b.html.includes("Außerhalb des Mietpreises") && s4b.html.includes("Nicht Teil des Mietpreises, wird nicht addiert.") && s4b.html.split(totalAlt).length - 1 >= 3 && s4b.html.includes("Vertragsübersicht") && s4b.html.includes('aria-label="Vertragsübersicht"'), "29.6 Übersicht: Gesamtmietpreis wie im Vertrag (Karte C, Seitenleiste, aufklappbar), Kaution/Selbstbeteiligung getrennt");
+  // 16/20/21: Schritt 7 – Leiste mit Abschlussknopf, Grund verknüpft, Kurzübersicht, Ersatztext ohne Mietbedingungen
+  const s7 = await get(owner.cookie, `${alt}?schritt=7`);
+  report(s7.html.includes("Mietvertrag verbindlich abschließen") && s7.html.includes('id="abschluss-grund"') && s7.html.includes('aria-describedby="abschluss-grund"') && s7.html.includes("Es fehlt noch die Unterschrift des Mieters.") && s7.html.includes("Noch keine Mietbedingungen veröffentlicht (Einstellungen → Mietbedingungen). Der Vertrag enthält keinen Bedingungstext.") && s7.html.includes("Kurzübersicht") && s7.html.includes("Vollständige Zusammenfassung ansehen") && s7.html.includes(totalAlt) && /name="seenHash" value="[0-9a-f]{64}"/.test(s7.html), "29.6 Schritt 7: Abschluss in der Leiste (Grund sichtbar und verknüpft), Kurzübersicht, Ersatztext ohne Mietbedingungen");
+  for (const n of [1, 2, 3, 4, 5, 6, 7]) {
+    const p = await get(dispo.cookie, `${alt}?schritt=${n}`);
+    const bar = /<div data-action-bar="" class="([^"]*)"/.exec(p.html)?.[1] ?? "";
+    report(p.status === 200 && p.html.includes(`Schritt ${n} von 7`) && p.html.split('aria-current="step"').length - 1 === 2 && bar.includes("sticky") && !/\bfixed\b/.test(bar) && p.html.includes("Alle Schritte"), `${p.status} 29.6 Disponent Schritt ${n}: erreichbar, Stepper und mobile Fortschrittsanzeige, Leiste sticky`);
+  }
+  // 18: Hofmitarbeiter – Entwurf leitet um
+  const yardDraft296 = await get(yard.cookie, alt);
+  report(yardDraft296.status === 307 && decodeURIComponent(yardDraft296.location).includes("nur Inhaber und Disponenten"), `${yardDraft296.status} 29.6 Hof: Vertragsentwurf nicht zugänglich`);
+
+  // Fahrer abweichend gespeichert, Führerschein abgelaufen: Feldhinweis nur ohne ?vonKunde
+  await setOtherDriver(vw.tenantId, altContract.id, { firstName: "Tim", lastName: "Abgelaufen", birthDate: new Date("1995-02-02"), street: "Weg 9", zip: "28195", city: "Bremen", country: "DE", licenseNumber: "ABL1", licenseClass: "B", licenseIssuedAt: new Date("2014-01-01"), licenseValidUntil: new Date("2020-01-01"), licenseCountry: "DE" } as never);
+  const other2 = await get(owner.cookie, `${alt}?schritt=2`);
+  const other2Pick = await get(owner.cookie, `${alt}?schritt=2&vonKunde=${otherCust.id}`);
+  report(/<input id="d_licenseValidUntil"[^>]*aria-invalid="true"/.test(other2.html) && other2.html.includes("wird nach dem Speichern geprüft") && !/<input id="d_[^"]*"[^>]*aria-invalid/.test(other2Pick.html), "29.6 Schritt 2: Feldhinweis am gespeicherten abweichenden Fahrer, nicht bei vorbelegtem Kunden");
+
+  // Tarifbuchung mit allen vier Abweichungen und Auslandsfahrt laut Buchung
+  const tv = await db.vehicle.create({ data: { tenantId: vw.tenantId, plate: "HB-V 2960", make: "VW", model: "Crafter", groupId: vw.groupId, fuel: "DIESEL", mileage: 20_000, dailyRate: 89, kmIncludedPerDay: 200, extraKmRate: 0.25, deposit: 500, tankCapacityLiters: 75, requiredLicenseClass: "B" } });
+  const tStart = new Date(Math.floor((Date.now() + 20 * DAY) / 60_000) * 60_000);
+  const tBooking = await db.booking.create({ data: { tenantId: vw.tenantId, number: "V296-T", vehicleId: tv.id, customerId: vw.customerId, startAt: tStart, endAt: new Date(tStart.getTime() + 7 * DAY), dailyRate: 89, deposit: 500, abroadAllowed: true, abroadCountries: ["AT"], abroadSurchargeCents: 4900 } });
+  const tPlan = await createRatePlan(vw.tenantId, owner.actor, { meta: { name: "SMOKE296", code: null, description: null, sortOrder: 0 }, content: { km: { policy: "FREE_KILOMETERS", kmIncludedPerDay: 200, extraKmRateCents: 25 }, depositCents: 20000, deductibleCents: 75000, groups: [{ groupId: vw.groupId, tiers: [{ days: 1, cents: 6000 }, { days: 7, cents: 36000 }], depositCents: null, km: null }] }, active: true, createKey: `smoke-296-${Date.now()}` });
+  await db.$transaction(async (tx) => {
+    const res = await bookingTariffFor(tx, vw.tenantId, owner.actor, { vehicleId: tv.id, ratePlanId: tPlan.id, startAt: tBooking.startAt, endAt: tBooking.endAt!, discountPercent: 0, choices: { price: { mode: "INDIVIDUAL", cents: 33300, reason: "Grund-Preis-296" }, km: { mode: "INDIVIDUAL", reason: "Grund-Km-296", policy: "FREE_KILOMETERS", kmIncludedPerDay: 300, extraKmRateCents: 20 }, deposit: { mode: "INDIVIDUAL", cents: 15000, reason: "Grund-Kaution-296" }, deductible: { mode: "INDIVIDUAL", cents: 50000, reason: "Grund-SB-296" } }, previous: null });
+    await tx.booking.update({ where: { id: tBooking.id }, data: res.data });
+  });
+  const tContract = await ensureContractDraft(vw.tenantId, tBooking.id, owner.actor);
+  await setWizardStep(vw.tenantId, tContract.id, 7);
+  const tUrl = vUrl(tBooking.id);
+  const REASONS = ["Grund-Preis-296", "Grund-Km-296", "Grund-Kaution-296", "Grund-SB-296"];
+  const t3 = await get(owner.cookie, `${tUrl}?schritt=3`);
+  report(t3.html.includes("Miettarif SMOKE296") && t3.html.includes("(eingefroren bei der Buchung)") && !t3.html.includes("Woche (5 Tage)") && t3.html.includes("SMOKE296 · Rev. 1"), "29.6 Schritt 3 (Tarif): eingefrorene Tarifstufen mit Revision, keine Altstaffel, Übersicht mit Revision");
+  const t4 = await get(owner.cookie, `${tUrl}?schritt=4`);
+  const tf4 = formWith(t4.html, 'name="rulesPresent"');
+  report(REASONS.every((x) => t4.html.includes(x)) && t4.html.includes("Abweichung in der Buchung") && /<input type="hidden" name="agreedTotal" value="333,00"/.test(tf4) && countName(tf4, "kmPolicy") === 1 && /<select id="kmPolicy" disabled=""/.test(tf4) && countName(tf4, "abroadAllowed") === 0 && countName(tf4, "abroadCountries") === 0 && tf4.includes("laut Buchung – Änderung in der Buchung") && STD_NAMES.filter((n) => !["abroadAllowed"].includes(n)).every((n) => countName(tf4, n) === 1), "29.6 Schritt 4 (Tarif): Gründe nur hier, Preis verborgen, Kilometerregel gesperrt (einmal), Auslandsfahrt laut Buchung ohne Felder");
+  for (const n of [1, 2, 3, 5, 6, 7]) {
+    const p = await get(owner.cookie, `${tUrl}?schritt=${n}`);
+    report(p.status === 200 && !REASONS.some((x) => p.html.includes(x)), `29.6 Tarif Schritt ${n}: keine internen Abweichungsgründe (auch nicht in der Übersicht)`);
+  }
+  const t6 = await get(owner.cookie, `${tUrl}?schritt=6`);
+  report(t6.html.includes(`href="/buchungen/${tBooking.id}"`) && t6.html.includes("In der Buchung ändern") && t6.html.includes('aria-label="Kunde bearbeiten"'), "29.6 Schritt 6 (Tarif): Preis/Fahrzeug „In der Buchung ändern“, sonst „Bearbeiten“");
+  // Tarifbuchung mit unlesbarem Snapshot (Altbestand/Kopie): nie „ohne Miettarif“
+  await db.booking.update({ where: { id: tBooking.id }, data: { tariffSnapshot: {} as never } });
+  const tBroken = await get(owner.cookie, `${tUrl}?schritt=3`);
+  report(tBroken.status === 200 && tBroken.html.includes("Stufen nicht verfügbar") && !tBroken.html.includes("ohne Miettarif"), `${tBroken.status} 29.6 Tarifbuchung mit unlesbarem Snapshot: „Stufen nicht verfügbar“, nie „ohne Miettarif“`);
+
+  // Unfallersatz (offenes Ende): Verbote gelten auch für Übersicht und aufklappbare Übersicht
+  await db.tenantFeatureFlag.create({ data: { tenantId: vw.tenantId, key: "ACCIDENT_REPLACEMENT", enabled: true } });
+  const uv = await db.vehicle.create({ data: { tenantId: vw.tenantId, plate: "HB-V 2961", make: "VW", model: "Golf", groupId: vw.groupId, fuel: "BENZIN", mileage: 20_000, dailyRate: 59, kmIncludedPerDay: 200, extraKmRate: 0.25, deposit: 0, tankCapacityLiters: 50, requiredLicenseClass: "B" } });
+  const ue296 = await createAccidentCase(vw.tenantId, owner.actor, {
+    nonce: `smoke-296-ue-${Date.now().toString(36)}`, customerId: vw.customerId, vehicleId: uv.id, startAt: new Date(Date.now() + 30 * DAY), plannedEndAt: new Date(Date.now() + 36 * DAY), dailyRateCents: 7_900, depositCents: 0, kmIncludedPerDay: 200, extraKmRateCents: 25,
+    damaged: { plate: "hb-ab 296", make: "Opel", model: "Astra", drivable: false, damageKind: "REPAIR" },
+    accident: { accidentAt: new Date(Date.now() - 2 * DAY), place: "Bremen", opponentPlate: "OL-X 296", opponentName: "Gegner", policeFileNumber: null },
+    insurer: { name: "HUK-COBURG", claimNumber: null, contactName: null, phone: null, email: null, street: null, zip: null, city: null },
+    liability: { status: "REPORTED" },
+    tariff: [{ kind: "LIABILITY_REDUCTION", perDay: true, unitPriceCents: 1500 }],
+  } as never);
+  const ueC = await db.rentalContract.findFirstOrThrow({ where: { tenantId: vw.tenantId, bookingId: ue296.bookingId } });
+  await setWizardStep(vw.tenantId, ueC.id, 7);
+  const ueUrl = vUrl(ue296.bookingId);
+  const NO_ZERO_296 = (html: string) => !/>0,00\s€</.test(html) && !/\b0 Tage\b/.test(html);
+  const u4 = await get(owner.cookie, `${ueUrl}?schritt=4`);
+  const uf4 = formWith(u4.html, 'name="rulesPresent"');
+  report(["startAt", "endAt", "agreedTotal", "agreedTotalNote", "additionalDriverFeeType"].every((n) => countName(uf4, n) === 0) && ["pickupLocation", "deposit", "deductible", "kmPolicy", "fuelPolicy", "petsPolicy", "smokingAllowed", "individualAgreements", "internalNote"].every((n) => countName(uf4, n) === 1) && u4.html.includes("Tarif der Fallakte") && !u4.html.includes('id="endAt"'), "29.6 Schritt 4 (Unfallersatz): ohne Zeitraum-, Preis- und Zusatzfahrer-Preisfelder, übrige Konditionen genau einmal");
+  const u4main = mainOf(u4.html);
+  report(u4main.slice(u4main.indexOf('id="k4-a"')).includes("offen – bis zur Rückgabe") && u4main.includes("Summe je Miettag"), "29.6 Schritt 4 (Unfallersatz): offenes Ende in Karte Mietzeitraum der Hauptspalte (nicht nur in der Übersicht)");
+  const u6 = await get(owner.cookie, `${ueUrl}?schritt=6`);
+  report(!/Gesamtmietpreis<\/span><span[^>]*>[^<]*je Miettag/.test(u6.html) && u6.html.includes("nach tatsächlicher Mietdauer"), "29.6 Bereitschaft (Unfallersatz): Gesamtmietpreis „nach tatsächlicher Mietdauer“, nie ein Tagessatz als Gesamtpreis");
+  report(NO_ZERO_296(domOf(u6.html)) && !u6.html.includes("Geplante Rückgabe") && u6.html.includes("keine Kaution vereinbart") && u6.html.includes(`${ueUrl}?schritt=4#k4-a`) && u6.html.includes("nach tatsächlicher Mietdauer"), "29.6 Schritt 6 (Unfallersatz): kein 0-€-Wert, keine „Geplante Rückgabe“ (auch nicht in der Übersicht), Ort-Karte „Bearbeiten“ in Schritt 4");
+  const u7 = await get(owner.cookie, `${ueUrl}?schritt=7`);
+  const u7main = mainOf(u7.html);
+  report(u7main.includes("offen – bis zur Rückgabe") && u7main.includes("je Miettag") && u7main.includes("Kurzübersicht"), "29.6 Schritt 7 (Unfallersatz): Kurzübersicht mit offenem Ende und Preis je Miettag in der Hauptspalte");
+
+  // 18: abgeschlossener Vertrag – unverändert, ohne Leiste und ohne Übersicht (auch für den Hof)
+  const yardSigned296 = await fetch(`${base}/buchungen/${doneBooking.id}/vertrag`, { headers: { cookie: `rb_session=${yardSession}` } });
+  const yardSignedHtml = await plain(yardSigned296);
+  report(yardSigned296.status === 200 && !yardSignedHtml.includes("data-action-bar") && !yardSignedHtml.includes('aria-label="Vertragsübersicht"') && !yardSignedHtml.includes("Schritt 1 von 7"), `${yardSigned296.status} 29.6 Abgeschlossener Vertrag: keine Leiste, keine Übersicht, kein Stepper`);
+}
+
 const health = await fetch(`${base}/api/health`);
 const healthJson = await health.json().catch(() => ({}));
 report(health.status === 200 && healthJson.status === "ok" && healthJson.db === "ok", `${health.status} Healthcheck`);

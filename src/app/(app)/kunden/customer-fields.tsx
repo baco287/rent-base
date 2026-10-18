@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { COUNTRIES, CUSTOMER_TYPES, ID_TYPES } from "@/lib/constants";
-import { Field } from "@/components/ui";
+import { Field, type FieldIssue } from "@/components/ui";
+import type { CustomerSection } from "./customer-sections";
 
 export type CustomerFormValues = {
   type: string;
@@ -50,105 +51,125 @@ function H({ children }: { children: React.ReactNode }) {
  * Eingabefelder für einen Kunden. Wird im Kundenformular und im Buchungsformular (Kunde direkt anlegen) verwendet.
  * prefix: Feldnamen-Präfix, z. B. "c_" in der Buchung, damit sich Namen nicht überschneiden.
  * compact: ohne Sperre, Rabatt und Notizen (für die Buchung).
+ * Befehl 29.6 (Vertragsassistent; alle optional – ohne sie bleibt die Ausgabe unverändert):
+ * sections: nur diese Abschnitte rendern (je Karte ein Abschnitt); headings: Zwischenüberschriften (Standard ja);
+ * marks: Pflicht-/Abschlusszeichen je Feld; issues: Prüfhinweise je Feld (aria-describedby, aria-invalid nur bei Fehlern).
  */
-export function CustomerFields({ values, prefix = "", compact = false, disabled = false }: { values: CustomerFormValues; prefix?: string; compact?: boolean; disabled?: boolean }) {
+export function CustomerFields({ values, prefix = "", compact = false, disabled = false, sections, headings = true, marks, issues }: { values: CustomerFormValues; prefix?: string; compact?: boolean; disabled?: boolean; sections?: readonly CustomerSection[]; headings?: boolean; marks?: Partial<Record<keyof CustomerFormValues, "save" | "close" | "either">>; issues?: Partial<Record<keyof CustomerFormValues, FieldIssue>> }) {
   const [type, setType] = useState(values.type);
   const [blocked, setBlocked] = useState(values.blocked);
   const v = values;
   const n = (name: string) => `${prefix}${name}`;
+  const show = (s: CustomerSection) => (!sections || sections.includes(s)) && (s !== "admin" || !compact);
+  /** Beschriftung: Zeichen und Hinweis (nur wenn übergeben) */
+  const f = (k: keyof CustomerFormValues) => ({ mark: marks?.[k], issue: issues?.[k] });
+  /** Verknüpfung am Eingabefeld (nur wenn ein Hinweis vorliegt) */
+  const a = (k: keyof CustomerFormValues) => ({ "aria-invalid": issues?.[k]?.error ? true : undefined, "aria-describedby": issues?.[k]?.describedBy || undefined });
 
   return (
     <fieldset disabled={disabled} className="contents">
-      <H>Kunde</H>
-      <Field label="Kundenart" htmlFor={n("type")}>
-        <select id={n("type")} name={n("type")} value={type} onChange={(e) => setType(e.target.value)} className="input">
-          {Object.entries(CUSTOMER_TYPES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-        </select>
-      </Field>
-      {type === "COMPANY" ? (
-        <Field label="Firmenname" htmlFor={n("companyName")}>
-          <input id={n("companyName")} name={n("companyName")} defaultValue={v.companyName} required className="input" />
-        </Field>
-      ) : (
-        <div className="hidden md:block" />
-      )}
-      <Field label={type === "COMPANY" ? "Ansprechpartner / Fahrer Vorname" : "Vorname"} htmlFor={n("firstName")}>
-        <input id={n("firstName")} name={n("firstName")} defaultValue={v.firstName} required className="input" autoComplete="off" />
-      </Field>
-      <Field label={type === "COMPANY" ? "Ansprechpartner / Fahrer Nachname" : "Nachname"} htmlFor={n("lastName")}>
-        <input id={n("lastName")} name={n("lastName")} defaultValue={v.lastName} required className="input" autoComplete="off" />
-      </Field>
-      <Field label="Telefon" htmlFor={n("phone")}>
-        <input id={n("phone")} name={n("phone")} type="tel" defaultValue={v.phone} className="input" />
-      </Field>
-      <Field label="E-Mail" htmlFor={n("email")}>
-        <input id={n("email")} name={n("email")} type="email" defaultValue={v.email} className="input" />
-      </Field>
-      <Field label="Straße und Hausnummer" htmlFor={n("street")} full>
-        <input id={n("street")} name={n("street")} defaultValue={v.street} className="input" />
-      </Field>
-      <Field label="PLZ" htmlFor={n("zip")}>
-        <input id={n("zip")} name={n("zip")} defaultValue={v.zip} className="input" inputMode="numeric" />
-      </Field>
-      <Field label="Ort" htmlFor={n("city")}>
-        <input id={n("city")} name={n("city")} defaultValue={v.city} className="input" />
-      </Field>
-      <Field label="Land" htmlFor={n("country")}>
-        <select id={n("country")} name={n("country")} defaultValue={v.country || "DE"} className="input">
-          {Object.entries(COUNTRIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-        </select>
-      </Field>
-      <div className="hidden md:block" />
-
-      <H>Ausweis</H>
-      <Field label="Geburtsdatum" htmlFor={n("birthDate")}>
-        <input id={n("birthDate")} name={n("birthDate")} type="date" defaultValue={v.birthDate} className="input" />
-      </Field>
-      <Field label="Geburtsort" htmlFor={n("birthPlace")}>
-        <input id={n("birthPlace")} name={n("birthPlace")} defaultValue={v.birthPlace} className="input" />
-      </Field>
-      <Field label="Staatsangehörigkeit" htmlFor={n("nationality")}>
-        <input id={n("nationality")} name={n("nationality")} defaultValue={v.nationality} className="input" />
-      </Field>
-      <Field label="Ausweisart" htmlFor={n("idType")}>
-        <select id={n("idType")} name={n("idType")} defaultValue={v.idType} className="input">
-          <option value="">Nicht erfasst</option>
-          {Object.entries(ID_TYPES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-        </select>
-      </Field>
-      <Field label="Ausweisnummer" htmlFor={n("idNumber")}>
-        <input id={n("idNumber")} name={n("idNumber")} defaultValue={v.idNumber} className="input font-mono uppercase" autoComplete="off" />
-      </Field>
-      <Field label="Ausstellende Behörde" htmlFor={n("idIssuedBy")}>
-        <input id={n("idIssuedBy")} name={n("idIssuedBy")} defaultValue={v.idIssuedBy} className="input" placeholder="z. B. Stadt Bremen" />
-      </Field>
-      <Field label="Ausgestellt am" htmlFor={n("idIssuedAt")}>
-        <input id={n("idIssuedAt")} name={n("idIssuedAt")} type="date" defaultValue={v.idIssuedAt} className="input" />
-      </Field>
-      <Field label="Gültig bis" htmlFor={n("idValidUntil")}>
-        <input id={n("idValidUntil")} name={n("idValidUntil")} type="date" defaultValue={v.idValidUntil} className="input" />
-      </Field>
-
-      <H>Führerschein</H>
-      <Field label="Führerscheinnummer" htmlFor={n("licenseNumber")}>
-        <input id={n("licenseNumber")} name={n("licenseNumber")} defaultValue={v.licenseNumber} className="input font-mono uppercase" autoComplete="off" />
-      </Field>
-      <Field label="Klasse" htmlFor={n("licenseClass")}>
-        <input id={n("licenseClass")} name={n("licenseClass")} defaultValue={v.licenseClass} className="input" placeholder="B" />
-      </Field>
-      <Field label="Ausstellende Behörde" htmlFor={n("licenseIssuedBy")}>
-        <input id={n("licenseIssuedBy")} name={n("licenseIssuedBy")} defaultValue={v.licenseIssuedBy} className="input" />
-      </Field>
-      <Field label="Ausgestellt am" htmlFor={n("licenseIssuedAt")} hint="Wichtig für Fahranfänger-Regeln">
-        <input id={n("licenseIssuedAt")} name={n("licenseIssuedAt")} type="date" defaultValue={v.licenseIssuedAt} className="input" />
-      </Field>
-      <Field label="Gültig bis" htmlFor={n("licenseValidUntil")}>
-        <input id={n("licenseValidUntil")} name={n("licenseValidUntil")} type="date" defaultValue={v.licenseValidUntil} className="input" />
-      </Field>
-
-      {!compact && (
+      {show("contact") && (
         <>
-          <H>Konditionen, Sperre und Notizen</H>
+          {headings && <H>Kunde</H>}
+          <Field label="Kundenart" htmlFor={n("type")} {...f("type")}>
+            <select id={n("type")} name={n("type")} value={type} onChange={(e) => setType(e.target.value)} className="input">
+              {Object.entries(CUSTOMER_TYPES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </Field>
+          {type === "COMPANY" ? (
+            <Field label="Firmenname" htmlFor={n("companyName")} {...f("companyName")}>
+              <input id={n("companyName")} name={n("companyName")} defaultValue={v.companyName} required {...a("companyName")} className="input" />
+            </Field>
+          ) : (
+            <div className="hidden md:block" />
+          )}
+          <Field label={type === "COMPANY" ? "Ansprechpartner / Fahrer Vorname" : "Vorname"} htmlFor={n("firstName")} {...f("firstName")}>
+            <input id={n("firstName")} name={n("firstName")} defaultValue={v.firstName} required {...a("firstName")} className="input" autoComplete="off" />
+          </Field>
+          <Field label={type === "COMPANY" ? "Ansprechpartner / Fahrer Nachname" : "Nachname"} htmlFor={n("lastName")} {...f("lastName")}>
+            <input id={n("lastName")} name={n("lastName")} defaultValue={v.lastName} required {...a("lastName")} className="input" autoComplete="off" />
+          </Field>
+          <Field label="Telefon" htmlFor={n("phone")} {...f("phone")}>
+            <input id={n("phone")} name={n("phone")} type="tel" defaultValue={v.phone} {...a("phone")} className="input" />
+          </Field>
+          <Field label="E-Mail" htmlFor={n("email")} {...f("email")}>
+            <input id={n("email")} name={n("email")} type="email" defaultValue={v.email} {...a("email")} className="input" />
+          </Field>
+          <Field label="Straße und Hausnummer" htmlFor={n("street")} full {...f("street")}>
+            <input id={n("street")} name={n("street")} defaultValue={v.street} {...a("street")} className="input" />
+          </Field>
+          <Field label="PLZ" htmlFor={n("zip")} {...f("zip")}>
+            <input id={n("zip")} name={n("zip")} defaultValue={v.zip} {...a("zip")} className="input" inputMode="numeric" />
+          </Field>
+          <Field label="Ort" htmlFor={n("city")} {...f("city")}>
+            <input id={n("city")} name={n("city")} defaultValue={v.city} {...a("city")} className="input" />
+          </Field>
+          <Field label="Land" htmlFor={n("country")} {...f("country")}>
+            <select id={n("country")} name={n("country")} defaultValue={v.country || "DE"} {...a("country")} className="input">
+              {Object.entries(COUNTRIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </Field>
+          <div className="hidden md:block" />
+        </>
+      )}
+
+      {show("identity") && (
+        <>
+          {headings && <H>Ausweis</H>}
+          <Field label="Geburtsdatum" htmlFor={n("birthDate")} {...f("birthDate")}>
+            <input id={n("birthDate")} name={n("birthDate")} type="date" defaultValue={v.birthDate} {...a("birthDate")} className="input" />
+          </Field>
+          <Field label="Geburtsort" htmlFor={n("birthPlace")} {...f("birthPlace")}>
+            <input id={n("birthPlace")} name={n("birthPlace")} defaultValue={v.birthPlace} {...a("birthPlace")} className="input" />
+          </Field>
+          <Field label="Staatsangehörigkeit" htmlFor={n("nationality")} {...f("nationality")}>
+            <input id={n("nationality")} name={n("nationality")} defaultValue={v.nationality} {...a("nationality")} className="input" />
+          </Field>
+          <Field label="Ausweisart" htmlFor={n("idType")} {...f("idType")}>
+            <select id={n("idType")} name={n("idType")} defaultValue={v.idType} {...a("idType")} className="input">
+              <option value="">Nicht erfasst</option>
+              {Object.entries(ID_TYPES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </Field>
+          <Field label="Ausweisnummer" htmlFor={n("idNumber")} {...f("idNumber")}>
+            <input id={n("idNumber")} name={n("idNumber")} defaultValue={v.idNumber} {...a("idNumber")} className="input font-mono uppercase" autoComplete="off" />
+          </Field>
+          <Field label="Ausstellende Behörde" htmlFor={n("idIssuedBy")} {...f("idIssuedBy")}>
+            <input id={n("idIssuedBy")} name={n("idIssuedBy")} defaultValue={v.idIssuedBy} {...a("idIssuedBy")} className="input" placeholder="z. B. Stadt Bremen" />
+          </Field>
+          <Field label="Ausgestellt am" htmlFor={n("idIssuedAt")} {...f("idIssuedAt")}>
+            <input id={n("idIssuedAt")} name={n("idIssuedAt")} type="date" defaultValue={v.idIssuedAt} {...a("idIssuedAt")} className="input" />
+          </Field>
+          <Field label="Gültig bis" htmlFor={n("idValidUntil")} {...f("idValidUntil")}>
+            <input id={n("idValidUntil")} name={n("idValidUntil")} type="date" defaultValue={v.idValidUntil} {...a("idValidUntil")} className="input" />
+          </Field>
+        </>
+      )}
+
+      {show("license") && (
+        <>
+          {headings && <H>Führerschein</H>}
+          <Field label="Führerscheinnummer" htmlFor={n("licenseNumber")} {...f("licenseNumber")}>
+            <input id={n("licenseNumber")} name={n("licenseNumber")} defaultValue={v.licenseNumber} {...a("licenseNumber")} className="input font-mono uppercase" autoComplete="off" />
+          </Field>
+          <Field label="Klasse" htmlFor={n("licenseClass")} {...f("licenseClass")}>
+            <input id={n("licenseClass")} name={n("licenseClass")} defaultValue={v.licenseClass} {...a("licenseClass")} className="input" placeholder="B" />
+          </Field>
+          <Field label="Ausstellende Behörde" htmlFor={n("licenseIssuedBy")} {...f("licenseIssuedBy")}>
+            <input id={n("licenseIssuedBy")} name={n("licenseIssuedBy")} defaultValue={v.licenseIssuedBy} {...a("licenseIssuedBy")} className="input" />
+          </Field>
+          <Field label="Ausgestellt am" htmlFor={n("licenseIssuedAt")} hint="Wichtig für Fahranfänger-Regeln" {...f("licenseIssuedAt")}>
+            <input id={n("licenseIssuedAt")} name={n("licenseIssuedAt")} type="date" defaultValue={v.licenseIssuedAt} {...a("licenseIssuedAt")} className="input" />
+          </Field>
+          <Field label="Gültig bis" htmlFor={n("licenseValidUntil")} {...f("licenseValidUntil")}>
+            <input id={n("licenseValidUntil")} name={n("licenseValidUntil")} type="date" defaultValue={v.licenseValidUntil} {...a("licenseValidUntil")} className="input" />
+          </Field>
+        </>
+      )}
+
+      {show("admin") && (
+        <>
+          {headings && <H>Konditionen, Sperre und Notizen</H>}
           <Field label="Rabatt in %" htmlFor={n("discountPercent")} hint="Für Stammkunden, wird bei Buchungen abgezogen">
             <input id={n("discountPercent")} name={n("discountPercent")} type="number" min={0} max={100} defaultValue={v.discountPercent} className="input tnum" />
           </Field>

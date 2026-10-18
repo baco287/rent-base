@@ -80,12 +80,29 @@ export function Empty({ children, action }: { children: ReactNode; action?: { hr
   );
 }
 
-export function Field({ label, htmlFor, children, hint, full }: { label: string; htmlFor?: string; children: ReactNode; hint?: string; full?: boolean }) {
+/** Hinweis(e) aus der Prüfung an einem Eingabefeld (Befehl 29.6): describedBy gehört an das Eingabefeld, messages stehen unter dem Feld. */
+export type FieldIssue = { describedBy: string; error: boolean; messages: { id: string; text: string; error: boolean }[] };
+
+const MARK_TEXT = { save: "(Pflichtfeld)", close: "(für den Abschluss nötig)", either: "(Telefon oder E-Mail – eine Angabe ist für den Abschluss nötig)" } as const;
+
+/**
+ * mark (optional): „*“ = Pflichtfeld (Speichern), „°“ = für den Abschluss nötig („either“: eine von zwei Angaben genügt) –
+ * sichtbar als Zeichen, für Screenreader als Text.
+ * issue (optional): Prüfhinweise unter dem Feld (die Verknüpfung am Eingabefeld setzt der Aufrufer), mit „Fehler:“/„Hinweis:“
+ * für Screenreader und eigenem Symbol je Art (nicht nur Farbe). Ohne beide unverändert.
+ */
+export function Field({ label, htmlFor, children, hint, full, mark, issue }: { label: string; htmlFor?: string; children: ReactNode; hint?: string; full?: boolean; mark?: "save" | "close" | "either"; issue?: FieldIssue }) {
   return (
     <div className={`flex flex-col gap-1 ${full ? "md:col-span-2" : ""}`}>
-      <label htmlFor={htmlFor} className="label-xs">{label}</label>
+      <label htmlFor={htmlFor} className="label-xs">{label}{mark && <> <span aria-hidden="true" className={mark === "save" ? "text-bad" : "text-ink-2"}>{mark === "save" ? "*" : "°"}</span><span className="sr-only">{MARK_TEXT[mark]}</span></>}</label>
       {children}
       {hint && <span className="text-xs text-ink-3">{hint}</span>}
+      {issue?.messages.map((m) => (
+        <p key={m.id} id={m.id} className={`flex items-start gap-1 text-xs ${m.error ? "font-medium text-bad" : "text-ink-2"}`}>
+          <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" className={`mt-px shrink-0 ${m.error ? "" : "text-amber"}`}><circle cx="12" cy="12" r="9" />{m.error ? <path d="M12 7.5v5.5M12 16.2v.3" /> : <path d="M12 11v5.5M12 7.8v.3" />}</svg>
+          <span><span className="sr-only">{m.error ? "Fehler: " : "Hinweis: "}</span>{m.text}</span>
+        </p>
+      ))}
     </div>
   );
 }

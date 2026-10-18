@@ -3,10 +3,13 @@
 import { useActionState, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { ADDITIONAL_DRIVER_FEE_TYPES, COUNTRIES, FUEL_POLICIES, KM_POLICIES, PETS_POLICIES, TERMS_ACKNOWLEDGEMENT_TEXT } from "@/lib/constants";
-import { Field, FormError } from "@/components/ui";
+import { Field, FormError, type FieldIssue } from "@/components/ui";
 import { SignaturePad } from "@/components/signature-pad";
 import { submitWithoutReset } from "@/components/submit-without-reset";
 import { WIZARD_STEPS } from "./steps";
+import { ActionBar, BAR_BACK, BAR_NEXT, LockedBox, SourceHint } from "./wizard-layout";
+import { useBarHeight } from "./wizard-shell";
+import { ContractIcon } from "./contract-icons";
 
 export type StepState = { error?: string } | undefined;
 type StepAction = (prev: StepState, fd: FormData) => Promise<StepState>;
@@ -61,8 +64,37 @@ export function NavButton({ action, label, className = "btn btn-primary justify-
   );
 }
 
-export function StepForm({ action, children, step, nextLabel = "Speichern & weiter", hideNext = false }: { action: StepAction; children: ReactNode; step: number; nextLabel?: string; hideNext?: boolean }) {
+/**
+ * variant "page" (Befehl 29.6): Formular als display: contents – die Eingabekarten liegen im Kartenraster der Hauptspalte,
+ * die Aktionsleiste (sticky) am Ende; gleiche Absende-Logik (nav über den Submitter, Eingaben bleiben bei Fehlern erhalten).
+ * Standard "card": unverändert (Übergabe, Rückgabe).
+ */
+export function StepForm({ action, children, step, nextLabel = "Speichern & weiter", hideNext = false, variant = "card", info }: { action: StepAction; children: ReactNode; step: number; nextLabel?: string; hideNext?: boolean; variant?: "card" | "page"; info?: string }) {
   const [state, formAction, pending] = useActionState(action, undefined);
+  const barRef = useRef<HTMLDivElement>(null);
+  useBarHeight(barRef);
+  if (variant === "page") {
+    return (
+      <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="contents">
+        {children}
+        <ActionBar
+          barRef={barRef}
+          error={state?.error}
+          left={step > 1 ? (
+            <button type="submit" name="nav" value="back" formNoValidate disabled={pending} className={BAR_BACK}>
+              <ContractIcon name="chevron-left" size={16} /><span className="max-sm:sr-only">Zurück</span>
+            </button>
+          ) : undefined}
+          info={info}
+          right={!hideNext ? (
+            <button type="submit" name="nav" value="next" disabled={pending} className={BAR_NEXT}>
+              {pending ? "Wird gespeichert…" : nextLabel}<ContractIcon name="chevron-right" size={16} />
+            </button>
+          ) : undefined}
+        />
+      </form>
+    );
+  }
   return (
     <form action={formAction} onSubmit={submitWithoutReset(formAction)} className="flex flex-col gap-4">
       {children}
@@ -98,13 +130,17 @@ export function InlineForm({ action, children, submitLabel, pendingLabel = "Wird
   );
 }
 
-/** Auswahl "Mieter fährt selbst" oder "Abweichender Fahrer". Die Fahrerfelder sind nur im zweiten Fall aktiv. */
+/**
+ * Auswahl "Mieter fährt selbst" oder "Abweichender Fahrer". Die Fahrerfelder sind nur im zweiten Fall aktiv.
+ * Befehl 29.6: Kacheln als Fieldset mit (unsichtbarer) Legende; renterSummary bzw. das gesperrte Fieldset bleiben die einzige Steuerung.
+ */
 export function DriverModeSection({ initial, renterSummary, children }: { initial: "RENTER" | "OTHER"; renterSummary: ReactNode; children: ReactNode }) {
   const [mode, setMode] = useState(initial);
   const option = (value: "RENTER" | "OTHER", title: string, text: string) => (
-    <label className={`flex-1 min-w-[240px] cursor-pointer rounded-lg border-2 p-3.5 flex gap-3 items-start ${mode === value ? "border-brand bg-brand-soft" : "border-line bg-panel"}`}>
+    <label className={`flex-1 cursor-pointer rounded-lg border-2 p-3.5 flex gap-3 items-start has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-info ${mode === value ? "border-brand bg-brand-soft" : "border-line bg-panel"}`}>
       <input type="radio" name="driverMode" value={value} checked={mode === value} onChange={() => setMode(value)} className="mt-1 size-4" />
-      <span>
+      <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-panel text-brand"><ContractIcon name={value === "RENTER" ? "user" : "users"} /></span>
+      <span className="min-w-0">
         <span className="block font-semibold">{title}</span>
         <span className="block text-xs text-ink-2">{text}</span>
       </span>
@@ -112,10 +148,13 @@ export function DriverModeSection({ initial, renterSummary, children }: { initia
   );
   return (
     <>
-      <div className="flex flex-wrap gap-3">
-        {option("RENTER", "Mieter fährt selbst", "Die Führerscheindaten des Mieters werden in den Vertrag übernommen.")}
-        {option("OTHER", "Abweichender Fahrer", "Eine andere Person fährt. Ihre Daten werden eigens am Vertrag gespeichert.")}
-      </div>
+      <fieldset className="card px-4 py-4 md:px-[18px]">
+        <legend className="sr-only">Wer fährt das Fahrzeug?</legend>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {option("RENTER", "Mieter fährt selbst", "Die Führerscheindaten des Mieters werden in den Vertrag übernommen.")}
+          {option("OTHER", "Abweichender Fahrer", "Eine andere Person fährt. Ihre Daten werden eigens am Vertrag gespeichert.")}
+        </div>
+      </fieldset>
       {mode === "RENTER" ? renterSummary : null}
       <fieldset disabled={mode !== "OTHER"} className={mode === "OTHER" ? "contents" : "hidden"}>
         {children}
@@ -162,67 +201,115 @@ export type RuleFieldValues = {
   smokingAllowed: boolean; petsPolicy: string; additionalDriversAllowed: boolean; additionalDriverFeeType: string; additionalDriverFee: string;
   driveClass: "COMBUSTION" | "ELECTRIC" | "PHEV";
 };
-/**
- * Geschäftsregeln im Schritt Konditionen: jedes Feld zeigt seine Herkunft (Text vom Server); abhängige Felder erscheinen nur bei Bedarf.
- * driverFeeNote (Befehl 29 Phase E, Unfallersatz): statt Zusatzfahrer-Preisregel nur ein Hinweis – die Gebühr aus den Regeln gilt dort nicht.
+/*
+ * Geschäftsregeln im Schritt Konditionen (Befehl 29.6: auf die Karten E, F und G verteilt; vorher eine Komponente RuleFields).
+ * Jedes Feld zeigt seine Herkunft (Text vom Server); abhängige Felder erscheinen nur bei Bedarf. Feldnamen, Werte und
+ * Bedingungen sind unverändert – das verborgene rulesPresent setzt page.tsx genau einmal.
  */
-export function RuleFields({ v, sources, driverFeeNote, kmLocked = false, abroadLocked = null }: { v: RuleFieldValues; sources: Record<string, string>; driverFeeNote?: string; /** Befehl 29: Tarifbuchung – Kilometerregel aus der Buchung */ kmLocked?: boolean; /** Auslandsfahrt laut Buchung (Genehmigung, Länder, Aufpreis) – hier nur Anzeige */ abroadLocked?: string | null }) {
-  const source = (key: string): ReactNode => (sources[key] ? <span className="text-[11px] text-ink-3">Quelle: {sources[key]}</span> : null);
-  const [kmPolicy, setKmPolicy] = useState(v.kmPolicy);
-  const [fuelPolicy, setFuelPolicy] = useState(v.fuelPolicy);
-  const [abroad, setAbroad] = useState(v.abroadAllowed);
-  const [feeType, setFeeType] = useState(v.additionalDriverFeeType);
+const sourceHint = (text: string | undefined, locked = false): ReactNode => (text ? <SourceHint locked={locked}>Quelle: {text}</SourceHint> : null);
+const lockedSelect = "input disabled:bg-panel-2 disabled:text-ink-2 disabled:cursor-not-allowed";
+
+/** Karte E: Kilometerregel. kmLocked (Befehl 29, Tarifbuchung): Regel aus der Buchung – Auswahl gesperrt, Wert als verborgenes Feld. */
+export function KmPolicyField({ value, note, kmLocked = false, source }: { value: string; note: string; kmLocked?: boolean; source?: string }) {
+  const [kmPolicy, setKmPolicy] = useState(value);
   return (
     <>
-      <input type="hidden" name="rulesPresent" value="1" />
-      <Field label="Kilometerregel" htmlFor="kmPolicy" hint={undefined}>
-        <select id="kmPolicy" name={kmLocked ? undefined : "kmPolicy"} value={kmPolicy} onChange={(e) => setKmPolicy(e.target.value)} disabled={kmLocked} className="input">{Object.entries(KM_POLICIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
-        {kmLocked && <input type="hidden" name="kmPolicy" value={kmPolicy} />}
-        {source("kmPolicy")}
-      </Field>
-      {kmPolicy === "INDIVIDUAL" && <Field label="Beschreibung der individuellen Kilometerregel" htmlFor="kmPolicyNote"><input id="kmPolicyNote" name="kmPolicyNote" defaultValue={v.kmPolicyNote} className="input" maxLength={300} /></Field>}
-      <Field label={v.driveClass === "ELECTRIC" ? "Laderegel" : v.driveClass === "PHEV" ? "Tank- und Laderegel" : "Tankregelung"} htmlFor="fuelPolicy">
+      <div className="min-w-0 @min-[480px]/karte:col-span-2">
+        <Field label="Kilometerregel" htmlFor="kmPolicy">
+          <select id="kmPolicy" name={kmLocked ? undefined : "kmPolicy"} value={kmPolicy} onChange={(e) => setKmPolicy(e.target.value)} disabled={kmLocked} className={lockedSelect}>{Object.entries(KM_POLICIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+          {kmLocked && <input type="hidden" name="kmPolicy" value={kmPolicy} />}
+          {sourceHint(source, kmLocked)}
+        </Field>
+      </div>
+      {kmPolicy === "INDIVIDUAL" && (
+        <div className="min-w-0 @min-[480px]/karte:col-span-2">
+          <Field label="Beschreibung der individuellen Kilometerregel" htmlFor="kmPolicyNote"><input id="kmPolicyNote" name="kmPolicyNote" defaultValue={note} className="input" maxLength={300} /></Field>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Karte E: Tank-/Laderegel mit Preis je fehlendem Liter; Mindeststände bzw. Beschreibung nur, wenn die Regel sie braucht. */
+export function FuelRuleFields({ driveClass, fuelPolicy: initial, fuelPolicyNote, fuelMinimumEighths, batteryMinimumPercent, fuelPricePerLiter, source, noteIssue }: { driveClass: RuleFieldValues["driveClass"]; fuelPolicy: string; fuelPolicyNote: string; fuelMinimumEighths: string; batteryMinimumPercent: string; fuelPricePerLiter: string; source?: string; noteIssue?: FieldIssue }) {
+  const [fuelPolicy, setFuelPolicy] = useState(initial);
+  return (
+    <>
+      <Field label={driveClass === "ELECTRIC" ? "Laderegel" : driveClass === "PHEV" ? "Tank- und Laderegel" : "Tankregelung"} htmlFor="fuelPolicy">
         <select id="fuelPolicy" name="fuelPolicy" value={fuelPolicy} onChange={(e) => setFuelPolicy(e.target.value)} className="input">
           {Object.entries(FUEL_POLICIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
         </select>
-        {source("fuelRule")}
+        {sourceHint(source)}
       </Field>
-      {fuelPolicy === "MINIMUM_LEVEL" && v.driveClass !== "ELECTRIC" && <Field label="Mindestfüllstand Tank (Achtel, 0–8)" htmlFor="fuelMinimumEighths"><input id="fuelMinimumEighths" name="fuelMinimumEighths" type="number" min={0} max={8} defaultValue={v.fuelMinimumEighths} className="input tnum" /></Field>}
-      {fuelPolicy === "MINIMUM_LEVEL" && v.driveClass !== "COMBUSTION" && <Field label="Mindestladestand Batterie (%)" htmlFor="batteryMinimumPercent"><input id="batteryMinimumPercent" name="batteryMinimumPercent" type="number" min={0} max={100} defaultValue={v.batteryMinimumPercent} className="input tnum" /></Field>}
+      <Field label="Preis je fehlendem Liter € (optional)" htmlFor="fuelPricePerLiter"><input id="fuelPricePerLiter" name="fuelPricePerLiter" inputMode="decimal" defaultValue={fuelPricePerLiter} className="input tnum" /></Field>
+      {fuelPolicy === "MINIMUM_LEVEL" && driveClass !== "ELECTRIC" && <Field label="Mindestfüllstand Tank (Achtel, 0–8)" htmlFor="fuelMinimumEighths"><input id="fuelMinimumEighths" name="fuelMinimumEighths" type="number" min={0} max={8} defaultValue={fuelMinimumEighths} className="input tnum" /></Field>}
+      {fuelPolicy === "MINIMUM_LEVEL" && driveClass !== "COMBUSTION" && <Field label="Mindestladestand Batterie (%)" htmlFor="batteryMinimumPercent"><input id="batteryMinimumPercent" name="batteryMinimumPercent" type="number" min={0} max={100} defaultValue={batteryMinimumPercent} className="input tnum" /></Field>}
+      {fuelPolicy === "OTHER" && (
+        <div className="min-w-0 col-span-full">
+          <Field label="Beschreibung bei individueller Tankregelung" htmlFor="fuelPolicyNote" issue={noteIssue}><input id="fuelPolicyNote" name="fuelPolicyNote" defaultValue={fuelPolicyNote} aria-invalid={noteIssue?.error ? true : undefined} aria-describedby={noteIssue?.describedBy || undefined} className="input" placeholder="Nur bei „Individuelle Regelung“ nötig" /></Field>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Karte E: Tiere und Rauchen. */
+export function UsageRuleFields({ petsPolicy, smokingAllowed, sources }: { petsPolicy: string; smokingAllowed: boolean; sources: Record<string, string> }) {
+  return (
+    <>
       <Field label="Tiere im Fahrzeug" htmlFor="petsPolicy">
-        <select id="petsPolicy" name="petsPolicy" defaultValue={v.petsPolicy} className="input">{Object.entries(PETS_POLICIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
-        {source("petsPolicy")}
+        <select id="petsPolicy" name="petsPolicy" defaultValue={petsPolicy} className="input">{Object.entries(PETS_POLICIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+        {sourceHint(sources.petsPolicy)}
       </Field>
       <div className="flex flex-col gap-1">
         <span className="label-xs">Rauchen im Fahrzeug</span>
-        <label className="flex items-center gap-2 text-sm py-2"><input type="checkbox" name="smokingAllowed" value="1" defaultChecked={v.smokingAllowed} /> Rauchen gestattet</label>
-        {source("smokingAllowed")}
+        <label className="flex min-h-[38px] items-center gap-2 text-sm"><input type="checkbox" name="smokingAllowed" value="1" defaultChecked={smokingAllowed} className="size-4" /> Rauchen gestattet</label>
+        {sourceHint(sources.smokingAllowed)}
       </div>
-      {abroadLocked ? (
-        <div className="md:col-span-2 flex flex-col gap-1 rounded-lg bg-panel-2 p-3 text-sm">
-          <span className="label-xs">Auslandsfahrten</span>
-          <span>{abroadLocked}</span>
-          <span className="text-[11px] text-ink-3">laut Buchung – Änderung in der Buchung · Quelle: Buchung</span>
-        </div>
-      ) : (
-      <div className="md:col-span-2 flex flex-col gap-1.5 rounded-lg bg-panel-2 p-3">
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="abroadAllowed" value="1" checked={abroad} onChange={(e) => setAbroad(e.target.checked)} disabled={!v.abroadPossible} /> Auslandsfahrten gestattet {source("abroadAllowed")}</label>
-        {!v.abroadPossible && <span className="text-xs text-ink-3">Nach den Geschäftsregeln des Vermieters sind Auslandsfahrten nicht vorgesehen. Eine Freigabe braucht zuerst die Einstellung (Inhaber).</span>}
-        {abroad && v.abroadPossible && (
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
-            <span className="basis-full text-xs text-ink-3">Konkret genehmigte Länder (nur aus der Freigabeliste des Vermieters):</span>
-            {v.allowedCountries.map((c) => <label key={c} className="flex items-center gap-1.5"><input type="checkbox" name="abroadCountries" value={c} defaultChecked={v.abroadCountries.includes(c)} /> {COUNTRIES[c as keyof typeof COUNTRIES] ?? c}</label>)}
+    </>
+  );
+}
+
+/**
+ * Karte F: Auslandsfahrten. abroadLocked: Auslandsfahrt laut Buchung (Genehmigung, Länder, Aufpreis) – nur Anzeige, keine Felder
+ * (die Aktion lässt die Werte dann unverändert). Sonst Häkchen und Länder aus der Freigabeliste des Vermieters.
+ */
+export function AbroadRuleFields({ abroadAllowed, abroadCountries, allowedCountries, abroadPossible, abroadLocked = null, source }: { abroadAllowed: boolean; abroadCountries: string[]; allowedCountries: string[]; abroadPossible: boolean; abroadLocked?: string | null; source?: string }) {
+  const [abroad, setAbroad] = useState(abroadAllowed);
+  return abroadLocked ? (
+    <LockedBox>
+      <span className="label-xs">Auslandsfahrten</span>
+      <span>{abroadLocked}</span>
+      <SourceHint locked>laut Buchung – Änderung in der Buchung · Quelle: Buchung</SourceHint>
+    </LockedBox>
+  ) : (
+    <div className="flex flex-col gap-2">
+      <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" name="abroadAllowed" value="1" checked={abroad} onChange={(e) => setAbroad(e.target.checked)} disabled={!abroadPossible} className="size-4" /> Auslandsfahrten gestattet</label>
+      {sourceHint(source)}
+      {!abroadPossible && <span className="text-xs text-ink-2">Nach den Geschäftsregeln des Vermieters sind Auslandsfahrten nicht vorgesehen. Eine Freigabe braucht zuerst die Einstellung (Inhaber).</span>}
+      {abroad && abroadPossible && (
+        <div role="group" aria-labelledby="k4-f-laender" className="flex flex-col gap-1.5 rounded-lg bg-panel-2 p-3">
+          <span id="k4-f-laender" className="text-xs text-ink-2">Konkret genehmigte Länder (nur aus der Freigabeliste des Vermieters):</span>
+          <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-sm">
+            {allowedCountries.map((c) => <label key={c} className="flex min-h-7 items-center gap-1.5"><input type="checkbox" name="abroadCountries" value={c} defaultChecked={abroadCountries.includes(c)} className="size-4" /> {COUNTRIES[c as keyof typeof COUNTRIES] ?? c}</label>)}
           </div>
-        )}
-      </div>
+        </div>
       )}
-      {driverFeeNote ? <div className="flex flex-col gap-1"><span className="label-xs">Zusatzfahrer-Kosten</span><span className="text-sm text-ink-2 py-1">{driverFeeNote}</span></div> : <>
-      <Field label="Zusatzfahrer-Preisregel" htmlFor="additionalDriverFeeType" hint={v.additionalDriversAllowed ? "Erscheint als eigene Position im Vertrag, nie im Basispreis." : "Zusatzfahrer sind für dieses Fahrzeug nicht vorgesehen."}>
-        <select id="additionalDriverFeeType" name="additionalDriverFeeType" value={feeType} onChange={(e) => setFeeType(e.target.value)} className="input" disabled={!v.additionalDriversAllowed}>{Object.entries(ADDITIONAL_DRIVER_FEE_TYPES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
-        {source("additionalDriverFeeType")}
+    </div>
+  );
+}
+
+/** Karte G: Zusatzfahrer-Preisregel. driverFeeNote (Befehl 29 Phase E, Unfallersatz): nur ein Hinweis – die Gebühr aus den Regeln gilt dort nicht. */
+export function DriverFeeFields({ driverFeeNote, allowed, feeType: initial, fee, sources }: { driverFeeNote?: string; allowed: boolean; feeType: string; fee: string; sources: Record<string, string> }) {
+  const [feeType, setFeeType] = useState(initial);
+  if (driverFeeNote) return <div className="col-span-full flex flex-col gap-1"><span className="label-xs">Zusatzfahrer-Kosten</span><span className="text-sm text-ink-2 py-1">{driverFeeNote}</span></div>;
+  return (
+    <>
+      <Field label="Zusatzfahrer-Preisregel" htmlFor="additionalDriverFeeType" hint={allowed ? "Erscheint als eigene Position im Vertrag, nie im Basispreis." : "Zusatzfahrer sind für dieses Fahrzeug nicht vorgesehen."}>
+        <select id="additionalDriverFeeType" name="additionalDriverFeeType" value={feeType} onChange={(e) => setFeeType(e.target.value)} className={lockedSelect} disabled={!allowed}>{Object.entries(ADDITIONAL_DRIVER_FEE_TYPES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+        {sourceHint(sources.additionalDriverFeeType)}
       </Field>
-      {feeType !== "FREE" && v.additionalDriversAllowed && <Field label="Zusatzfahrer-Preis €" htmlFor="additionalDriverFeeCents"><input id="additionalDriverFeeCents" name="additionalDriverFeeCents" inputMode="decimal" defaultValue={v.additionalDriverFee} className="input tnum" />{source("additionalDriverFeeCents")}</Field>}
-      </>}
+      {feeType !== "FREE" && allowed ? <Field label="Zusatzfahrer-Preis €" htmlFor="additionalDriverFeeCents"><input id="additionalDriverFeeCents" name="additionalDriverFeeCents" inputMode="decimal" defaultValue={fee} className="input tnum" />{sourceHint(sources.additionalDriverFeeCents)}</Field> : <div className="hidden @min-[448px]/karte:block" />}
     </>
   );
 }
@@ -254,11 +341,44 @@ export function AcknowledgeForm({ action, version }: { action: StepAction; versi
   );
 }
 
-/** Verbindlicher Abschluss: ein Klick, danach gesperrt, mit Ladeanzeige. */
-export function FinalizeForm({ action, disabled, reason, label = "Mietvertrag verbindlich abschließen", pendingLabel = "Vertrag wird abgeschlossen…" }: { action: StepAction; disabled: boolean; reason?: string; label?: string; pendingLabel?: string }) {
+/**
+ * Verbindlicher Abschluss: ein Klick, danach gesperrt, mit Ladeanzeige.
+ * variant "bar" (Befehl 29.6, Vertrag Schritt 7): dieselbe Logik in der sticky Aktionsleiste; left = „Zurück“ (vom Server),
+ * der Grund steht auf allen Breiten sichtbar (aria-live) und ist per aria-describedby mit dem Knopf verknüpft.
+ * Standard "stack": unverändert (Übergabe, Rückgabe, Nachtrag).
+ */
+export function FinalizeForm({ action, disabled, reason, label = "Mietvertrag verbindlich abschließen", pendingLabel = "Vertrag wird abgeschlossen…", variant = "stack", left }: { action: StepAction; disabled: boolean; reason?: string; label?: string; pendingLabel?: string; variant?: "stack" | "bar"; left?: ReactNode }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   const [clicked, setClicked] = useState(false);
+  const barRef = useRef<HTMLDivElement>(null);
+  useBarHeight(barRef);
   const locked = disabled || pending || (clicked && !state?.error);
+  if (variant === "bar") {
+    const why = disabled && reason ? reason : undefined;
+    return (
+      <form
+        action={formAction}
+        onSubmit={(e) => {
+          setClicked(true);
+          submitWithoutReset(formAction)(e);
+        }}
+        className="contents"
+      >
+        <ActionBar
+          barRef={barRef}
+          error={state?.error}
+          left={left}
+          statusId="abschluss-grund"
+          status={why}
+          right={
+            <button type="submit" disabled={locked} aria-describedby={why ? "abschluss-grund" : undefined} className={`${BAR_NEXT} !text-[15px]`}>
+              {pending || (clicked && !state?.error) ? pendingLabel : label}
+            </button>
+          }
+        />
+      </form>
+    );
+  }
   return (
     <form
       action={formAction}
