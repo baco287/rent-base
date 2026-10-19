@@ -522,6 +522,7 @@ export const AUDIT_ACTIONS = {
   AMENDMENT_DRIVER_REMOVED: "Nachtrag: Zusatzfahrer herausgenommen",
   AMENDMENT_DEPOSIT_CHANGED: "Nachtrag: vereinbarte Kaution geändert",
   AMENDMENT_RETURN_LOCATION_CHANGED: "Nachtrag: Rückgabeort geändert",
+  AMENDMENT_ABROAD_CHANGED: "Nachtrag: Auslandsfahrt geändert",
   AMENDMENT_SENT: "Nachtrag versendet",
   AMENDMENT_SETTLEMENT_CREATED: "Nachtrag: Abrechnungsbeleg erstellt",
   DEPOSIT_CORRECTION: "Kautionsbewegung storniert",
@@ -840,6 +841,7 @@ export const AMENDMENT_CHANGE_KINDS = {
   DEPOSIT: "Vereinbarte Kaution",
   RETURN_LOCATION: "Rückgabeort",
   AGREEMENT: "Sonstige Vereinbarung",
+  ABROAD: "Auslandsfahrten",
 } as const;
 export type AmendmentChangeKind = keyof typeof AMENDMENT_CHANGE_KINDS;
 export const AMENDMENT_HELP = {
@@ -848,6 +850,7 @@ export const AMENDMENT_HELP = {
   DEPOSIT: "Die vereinbarte Kaution ist nicht die erhaltene: Ein zusätzlicher Eingang wird wie bisher als Kautionsbewegung dokumentiert; eine Reduzierung zahlt nichts automatisch aus.",
   KM: "Eine geänderte Kilometervereinbarung gilt als neue Gesamtkondition für die gesamte Mietdauer dieses Vertrags (Freikilometer je Tag × Miettage); eine anteilige Aufteilung gibt es nicht.",
   SHORTEN: "Eine frühere Rückgabe ändert den Preis nicht von selbst. Eine Preisänderung ist eine eigene, ausdrückliche Vereinbarung.",
+  ABROAD: "Die Auslandsfahrt wird als neuer Gesamtstand vereinbart: genehmigte Länder und der einmalige Gesamt-Aufpreis. Abgerechnet wird nur der Unterschied zum bisher vereinbarten Aufpreis – in einem eigenen Nachtrag, nicht zusammen mit einer weiteren Preisänderung.",
 } as const;
 
 export const DUNNING_LEVELS = { 1: "Zahlungserinnerung", 2: "1. Mahnung", 3: "2. Mahnung" } as const;

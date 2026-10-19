@@ -5,6 +5,7 @@
 import { useActionState, useState } from "react";
 import { Field, FormError } from "@/components/ui";
 import { submitWithoutReset } from "@/components/submit-without-reset";
+import { countryName, parseSurchargeCents } from "@/lib/abroad";
 import { AMENDMENT_HELP } from "@/lib/constants";
 import type { AmendmentState } from "./actions";
 
@@ -28,8 +29,12 @@ export type ChangesValues = {
   newDepositCents: number | null;
   newReturnLocation: string | null;
   agreementText: string | null;
+  /** Auslandsfahrt (Stufe 2): gespeicherte Auslandsänderung dieses Entwurfs (null = keine) */
+  abroad?: { allowed: boolean; countries: string[]; surchargeCents: number; reason: string } | null;
 };
-export type CurrentValues = { startAt: string; canChangeStart: boolean; /** Befehl 29 Phase E: Unfallersatz – Mietende offen, kein Gesamtpreis */ openEnd?: boolean; endAt: string; totalEur: string; kmIncludedPerDay: number; extraKmRateEur: string; kmPolicy: string; kmPolicyLabel: string; depositEur: string; returnLocation: string };
+/** Wirksamer Auslandsstand und Auswahl (Freigabeliste des Fahrzeugs, Länder mit Bestandsschutz) – vom Server */
+export type AbroadCurrent = { allowed: boolean; countries: string[]; surchargeCents: number; text: string; totalCents: number; plate: string; possible: boolean; releaseCountries: string[]; kept: string[]; accident: boolean };
+export type CurrentValues = { startAt: string; canChangeStart: boolean; /** Befehl 29 Phase E: Unfallersatz – Mietende offen, kein Gesamtpreis */ openEnd?: boolean; endAt: string; totalEur: string; kmIncludedPerDay: number; extraKmRateEur: string; kmPolicy: string; kmPolicyLabel: string; depositEur: string; returnLocation: string; abroad?: AbroadCurrent | null };
 
 const eur = (cents: number) => (cents / 100).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -56,6 +61,7 @@ export function ChangesForm({ action, values: v, current: c, locked }: { action:
   const [deposit, setDeposit] = useState(v.newDepositCents != null);
   const [location, setLocation] = useState(v.newReturnLocation != null);
   const [agreement, setAgreement] = useState(v.agreementText != null);
+  const [abroad, setAbroad] = useState(v.abroad != null);
   const delta = v.priceDeltaCents ?? v.priceProposalCents ?? null;
   const [sign, setSign] = useState<"+" | "-">(delta != null && delta < 0 ? "-" : "+");
   return (
@@ -103,6 +109,15 @@ export function ChangesForm({ action, values: v, current: c, locked }: { action:
           </div>
         </Toggle>}
 
+        {c.abroad && (c.abroad.possible || c.abroad.kept.length > 0 || c.abroad.allowed || v.abroad) && (
+          <Toggle id="abroadChange" label="Auslandsfahrten ändern" checked={abroad} onChange={setAbroad}>
+            <AbroadChange value={v.abroad ?? null} current={c.abroad} priceOn={price} />
+          </Toggle>
+        )}
+        {c.abroad && !(c.abroad.possible || c.abroad.kept.length > 0 || c.abroad.allowed || v.abroad) && (
+          <p className="text-xs text-ink-3 px-1">Auslandsfahrten: {c.abroad.text}. Für {c.abroad.plate} sind nach den Geschäftsregeln des Vermieters keine Auslandsfahrten vorgesehen (Einstellung durch den Inhaber).</p>
+        )}
+
         <Toggle id="changeKm" label="Kilometervereinbarung ändern" checked={km} onChange={setKm}>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Bisher"><div className="input bg-panel-2 font-mono tnum">{c.kmPolicy === "UNLIMITED" ? c.kmPolicyLabel : `${c.kmIncludedPerDay.toLocaleString("de-DE")} km/Tag · ${c.extraKmRateEur} €/km`}</div></Field>
@@ -145,6 +160,89 @@ export function ChangesForm({ action, values: v, current: c, locked }: { action:
       <Msg state={state} />
       {!locked && <div><button type="submit" disabled={pending} className="btn btn-primary !py-2.5">{pending ? "Wird gespeichert…" : "Änderungen speichern"}</button></div>}
     </form>
+  );
+}
+
+/**
+ * Auslandsfahrt per Nachtrag: neuer GESAMT-Stand (gestattet mit Ländern und einmaligem Aufpreis oder nicht mehr gestattet).
+ * Länder nur aus der Freigabeliste des Fahrzeugs; bereits genehmigte Länder behalten Bestandsschutz. Der Unterschied zum
+ * bisherigen Aufpreis ist hier nur eine Vorschau – berechnet und geprüft wird er beim Speichern auf dem Server.
+ */
+function AbroadChange({ value, current: c, priceOn }: { value: NonNullable<ChangesValues["abroad"]> | null; current: AbroadCurrent; priceOn: boolean }) {
+  const canGrant = c.possible || c.kept.length > 0;
+  // eine gespeicherte Genehmigung, die nach den Geschäftsregeln nicht mehr möglich ist, wird nicht als wählbar angezeigt
+  const stale = !!value?.allowed && !canGrant;
+  const [allowed, setAllowed] = useState(value ? value.allowed && canGrant : canGrant);
+  const [countries, setCountries] = useState<string[]>(value ? value.countries : c.countries);
+  const [surcharge, setSurcharge] = useState(c.accident ? "0,00" : eur(value ? value.surchargeCents : c.surchargeCents));
+  const parsed = allowed && canGrant ? parseSurchargeCents(surcharge) : { cents: 0 };
+  const next = "error" in parsed ? null : parsed.cents;
+  const delta = next == null || (!allowed && !c.allowed) ? null : next - c.surchargeCents;
+  const needsReason = !allowed ? c.allowed : delta != null && delta < 0;
+  const list = [...c.releaseCountries, ...c.kept.filter((k) => !c.releaseCountries.includes(k))];
+  const outside = countries.filter((k) => !list.includes(k));
+  const toggle = (k: string, on: boolean) => setCountries(on ? [...new Set([...countries, k])] : countries.filter((x) => x !== k));
+  return (
+    <>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <Field label="Bisher vereinbart"><div className="input bg-panel-2 !h-auto min-h-10 py-2 leading-snug">{c.text}</div></Field>
+        <div className="flex flex-col gap-1.5">
+          <span className="label-xs">Neu</span>
+          <label className="flex items-center gap-2 text-sm"><input type="radio" name="abroadAllowed" value="1" checked={allowed} onChange={() => setAllowed(true)} disabled={!canGrant} className="size-5" /> Auslandsfahrten gestattet</label>
+          <label className="flex items-center gap-2 text-sm"><input type="radio" name="abroadAllowed" value="0" checked={!allowed} onChange={() => setAllowed(false)} disabled={!c.allowed} className="size-5" /> Nicht (mehr) gestattet</label>
+        </div>
+      </div>
+      {!c.possible && <p className="text-xs text-ink-3">Für {c.plate} sind nach den Geschäftsregeln des Vermieters keine Auslandsfahrten vorgesehen (Einstellung durch den Inhaber).{c.kept.length > 0 ? " Bereits genehmigte Länder behalten Bestandsschutz." : ""}</p>}
+      {stale && !c.allowed && <p role="alert" className="text-sm rounded-md bg-amber-soft text-amber px-3 py-2">Die gespeicherte Genehmigung ist nach den Geschäftsregeln nicht mehr möglich. Bitte „Auslandsfahrten ändern“ abwählen und speichern.</p>}
+      {allowed && canGrant && (
+        <>
+          <div className="flex flex-col gap-1.5">
+            <span className="label-xs">Genehmigte Länder</span>
+            <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm">
+              {list.map((k) => (
+                <label key={k} className="flex items-center gap-1.5">
+                  <input type="checkbox" name="abroadCountries" value={k} checked={countries.includes(k)} onChange={(e) => toggle(k, e.target.checked)} className="size-5" /> {countryName(k)}
+                  {!c.releaseCountries.includes(k) && <span className="chip bg-panel-2 text-ink-3 text-[11px]">Bestandsschutz</span>}
+                </label>
+              ))}
+            </div>
+            {outside.length > 0 && (
+              <div role="alert" className="flex flex-wrap items-center gap-2 text-xs text-bad bg-bad-soft rounded-md px-3 py-2">
+                <span>Nicht in der Freigabeliste für {c.plate}:</span>
+                {outside.map((k) => (
+                  <span key={k} className="chip bg-panel text-bad inline-flex items-center gap-1">
+                    <input type="hidden" name="abroadCountries" value={k} />
+                    {countryName(k)}
+                    <button type="button" onClick={() => toggle(k, false)} className="underline">entfernen</button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+          {c.accident ? (
+            <p className="text-xs text-ink-3"><input type="hidden" name="abroadSurcharge" value="0,00" />Unfallersatz: Die Auslandsfahrt lässt sich genehmigen, ein Auslandsfahrt-Aufpreis ist dabei nicht vorgesehen (0,00 €).</p>
+          ) : (
+            <label className="flex flex-col gap-1 sm:max-w-xs">
+              <span className="label-xs">Neuer Gesamt-Aufpreis Auslandsfahrt (€, einmalig)</span>
+              <input name="abroadSurcharge" inputMode="decimal" value={surcharge} onChange={(e) => setSurcharge(e.target.value)} placeholder="0,00" required className="input tnum" />
+            </label>
+          )}
+          {"error" in parsed && <p role="alert" className="text-xs text-bad bg-bad-soft rounded-md px-3 py-2">{parsed.error}</p>}
+        </>
+      )}
+      {delta != null && delta !== 0 && !c.accident && (
+        <p className="text-sm rounded-md bg-info-soft text-info px-3 py-2">
+          Unterschied zum bisherigen Aufpreis: <b className="font-mono tnum">{delta > 0 ? "+" : "−"}{eur(Math.abs(delta))} €</b> · neuer Gesamtmietpreis <b className="font-mono tnum">{eur(c.totalCents + delta)} €</b> <span className="text-xs">(wird beim Speichern berechnet und geprüft)</span>
+        </p>
+      )}
+      {priceOn && delta != null && delta !== 0 && (
+        <p role="alert" className="text-sm rounded-md bg-amber-soft text-amber px-3 py-2">Eine Änderung des Auslandsfahrt-Aufpreises bitte in einem eigenen Nachtrag vereinbaren – nicht zusammen mit „Mietpreis ändern“. Erst diesen Nachtrag wirksam machen, dann erneut „Vertrag ändern“ (es gibt je Vertrag nur einen offenen Entwurf).</p>
+      )}
+      <Field label={needsReason ? "Grund (Pflicht)" : "Grund (optional)"} htmlFor="abroadReason" hint={needsReason ? (allowed ? "Pflicht bei einer Senkung des Aufpreises" : "Pflicht, wenn die Auslandsfahrt nicht mehr gestattet ist") : "3 bis 300 Zeichen"}>
+        <input id="abroadReason" name="abroadReason" defaultValue={value?.reason ?? ""} minLength={3} maxLength={300} required={needsReason} className="input" />
+      </Field>
+      <p className="text-xs text-ink-3">{AMENDMENT_HELP.ABROAD}</p>
+    </>
   );
 }
 

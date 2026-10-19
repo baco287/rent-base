@@ -15,6 +15,7 @@ import { customerName } from "@/lib/format";
 import { toCents, type Cents } from "@/lib/money";
 import { dunningLevelLabel } from "@/lib/constants";
 import { SIGNED_AMENDMENTS_SELECT, effectiveTotalCents } from "@/lib/amendments";
+import { abroadStateText, type AbroadState } from "@/lib/abroad";
 import { prepaymentBalances } from "@/lib/rental-payments";
 import { accidentTariffsFor } from "@/lib/accident-case-file";
 import { accidentRentState } from "@/lib/accident-pricing";
@@ -424,8 +425,11 @@ async function timelineFor(tenantId: string, scope: TimelineScope, limit: number
   for (const a of amendments) {
     const href = `/buchungen/${a.bookingId}/nachtrag/${a.id}`;
     const period = a.newEndAt ? `Rückgabe bis ${dateTimeText(a.newEndAt)}` : a.newStartAt ? `Abholung ${dateTimeText(a.newStartAt)}` : null;
+    // Auslandsfahrt (Stufe 2): neuer Stand aus dem versiegelten Snapshot
+    const ab = (a.snapshot as { abroad?: { after: AbroadState } } | null)?.abroad;
+    const abroadText = ab ? `Auslandsfahrt: ${abroadStateText(ab.after)}` : null;
     if (a.agreedAt) e.push({ key: `na-${a.id}`, at: a.agreedAt, kind: "Nachtrag", title: `Vertragsänderung vereinbart (${a.agreedChannel === "PHONE" ? "telefonisch" : "vorab"}) · Buchung ${a.booking.number}`, detail: [period, "Unterschrift ausstehend"].filter(Boolean).join(" · "), href });
-    if (a.status === "SIGNED" && a.signedAt) e.push({ key: `ns-${a.id}`, at: a.signedAt, kind: "Nachtrag", title: `Nachtrag ${a.number} ${(a.snapshot as { consent?: unknown } | null)?.consent ? "telefonisch bestätigt" : "unterschrieben"} · Buchung ${a.booking.number}`, detail: period, href });
+    if (a.status === "SIGNED" && a.signedAt) e.push({ key: `ns-${a.id}`, at: a.signedAt, kind: "Nachtrag", title: `Nachtrag ${a.number} ${(a.snapshot as { consent?: unknown } | null)?.consent ? "telefonisch bestätigt" : "unterschrieben"} · Buchung ${a.booking.number}`, detail: [period, abroadText].filter(Boolean).join(" · ") || null, href });
     if (a.status === "DISCARDED" && a.discardedAt && a.agreedAt) e.push({ key: `nd-${a.id}`, at: a.discardedAt, kind: "Nachtrag", title: `Vereinbarte Vertragsänderung zurückgenommen · Buchung ${a.booking.number}`, detail: a.discardReason, href });
   }
   for (const c of contracts) if (c.status === "SIGNED" && c.signedAt) e.push({ key: `c-${c.id}`, at: c.signedAt, kind: "Vertrag", title: `Mietvertrag ${c.number} abgeschlossen`, detail: null, href: `/buchungen/${c.bookingId}/vertrag` });

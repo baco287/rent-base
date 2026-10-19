@@ -5,6 +5,7 @@
 // Fahrerprüfung, Dokument- und Mailarchitektur; hier steht keine Fachlogik.
 
 import { headers } from "next/headers";
+import { parseAmendmentAbroadForm } from "@/lib/abroad";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
@@ -118,6 +119,10 @@ export async function saveAmendmentChangesAction(bookingId: string, amendmentId:
   if (d.changeReturnLocation && !(d.newReturnLocation ?? "").trim()) return { error: "Bitte den neuen Rückgabeort angeben." };
   input.agreementText = d.changeAgreement ? (d.agreementText ?? "") : null;
   if (d.changeAgreement && !(d.agreementText ?? "").trim()) return { error: "Bitte den Text der sonstigen Vereinbarung eingeben." };
+  // Auslandsfahrt (Stufe 2): Länder als Mehrfachwerte (Object.fromEntries behält nur den letzten); nicht angehakt = entfernen
+  const abroad = parseAmendmentAbroadForm(formData);
+  if (abroad && "error" in abroad) return { error: abroad.error };
+  input.abroad = abroad;
   try {
     await updateAmendmentDraft(tenant.id, actor, amendmentId, input);
   } catch (e) {

@@ -6,6 +6,7 @@ import { db } from "@/lib/db";
 import { Card, Chip } from "@/components/ui";
 import { AMENDMENT_HELP, AMENDMENT_STATUS, type AmendmentStatus } from "@/lib/constants";
 import { amendmentAllowed, amendmentKindsLabel, effectiveStateForBooking, listAmendments, pendingSettlements } from "@/lib/amendments";
+import { abroadStateText } from "@/lib/abroad";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import { fmtCents } from "@/lib/money";
 import { createAmendmentAction, createAmendmentSettlementAction } from "./actions";
@@ -69,6 +70,7 @@ export async function AmendmentsCard({ tenantId, bookingId, role, supportMode, l
               <div><dt className="text-ink-3">Kilometer</dt><dd className="font-mono tnum">{state.kmIncludedPerDay.toLocaleString("de-DE")} km/Tag · {rate} €/km{changed(state.changedBy.km)}</dd></div>
               <div><dt className="text-ink-3">Vereinbarte Kaution</dt><dd className="font-mono tnum">{openEnd && state.depositCents === 0 ? "keine" : fmtCents(state.depositCents)}{changed(state.changedBy.deposit)}</dd></div>
               <div><dt className="text-ink-3">Rückgabeort</dt><dd>{state.returnLocation ?? state.pickupLocation ?? "wie Abholort"}{changed(state.changedBy.returnLocation)}</dd></div>
+              <div className="sm:col-span-2 xl:col-span-3"><dt className="text-ink-3">Auslandsfahrten</dt><dd>{abroadStateText(state.abroad)}{changed(state.abroadChangedBy)}</dd></div>
               <div className="sm:col-span-2 xl:col-span-3"><dt className="text-ink-3">Fahrer</dt><dd>{state.drivers.map((d) => `${d.firstName} ${d.lastName}${d.role === "PRIMARY_DRIVER" ? " (Hauptfahrer)" : ""}${d.addedBy ? ` – aufgenommen durch ${state.amendments.find((a) => a.id === d.addedBy)?.number ?? "Nachtrag"}` : ""}`).join(" · ")}</dd></div>
               {state.agreements.length > 0 && <div className="sm:col-span-2 xl:col-span-3"><dt className="text-ink-3">Sonstige Vereinbarungen</dt><dd className="flex flex-col gap-1">{state.agreements.map((g) => <span key={g.number} className="whitespace-pre-wrap"><span className="font-mono tnum text-xs text-ink-3">{g.number}: </span>{g.text}</span>)}</dd></div>}
             </dl>
@@ -79,7 +81,7 @@ export async function AmendmentsCard({ tenantId, bookingId, role, supportMode, l
               <div className="font-semibold">Noch abzurechnende Vertragsänderung</div>
               {pending.map((p) => (
                 <div key={p.amendment.id} className="flex flex-wrap items-center gap-2">
-                  <span>{p.amendment.number}: {p.deltaCents > 0 ? "+" : "−"}{fmtCents(Math.abs(p.deltaCents))} – die Mietrechnung {p.invoiceNumber} ist bereits abgeschlossen und wird nicht verändert.</span>
+                  <span>{p.amendment.number}{p.amendment.abroadSurchargeDeltaCents ? " · Auslandsfahrt-Aufpreis" : ""}: {p.deltaCents > 0 ? "+" : "−"}{fmtCents(Math.abs(p.deltaCents))} – die Mietrechnung {p.invoiceNumber} ist bereits abgeschlossen und wird nicht verändert.</span>
                   {canManage && p.deltaCents > 0 && (
                     <form action={createAmendmentSettlementAction.bind(null, bookingId, p.amendment.id)}><input type="hidden" name="nonce" value={randomUUID()} /><button className="btn !py-1.5">Rechnung über {fmtCents(p.deltaCents)} erstellen</button></form>
                   )}

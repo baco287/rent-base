@@ -127,7 +127,7 @@ test("Rollen: Nachträge nur Inhaber und Disposition, nie Hofmitarbeiter", () =>
   assert.equal(roleAllows("OWNER", ["DISPO"]), true);
   assert.equal(roleAllows("DISPO", ["DISPO"]), true);
   assert.equal(roleAllows("YARD", ["DISPO"]), false);
-  assert.ok(Object.keys(AMENDMENT_CHANGE_KINDS).length === 8);
+  assert.ok(Object.keys(AMENDMENT_CHANGE_KINDS).length === 9);
 });
 
 // ---------------------------------------------------------------------------

@@ -1579,10 +1579,11 @@ const actionIdOf = (html: string, name: string, fallback: "bound" | "other") => 
   return others.length === 1 ? others[0] : "";
 };
 /** Server-Aktion direkt per HTTP aufrufen (React-Reply-Format: Formularfelder mit Präfix vor dem Wurzelteil „0“). */
-const callAction = async (path: string, actionId: string, cookieValue: string, args: { form: Record<string, string>; bound?: unknown[] } | { json: unknown[] }) => {
+const callAction = async (path: string, actionId: string, cookieValue: string, args: { form: Record<string, string | string[]>; bound?: unknown[] } | { json: unknown[] }) => {
   const body = new FormData();
   if ("form" in args) {
-    for (const [k, v] of Object.entries(args.form)) body.append(`_1_${k}`, v);
+    // Mehrfachwerte (z. B. Länder-Häkchen) wie der Browser: ein Feld je Wert
+    for (const [k, v] of Object.entries(args.form)) for (const x of [v].flat()) body.append(`_1_${k}`, x);
     // gebundene Argumente (z. B. die Fall-ID) schickt der Browser selbst mit – ein Angreifer könnte jede ID einsetzen
     body.append("0", JSON.stringify([...(args.bound ?? []), "$undefined", "$K1"]));
   } else body.append("0", JSON.stringify(args.json));
@@ -1724,6 +1725,37 @@ report(stdBooking?.rentalType === "STANDARD" && stdBooking.endAt !== null && Num
   await callAction("/buchungen/neu", stdCreateId, ueDispo, { form: form(35, {}) });
   const offB = await db.booking.findFirst({ where: { tenantId: ue.tenantId, vehicleId: ueV3.id, startAt: at(35) } });
   report(offB?.abroadAllowed === false && offB.abroadSurchargeCents === null && offB.abroadCountries.length === 0, "Auslandsfahrt nicht gestattet (Standard bei neuer Buchung): kein Aufpreis");
+}
+// Auslandsfahrt per Nachtrag (Stufe 2): Bereich im Nachtrag, Speichern über die echte Aktion (Länder als Mehrfachwerte, Unterschied
+// berechnet der Server), Freigabeliste serverseitig, Hof ohne Schreibrecht, Wirksamwerden, Anzeige auf Buchung und Nachtragsseite
+{
+  const t0 = await db.tenant.findUniqueOrThrow({ where: { id: dnWorld.tenantId }, select: { businessRules: true } });
+  await db.tenant.update({ where: { id: dnWorld.tenantId }, data: { businessRules: { ...((t0.businessRules ?? {}) as Record<string, unknown>), abroadAllowed: true, abroadCountries: ["AT", "CH"] } } });
+  const abw = await pickedUpWorld("smoke-ab2", { within: dnWorld, beforeContract: async (x) => { await db.booking.update({ where: { id: x.bookingId }, data: { abroadAllowed: true, abroadCountries: ["AT"], abroadSurchargeCents: 4900 } }); } });
+  const abDraft = (await createAmendmentDraft(abw.tenantId, abw.actor, { bookingId: abw.bookingId, nonce: `smoke-ab2-${Date.now()}` })).amendment;
+  const abPath = `/buchungen/${abw.bookingId}/nachtrag/${abDraft.id}`;
+  const abPage = await fetch(`${base}${abPath}`, { headers: { cookie: dnCookie } });
+  const abHtml = await plain(abPage);
+  report(abPage.status === 200 && abHtml.includes("Auslandsfahrten ändern"), `${abPage.status} Nachtrag-Entwurf: Bereich „Auslandsfahrten ändern“`);
+  const saveId = boundIdOf(abHtml, "saveAmendmentChangesAction") || actionIdOf(abHtml, "saveAmendmentChangesAction", "bound");
+  const abForm = (extra: Record<string, string | string[]>) => ({ form: { abroadChange: "1", abroadAllowed: "1", ...extra }, bound: [abw.bookingId, abDraft.id] });
+  const bad = actionState((await callAction(abPath, saveId, dnCookie, abForm({ abroadCountries: ["AT", "FR"], abroadSurcharge: "80,00" }))).text);
+  report(!!bad?.error && /Frankreich ist nicht in der Freigabeliste/.test(bad.error), "Nachtrag: nicht freigegebenes Land serverseitig abgelehnt");
+  await callAction(abPath, saveId, `rb_session=${dnYardSession}`, abForm({ abroadCountries: ["AT"], abroadSurcharge: "1,00" }));
+  const afterYard = await db.contractAmendment.findUniqueOrThrow({ where: { id: abDraft.id } });
+  report(afterYard.newAbroadAllowed === null, "Hofmitarbeiter: Auslandsänderung nicht speicherbar");
+  const ok = await callAction(abPath, saveId, dnCookie, abForm({ abroadCountries: ["CH", "AT"], abroadSurcharge: "80,00", abroadReason: "Messe in Basel" }));
+  const saved = await db.contractAmendment.findUniqueOrThrow({ where: { id: abDraft.id } });
+  report(saved.newAbroadAllowed === true && saved.newAbroadCountries.join() === "AT,CH" && saved.newAbroadSurchargeCents === 8000 && saved.abroadSurchargeDeltaCents === 3100, `${ok.status} Nachtrag gespeichert: Österreich + Schweiz, neuer Gesamt-Aufpreis 80 €, Unterschied +31 € (Server)`);
+  const abDraftHtml = await plain(await fetch(`${base}${abPath}`, { headers: { cookie: dnCookie } }));
+  report(abDraftHtml.includes("Auslandsfahrten") && abDraftHtml.includes("Schweiz") && abDraftHtml.includes("Alle Voraussetzungen erfüllt"), "Nachtrag-Entwurf: Zusammenfassung alt/neu mit Auslandsfahrten");
+  await saveAmendmentSignature(abw.tenantId, abw.actor, abDraft.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(4), seenHash: await getAmendmentContentHash(abw.tenantId, abDraft.id) });
+  const abSigned = (await signAmendment(abw.tenantId, abw.actor, abDraft.id)).amendment;
+  const abSignedHtml = await plain(await fetch(`${base}${abPath}`, { headers: { cookie: dnCookie } }));
+  report(abSignedHtml.includes("Stand nach diesem Nachtrag") && abSignedHtml.includes("Auslandsfahrten") && abSignedHtml.includes("Schweiz"), "Nachtrag wirksam: Auslandsstand im versiegelten Inhalt");
+  const abBooking = await plain(await fetch(`${base}/buchungen/${abw.bookingId}`, { headers: { cookie: dnCookie } }));
+  report(abBooking.includes(`geändert durch Nachtrag ${abSigned.number}`) && abBooking.includes(`Nachtrag ${abSigned.number} · Auslandsfahrt-Aufpreis`) && abBooking.includes("Österreich, Schweiz"), "Buchungsseite: wirksame Auslandsfahrt (geändert durch Nachtrag) und Aufpreis-Unterschied in der Kostenübersicht");
+  await db.tenant.update({ where: { id: dnWorld.tenantId }, data: { businessRules: (t0.businessRules ?? {}) as object } });
 }
 // Befehl 29: Tarifseiten, Rechte (serverseitig) und Anzeige
 {

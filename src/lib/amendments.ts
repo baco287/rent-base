@@ -17,7 +17,7 @@ import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { recordAudit, type Actor } from "@/lib/audit";
 import { assertVehicleBookable, findConflicts, vehicleStatusProblem } from "@/lib/bookings";
-import { readContractRules } from "@/lib/business-rules";
+import { readContractRules, resolveRules } from "@/lib/business-rules";
 import { balanceOf } from "@/lib/deposit-balance";
 import { AMENDMENT_AGREED_CHANNELS, AMENDMENT_CHANGE_KINDS, KM_POLICIES, type AmendmentChangeKind, type KmPolicy } from "@/lib/constants";
 import { assertLinkedCustomer, driverData, type CustomerSnapshot, type DriverInput, type VehicleSnapshot } from "@/lib/contracts";
@@ -30,6 +30,8 @@ import { isUniqueViolation, nextAmendmentNumber, withNumberRetry } from "@/lib/n
 import { calculateRentalPrice, rentalDays, toNumber, totalCentsOf, type PriceBreakdown } from "@/lib/pricing";
 import { buildStorageKey } from "@/lib/storage";
 import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed, assertAccidentCaseOpen } from "@/lib/accident-replacement-events";
+import { ABROAD_REASON_MIN, MAX_ABROAD_SURCHARGE_CENTS, abroadReasonIssue, abroadRuleIssues, abroadStateText, charCount, contractAbroadOf, countryNames, normalizeCountries, type AbroadState, type AmendmentAbroadChoice } from "@/lib/abroad";
+import { allocateRentalItems } from "@/lib/rental-allocation";
 
 type Tx = Prisma.TransactionClient;
 type Client = Tx | typeof db;
@@ -66,6 +68,10 @@ export type EffectiveContractState = {
   changedBy: { endAt: string | null; total: string | null; km: string | null; deposit: string | null; returnLocation: string | null };
   /** Befehl 28: Nachtrag, der den Mietbeginn zuletzt geändert hat (null = Originalvertrag) */
   startChangedBy: string | null;
+  /** Auslandsfahrt laut Vertrag bzw. letztem Ausland-Nachtrag (Genehmigung, Länder, einmaliger Gesamt-Aufpreis) */
+  abroad: AbroadState;
+  /** Nachtrag, der die Auslandsfahrt zuletzt geändert hat (null = Originalvertrag) */
+  abroadChangedBy: string | null;
   amendments: AmendmentRow[];
   /** Stand des Originalvertrags (nie verändert) */
   original: { startAt: Date; endAt: Date | null; totalCents: Cents; kmIncludedPerDay: number; extraKmRate: number; kmPolicy: KmPolicy; depositCents: Cents; returnLocation: string | null };
@@ -99,6 +105,8 @@ export function applyAmendments(c: Prisma.RentalContractGetPayload<object>, driv
   const changedBy = { endAt: null as string | null, total: null as string | null, km: null as string | null, deposit: null as string | null, returnLocation: null as string | null };
   const agreements: { number: string; text: string }[] = [];
   let startChangedBy: string | null = null;
+  let abroad = contractAbroadOf(c.conditions, c.priceSnapshot);
+  let abroadChangedBy: string | null = null;
   for (const a of ordered) {
     if (a.newStartAt) { state.startAt = a.newStartAt; startChangedBy = a.number; }
     if (a.newEndAt) { state.endAt = a.newEndAt; changedBy.endAt = a.number; }
@@ -109,12 +117,18 @@ export function applyAmendments(c: Prisma.RentalContractGetPayload<object>, driv
     if (a.newDepositCents != null) { state.depositCents = a.newDepositCents; changedBy.deposit = a.number; }
     if (a.newReturnLocation != null) { state.returnLocation = a.newReturnLocation; changedBy.returnLocation = a.number; }
     if (a.agreementText) agreements.push({ number: a.number ?? "", text: a.agreementText });
+    // Auslandsfahrt: neuer Gesamtstand; der Unterschied des Aufpreises wirkt auf den Gesamtpreis (eigener Abrechnungsbezug)
+    if (a.newAbroadAllowed != null) {
+      abroad = { allowed: a.newAbroadAllowed, countries: normalizeCountries(a.newAbroadCountries), surchargeCents: a.newAbroadSurchargeCents ?? 0 };
+      abroadChangedBy = a.number;
+      if (a.abroadSurchargeDeltaCents) { state.totalCents += a.abroadSurchargeDeltaCents; changedBy.total = a.number; }
+    }
   }
   const signedIds = new Set(ordered.map((a) => a.id));
   const effectiveDrivers = drivers
     .filter((d) => (!d.addedByAmendmentId || signedIds.has(d.addedByAmendmentId)) && !(d.removedByAmendmentId && signedIds.has(d.removedByAmendmentId)))
     .map((d) => ({ id: d.id, role: d.role, firstName: d.firstName, lastName: d.lastName, birthDate: d.birthDate, licenseNumber: d.licenseNumber, licenseClass: d.licenseClass, licenseCountry: d.licenseCountry, licenseValidUntil: d.licenseValidUntil, customerId: d.customerId, addedBy: d.addedByAmendmentId, removedBy: d.removedByAmendmentId }));
-  return { contractId: c.id, contractNumber: c.number, bookingId: c.bookingId, ...state, drivers: effectiveDrivers, agreements, changedBy, startChangedBy, amendments: ordered, original };
+  return { contractId: c.id, contractNumber: c.number, bookingId: c.bookingId, ...state, drivers: effectiveDrivers, agreements, changedBy, startChangedBy, abroad, abroadChangedBy, amendments: ordered, original };
 }
 
 /**
@@ -137,14 +151,14 @@ export async function loadEffectiveContract<T extends Prisma.RentalContractGetPa
 }
 
 /** Kleine, reine Ableitungen für Stellen, die nur einen Wert brauchen (Kaution, Gesamtpreis) – dieselbe Regel wie applyAmendments. */
-export const SIGNED_AMENDMENTS_SELECT = { where: { status: "SIGNED" }, orderBy: { sequenceNo: "asc" }, select: { id: true, number: true, sequenceNo: true, priceDeltaCents: true, newDepositCents: true, newEndAt: true } } as const;
-type MiniAmendment = { sequenceNo: number | null; priceDeltaCents?: number | null; newDepositCents?: number | null };
+export const SIGNED_AMENDMENTS_SELECT = { where: { status: "SIGNED" }, orderBy: { sequenceNo: "asc" }, select: { id: true, number: true, sequenceNo: true, priceDeltaCents: true, abroadSurchargeDeltaCents: true, newDepositCents: true, newEndAt: true } } as const;
+type MiniAmendment = { sequenceNo: number | null; priceDeltaCents?: number | null; abroadSurchargeDeltaCents?: number | null; newDepositCents?: number | null };
 const bySeq = <T extends MiniAmendment>(xs: T[]) => [...xs].sort((a, b) => (a.sequenceNo ?? 0) - (b.sequenceNo ?? 0));
 export function effectiveDepositCents(contractDeposit: Prisma.Decimal | number | string, signed: MiniAmendment[]): Cents {
   return bySeq(signed).reduce<Cents>((acc, a) => (a.newDepositCents != null ? a.newDepositCents : acc), toCents(contractDeposit));
 }
 export function effectiveTotalCents(contractTotal: Prisma.Decimal | number | string, signed: MiniAmendment[]): Cents {
-  return bySeq(signed).reduce<Cents>((acc, a) => acc + (a.priceDeltaCents ?? 0), toCents(contractTotal));
+  return bySeq(signed).reduce<Cents>((acc, a) => acc + (a.priceDeltaCents ?? 0) + (a.abroadSurchargeDeltaCents ?? 0), toCents(contractTotal));
 }
 /** Vereinbarte Kaution laut wirksamem Stand für einen Vertrag (Abfrage nur der Kautionsänderungen). */
 export async function loadEffectiveDepositCents(client: Client, tenantId: string, contract: { id: string; deposit: Prisma.Decimal | number | string }): Promise<Cents> {
@@ -241,6 +255,8 @@ export type AmendmentChangesInput = {
   newDepositCents?: Cents | null;
   newReturnLocation?: string | null;
   agreementText?: string | null;
+  /** Auslandsfahrt (Stufe 2): neuer Gesamtstand; undefined = unverändert lassen, null = Auslandsänderung entfernen */
+  abroad?: AmendmentAbroadChoice | null;
 };
 
 const cleanText = (v: string | null | undefined, max: number) => {
@@ -348,6 +364,15 @@ export async function updateAmendmentDraft(tenantId: string, actor: Actor, amend
     }
     if (input.newReturnLocation !== undefined) data.newReturnLocation = input.newReturnLocation === null ? null : cleanText(input.newReturnLocation, 200);
     if (input.agreementText !== undefined) data.agreementText = input.agreementText === null ? null : cleanText(input.agreementText, 2000);
+    // Auslandsfahrt (Stufe 2): neuer Gesamtstand, Unterschied zum wirksamen Aufpreis berechnet der Server
+    if (input.abroad !== undefined) {
+      if (input.abroad === null) Object.assign(data, { newAbroadAllowed: null, newAbroadCountries: [], newAbroadSurchargeCents: null, abroadSurchargeDeltaCents: null, abroadReason: null });
+      else Object.assign(data, await abroadAmendmentData(tx, tenantId, a, eff, input.abroad));
+    }
+    const priceAfter = input.priceDeltaCents !== undefined ? input.priceDeltaCents : a.priceDeltaCents;
+    const abroadDeltaAfter = input.abroad !== undefined ? ((data.abroadSurchargeDeltaCents as number | null | undefined) ?? 0) : a.abroadSurchargeDeltaCents ?? 0;
+    if (priceAfter && abroadDeltaAfter) throw new DomainError("Eine Änderung des Auslandsfahrt-Aufpreises bitte in einem eigenen Nachtrag vereinbaren – nicht zusammen mit einer weiteren Preisänderung.");
+    if (eff.totalCents + (priceAfter ?? 0) + abroadDeltaAfter < 0) throw new DomainError(`Der Vertragsgesamtpreis würde negativ (bisher ${fmtCents(eff.totalCents)}).`);
     const row = await tx.contractAmendment.update({ where: { id: a.id }, data });
     await tx.signature.deleteMany({ where: { tenantId, amendmentId: a.id } });
     return row;
@@ -462,6 +487,7 @@ export async function agreeAmendment(tenantId: string, actor: Actor, amendmentId
       assertEditable(a);
       if (!a.newEndAt && !a.newStartAt) throw new DomainError("Vorab vereinbart (Unterschrift ausstehend) wird nur eine Änderung des Mietzeitraums – sie reserviert das Fahrzeug sofort. Andere Änderungen bitte direkt unterschreiben lassen.");
       if (a.contract.drivers.some((d) => d.addedByAmendmentId === a.id || d.removedByAmendmentId === a.id)) throw new DomainError("Fahreränderungen werden nicht vorab vereinbart; sie werden erst mit Fahrerprüfung und Unterschrift wirksam.");
+      if (a.newAbroadAllowed != null) throw new DomainError("Auslandsfahrten werden nicht vorab vereinbart. Bitte direkt unterschreiben lassen oder die telefonische Zustimmung dokumentieren.");
       const eff = applyAmendments(a.contract, a.contract.drivers, a.contract.amendments);
       // dieselben Prüfungen wie beim Unterschreiben (ohne Unterschrift), Fahrzeug unter Sperre
       const { conflicts } = await assertVehicleBookable(tx, tenantId, a.booking.vehicleId, a.newStartAt ?? eff.startAt, a.newEndAt ?? a.booking.endAt, a.bookingId);
@@ -483,6 +509,65 @@ export async function agreeAmendment(tenantId: string, actor: Actor, amendmentId
 export function agreedAmendmentOf(tenantId: string, bookingId: string, client: Client = db) {
   return client.contractAmendment.findFirst({ where: { tenantId, bookingId, status: "AGREED" }, select: { id: true, newEndAt: true, newStartAt: true, priceDeltaCents: true, agreedAt: true, agreedChannel: true, agreedByName: true, agreedNote: true } });
 }
+
+// ---------------------------------------------------------------------------
+// Auslandsfahrt per Nachtrag (Stufe 2)
+// ---------------------------------------------------------------------------
+
+/** Freigabeliste des Vermieters für das Fahrzeug der Buchung (Mandant → Gruppe → Fahrzeug), mandantengeprüft. */
+async function abroadRulesFor(client: Client, tenantId: string, vehicleId: string) {
+  const [tenant, vehicle] = await Promise.all([
+    client.tenant.findUnique({ where: { id: tenantId }, select: { businessRules: true } }),
+    client.vehicle.findFirst({ where: { id: vehicleId, tenantId }, select: { plate: true, businessRules: true, group: { select: { name: true, businessRules: true } } } }),
+  ]);
+  if (!vehicle) throw new DomainError("Fahrzeug nicht gefunden.");
+  const v = resolveRules(tenant?.businessRules, vehicle.group, vehicle).values;
+  return { abroadAllowed: v.abroadAllowed, abroadCountries: v.abroadCountries, plate: vehicle.plate };
+}
+
+/** Auswahl für das Formular „Auslandsfahrten ändern“: Freigabeliste des Fahrzeugs und Länder mit Bestandsschutz. */
+export type AmendmentAbroadOptions = { plate: string; possible: boolean; countries: string[]; kept: string[]; accident: boolean };
+
+/**
+ * Prüfung und Spaltenwerte einer Auslandsänderung: Länder nur aus der Freigabeliste – bereits genehmigte Länder haben
+ * Bestandsschutz –, Entzug = keine Länder und Aufpreis 0, ganze Cent 0 bis 100.000 €, Unfallersatz/offenes Ende ohne
+ * Aufpreis, der neue Stand muss sich vom wirksamen unterscheiden. Der Unterschied des Aufpreises wird hier berechnet.
+ */
+async function abroadAmendmentData(client: Client, tenantId: string, a: LoadedAmendment, eff: EffectiveContractState, x: AmendmentAbroadChoice): Promise<Prisma.ContractAmendmentUpdateInput> {
+  const countries = x.allowed ? normalizeCountries(x.countries) : [];
+  const surcharge = x.allowed ? x.surchargeCents : 0;
+  if (x.allowed && countries.length === 0) throw new DomainError("Auslandsfahrt: Bitte die konkret genehmigten Länder auswählen.");
+  if (!Number.isInteger(surcharge) || surcharge < 0 || surcharge > MAX_ABROAD_SURCHARGE_CENTS) throw new DomainError("Auslandsfahrt: Bitte einen Aufpreis zwischen 0,00 € und 100.000,00 € angeben.");
+  if (surcharge > 0 && (a.booking.rentalType === "ACCIDENT_REPLACEMENT" || eff.endAt === null)) throw new DomainError("Bei einer Unfallersatzmiete gibt es keinen Auslandsfahrt-Aufpreis per Nachtrag.");
+  if (x.allowed === eff.abroad.allowed && countries.join() === eff.abroad.countries.join() && surcharge === eff.abroad.surchargeCents) throw new DomainError("Die Auslandsfahrt entspricht bereits dem vereinbarten Stand.");
+  const reason = cleanText(x.reason, 300);
+  const reasonIssue = abroadReasonIssue(reason);
+  if (reasonIssue) throw new DomainError(reasonIssue);
+  const issues = abroadRuleIssues({ abroadAllowed: x.allowed, abroadCountries: countries }, await abroadRulesFor(client, tenantId, a.booking.vehicleId), "AMENDMENT", eff.abroad.allowed ? eff.abroad.countries : []);
+  if (issues.length) throw new DomainError(issues[0]);
+  return { newAbroadAllowed: x.allowed, newAbroadCountries: countries, newAbroadSurchargeCents: surcharge, abroadSurchargeDeltaCents: surcharge - eff.abroad.surchargeCents, abroadReason: reason };
+}
+
+/** Prüfungen vor dem Wirksamwerden einer Auslandsänderung (unter den Sperren von signAmendment erneut). */
+async function abroadAmendmentIssues(client: Client, tenantId: string, a: LoadedAmendment, eff: EffectiveContractState): Promise<{ code: string; message: string }[]> {
+  const out: { code: string; message: string }[] = [];
+  const delta = a.abroadSurchargeDeltaCents ?? 0;
+  if (delta !== (a.newAbroadSurchargeCents ?? 0) - eff.abroad.surchargeCents) out.push({ code: "ABROAD_STALE", message: "Der Auslandsfahrt-Aufpreis wurde inzwischen geändert. Bitte die Auslandsänderung im Nachtrag neu speichern." });
+  if (delta !== 0 && a.priceDeltaCents) out.push({ code: "ABROAD_SEPARATE", message: "Eine Änderung des Auslandsfahrt-Aufpreises bitte in einem eigenen Nachtrag vereinbaren – nicht zusammen mit einer weiteren Preisänderung." });
+  if ((delta < 0 || a.newAbroadAllowed === false) && !(a.abroadReason && charCount(a.abroadReason.trim()) >= ABROAD_REASON_MIN)) out.push({ code: "ABROAD_REASON", message: a.newAbroadAllowed === false ? "Bitte begründen, warum die Auslandsfahrt nicht mehr gestattet ist." : "Bitte die Senkung des Auslandsfahrt-Aufpreises begründen." });
+  if ((a.newAbroadSurchargeCents ?? 0) > 0 && (a.booking.rentalType === "ACCIDENT_REPLACEMENT" || eff.endAt === null)) out.push({ code: "ABROAD_ACCIDENT", message: "Bei einer Unfallersatzmiete gibt es keinen Auslandsfahrt-Aufpreis per Nachtrag." });
+  const kept = eff.abroad.allowed ? eff.abroad.countries : [];
+  for (const m of abroadRuleIssues({ abroadAllowed: !!a.newAbroadAllowed, abroadCountries: normalizeCountries(a.newAbroadCountries) }, await abroadRulesFor(client, tenantId, a.booking.vehicleId), "AMENDMENT", kept)) out.push({ code: "ABROAD_RULES", message: m });
+  return out;
+}
+
+async function abroadOptionsFor(client: Client, tenantId: string, a: LoadedAmendment, eff: EffectiveContractState): Promise<AmendmentAbroadOptions> {
+  const r = await abroadRulesFor(client, tenantId, a.booking.vehicleId);
+  return { plate: r.plate, possible: r.abroadAllowed, countries: r.abroadAllowed ? r.abroadCountries : [], kept: eff.abroad.allowed ? eff.abroad.countries : [], accident: a.booking.rentalType === "ACCIDENT_REPLACEMENT" || eff.endAt === null };
+}
+
+/** Kurzinfo für Listen und Mails: genehmigte Länder bzw. „nicht gestattet“. */
+export const abroadCountriesText = (countries: readonly string[]) => (countries.length ? countryNames(countries) : "nicht gestattet");
 
 // ---------------------------------------------------------------------------
 // Inhalt, Prüfung, Unterschrift
@@ -519,6 +604,11 @@ export function describeChanges(a: AmendmentRow, eff: EffectiveContractState, dr
   if (a.newDepositCents != null) out.push({ kind: "DEPOSIT", label: AMENDMENT_CHANGE_KINDS.DEPOSIT, before: eur(eff.depositCents), after: eur(a.newDepositCents), note: a.newDepositCents > eff.depositCents ? "zusätzlicher Eingang wird gesondert als Kautionsbewegung dokumentiert" : "keine automatische Auszahlung; Freigabe und Rückzahlung wie bisher" });
   if (a.newReturnLocation != null) out.push({ kind: "RETURN_LOCATION", label: AMENDMENT_CHANGE_KINDS.RETURN_LOCATION, before: eff.returnLocation ?? eff.pickupLocation ?? "–", after: a.newReturnLocation });
   if (a.agreementText) out.push({ kind: "AGREEMENT", label: AMENDMENT_CHANGE_KINDS.AGREEMENT, before: "–", after: a.agreementText });
+  if (a.newAbroadAllowed != null) {
+    const next: AbroadState = { allowed: a.newAbroadAllowed, countries: normalizeCountries(a.newAbroadCountries), surchargeCents: a.newAbroadSurchargeCents ?? 0 };
+    const d = a.abroadSurchargeDeltaCents ?? 0;
+    out.push({ kind: "ABROAD", label: AMENDMENT_CHANGE_KINDS.ABROAD, before: abroadStateText(eff.abroad), after: abroadStateText(next), note: `${d === 0 ? "Aufpreis unverändert" : `Auslandsfahrt-Aufpreis ${d > 0 ? "+" : "−"}${eur(Math.abs(d))} (einmalig)`}${a.abroadReason ? ` · ${a.abroadReason}` : ""}` });
+  }
   return out;
 }
 
@@ -528,8 +618,8 @@ function signedContent(a: LoadedAmendment, eff: EffectiveContractState) {
   const removed = a.contract.drivers.filter((d) => d.removedByAmendmentId === a.id).map((d) => ({ id: d.id, firstName: d.firstName, lastName: d.lastName, birthDate: d.birthDate }));
   return {
     contractId: a.contractId, contractNumber: a.contract.number, contractHash: a.contract.contentHash, bookingId: a.bookingId,
-    base: { endAt: eff.endAt, totalCents: eff.totalCents, kmIncludedPerDay: eff.kmIncludedPerDay, extraKmRate: eff.extraKmRate, depositCents: eff.depositCents, returnLocation: eff.returnLocation, priorAmendments: eff.amendments.map((x) => x.number) },
-    changes: { ...(a.newStartAt ? { newStartAt: a.newStartAt } : {}), newEndAt: a.newEndAt, priceDeltaCents: a.priceDeltaCents, priceReason: a.priceReason, newKmIncludedPerDay: a.newKmIncludedPerDay, newExtraKmRate: toNumber(a.newExtraKmRate), ...(a.newKmPolicy ? { newKmPolicy: a.newKmPolicy } : {}), newDepositCents: a.newDepositCents, newReturnLocation: a.newReturnLocation, agreementText: a.agreementText, added, removed },
+    base: { endAt: eff.endAt, totalCents: eff.totalCents, kmIncludedPerDay: eff.kmIncludedPerDay, extraKmRate: eff.extraKmRate, depositCents: eff.depositCents, returnLocation: eff.returnLocation, priorAmendments: eff.amendments.map((x) => x.number), ...(a.newAbroadAllowed != null ? { abroad: eff.abroad } : {}) },
+    changes: { ...(a.newStartAt ? { newStartAt: a.newStartAt } : {}), newEndAt: a.newEndAt, priceDeltaCents: a.priceDeltaCents, priceReason: a.priceReason, newKmIncludedPerDay: a.newKmIncludedPerDay, newExtraKmRate: toNumber(a.newExtraKmRate), ...(a.newKmPolicy ? { newKmPolicy: a.newKmPolicy } : {}), newDepositCents: a.newDepositCents, newReturnLocation: a.newReturnLocation, agreementText: a.agreementText, added, removed, ...(a.newAbroadAllowed != null ? { abroad: { allowed: a.newAbroadAllowed, countries: normalizeCountries(a.newAbroadCountries), surchargeCents: a.newAbroadSurchargeCents, deltaCents: a.abroadSurchargeDeltaCents, reason: a.abroadReason } } : {}) },
   };
 }
 
@@ -546,7 +636,7 @@ async function collectIssues(client: Client, tenantId: string, a: LoadedAmendmen
   const eff = applyAmendments(a.contract, a.contract.drivers, a.contract.amendments);
   const added = a.contract.drivers.filter((d) => d.addedByAmendmentId === a.id);
   const removed = a.contract.drivers.filter((d) => d.removedByAmendmentId === a.id);
-  const hasChange = !!a.newStartAt || !!a.newEndAt || !!a.priceDeltaCents || a.newKmIncludedPerDay != null || a.newExtraKmRate != null || !!a.newKmPolicy || a.newDepositCents != null || a.newReturnLocation != null || !!a.agreementText || added.length > 0 || removed.length > 0;
+  const hasChange = !!a.newStartAt || !!a.newEndAt || !!a.priceDeltaCents || a.newKmIncludedPerDay != null || a.newExtraKmRate != null || !!a.newKmPolicy || a.newDepositCents != null || a.newReturnLocation != null || !!a.agreementText || added.length > 0 || removed.length > 0 || a.newAbroadAllowed != null;
   if (!hasChange) err("NO_CHANGES", "Der Nachtrag enthält noch keine Änderung.");
   if (a.booking.status === "RETURNED" || a.booking.status === "CANCELLED") err("BOOKING_STATUS", "Die Miete ist beendet oder storniert; der Nachtrag kann nicht mehr wirksam werden.");
   if (a.booking.rentalType === "ACCIDENT_REPLACEMENT" && (await accidentCaseClosed(client, tenantId, a.bookingId))) err("CASE_CLOSED", ACCIDENT_CASE_CLOSED_MESSAGE);
@@ -568,7 +658,8 @@ async function collectIssues(client: Client, tenantId: string, a: LoadedAmendmen
   if (a.priceDeltaCents && a.priceDeltaCents !== (a.priceProposalCents ?? null) && !(a.priceReason && a.priceReason.trim().length >= 3)) err("PRICE_REASON", "Bitte die Preisänderung begründen (abweichend vom Vorschlag der Preislogik bzw. manuelle Preisänderung).");
   // Befehl 28: eine Preisreduktion (z. B. bei Verkürzung) braucht immer eine Begründung – auch wenn sie dem Vorschlag entspricht
   else if (a.priceDeltaCents && a.priceDeltaCents < 0 && !(a.priceReason && a.priceReason.trim().length >= 3)) err("PRICE_REASON", "Bitte die Preisreduktion begründen.");
-  if (a.priceDeltaCents && eff.totalCents + a.priceDeltaCents < 0) err("PRICE_NEGATIVE", "Der Vertragsgesamtpreis würde negativ.");
+  if (eff.totalCents + (a.priceDeltaCents ?? 0) + (a.abroadSurchargeDeltaCents ?? 0) < 0) err("PRICE_NEGATIVE", "Der Vertragsgesamtpreis würde negativ.");
+  if (a.newAbroadAllowed != null) for (const i of await abroadAmendmentIssues(client, tenantId, a, eff)) err(i.code, i.message);
   if (a.newDepositCents != null) {
     const floor = await depositFloorProblem(client, tenantId, a.bookingId, a.newDepositCents);
     if (floor) err("DEPOSIT_BELOW_RECEIVED", floor);
@@ -584,14 +675,15 @@ async function collectIssues(client: Client, tenantId: string, a: LoadedAmendmen
   return issues;
 }
 
-export type AmendmentState = { amendment: LoadedAmendment; effective: EffectiveContractState; changes: AmendmentChange[]; issues: AmendmentIssue[]; hash: string; addedDrivers: DriverRow[]; removedDrivers: DriverRow[] };
+export type AmendmentState = { amendment: LoadedAmendment; effective: EffectiveContractState; changes: AmendmentChange[]; issues: AmendmentIssue[]; hash: string; addedDrivers: DriverRow[]; removedDrivers: DriverRow[]; abroadOptions: AmendmentAbroadOptions | null };
 
 export async function getAmendmentState(tenantId: string, amendmentId: string): Promise<AmendmentState> {
   const a = await loadAmendment(db, tenantId, amendmentId);
   const eff = applyAmendments(a.contract, a.contract.drivers, a.contract.amendments.filter((x) => x.status === "SIGNED" && (a.status !== "SIGNED" || (x.sequenceNo ?? 0) < (a.sequenceNo ?? 0))));
   const changes = describeChanges(a, eff, a.contract.drivers);
   const issues = a.status === "DRAFT" ? await collectIssues(db, tenantId, a, { requireSignature: false }) : [];
-  return { amendment: a, effective: eff, changes, issues, hash: a.contentHash ?? contentHash(signedContent(a, eff)), addedDrivers: a.contract.drivers.filter((d) => d.addedByAmendmentId === a.id), removedDrivers: a.contract.drivers.filter((d) => d.removedByAmendmentId === a.id) };
+  const abroadOptions = a.status === "DRAFT" ? await abroadOptionsFor(db, tenantId, a, eff) : null;
+  return { amendment: a, effective: eff, changes, issues, hash: a.contentHash ?? contentHash(signedContent(a, eff)), addedDrivers: a.contract.drivers.filter((d) => d.addedByAmendmentId === a.id), removedDrivers: a.contract.drivers.filter((d) => d.removedByAmendmentId === a.id), abroadOptions };
 }
 
 const PNG_PREFIX = "data:image/png;base64,";
@@ -644,6 +736,8 @@ export type AmendmentSnapshot = {
   before: { endAt: string | null; totalCents: Cents; kmIncludedPerDay: number; extraKmRate: number; kmPolicy?: KmPolicy; depositCents: Cents; returnLocation: string | null; drivers: { role: string; name: string }[] };
   after: { endAt: string | null; totalCents: Cents; kmIncludedPerDay: number; extraKmRate: number; kmPolicy?: KmPolicy; depositCents: Cents; returnLocation: string | null; drivers: { role: string; name: string }[] };
   changes: AmendmentChange[];
+  /** Auslandsfahrt (Stufe 2): Stand vorher/nachher und Unterschied des Aufpreises – nur bei Auslandsänderung */
+  abroad?: { before: AbroadState; after: AbroadState; deltaCents: Cents; reason: string | null };
   priceProposalCents: Cents | null;
   signatures: { role: string; signerName: string; signedAt: string }[];
   createdByName: string | null; signedByName: string;
@@ -698,7 +792,7 @@ export async function signAmendment(tenantId: string, actor: Actor, amendmentId:
     const number = await nextAmendmentNumber(tx, tenantId, now);
     const sequenceNo = (await tx.contractAmendment.count({ where: { tenantId, contractId: a.contractId, status: "SIGNED" } })) + 1;
     const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
-    const after = { ...eff, startAt: a.newStartAt ?? eff.startAt, endAt: a.newEndAt ?? eff.endAt, totalCents: eff.totalCents + (a.priceDeltaCents ?? 0), kmIncludedPerDay: a.newKmIncludedPerDay ?? eff.kmIncludedPerDay, extraKmRate: a.newExtraKmRate != null ? toNumber(a.newExtraKmRate) ?? eff.extraKmRate : eff.extraKmRate, kmPolicy: (a.newKmPolicy as KmPolicy | null) ?? eff.kmPolicy, depositCents: a.newDepositCents ?? eff.depositCents, returnLocation: a.newReturnLocation ?? eff.returnLocation };
+    const after = { ...eff, startAt: a.newStartAt ?? eff.startAt, endAt: a.newEndAt ?? eff.endAt, totalCents: eff.totalCents + (a.priceDeltaCents ?? 0) + (a.abroadSurchargeDeltaCents ?? 0), kmIncludedPerDay: a.newKmIncludedPerDay ?? eff.kmIncludedPerDay, extraKmRate: a.newExtraKmRate != null ? toNumber(a.newExtraKmRate) ?? eff.extraKmRate : eff.extraKmRate, kmPolicy: (a.newKmPolicy as KmPolicy | null) ?? eff.kmPolicy, depositCents: a.newDepositCents ?? eff.depositCents, returnLocation: a.newReturnLocation ?? eff.returnLocation };
     const driverName = (d: { role: string; firstName: string; lastName: string }) => ({ role: d.role, name: `${d.firstName} ${d.lastName}` });
     const afterDrivers = a.contract.drivers.filter((d) => (!d.addedByAmendmentId || d.addedByAmendmentId === a.id || eff.amendments.some((x) => x.id === d.addedByAmendmentId)) && !(d.removedByAmendmentId && (d.removedByAmendmentId === a.id || eff.amendments.some((x) => x.id === d.removedByAmendmentId))));
     const changes = describeChanges(a, eff, a.contract.drivers);
@@ -718,6 +812,7 @@ export async function signAmendment(tenantId: string, actor: Actor, amendmentId:
       ...(a.agreedAt ? { agreed: { at: a.agreedAt.toISOString(), channel: a.agreedChannel, byName: a.agreedByName, note: a.agreedNote } } : {}),
       ...(a.newStartAt ? { startBefore: eff.startAt.toISOString(), startAfter: a.newStartAt.toISOString() } : {}),
       ...(phone ? { consent: { method: "PHONE" as const, at: now.toISOString(), byName: actor.name, note: phoneNote } } : {}),
+      ...(a.newAbroadAllowed != null ? { abroad: { before: eff.abroad, after: { allowed: a.newAbroadAllowed, countries: normalizeCountries(a.newAbroadCountries), surchargeCents: a.newAbroadSurchargeCents ?? 0 }, deltaCents: a.abroadSurchargeDeltaCents ?? 0, reason: a.abroadReason } } : {}),
     };
     const row = await tx.contractAmendment.update({ where: { id: a.id }, data: { status: "SIGNED", number, sequenceNo, snapshot: snapshot as unknown as Prisma.InputJsonValue, contentHash: hash, signedAt: now, signedById: actor.id, signedByName: actor.name } });
 
@@ -729,7 +824,7 @@ export async function signAmendment(tenantId: string, actor: Actor, amendmentId:
     }
     const base = { bookingId: a.bookingId, details: { amendmentId: a.id, number, contractNumber: a.contract.number } };
     if (phone) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_PHONE_CONSENT", ...base, details: { ...base.details, consentAt: now.toISOString(), documentedBy: actor.name, note: phoneNote } });
-    await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_SIGNED", ...base, amountCents: a.priceDeltaCents ?? null, details: { ...base.details, sequenceNo, changes: changes.map((c) => c.kind).join(", "), wasAgreed: a.status === "AGREED", agreedAt: a.agreedAt?.toISOString() ?? null, consent: phone ? "PHONE" : "SIGNATURE" } });
+    await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_SIGNED", ...base, amountCents: (a.priceDeltaCents ?? 0) + (a.abroadSurchargeDeltaCents ?? 0) || null, details: { ...base.details, sequenceNo, changes: changes.map((c) => c.kind).join(", "), wasAgreed: a.status === "AGREED", agreedAt: a.agreedAt?.toISOString() ?? null, consent: phone ? "PHONE" : "SIGNATURE" } });
     if (a.newEndAt || a.newStartAt) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_PERIOD_CHANGED", ...base, details: { ...base.details, before: iso(eff.endAt), after: iso(a.newEndAt ?? eff.endAt), startBefore: a.newStartAt ? eff.startAt.toISOString() : null, startAfter: a.newStartAt?.toISOString() ?? null } });
     if (a.priceDeltaCents) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_PRICE_CHANGED", ...base, amountCents: a.priceDeltaCents, details: { ...base.details, before: eff.totalCents, delta: a.priceDeltaCents, after: after.totalCents, proposal: a.priceProposalCents, reason: a.priceReason } });
     if (a.newKmIncludedPerDay != null || a.newExtraKmRate != null || a.newKmPolicy) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_KM_CHANGED", ...base, details: { ...base.details, before: `${eff.kmPolicy} · ${eff.kmIncludedPerDay} km/Tag · ${eff.extraKmRate} €/km`, after: `${after.kmPolicy} · ${after.kmIncludedPerDay} km/Tag · ${after.extraKmRate} €/km` } });
@@ -737,6 +832,7 @@ export async function signAmendment(tenantId: string, actor: Actor, amendmentId:
     for (const d of a.contract.drivers.filter((d) => d.removedByAmendmentId === a.id)) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_DRIVER_REMOVED", ...base, details: { ...base.details, contractDriverId: d.id, driver: `${d.firstName} ${d.lastName}` } });
     if (a.newDepositCents != null) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_DEPOSIT_CHANGED", ...base, amountCents: a.newDepositCents, details: { ...base.details, before: eff.depositCents, after: a.newDepositCents } });
     if (a.newReturnLocation != null) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_RETURN_LOCATION_CHANGED", ...base, details: { ...base.details, before: eff.returnLocation, after: a.newReturnLocation } });
+    if (a.newAbroadAllowed != null) await recordAudit(tx, tenantId, actor, { action: "AMENDMENT_ABROAD_CHANGED", ...base, amountCents: a.abroadSurchargeDeltaCents ?? 0, details: { ...base.details, before: abroadStateText(eff.abroad), after: abroadStateText({ allowed: a.newAbroadAllowed, countries: normalizeCountries(a.newAbroadCountries), surchargeCents: a.newAbroadSurchargeCents ?? 0 }), deltaCents: a.abroadSurchargeDeltaCents ?? 0, reason: a.abroadReason } });
     return { amendment: row, created: true };
   }, TX));
 }
@@ -747,7 +843,7 @@ export function listAmendments(tenantId: string, bookingId: string, client: Clie
 }
 
 /** Kurzbeschreibung der Änderungsarten eines Nachtrags (Listen). */
-export function amendmentKindsLabel(a: { newStartAt?: Date | null; newEndAt: Date | null; priceDeltaCents: number | null; newKmIncludedPerDay: number | null; newExtraKmRate: unknown; newKmPolicy?: string | null; newDepositCents: number | null; newReturnLocation: string | null; agreementText: string | null; addedDrivers: unknown[]; removedDrivers: unknown[] }): string {
+export function amendmentKindsLabel(a: { newStartAt?: Date | null; newEndAt: Date | null; priceDeltaCents: number | null; newKmIncludedPerDay: number | null; newExtraKmRate: unknown; newKmPolicy?: string | null; newDepositCents: number | null; newReturnLocation: string | null; agreementText: string | null; newAbroadAllowed?: boolean | null; addedDrivers: unknown[]; removedDrivers: unknown[] }): string {
   const parts: string[] = [];
   if (a.newStartAt) parts.push("Mietbeginn");
   if (a.newEndAt) parts.push("Mietdauer");
@@ -758,6 +854,7 @@ export function amendmentKindsLabel(a: { newStartAt?: Date | null; newEndAt: Dat
   if (a.newDepositCents != null) parts.push("Kaution");
   if (a.newReturnLocation != null) parts.push("Rückgabeort");
   if (a.agreementText) parts.push("Vereinbarung");
+  if (a.newAbroadAllowed != null) parts.push("Auslandsfahrt");
   return parts.join(" · ") || "ohne Änderung";
 }
 
@@ -768,6 +865,20 @@ export function amendmentKindsLabel(a: { newStartAt?: Date | null; newEndAt: Dat
 export type PendingSettlement = { amendment: AmendmentRow; invoiceId: string; invoiceNumber: string | null; deltaCents: Cents };
 
 /**
+ * Nach der Verrechnung in der Mietrechnung noch berechenbarer Betrag je Erhöhung (Preis oder Auslandsfahrt-Aufpreis) – gleiche
+ * Verteilung wie beim Erstellen der Mietrechnung (lib/rental-allocation) über die Nachträge, die bis `asOf` (Erstellung der
+ * Mietrechnung) wirksam waren. Eine durch spätere Minderungen bereits ausgeglichene Erhöhung hat 0; Nachträge nach `asOf` fehlen.
+ */
+export async function allocatedIncreases(client: Client, tenantId: string, bookingId: string, asOf: Date): Promise<Map<string, { cents: Cents; reducedBy: string[] }>> {
+  const contract = await client.rentalContract.findFirst({ where: { tenantId, bookingId, status: "SIGNED" }, select: { totalAmount: true, priceSnapshot: true } });
+  if (!contract) return new Map();
+  const rows = await client.contractAmendment.findMany({ where: { tenantId, bookingId, status: "SIGNED", signedAt: { lte: asOf } }, orderBy: { sequenceNo: "asc" }, select: { id: true, number: true, priceDeltaCents: true, abroadSurchargeDeltaCents: true } });
+  const extras = (contract.priceSnapshot as { extras?: { key?: string; amount: number }[] } | null)?.extras ?? [];
+  const alloc = allocateRentalItems(toCents(contract.totalAmount), extras, rows);
+  return new Map([...alloc.increases, ...alloc.abroad].map((x) => [x.a.id, { cents: x.cents, reducedBy: x.reducedBy }]));
+}
+
+/**
  * Unterschriebene Nachträge mit Preisänderung, die in keiner abgeschlossenen Rechnung dieser Buchung als Position stehen und
  * noch keinen Abrechnungsbeleg haben – nur relevant, wenn die Mietrechnung bereits abgeschlossen ist (im Normalfall entstehen
  * die Positionen beim Erstellen der Mietrechnung nach der Rückgabe).
@@ -775,10 +886,15 @@ export type PendingSettlement = { amendment: AmendmentRow; invoiceId: string; in
 export async function pendingSettlements(tenantId: string, bookingId: string, client: Client = db): Promise<PendingSettlement[]> {
   const invoice = await client.invoice.findFirst({ where: { tenantId, bookingId, kind: "RENTAL", documentType: "INVOICE", status: "FINALIZED" }, select: { id: true, number: true, createdAt: true } });
   if (!invoice) return [];
-  const rows = await client.contractAmendment.findMany({ where: { tenantId, bookingId, status: "SIGNED", priceDeltaCents: { not: null }, settlementInvoiceId: null }, orderBy: { sequenceNo: "asc" } });
+  const rows = await client.contractAmendment.findMany({ where: { tenantId, bookingId, status: "SIGNED", OR: [{ priceDeltaCents: { not: null } }, { abroadSurchargeDeltaCents: { not: 0 } }], settlementInvoiceId: null }, orderBy: { sequenceNo: "asc" } });
   const billed = new Set((await client.invoiceVersionItem.findMany({ where: { tenantId, amendmentId: { in: rows.map((r) => r.id) }, version: { status: "FINALIZED" } }, select: { amendmentId: true } })).map((i) => i.amendmentId));
   // Erhöhungen stehen als eigene Position in der Rechnung; Minderungen sind in den Mietpreis eingerechnet, sofern der
   // Nachtrag beim Erstellen der Rechnung bereits wirksam war (später wirksame Minderungen bleiben offen → Gutschrift)
-  const open = (r: AmendmentRow) => ((r.priceDeltaCents ?? 0) > 0 ? !billed.has(r.id) : !!r.signedAt && r.signedAt > invoice.createdAt);
-  return rows.filter((r) => r.priceDeltaCents && open(r)).map((r) => ({ amendment: r, invoiceId: invoice.id, invoiceNumber: invoice.number, deltaCents: r.priceDeltaCents! }));
+  // Auslandsfahrt (Stufe 2): der Unterschied des Aufpreises zählt wie eine Preisänderung (nie beides in einem Nachtrag)
+  const delta = (r: AmendmentRow) => (r.priceDeltaCents ?? 0) + (r.abroadSurchargeDeltaCents ?? 0);
+  const open = (r: AmendmentRow) => (delta(r) > 0 ? !billed.has(r.id) : !!r.signedAt && r.signedAt > invoice.createdAt);
+  // Erhöhung: nur der Teil, den spätere (vor der Rechnung wirksame) Minderungen nicht schon ausgeglichen haben – nie doppelt
+  const alloc = rows.some((r) => delta(r) > 0) ? await allocatedIncreases(client, tenantId, bookingId, invoice.createdAt) : new Map<string, { cents: Cents }>();
+  const amount = (r: AmendmentRow) => (delta(r) > 0 ? alloc.get(r.id)?.cents ?? delta(r) : delta(r));
+  return rows.filter((r) => delta(r) !== 0 && open(r) && amount(r) !== 0).map((r) => ({ amendment: r, invoiceId: invoice.id, invoiceNumber: invoice.number, deltaCents: amount(r) }));
 }

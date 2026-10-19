@@ -2305,6 +2305,13 @@ model ContractAmendment {
   newDepositCents     Int? // vereinbarte Kaution neu (nie eine Kautionsbewegung)
   newReturnLocation   String?
   agreementText       String? // sonstige Vereinbarung, reiner Text
+  // Auslandsfahrt per Nachtrag (Stufe 2): null = keine Auslandsänderung. newAbroadSurchargeCents = neuer GESAMT-Aufpreis
+  // (einmalig); abroadSurchargeDeltaCents = vom Server berechnet (neu − bisher wirksam), wirkt auf den Gesamtpreis.
+  newAbroadAllowed          Boolean?
+  newAbroadCountries        String[] @default([])
+  newAbroadSurchargeCents   Int?
+  abroadSurchargeDeltaCents Int?
+  abroadReason              String?
   snapshot            Json? // eingefrorener Inhalt bei Unterschrift (Firma, Kunde, Fahrzeug, Vertrag, Stand vorher/nachher, Fahrer, Unterzeichner)
   contentHash         String?
   signedAt            DateTime?

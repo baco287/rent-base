@@ -42,6 +42,7 @@ export async function renderAmendmentPdf(data: AmendmentDocumentData, signatureI
     { label: "Kilometer", value: data.after.km },
     { label: "Vereinbarte Kaution", value: data.after.deposit },
     { label: "Rückgabeort", value: data.after.returnLocation },
+    ...(data.after.abroad ? [{ label: "Auslandsfahrten", value: data.after.abroad }] : []),
     { label: "Fahrer", value: data.after.drivers.join(", ") || "–" },
   ], 2);
   pdf.gap(4);

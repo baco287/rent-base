@@ -8,6 +8,7 @@ import { db } from "@/lib/db";
 import { Card, Chip, Content, PageHeader } from "@/components/ui";
 import { AMENDMENT_AGREED_CHANNELS, AMENDMENT_HELP, AMENDMENT_STATUS, DRIVER_ROLES, KM_POLICIES, DRIVER_VERIFICATION_STATUS, type AmendmentStatus, type DriverRole, type DriverVerificationStatus } from "@/lib/constants";
 import { getAmendmentState, type AmendmentSnapshot } from "@/lib/amendments";
+import { abroadStateText } from "@/lib/abroad";
 import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed } from "@/lib/accident-replacement-events";
 import { DRIVER_BLOCKER_LABELS, driverVerificationOverview } from "@/lib/driver-verification";
 import { fmtDate, fmtDateTime, fmtTime, toDateTimeInput } from "@/lib/format";
@@ -35,7 +36,7 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
   const canEdit = user.role !== "YARD" && !supportSession;
   if (!canEdit && (row.status === "DRAFT" || row.status === "AGREED")) redirect(`/buchungen/${id}?hinweis=${encodeURIComponent("Nachträge erstellen und bearbeiten nur Inhaber und Disponenten.")}#vertrag`);
 
-  const { amendment: a, effective: eff, changes, issues, hash, addedDrivers, removedDrivers } = await getAmendmentState(tenant.id, aid);
+  const { amendment: a, effective: eff, changes, issues, hash, addedDrivers, removedDrivers, abroadOptions } = await getAmendmentState(tenant.id, aid);
   const b = a.booking;
   const back = <Link href={`/buchungen/${id}#vertrag`} className="btn">Zur Buchung</Link>;
   const hint = typeof sp.hinweis === "string" ? <p role="alert" className="rounded-md bg-bad-soft text-bad px-3.5 py-2.5 text-sm">{sp.hinweis}</p> : null;
@@ -67,6 +68,7 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
                   <div><dt className="text-ink-3">Kilometer</dt><dd className="font-mono tnum">{snap.after.kmPolicy === "UNLIMITED" ? KM_POLICIES.UNLIMITED : `${snap.after.kmIncludedPerDay.toLocaleString("de-DE")} km/Tag · ${snap.after.extraKmRate.toLocaleString("de-DE", { minimumFractionDigits: 2 })} €/km`}</dd></div>
                   <div><dt className="text-ink-3">Vereinbarte Kaution</dt><dd className="font-mono tnum">{!snap.after.endAt && snap.after.depositCents === 0 ? "keine" : fmtCents(snap.after.depositCents)}</dd></div>
                   <div><dt className="text-ink-3">Rückgabeort</dt><dd>{snap.after.returnLocation ?? "wie Abholort"}</dd></div>
+                  {snap.abroad && <div><dt className="text-ink-3">Auslandsfahrten</dt><dd>{abroadStateText(snap.abroad.after)}</dd></div>}
                   <div><dt className="text-ink-3">Fahrer</dt><dd>{snap.after.drivers.map((d) => `${d.name}${d.role === "PRIMARY_DRIVER" ? " (Hauptfahrer)" : ""}`).join(", ")}</dd></div>
                 </dl>
               </Card>
@@ -169,8 +171,8 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
                 <ChangesForm
                   action={saveAmendmentChangesAction.bind(null, id, a.id)}
                   locked={!mayEdit || agreed}
-                  values={{ newStartAt: toDateTimeInput(a.newStartAt), newEndAt: toDateTimeInput(a.newEndAt), priceDeltaCents: a.priceDeltaCents, priceProposalCents: a.priceProposalCents, priceReason: a.priceReason ?? "", newKmIncludedPerDay: a.newKmIncludedPerDay, newExtraKmRate: a.newExtraKmRate != null ? dec(a.newExtraKmRate) : "", newKmPolicy: a.newKmPolicy, newDepositCents: a.newDepositCents, newReturnLocation: a.newReturnLocation, agreementText: a.agreementText }}
-                  current={{ startAt: fmtDateTime(eff.startAt), canChangeStart: b.status === "RESERVED" && eff.endAt !== null, openEnd: eff.endAt === null, endAt: fmtDateTime(eff.endAt), totalEur: dec(eff.totalCents / 100), kmIncludedPerDay: eff.kmIncludedPerDay, extraKmRateEur: dec(eff.extraKmRate), kmPolicy: eff.kmPolicy, kmPolicyLabel: KM_POLICIES[eff.kmPolicy], depositEur: dec(eff.depositCents / 100), returnLocation: eff.returnLocation ?? eff.pickupLocation ?? "wie Abholort" }}
+                  values={{ newStartAt: toDateTimeInput(a.newStartAt), newEndAt: toDateTimeInput(a.newEndAt), priceDeltaCents: a.priceDeltaCents, priceProposalCents: a.priceProposalCents, priceReason: a.priceReason ?? "", newKmIncludedPerDay: a.newKmIncludedPerDay, newExtraKmRate: a.newExtraKmRate != null ? dec(a.newExtraKmRate) : "", newKmPolicy: a.newKmPolicy, newDepositCents: a.newDepositCents, newReturnLocation: a.newReturnLocation, agreementText: a.agreementText, abroad: a.newAbroadAllowed != null ? { allowed: a.newAbroadAllowed, countries: a.newAbroadCountries, surchargeCents: a.newAbroadSurchargeCents ?? 0, reason: a.abroadReason ?? "" } : null }}
+                  current={{ startAt: fmtDateTime(eff.startAt), canChangeStart: b.status === "RESERVED" && eff.endAt !== null, openEnd: eff.endAt === null, endAt: fmtDateTime(eff.endAt), totalEur: dec(eff.totalCents / 100), kmIncludedPerDay: eff.kmIncludedPerDay, extraKmRateEur: dec(eff.extraKmRate), kmPolicy: eff.kmPolicy, kmPolicyLabel: KM_POLICIES[eff.kmPolicy], depositEur: dec(eff.depositCents / 100), returnLocation: eff.returnLocation ?? eff.pickupLocation ?? "wie Abholort", abroad: abroadOptions ? { allowed: eff.abroad.allowed, countries: eff.abroad.countries, surchargeCents: eff.abroad.surchargeCents, text: `${abroadStateText(eff.abroad)}${eff.abroadChangedBy ? ` (laut Nachtrag ${eff.abroadChangedBy})` : ""}`, totalCents: eff.totalCents, plate: abroadOptions.plate, possible: abroadOptions.possible, releaseCountries: abroadOptions.countries, kept: abroadOptions.kept, accident: abroadOptions.accident } : null }}
                 />
               </div>
             </Card>
@@ -267,7 +269,7 @@ export default async function AmendmentPage({ params, searchParams }: PageProps<
             <Card title="Prüfung" right={<Chip tone={errors.length ? "amber" : "good"}>{errors.length ? `${errors.length} offen` : "bereit"}</Chip>}>
               <ul className="p-4 text-sm flex flex-col gap-1.5">
                 {errors.length === 0 && <li className="text-good">Alle Voraussetzungen erfüllt. Der Nachtrag kann wirksam gemacht werden.</li>}
-                {issues.map((i) => <li key={i.code} className={i.severity === "error" ? "text-bad" : "text-amber"}>{i.message}</li>)}
+                {issues.map((i, idx) => <li key={`${i.code}-${idx}`} className={i.severity === "error" ? "text-bad" : "text-amber"}>{i.message}</li>)}
               </ul>
             </Card>
             <div id="unterschrift" className="scroll-mt-20">

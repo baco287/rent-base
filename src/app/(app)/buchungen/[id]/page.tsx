@@ -28,7 +28,7 @@ import { createAmendmentAction } from "./nachtrag/actions";
 import { BookingForm } from "../booking-form";
 import { BookingDraftCleanup } from "../booking-draft-cleanup";
 import { isDraftId } from "@/lib/booking-draft";
-import { abroadSummary, countryNames } from "@/lib/abroad";
+import { abroadStateText, abroadSummary, countryNames } from "@/lib/abroad";
 import { rentalPaymentSummary } from "@/lib/rental-payments";
 import { customerOptionOf } from "../customer-option";
 import { loadBookingOptions } from "../options";
@@ -311,7 +311,10 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                 <dt className="label-xs self-center">Rückgabe</dt><dd className="font-mono tnum">{b.endAt ? fmtDateTime(b.endAt) : accident ? "offen (bis zur Rückgabe)" : "–"}{effective?.changedBy.endAt && <span className="block text-[11px] text-ink-3 font-sans">geändert durch {effective.changedBy.endAt}</span>}</dd>
                 <dt className="label-xs self-center">Kilometer</dt><dd className="font-mono tnum">{effective ? <>{effective.kmIncludedPerDay.toLocaleString("de-DE")} km/Tag frei · {fmtEur(effective.extraKmRate)} je Mehrkilometer (laut Vertrag{effective.changedBy.km ? `, geändert durch ${effective.changedBy.km}` : ""})</> : <>{(b.kmIncludedPerDay ?? b.vehicle.kmIncludedPerDay).toLocaleString("de-DE")} km/Tag frei · {fmtEur(Number(b.extraKmRate ?? b.vehicle.extraKmRate))} je Mehrkilometer</>}</dd>
                 {deductibleText && <><dt className="label-xs self-center">Selbstbeteiligung</dt><dd><span className="font-mono tnum">{deductibleText}</span> <span className="text-xs text-ink-3">im Schadenfall, keine Zahlung</span></dd></>}
-                {abroadSummary(b) && <><dt className="label-xs self-center">Auslandsfahrten</dt><dd>{abroadSummary(b)}{contractSigned && <span className="block text-[11px] text-ink-3">laut Mietvertrag festgeschrieben</span>}</dd></>}
+                {/* Auslandsfahrt: mit Vertrag der wirksame Stand (Vertrag + Nachträge), sonst die Buchung */}
+                {effective && (abroadSummary(b) || effective.abroad.allowed || effective.abroadChangedBy)
+                  ? <><dt className="label-xs self-center">Auslandsfahrten</dt><dd>{abroadStateText(effective.abroad)}<span className="block text-[11px] text-ink-3">{effective.abroadChangedBy ? `geändert durch Nachtrag ${effective.abroadChangedBy}` : "laut Mietvertrag festgeschrieben"}</span></dd></>
+                  : !effective && abroadSummary(b) && <><dt className="label-xs self-center">Auslandsfahrten</dt><dd>{abroadSummary(b)}{contractSigned && <span className="block text-[11px] text-ink-3">laut Mietvertrag festgeschrieben</span>}</dd></>}
                 <dt className="label-xs self-center">Notizen</dt><dd>{b.notes || "–"}</dd>
               </dl>
             )}
@@ -359,9 +362,10 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                 <div className="p-4 text-sm flex flex-col">
                   <div className="text-xs text-ink-3 pb-1">laut Mietvertrag {b.contract!.number}{effective.amendments.length ? ` und Nachtrag ${effective.amendments.map((a) => a.number).join(", ")}` : ""}</div>
                   <div className="flex justify-between py-1.5 border-b border-line-soft"><span>Mietpreis laut Vertrag{b.abroadAllowed && (b.abroadSurchargeCents ?? 0) > 0 ? <span className="block text-xs text-ink-3">inkl. Auslandsfahrt-Aufpreis {fmtCents(b.abroadSurchargeCents ?? 0)} (einmalig)</span> : null}</span><span className="font-mono tnum">{fmtEur(effective.original.totalCents / 100)}</span></div>
-                  {effective.amendments.filter((a) => a.priceDeltaCents).map((a) => (
-                    <div key={a.id} className="flex justify-between py-1.5 border-b border-line-soft"><span>Nachtrag {a.number}</span><span className="font-mono tnum">{(a.priceDeltaCents ?? 0) > 0 ? "+" : "−"}{fmtEur(Math.abs(a.priceDeltaCents ?? 0) / 100)}</span></div>
-                  ))}
+                  {effective.amendments.filter((a) => a.priceDeltaCents || a.abroadSurchargeDeltaCents).map((a) => {
+                    const d = (a.priceDeltaCents ?? 0) + (a.abroadSurchargeDeltaCents ?? 0);
+                    return <div key={a.id} className="flex justify-between gap-3 py-1.5 border-b border-line-soft"><span>Nachtrag {a.number}{a.abroadSurchargeDeltaCents ? " · Auslandsfahrt-Aufpreis" : ""}</span><span className="font-mono tnum">{d > 0 ? "+" : "−"}{fmtEur(Math.abs(d) / 100)}</span></div>;
+                  })}
                   <div className="flex justify-between py-2 mt-1 border-t-2 border-ink font-semibold text-base"><span>Gesamtmietpreis</span><span className="font-mono tnum">{fmtEur(effective.totalCents / 100)}</span></div>
                   <div className="flex justify-between py-1.5 text-ink-3"><span>zzgl. vereinbarte Kaution</span><span className="font-mono tnum">{fmtEur(effective.depositCents / 100)}</span></div>
                   {deductibleText && <div className="flex justify-between gap-3 py-1.5 text-ink-3"><span>Selbstbeteiligung im Schadenfall (keine Zahlung)</span><span className="font-mono tnum text-right">{fmtEur(b.contract!.deductible)}</span></div>}

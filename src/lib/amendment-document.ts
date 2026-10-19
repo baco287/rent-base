@@ -4,6 +4,7 @@
 import { db } from "@/lib/db";
 import type { LogoRef } from "@/lib/branding-ref";
 import type { AmendmentSnapshot } from "@/lib/amendments";
+import { abroadStateText } from "@/lib/abroad";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/format";
 import { DomainError } from "@/lib/integrity";
 import { fmtCents } from "@/lib/money";
@@ -22,7 +23,7 @@ export type AmendmentDocumentData = {
   /** GEÄNDERTE VEREINBARUNGEN: je Änderung alt/neu, beim Preis zusätzlich die Änderung */
   changes: { label: string; before: string; after: string; note: string | null }[];
   /** Stand nach diesem Nachtrag (nur die geänderten Kerndaten, zur Orientierung) */
-  after: { endAt: string; total: string; km: string; deposit: string; returnLocation: string; drivers: string[] };
+  after: { endAt: string; total: string; km: string; deposit: string; returnLocation: string; drivers: string[]; /** Auslandsfahrt (Stufe 2): nur bei Auslandsänderung */ abroad: string | null };
   signatures: { id: string; role: string; roleLabel: string; signerName: string; signedAt: string; imageUrl: string }[];
   /** Paket 1: telefonische Zustimmung statt Mieter-Unterschrift (aus dem versiegelten Snapshot) */
   consent: { text: string; note: string | null } | null;
@@ -63,6 +64,7 @@ export function buildAmendmentDocument(s: AmendmentSnapshot, hash: string, signa
       deposit: fmtCents(s.after.depositCents),
       returnLocation: s.after.returnLocation ?? "wie Abholort",
       drivers: s.after.drivers.map((x) => `${x.name}${x.role === "PRIMARY_DRIVER" ? " (Hauptfahrer)" : ""}`),
+      abroad: s.abroad ? abroadStateText(s.abroad.after) : null,
     },
     signatures: signatures.map((x) => ({ id: x.id, role: x.role, roleLabel: x.role === "RENTER" ? "Mieter" : "Vermieter", signerName: x.signerName, signedAt: fmtDateTime(x.signedAt), imageUrl: `/api/signatures/${x.id}` })),
     consent: s.consent
