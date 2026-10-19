@@ -74,6 +74,17 @@ export function customerToData(d: CustomerInput) {
   };
 }
 
+/**
+ * Kundendaten aus Schritt 1 des Mietvertragsassistenten (kompaktes Kundenformular): nur die dort angezeigten Felder.
+ * Sperre, Rabatt, Notizen und die alte Kundennummer pflegt allein die Kundenverwaltung – das kompakte Formular sendet sie
+ * nicht, ohne diese Ausnahme würden sie beim Speichern geleert (alte Kundennummer: Fehler E3, Befehl 29.6).
+ */
+export function contractStepCustomerData(d: CustomerInput) {
+  const { blocked: _b, blockReason: _r, discountPercent: _d, notes: _n, legacyNumber: _l, ...data } = customerToData(d);
+  void _b; void _r; void _d; void _n; void _l;
+  return data;
+}
+
 /** Liest Kundenfelder mit Präfix aus einem Formular, z. B. "c_firstName" im Buchungsformular. */
 export function customerFieldsFromForm(formData: FormData, prefix: string) {
   const out: Record<string, FormDataEntryValue> = {};

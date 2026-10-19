@@ -2286,11 +2286,36 @@ await setTenantFeature({ id: admin.id, name: admin.name }, ue.tenantId, "ACCIDEN
   const custForm = formWith(fresh1.html, 'name="firstName"');
   report([...custForm.matchAll(/<(?:input|select|textarea)[^>]*\srequired=""[^>]*>/g)].map((m) => /name="(\w+)"/.exec(m[0])?.[1]).sort().join(",") === "firstName,lastName" && custForm.includes('class="contents"') && custForm.includes("data-action-bar"), "29.6 Schritt 1: Pflichtfelder wie bisher (nur Vor- und Nachname), Formular mit Aktionsleiste");
   const idCustomer = boundIdOf(fresh1.html, "saveCustomerStepAction");
-  // legacyNumber wird bewusst nicht geprüft (bekannter Altfehler E3: compact sendet das Feld nicht, die Aktion setzt es auf null)
+  // Fehler E3: das kompakte Formular sendet die alte Kundennummer (und Notizen, Rabatt, Sperre) nicht – sie müssen erhalten bleiben
+  await db.customer.update({ where: { id: vw.customerId }, data: { legacyNumber: "ALT-296", notes: "Smoke-Notiz 296" } });
   const custSent = { type: "PRIVATE", firstName: "Erika", lastName: "Muster", phone: "0421 296296", email: "erika296@example.test", street: "Weg 29", zip: "28195", city: "Bremen", country: "DE", birthDate: "1985-03-12", birthPlace: "Bremen", nationality: "deutsch", idType: "PERSONALAUSWEIS", idNumber: "L01X00T47", idIssuedBy: "Stadt Bremen", idIssuedAt: "", idValidUntil: "2031-01-01", licenseNumber: "B072RRE2I55", licenseClass: "B", licenseIssuedBy: "", licenseIssuedAt: "2005-06-01", licenseValidUntil: "2033-06-01", nav: "next" };
   const save1 = await callAction(alt, idCustomer, owner.cookie, { bound: [vw.bookingId], form: custSent });
   const cust1 = await db.customer.findUniqueOrThrow({ where: { id: vw.customerId } });
   report(save1.redirectTo.includes("schritt=2") && cust1.phone === "0421 296296" && cust1.street === "Weg 29" && cust1.birthPlace === "Bremen" && cust1.idIssuedBy === "Stadt Bremen", `${save1.status} 29.6 Schritt 1: „Speichern & weiter“ speichert die gesendeten Kundenfelder und führt zu Schritt 2`);
+  report(cust1.legacyNumber === "ALT-296" && cust1.notes === "Smoke-Notiz 296" && cust1.discountPercent === 10 && cust1.blocked === false, "29.6 Schritt 1 (E3): alte Kundennummer, Notizen, Rabatt und Sperre bleiben beim Speichern erhalten");
+  const save1b = await callAction(alt, idCustomer, owner.cookie, { bound: [vw.bookingId], form: custSent });
+  const cust1b = await db.customer.findUniqueOrThrow({ where: { id: vw.customerId } });
+  const withoutUpdatedAt = (c: typeof cust1) => JSON.stringify({ ...c, updatedAt: null });
+  report(save1b.redirectTo.includes("schritt=2") && withoutUpdatedAt(cust1b) === withoutUpdatedAt(cust1) && cust1b.legacyNumber === "ALT-296", `${save1b.status} 29.6 Schritt 1 (E3): erneut unverändert gespeichert – kein Kundenwert ändert sich, alte Kundennummer bleibt`);
+  // ausdrückliche Änderung bleibt in der Kundenverwaltung möglich (vollständiges Formular mit Feld „Alte Kundennummer“)
+  const kStamm = await get(owner.cookie, `/kunden/${vw.customerId}?tab=stammdaten`);
+  const idUpdCustomer = boundIdOf(kStamm.html, "updateCustomerAction");
+  const fullForm = { ...custSent, discountPercent: "10", notes: "Smoke-Notiz 296", blockReason: "" };
+  delete (fullForm as Record<string, string>).nav;
+  const updLegacy = await callAction(`/kunden/${vw.customerId}`, idUpdCustomer, owner.cookie, { bound: [vw.customerId], form: { ...fullForm, legacyNumber: "NEU-296" } });
+  const custNeu = await db.customer.findUniqueOrThrow({ where: { id: vw.customerId } });
+  report(kStamm.html.includes('name="legacyNumber"') && kStamm.html.includes('value="ALT-296"') && updLegacy.redirectTo.includes("gespeichert=1") && custNeu.legacyNumber === "NEU-296" && custNeu.notes === "Smoke-Notiz 296", `${updLegacy.status} Kundenverwaltung: alte Kundennummer ausdrücklich geändert (ALT-296 → NEU-296)`);
+  const keep296 = await callAction(alt, idCustomer, owner.cookie, { bound: [vw.bookingId], form: { ...custSent, phone: "0421 296297" } });
+  const custKeep = await db.customer.findUniqueOrThrow({ where: { id: vw.customerId } });
+  report(keep296.redirectTo.includes("schritt=2") && custKeep.phone === "0421 296297" && custKeep.legacyNumber === "NEU-296", `${keep296.status} 29.6 Schritt 1 (E3): geänderte Kundennummer bleibt beim nächsten Vertragsschritt erhalten (Telefon übernommen)`);
+  // Rollen und Mandanten: Hof und fremder Mandant können über Schritt 1 nichts ändern
+  const yardStep1 = await callAction(alt, idCustomer, yard.cookie, { bound: [vw.bookingId], form: { ...custSent, phone: "0000 hof" } });
+  const fremd296 = await createWorld("smoke-296-fremd");
+  platformTenants.push(fremd296.tenantId);
+  const fremdOwner = await session(fremd296.tenantId, "OWNER");
+  const fremdStep1 = await callAction(alt, idCustomer, fremdOwner.cookie, { bound: [vw.bookingId], form: { ...custSent, phone: "0000 fremd" } });
+  const custRoles = await db.customer.findUniqueOrThrow({ where: { id: vw.customerId } });
+  report(custRoles.phone === "0421 296297" && custRoles.legacyNumber === "NEU-296" && yardStep1.redirectTo.includes("fehler=rechte") && fremdStep1.redirectTo.includes(`/buchungen/${vw.bookingId}`) && !fremdStep1.redirectTo.includes("/vertrag"), `${yardStep1.status}/${fremdStep1.status} 29.6 Schritt 1: Hof (keine Rechte) und fremder Mandant (Vertrag nicht gefunden) ändern keine Kundendaten`);
   const after1 = await get(owner.cookie, `${alt}?schritt=2`);
   report(after1.html.includes(`href="${alt}?schritt=1"`) && after1.html.includes(`href="${alt}?schritt=2"`) && !after1.html.includes(`href="${alt}?schritt=3"`), "29.6 Navigation: nach Schritt 1 ist Schritt 2 erreichbar, Schritt 3 noch nicht");
   // 7: Fahrer – Moduswahl als Fieldset, Fahrerfelder im gesperrten Fieldset, Chip aus dem gespeicherten Stand

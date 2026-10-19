@@ -6,7 +6,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
-import { customerSchema, customerToData } from "@/lib/customer-schema";
+import { contractStepCustomerData, customerSchema } from "@/lib/customer-schema";
 import { DomainError, isImmutableError } from "@/lib/integrity";
 import {
   acknowledgeTerms,
@@ -82,10 +82,8 @@ export async function saveCustomerStepAction(bookingId: string, _prev: StepState
     if (contract.status !== "DRAFT") throw new DomainError("Der Vertrag ist abgeschlossen und kann nicht mehr geändert werden.");
     // Befehl 29 Phase E: geschlossener Unfallersatzfall – auch Schritt 1 des Vertrags ist gesperrt (Kundenpflege bleibt unter /kunden)
     if (await accidentCaseClosed(db, tenant.id, bookingId)) throw new DomainError(ACCIDENT_CASE_CLOSED_MESSAGE);
-    // Sperre und Rabatt werden hier nicht verändert: das bleibt der Kundenverwaltung vorbehalten
-    const { blocked: _b, blockReason: _r, discountPercent: _d, notes: _n, ...data } = customerToData(parsed.data);
-    void _b; void _r; void _d; void _n;
-    await db.customer.updateMany({ where: { id: contract.customerId, tenantId: tenant.id }, data });
+    // Sperre, Rabatt, Notizen und alte Kundennummer werden hier nicht verändert: das bleibt der Kundenverwaltung vorbehalten
+    await db.customer.updateMany({ where: { id: contract.customerId, tenantId: tenant.id }, data: contractStepCustomerData(parsed.data) });
     revalidatePath("/kunden");
   } catch (e) {
     return asState(e);
