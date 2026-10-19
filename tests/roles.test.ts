@@ -11,6 +11,7 @@ const matrix: [string, readonly string[], Record<(typeof ROLES)[number], boolean
   ["Mietvertrag erstellen/bearbeiten/finalisieren, Konditionen", ["DISPO"], { OWNER: true, DISPO: true, YARD: false }],
   ["Fahrzeuge und Gruppen pflegen", ["DISPO"], { OWNER: true, DISPO: true, YARD: false }],
   ["Übergabe, Rückgabe, Schäden, Fotos, Checkliste, Unterschrift, Zusatzkosten", ["DISPO", "YARD"], { OWNER: true, DISPO: true, YARD: true }],
+  ["Mehrkilometer individuell/erlassen", ["DISPO"], { OWNER: true, DISPO: true, YARD: false }],
   ["Kunden anlegen und ergänzen", ["DISPO", "YARD"], { OWNER: true, DISPO: true, YARD: true }],
   ["Dokumente erzeugen, ansehen, E-Mail erneut senden", ["DISPO", "YARD"], { OWNER: true, DISPO: true, YARD: true }],
   ["Einstellungen, Benutzer, Löschen", ["OWNER"], { OWNER: true, DISPO: false, YARD: false }],

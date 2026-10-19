@@ -245,7 +245,9 @@ test("Zusatzkosten: Vorschlag erst nach Bestätigung, manuelle Position, Schaden
     await change();
     assert.equal(await db.signature.count({ where: { handoverId: r.id } }), 0);
   }
-  await assert.rejects(() => finalizeHandover(a.w.tenantId, r.id, a.w.actor), /Unterschrift des Mieters fehlt/);
+  // Mehrkilometer-Kulanz (D5): 47.211 km passt nicht mehr zur bestätigten Position (800 km, 200 €) – auch bei Standardmiete ein Fehler
+  assert.ok((await getHandoverState(a.w.tenantId, r.id)).issues.some((i) => i.code === "EXTRA_MILEAGE_STALE" && i.severity === "error"));
+  await assert.rejects(() => finalizeHandover(a.w.tenantId, r.id, a.w.actor), /Mehrkilometer: Der bestätigte Betrag passt nicht mehr/);
 });
 
 test("Abschluss: Transaktion, Fahrzeug, Buchung, Schadenakte mit Bezug zur Miete, keine Haftungsfeststellung, danach unveränderlich", async () => {

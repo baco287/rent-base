@@ -6,7 +6,11 @@
 // - Ein Vorschlag ist keine Forderung. Erst wenn ein Mitarbeiter ihn bestätigt, entsteht eine Zusatzkostenposition.
 // - Für Schäden erzeugt das System nie einen Betrag; eine Position vom Typ DAMAGE legt nur ein Mitarbeiter an,
 //   und auch sie bedeutet nur "Kostenposition zu diesem Schaden", keine Haftungsfeststellung.
-// - Verspätung wird berechnet und angezeigt. Eine Gebühr dafür ist im Vertrag nicht geregelt, also gibt es keinen Vorschlag.
+// - Verspätung wird berechnet und angezeigt. Seit Befehl 28 entsteht nach der im Vertrag eingefrorenen Verspätungsregel ein
+//   Vorschlag (bewusst bestätigen); ohne maschinenlesbare Regel bleibt es beim Hinweis, ein Betrag wird nie erfunden.
+// - Mehrkilometer-Kulanz: Mehrkilometer werden immer entschieden – regulär berechnen (jede Rolle) oder, nur Inhaber und
+//   Disposition, einen niedrigeren Betrag festlegen bzw. erlassen (Pflichtbegründung, Audit). Die Entscheidung ist die eine
+//   EXTRA_MILEAGE-Position mit source PROPOSAL; ein offener Vorschlag > 0 € blockiert den Abschluss (collectIssues).
 
 import { effectiveKeyDropEnd } from "@/lib/key-drop-checks";
 import type { Prisma } from "@prisma/client";
@@ -16,7 +20,8 @@ import { accessoryPrice, accessoryProposalKey, missingAccessories, type Checklis
 import { readContractRules, resolveRules, type BusinessRules } from "@/lib/business-rules";
 import { CHARGE_UNITS, EXTRA_CHARGE_TYPES, FUEL_POLICIES, LATE_RETURN_RULES, energyRequirements, type ExtraChargeType, type LateReturnRule } from "@/lib/constants";
 import { fmtDateTime } from "@/lib/format";
-import { extraMileageCharge, flatCharge, fuelCharge, mileagePeriod, saveExtraCharge, type ChargeDraft } from "@/lib/extra-charges";
+import { flatCharge, fuelCharge, hasMileageDecision, mileageDecisionDraft, mileagePeriod, readMileageDecision, regularExtraMileage, saveExtraCharge, type ChargeDraft, type MileageDecision, type MileageDecisionKind } from "@/lib/extra-charges";
+import { fmtCents, parseEuroInput, toCents } from "@/lib/money";
 import { touchHandover } from "@/lib/handovers";
 import { contractKmPolicy, extensionPriceProposal, loadEffectiveContract } from "@/lib/amendments";
 import type { KmPolicy } from "@/lib/constants";
@@ -45,14 +50,45 @@ export type ReturnComparison = {
   battery: { pickup: number | null; return: number | null; diff: number | null } | null;
   /** plannedEnd null = offenes Mietende (Unfallersatz): keine Verspätung, Miettage bis zur tatsächlichen Rückgabe */
   time: { start: Date; plannedEnd: Date | null; actualEnd: Date; lateMinutes: number; rentalDays: number };
-  /** Befehl 27: kmPolicy laut wirksamem Vertragsstand; bei UNLIMITED gibt es keine Mehrkilometer (includedKm = null) */
-  contract: { number: string; amendmentNumbers: string[]; kmPolicy: KmPolicy; kmIncludedPerDay: number; includedKm: number | null; extraKmRate: number; fuelPolicy: string; fuelPolicyLabel: string; fuelPolicyNote: string | null; fuelPricePerLiter: number | null; deposit: number; deductible: number; tankCapacityLiters: number | null };
+  /** Befehl 27: kmPolicy laut wirksamem Vertragsstand; bei UNLIMITED gibt es keine Mehrkilometer (includedKm = null).
+   *  Mehrkilometer-Kulanz: kmPolicyNote = Regeltext der individuellen Kilometerregel (nur bei INDIVIDUAL) */
+  contract: { number: string; amendmentNumbers: string[]; kmPolicy: KmPolicy; kmPolicyNote: string | null; kmIncludedPerDay: number; includedKm: number | null; extraKmRate: number; fuelPolicy: string; fuelPolicyLabel: string; fuelPolicyNote: string | null; fuelPricePerLiter: number | null; deposit: number; deductible: number; tankCapacityLiters: number | null };
   /** Literpreis, der für die Rechnung gilt: aus dem Vertrag, sonst der bei der Rückgabe angegebene */
   effectiveFuelPrice: { value: number; origin: "Vertrag" | "Rückgabe" } | null;
   proposals: Proposal[];
   hints: ReturnHint[];
   charges: ChargeRow[];
   chargesTotal: number;
+  /** Mehrkilometer-Kulanz: Stand der Mehrkilometer-Abrechnung, nur aus vorhandenen Werten abgeleitet (veraltet steht in den issues) */
+  mileageBilling: MileageBilling | null;
+};
+
+/**
+ * Mehrkilometer-Kulanz: Zustand der Mehrkilometer-Abrechnung.
+ * UNLIMITED/NO_READING/NONE: keine Forderung möglich · ZERO_RATE: Mehrkilometer, aber Preis je Mehrkilometer 0 € – keine Forderung,
+ * nichts zu entscheiden (kein Blocker) · OPEN: Vorschlag > 0 € offen · DISMISSED_LEGACY: früher ohne Begründung „Nicht berechnet“
+ * (zählt nicht mehr) · LEGACY_MANUAL: manuell erfasste Position (Altbestand) · REGULAR/CUSTOM/WAIVED: entschieden.
+ */
+export type MileageBillingState = "UNLIMITED" | "NO_READING" | "NONE" | "ZERO_RATE" | "OPEN" | "DISMISSED_LEGACY" | "LEGACY_MANUAL" | "REGULAR" | "CUSTOM" | "WAIVED";
+export type MileageBilling = {
+  policy: KmPolicy;
+  policyNote: string | null;
+  drivenKm: number | null;
+  rentalDays: number;
+  kmIncludedPerDay: number;
+  includedKm: number | null;
+  extraKm: number;
+  extraKmRate: number;
+  /** regulärer Betrag laut aktuellem Stand (Euro); 0 ohne Vorschlag */
+  regularAmount: number;
+  state: MileageBillingState;
+  chargeId: string | null;
+  chargedAmount: number | null;
+  /**
+   * netPrices/pricesIncludeTax: Steuermodus aus dem gespeicherten Entscheidungsstand (Kennzeichnung der Beträge, nicht die heutige
+   * Mandanteneinstellung); pricesIncludeTax fehlt bei älteren Entscheidungen ohne gespeicherten Modus.
+   */
+  decision: { kind: MileageDecisionKind; regularAmount: number; agreedAmount: number; deviation: number; reason: string; decidedByName: string; decidedAt: string; netPrices: boolean; pricesIncludeTax?: boolean | null } | null;
 };
 
 export type ChargeRow = {
@@ -68,11 +104,14 @@ export type ChargeRow = {
   source: string;
   internalNote: string | null;
   handoverDamageId: string | null;
+  /** Mehrkilometer-Kulanz: individuell festgelegt oder erlassen (Beträge in Euro) */
+  decision: { kind: MileageDecisionKind; regularAmount: number; agreedAmount: number } | null;
 };
 
 const num = (v: Prisma.Decimal | number | null | undefined) => (v == null ? null : Number(v));
 
 export function chargeRow(c: Prisma.ExtraChargeGetPayload<object>): ChargeRow {
+  const d = c.type === "EXTRA_MILEAGE" ? readMileageDecision(c.calculation) : null;
   return {
     id: c.id,
     type: c.type,
@@ -86,6 +125,7 @@ export function chargeRow(c: Prisma.ExtraChargeGetPayload<object>): ChargeRow {
     source: c.source,
     internalNote: c.internalNote,
     handoverDamageId: c.handoverDamageId,
+    decision: d ? { kind: d.kind, regularAmount: d.regularCents / 100, agreedAmount: d.agreedCents / 100 } : null,
   };
 }
 
@@ -169,11 +209,42 @@ export function buildComparison(input: {
   const confirmedOf = (type: string) => h.extraCharges.find((c) => c.type === type && c.source === "PROPOSAL");
 
   // Mehrkilometer: Freikilometer je Vertrag × Vertragstage, Preis aus dem Vertrag. Bei „Unbegrenzte Kilometer“ nie.
+  // Mehrkilometer-Kulanz: dieselbe reine Rechenfunktion wie die Abschlussprüfung (regularExtraMileage), keine zweite Logik
   if (kmPolicy === "UNLIMITED") hints.push({ code: "KM_UNLIMITED", text: "Unbegrenzte Kilometer vereinbart – es werden keine Mehrkilometer berechnet. Der Kilometerstand wird trotzdem dokumentiert." });
-  else if (driven != null && driven >= 0) {
-    const draft = extraMileageCharge({ pickupMileage: pickup.mileage!, returnMileage: h.mileage!, start: kmPeriod.start, end: kmPeriod.end, kmIncludedPerDay: contract.kmIncludedPerDay, extraKmRate: Number(contract.extraKmRate) });
+  else {
+    const draft = regularExtraMileage({ kmPolicy, pickupMileage: pickup.mileage, returnMileage: h.mileage, contract: { startAt: contract.startAt, endAt: contract.endAt, kmIncludedPerDay: contract.kmIncludedPerDay, extraKmRate: Number(contract.extraKmRate) }, actualPickupAt: booking.actualPickupAt, actualEnd });
     if (draft) { const c = confirmedOf("EXTRA_MILEAGE"); proposals.push({ key: "EXTRA_MILEAGE", draft, confirmed: !!c, chargeId: c?.id ?? null, dismissed: dismissed.has("EXTRA_MILEAGE") }); }
   }
+  // Mehrkilometer-Kulanz: Zustand nur aus vorhandenen Werten (Vorschlag, Positionen, „Nicht berechnet“) – „veraltet“ meldet collectIssues
+  const kmProposal = proposals.find((p) => p.key === "EXTRA_MILEAGE") ?? null;
+  const kmCharge = confirmedOf("EXTRA_MILEAGE") ?? null;
+  const kmManual = h.extraCharges.find((c) => c.type === "EXTRA_MILEAGE" && c.source !== "PROPOSAL") ?? null;
+  const kmDecision = kmCharge ? readMileageDecision(kmCharge.calculation) : null;
+  const kmState: MileageBillingState =
+    kmCharge ? (kmDecision?.kind ?? "REGULAR")
+    : kmManual ? "LEGACY_MANUAL"
+    : kmPolicy === "UNLIMITED" ? "UNLIMITED"
+    : driven == null || driven < 0 ? "NO_READING"
+    : !kmProposal ? "NONE"
+    // Preis je Mehrkilometer 0 €: keine Forderung, nichts zu entscheiden (collectIssues blockiert erst ab regulär > 0 €)
+    : toCents(kmProposal.draft.amount) === 0 ? "ZERO_RATE"
+    : kmProposal.dismissed ? "DISMISSED_LEGACY"
+    : "OPEN";
+  const mileageBilling: MileageBilling = {
+    policy: kmPolicy,
+    policyNote: kmPolicy === "INDIVIDUAL" ? (readContractRules(contract.conditions)?.values.kmPolicyNote ?? null) : null,
+    drivenKm: driven,
+    rentalDays: days,
+    kmIncludedPerDay: contract.kmIncludedPerDay,
+    includedKm: kmPolicy === "UNLIMITED" ? null : contract.kmIncludedPerDay * days,
+    extraKm: kmProposal?.draft.quantity ?? 0,
+    extraKmRate: Number(contract.extraKmRate),
+    regularAmount: kmProposal?.draft.amount ?? 0,
+    state: kmState,
+    chargeId: kmCharge?.id ?? kmManual?.id ?? null,
+    chargedAmount: kmCharge ? Number(kmCharge.amount) : kmManual ? Number(kmManual.amount) : null,
+    decision: kmDecision ? { kind: kmDecision.kind, regularAmount: kmDecision.regularCents / 100, agreedAmount: kmDecision.agreedCents / 100, deviation: kmDecision.deviationCents / 100, reason: kmDecision.reason, decidedByName: kmDecision.decidedByName, decidedAt: kmDecision.decidedAt, netPrices: kmDecision.netPrices, ...(kmDecision.pricesIncludeTax !== undefined ? { pricesIncludeTax: kmDecision.pricesIncludeTax } : {}) } : null,
+  };
 
   // Kraftstoff: nur wenn die Tankregel eine Nachberechnung vorsieht und Preis sowie Tankgröße belastbar vorliegen
   const fuelDiff = energy.fuel && h.fuelLevelEighths != null && pickup.fuelLevelEighths != null ? h.fuelLevelEighths - pickup.fuelLevelEighths : null;
@@ -242,6 +313,7 @@ export function buildComparison(input: {
       number: contract.number,
       amendmentNumbers: contract.amended?.numbers ?? [],
       kmPolicy,
+      kmPolicyNote: mileageBilling.policyNote,
       kmIncludedPerDay: contract.kmIncludedPerDay,
       includedKm: kmPolicy === "UNLIMITED" ? null : contract.kmIncludedPerDay * days,
       extraKmRate: Number(contract.extraKmRate),
@@ -258,6 +330,7 @@ export function buildComparison(input: {
     hints,
     charges,
     chargesTotal: Math.round(charges.reduce((s, c) => s + c.amount, 0) * 100) / 100,
+    mileageBilling,
   };
 }
 
@@ -287,6 +360,8 @@ export async function confirmProposal(tenantId: string, handoverId: string, acto
     const p = cmp.proposals.find((x) => x.key === key);
     if (!p) throw new DomainError("Für diese Position gibt es derzeit keinen Vorschlag.");
     if (p.confirmed) throw new DomainError("Diese Position wurde bereits bestätigt.");
+    // Mehrkilometer-Kulanz: eine Mehrkilometer-Position je Rückgabe – eine manuell erfasste (Altbestand) zuerst entfernen
+    if (key === "EXTRA_MILEAGE" && h.extraCharges.some((c) => c.type === "EXTRA_MILEAGE")) throw new DomainError("Es ist bereits eine manuelle Mehrkilometer-Position vorhanden – bitte zuerst entfernen und dann in der Mehrkilometer-Abrechnung entscheiden.");
     const created = await saveExtraCharge(tx, tenantId, actorId, { bookingId: h.bookingId, handoverId: h.id }, p.draft, { source: "PROPOSAL" });
     // eine frühere Entscheidung „Nicht berechnen“ ist damit überholt
     if (p.dismissed) await tx.handover.update({ where: { id: h.id }, data: { dismissedProposals: (h.dismissedProposals ?? []).filter((k) => k !== key) } });
@@ -306,6 +381,9 @@ export async function dismissProposal(tenantId: string, handoverId: string, acto
     assertHandoverDraft(h);
     // Befehl 29 Phase E: geschlossener Unfallersatzfall – auch „Nicht berechnen“ ist gesperrt (wie jede Änderung am Entwurf)
     if (booking.rentalType === "ACCIDENT_REPLACEMENT" && (await accidentCaseClosed(tx, tenantId, h.bookingId))) throw new DomainError(ACCIDENT_CASE_CLOSED_MESSAGE);
+    // Mehrkilometer-Kulanz: kein Erlass ohne Begründung – nach der Sperrprüfung des Falls, damit dort weiterhin dessen Meldung kommt.
+    // Das Zurücknehmen (undo) eines alten „Nicht berechnen“ bleibt erlaubt.
+    if (key === "EXTRA_MILEAGE" && !undo) throw new DomainError("Mehrkilometer werden nicht über „Nicht berechnen“ erlassen. Bitte in der Mehrkilometer-Abrechnung entscheiden (Erlass mit Begründung durch Inhaber oder Disposition).");
     // Befehl 28: dieselben Eingaben wie die Anzeige (inkl. Tankgröße am Fahrzeug als Ersatz) – sonst fehlte der Vorschlag beim Bestätigen
     const cmp = buildComparison({ handover: h, booking, contract, pickup, accessories, vehicleTankLiters });
     const p = cmp.proposals.find((x) => x.key === key);
@@ -333,6 +411,8 @@ export type ManualChargeInput = {
 /** Frei erfasste Position. Bei Schäden ist das ausdrücklich nur eine Kostenposition, keine Haftungsfeststellung. */
 export async function addManualCharge(tenantId: string, handoverId: string, actorId: string | null, input: ManualChargeInput) {
   if (!(input.type in EXTRA_CHARGE_TYPES)) throw new DomainError("Unbekannte Kostenart.");
+  // Mehrkilometer-Kulanz: kein Umweg an Berechnung, Deckel und Begründung vorbei
+  if (input.type === "EXTRA_MILEAGE") throw new DomainError("Mehrkilometer werden automatisch berechnet und in der Mehrkilometer-Abrechnung entschieden – bitte keine manuelle Position erfassen.");
   if (input.description.trim().length < 3) throw new DomainError("Bitte die Position kurz beschreiben (für den Mieter sichtbar).");
   if (!(Number.isFinite(input.quantity) && input.quantity > 0 && input.quantity <= 100_000)) throw new DomainError("Die Menge muss größer als 0 sein.");
   if (!(Number.isFinite(input.unitPrice) && input.unitPrice >= 0 && input.unitPrice <= 1_000_000)) throw new DomainError("Der Einzelpreis darf nicht negativ sein.");
@@ -356,12 +436,119 @@ export async function addManualCharge(tenantId: string, handoverId: string, acto
 
 export async function removeCharge(tenantId: string, handoverId: string, chargeId: string) {
   return db.$transaction(async (tx) => {
+    // Mehrkilometer-Kulanz: dieselbe Protokollsperre wie Bestätigen und Entscheiden – kein Entfernen mitten in einer Entscheidung
+    await tx.$queryRaw`SELECT "id" FROM "Handover" WHERE "id" = ${handoverId} AND "tenantId" = ${tenantId} FOR UPDATE`;
     const { h } = await loadReturn(tx, tenantId, handoverId);
     assertHandoverDraft(h);
     const c = h.extraCharges.find((x) => x.id === chargeId);
     if (!c) throw new DomainError("Position nicht gefunden.");
+    // Eine individuell festgelegte oder erlassene Mehrkilometer-Position entfernt nur Inhaber/Disposition über die Rücknahme (mit Audit).
+    // Eine regulär bestätigte Position darf weiterhin jede Rolle entfernen (z. B. um einen veralteten Betrag neu zu bestätigen).
+    if (c.type === "EXTRA_MILEAGE" && hasMileageDecision(c.calculation)) throw new DomainError("Diese Mehrkilometer-Position wurde individuell festgelegt oder erlassen. Entfernen nur durch Inhaber oder Disposition über „Entscheidung zurücknehmen“.");
     await tx.extraCharge.delete({ where: { id: c.id } });
     await touchAfterCharge(tx, tenantId, h.id);
+  }, TX);
+}
+
+// ---------------------------------------------------------------------------
+// Mehrkilometer-Kulanz: individueller Betrag oder Erlass (nur Inhaber und Disposition – die Rolle prüft die Server Action)
+// ---------------------------------------------------------------------------
+
+export type MileageDecisionInput = {
+  mode: MileageDecisionKind;
+  /** nur CUSTOM: Betrag als Formulartext, streng geparst (parseEuroInput) */
+  amount?: string | null;
+  reason: string;
+  /** regulärer Betrag in Cent, den die Seite beim Entscheiden angezeigt hat */
+  seenRegularCents: number;
+  /** ausdrücklich bestätigt, dass eine vorhandene Mieter-Unterschrift verworfen wird */
+  confirmSignatureLoss?: boolean;
+};
+
+/** Sperre, Entwurf, offener Unfallersatzfall – gemeinsame Vorbedingungen von Entscheidung und Rücknahme. */
+async function lockReturnForMileage(tx: Tx, tenantId: string, handoverId: string) {
+  await tx.$queryRaw`SELECT "id" FROM "Handover" WHERE "id" = ${handoverId} AND "tenantId" = ${tenantId} FOR UPDATE`;
+  const loaded = await loadReturn(tx, tenantId, handoverId);
+  assertHandoverDraft(loaded.h);
+  if (loaded.booking.rentalType === "ACCIDENT_REPLACEMENT" && (await accidentCaseClosed(tx, tenantId, loaded.h.bookingId))) throw new DomainError(ACCIDENT_CASE_CLOSED_MESSAGE);
+  return loaded;
+}
+
+/** Nach der Mieter-Unterschrift ändert eine Entscheidung den unterschriebenen Inhalt: nur mit ausdrücklicher Bestätigung (D6). */
+async function assertSignatureLossConfirmed(tx: Tx, tenantId: string, handoverId: string, confirmed: boolean | undefined) {
+  const renterSignatures = await tx.signature.count({ where: { tenantId, handoverId, role: "RENTER" } });
+  if (renterSignatures > 0 && confirmed !== true) throw new DomainError("Der Mieter hat das Protokoll bereits unterschrieben. Die Änderung verwirft seine Unterschrift – bitte ausdrücklich bestätigen; danach muss der Mieter erneut unterschreiben.");
+}
+
+/**
+ * Mehrkilometer individuell festlegen (CUSTOM, 0 < Betrag < regulär) oder aus Kulanz erlassen (WAIVED, 0 €) – mit Pflichtbegründung.
+ * Der reguläre Betrag wird in der Transaktion neu berechnet, nie aus dem Formular übernommen; seenRegularCents muss dazu passen.
+ * Es entsteht genau eine Position (source PROPOSAL) mit der Entscheidung in calculation.decision; Audit RETURN_MILEAGE_DECIDED.
+ */
+export async function decideMileageProposal(tenantId: string, handoverId: string, actor: Actor, input: MileageDecisionInput) {
+  const reason = String(input.reason ?? "").trim();
+  if (reason.length < 10) throw new DomainError("Bitte den Grund für die Abweichung nachvollziehbar angeben (mindestens 10 Zeichen).");
+  if (reason.length > 500) throw new DomainError("Die Begründung ist zu lang (höchstens 500 Zeichen).");
+  if (input.mode !== "CUSTOM" && input.mode !== "WAIVED") throw new DomainError("Bitte „Individuellen Betrag festlegen“ oder „Aus Kulanz erlassen“ wählen.");
+  let agreedCents = 0;
+  if (input.mode === "CUSTOM") {
+    const parsed = parseEuroInput(String(input.amount ?? ""));
+    if (parsed == null) throw new DomainError("Bitte einen gültigen Betrag angeben (z. B. 50,00).");
+    if (parsed === 0) throw new DomainError("Für 0 € bitte „Aus Kulanz erlassen“ wählen.");
+    agreedCents = parsed;
+  }
+  return db.$transaction(async (tx) => {
+    const { h, booking, contract, pickup, accessories, vehicleTankLiters } = await lockReturnForMileage(tx, tenantId, handoverId);
+    // dieselben Eingaben wie Anzeige und „Regulär berechnen“
+    const cmp = buildComparison({ handover: h, booking, contract, pickup, accessories, vehicleTankLiters });
+    const p = cmp.proposals.find((x) => x.key === "EXTRA_MILEAGE");
+    if (!p) throw new DomainError("Es fallen keine Mehrkilometer an – es gibt nichts festzulegen oder zu erlassen.");
+    const existing = h.extraCharges.find((c) => c.type === "EXTRA_MILEAGE");
+    if (existing) throw new DomainError(existing.source === "PROPOSAL" ? "Über die Mehrkilometer wurde bereits entschieden – zuerst die Entscheidung zurücknehmen." : "Es ist eine manuelle Mehrkilometer-Position vorhanden – bitte zuerst entfernen.");
+    const regularCents = toCents(p.draft.amount);
+    if (regularCents <= 0) throw new DomainError("Der reguläre Mehrkilometer-Betrag ist 0,00 € – es gibt nichts festzulegen oder zu erlassen.");
+    if (regularCents !== input.seenRegularCents) throw new DomainError(`Der reguläre Mehrkilometer-Betrag hat sich geändert (jetzt ${fmtCents(regularCents)}). Bitte die Angaben prüfen und erneut entscheiden.`);
+    if (input.mode === "CUSTOM" && agreedCents >= regularCents) throw new DomainError(`Der individuelle Betrag muss unter dem regulären Betrag von ${fmtCents(regularCents)} liegen. Für den vollen Betrag bitte „Regulär berechnen“ wählen.`);
+    await assertSignatureLossConfirmed(tx, tenantId, h.id, input.confirmSignatureLoss);
+    const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { pricesIncludeTax: true } });
+    const decision: MileageDecision = {
+      kind: input.mode,
+      regularCents,
+      agreedCents,
+      deviationCents: regularCents - agreedCents,
+      extraKm: p.draft.quantity,
+      reason,
+      decidedById: actor.id,
+      decidedByName: actor.name,
+      decidedAt: new Date().toISOString(),
+      netPrices: tenant.pricesIncludeTax === false,
+      // dreiwertig eingefroren (brutto/netto/nicht festgelegt): Kennzeichnung der Beträge auch nach einer späteren Umstellung
+      pricesIncludeTax: tenant.pricesIncludeTax,
+    };
+    const created = await saveExtraCharge(tx, tenantId, actor.id, { bookingId: h.bookingId, handoverId: h.id }, mileageDecisionDraft(p.draft, decision), { source: "PROPOSAL" });
+    // ein altes „Nicht berechnen“ ist damit überholt
+    if (p.dismissed) await tx.handover.update({ where: { id: h.id }, data: { dismissedProposals: (h.dismissedProposals ?? []).filter((k) => k !== "EXTRA_MILEAGE") } });
+    await touchAfterCharge(tx, tenantId, h.id);
+    await recordAudit(tx, tenantId, actor, { action: "RETURN_MILEAGE_DECIDED", bookingId: h.bookingId, amountCents: agreedCents, details: { handoverId: h.id, handoverNumber: h.number, decision: input.mode, regularCents, agreedCents, deviationCents: regularCents - agreedCents, extraKm: p.draft.quantity, reason: reason.slice(0, 300) } });
+    return created;
+  }, TX);
+}
+
+/**
+ * Entscheidung zurücknehmen – für jede Mehrkilometer-Position aus der Abrechnung (auch „Regulär berechnen“). Danach ist der
+ * Vorschlag wieder offen und blockiert den Abschluss, bis neu entschieden ist. Audit RETURN_MILEAGE_DECISION_REVOKED.
+ */
+export async function revokeMileageDecision(tenantId: string, handoverId: string, actor: Actor, input: { confirmSignatureLoss?: boolean } = {}) {
+  return db.$transaction(async (tx) => {
+    const { h } = await lockReturnForMileage(tx, tenantId, handoverId);
+    const c = h.extraCharges.find((x) => x.type === "EXTRA_MILEAGE" && x.source === "PROPOSAL");
+    if (!c) throw new DomainError("Zu den Mehrkilometern liegt keine Entscheidung vor.");
+    await assertSignatureLossConfirmed(tx, tenantId, h.id, input.confirmSignatureLoss);
+    const d = readMileageDecision(c.calculation);
+    const amountCents = toCents(c.amount);
+    await tx.extraCharge.delete({ where: { id: c.id } });
+    await touchAfterCharge(tx, tenantId, h.id);
+    await recordAudit(tx, tenantId, actor, { action: "RETURN_MILEAGE_DECISION_REVOKED", bookingId: h.bookingId, amountCents, details: { handoverId: h.id, handoverNumber: h.number, kind: d?.kind ?? "REGULAR", regularCents: d?.regularCents ?? amountCents, agreedCents: d?.agreedCents ?? amountCents } });
   }, TX);
 }
 

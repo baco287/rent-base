@@ -1408,6 +1408,18 @@ async function collectIssues(tx: Tx, tenantId: string, invoice: InvoiceRow, draf
     if (draft.versionNo === 1 && it.source === "EXTRA_CHARGE" && it.extraChargeId) {
       const ec = await tx.extraCharge.findFirst({ where: { id: it.extraChargeId, tenantId } });
       if (!ec || ec.handoverId !== invoice.returnHandoverId) err("EXTRA_CHARGE", `Position „${it.description}“ verweist auf keine bestätigte Zusatzkostenposition dieser Rückgabe.`);
+      // Mehrkilometer-Kulanz: die Rechnung darf nie mehr verlangen als bei der Rückgabe festgelegt (Fehler) – bei individuellem
+      // Betrag oder Erlass ebenso wie bei „Regulär berechnen“ (Position aus der Mehrkilometer-Abrechnung, source PROPOSAL). Weniger
+      // ist nur bei einer Entscheidung ein Hinweis auf die Abweichung vom Protokoll; eine reguläre Position darf wie bisher ohne
+      // Hinweis gesenkt werden. Bekannte Grenze (Plan Risiko 3): eine zusätzliche manuelle Zeile und spätere Fassungen prüft das nicht.
+      const decision = ec ? (ec.calculation as { decision?: { kind?: unknown } } | null)?.decision : undefined;
+      if (ec && (decision !== undefined || (ec.type === "EXTRA_MILEAGE" && ec.source === "PROPOSAL"))) {
+        const lineCents = toCents(draft.pricesIncludeTax ? it.grossAmount : it.netAmount);
+        const agreedCents = toCents(ec.amount);
+        const decided = decision === undefined ? `regulär mit ${fmtCents(agreedCents)} berechnet` : decision?.kind === "WAIVED" ? "aus Kulanz erlassen" : `auf ${fmtCents(agreedCents)} festgelegt`;
+        if (lineCents > agreedCents) err("EXTRA_MILEAGE_DECISION", `Position „${it.description}“: Die Mehrkilometer wurden bei der Rückgabe ${decided} – die Rechnung darf nicht mehr verlangen (jetzt ${fmtCents(lineCents)}).`);
+        else if (lineCents < agreedCents && decision !== undefined) warn("EXTRA_MILEAGE_DECISION", `Position „${it.description}“: ${fmtCents(lineCents)} statt ${fmtCents(agreedCents)} laut Rückgabeprotokoll – Abweichung von der Mehrkilometer-Entscheidung bei der Rückgabe.`);
+      }
     }
   }
   if (invoice.kind === "DAMAGE") {

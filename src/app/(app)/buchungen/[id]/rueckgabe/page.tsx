@@ -29,12 +29,14 @@ import {
   addChargeAction,
   addDamageAction,
   confirmProposalAction,
+  decideMileageAction,
   dismissProposalAction,
   finalizeReturnAction,
   navigateStepAction,
   removeChargeAction,
   removeDamageAction,
   removeSignatureAction,
+  revokeMileageDecisionAction,
   saveChecklistAction,
   saveEnergyAction,
   saveMileageAction,
@@ -42,7 +44,7 @@ import {
   startReturnAction,
   updateDamageAction,
 } from "./actions";
-import { ChargesEditor, CompareDamages, ComparePhotos, ReturnSummary } from "./return-parts";
+import { ChargesEditor, CompareDamages, ComparePhotos, MileageBillingSealed, ReturnSummary } from "./return-parts";
 import { ACCIDENT_CASE_CLOSED_MESSAGE, accidentCaseClosed } from "@/lib/accident-replacement-events";
 import { isFeatureEnabled } from "@/lib/features";
 
@@ -181,6 +183,8 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
           {sp.abgeschlossen === "1" && <FollowUpNotice tenantId={tenant.id} bookingId={b.id} handoverId={handover.id} kind="RETURN" />}
           <DocumentsPanel tenantId={tenant.id} bookingId={b.id} role={user.role} />
           <DamageCasesPanel tenantId={tenant.id} where={{ discoveredInHandoverId: handover.id }} title="Bei dieser Rückgabe neu festgestellte Schäden" empty="Bei dieser Rückgabe wurden keine neuen Schäden festgestellt." />
+          {/* Mehrkilometer-Kulanz: Entscheidung samt Begründung, Mitarbeiter und Zeitpunkt – nur hier (intern), nicht im PDF */}
+          {comparison?.mileageBilling && <MileageBillingSealed mileage={comparison.mileageBilling} taxMode={tenant.pricesIncludeTax} />}
           <HandoverDocumentView doc={doc} handoverId={handover.id} />
         </Content>
       </>
@@ -207,6 +211,11 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
   const cmp = comparison;
   const late = cmp && cmp.time.lateMinutes > 15 ? fmtMinutes(cmp.time.lateMinutes) : null;
   const attention = issues.filter((i) => i.code === "CHECKLIST_ATTENTION" || i.code === "ACCESSORY_MISSING").map((i) => i.message);
+  // Mehrkilometer-Kulanz: veraltet/doppelt/manuell meldet collectIssues – in Schritt 7 nur in der Karte (nicht zusätzlich in der
+  // Fehlerliste darüber); der Blocker „noch nicht entschieden“ (EXTRA_MILEAGE_OPEN) bleibt in der Liste, die Karte zeigt dazu nur den Zustand
+  const inMileageCard = (code: string) => code.startsWith("EXTRA_MILEAGE_") && code !== "EXTRA_MILEAGE_OPEN";
+  const mileageIssues = issues.filter((i) => inMileageCard(i.code)).map((i) => i.message);
+  const kmBilling = cmp?.mileageBilling ?? null;
   const damageActions = { add: addDamageAction.bind(null, b.id), update: updateDamageAction.bind(null, b.id), remove: removeDamageAction.bind(null, b.id) };
 
   return (
@@ -300,7 +309,11 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
                       <span className="text-ink-3 border-t border-line-soft pt-1.5">Freikilometer</span><span className="font-mono tnum text-right border-t border-line-soft pt-1.5">{fmtInt(cmp.contract.includedKm)} km</span>
                       <span className="text-ink-3">Mehrkilometer</span><span className="font-mono tnum text-right">{cmp.mileage.driven != null ? `${fmtInt(Math.max(0, cmp.mileage.driven - cmp.contract.includedKm))} km` : "–"}</span>
                       <span className="text-ink-3">Preis je Mehrkilometer</span><span className="font-mono tnum text-right">{fmtEur(cmp.contract.extraKmRate)}</span>
-                      <span className="text-ink-3">Berechnet</span><span className="font-mono tnum text-right font-semibold">{cmp.proposals.find((p) => p.key === "EXTRA_MILEAGE") ? fmtEur(cmp.proposals.find((p) => p.key === "EXTRA_MILEAGE")!.draft.amount) : fmtEur(0)}</span>
+                      <span className="text-ink-3">Regulär berechnet</span><span className="font-mono tnum text-right font-semibold">{cmp.proposals.find((p) => p.key === "EXTRA_MILEAGE") ? fmtEur(cmp.proposals.find((p) => p.key === "EXTRA_MILEAGE")!.draft.amount) : fmtEur(0)}</span>
+                      {/* Mehrkilometer-Kulanz: vereinbarter Betrag nach einer Entscheidung in Schritt 7 */}
+                      {kmBilling?.decision && <><span className="text-ink-3">Vereinbart</span><span className="font-mono tnum text-right font-semibold">{fmtEur(kmBilling.decision.agreedAmount)} ({kmBilling.decision.kind === "WAIVED" ? "erlassen" : "individuell"})</span></>}
+                      {cmp.contract.kmPolicy === "INDIVIDUAL" && <p className="col-span-2 text-xs text-ink-2">Individuelle Kilometerregel laut Vertrag: {cmp.contract.kmPolicyNote || "ohne Beschreibung"}</p>}
+                      <p className="col-span-2 text-xs text-ink-3">Die Mehrkilometer werden automatisch berechnet. Eine individuelle Anpassung oder ein Erlass ist später unter Zusatzkosten möglich.</p>
                     </>}
                   </div>
                 </div>
@@ -309,7 +322,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
                     <div><div className="label-xs">Geplant</div><div className="font-mono tnum">{cmp.time.plannedEnd ? fmtDateTime(cmp.time.plannedEnd) : "offen (Unfallersatz)"}</div></div>
                     <div><div className="label-xs">Tatsächlich</div><div className="font-mono tnum">{fmtDateTime(cmp.time.actualEnd)}</div></div>
                     <div><div className="label-xs">Verspätung</div><div className={late ? "text-bad font-semibold" : ""}>{late ?? "keine"}</div></div>
-                    <p className="sm:col-span-3 text-xs text-ink-3">Mehrkilometer sind zunächst ein Vorschlag und werden in Schritt 7 bestätigt. Eine Verspätungsgebühr ist im Vertrag nicht geregelt und wird nicht automatisch berechnet.</p>
+                    <p className="sm:col-span-3 text-xs text-ink-3">Eine Verspätung wird nur nach der im Vertrag hinterlegten Regel als Vorschlag in Schritt 7 angeboten.</p>
                   </div>
                 )}
               </StepForm>
@@ -443,7 +456,7 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
 
         {step === 7 && cmp && (
           <>
-            <HandoverIssueList issues={issues} areas={["CHARGES"]} />
+            <HandoverIssueList issues={issues} areas={["CHARGES"]} codes={(c) => !inMileageCard(c)} />
             {attention.length > 0 && <div className="rounded-md bg-amber-soft text-amber px-3.5 py-2.5 text-sm"><div className="font-semibold mb-1">Auffälligkeiten aus Checkliste und Vergleich</div><ul className="list-disc pl-5">{attention.map((a) => <li key={a}>{a}</li>)}</ul></div>}
             <ChargesEditor
               proposals={cmp.proposals}
@@ -452,7 +465,12 @@ export default async function ReturnPage({ params, searchParams }: PageProps<"/b
               total={cmp.chargesTotal}
               deposit={cmp.contract.deposit}
               newDamages={doc.damages.filter((d) => d.marker === "NEW")}
-              actions={{ confirm: confirmProposalAction.bind(null, b.id), dismiss: dismissProposalAction.bind(null, b.id), add: addChargeAction.bind(null, b.id), remove: removeChargeAction.bind(null, b.id) }}
+              actions={{ confirm: confirmProposalAction.bind(null, b.id), dismiss: dismissProposalAction.bind(null, b.id), add: addChargeAction.bind(null, b.id), remove: removeChargeAction.bind(null, b.id), decideMileage: decideMileageAction.bind(null, b.id), revokeMileage: revokeMileageDecisionAction.bind(null, b.id) }}
+              mileage={kmBilling}
+              canDecideMileage={user.role !== "YARD"}
+              renterSigned={!!renterSig}
+              taxMode={tenant.pricesIncludeTax}
+              mileageIssues={mileageIssues}
             />
             <Card className="p-4 md:p-5"><StepForm action={navigateStepAction.bind(null, b.id, 7)} step={7} nextLabel="Weiter zur Unterschrift"><span className="sr-only">Navigation</span></StepForm></Card>
           </>

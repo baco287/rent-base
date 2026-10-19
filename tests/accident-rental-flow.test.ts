@@ -11,7 +11,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { db } from "../src/lib/db";
-import { closeCase, createAccidentCase, reopenCase, setTariff, updateInsurer, updatePlannedEnd, type CreateAccidentCaseInput } from "../src/lib/accident-replacement";
+import { caseFinancials, closeCase, createAccidentCase, finalInvoiceMissing, reopenCase, setTariff, updateInsurer, updatePlannedEnd, type CreateAccidentCaseInput } from "../src/lib/accident-replacement";
 import { accidentTariffsFor, caseFileDocuments, caseFileHeader, caseFileOverview, caseFileRental, caseTariff, contractStep } from "../src/lib/accident-case-file";
 import { accidentRentState, contractTariffItems, rentValue, type RentState } from "../src/lib/accident-pricing";
 import { ACCIDENT_CASE_CLOSED_MESSAGE } from "../src/lib/accident-replacement-events";
@@ -26,8 +26,8 @@ import { mileagePeriod } from "../src/lib/extra-charges";
 import { runContractFollowUp, runPickupFollowUp, runReturnFollowUp } from "../src/lib/followup";
 import { discardEmptyReturnDraft, finalizeHandover, getHandoverState, registerPhoto, saveHandoverSignature, getHandoverContentHash, startHandover, updateHandoverDraft } from "../src/lib/handovers";
 import { authorizeKeyDrop, cancelKeyDrop, sendKeyDropLink } from "../src/lib/key-drop";
-import { confirmProposal, dismissProposal, getReturnComparison, removeCharge } from "../src/lib/returns";
-import { createAccidentInvoiceDraft } from "../src/lib/invoices";
+import { confirmProposal, decideMileageProposal, dismissProposal, getReturnComparison, removeCharge, revokeMileageDecision } from "../src/lib/returns";
+import { createAccidentInvoiceDraft, finalizeInvoice } from "../src/lib/invoices";
 import { REQUIRED_PHOTO_CATEGORIES } from "../src/lib/constants";
 import { DomainError, sha256 } from "../src/lib/integrity";
 import type { MailMessage, MailTransport } from "../src/lib/mail";
@@ -35,7 +35,7 @@ import { rentalDays } from "../src/lib/pricing";
 import { buildStorageKey, getStorage, type StorageDriver } from "../src/lib/storage";
 import { parseLocalDateTime } from "../src/lib/time";
 import { createWorld, fakeSignaturePng, purgeTenants, verifyAllDriversForPickup, type World } from "./helpers";
-import { answerAll, photo, pickedUpWorld, returnedWorld, sign } from "./rental-flow";
+import { answerAll, photo, pickedUpWorld, returnedWorld, settleMileage, sign } from "./rental-flow";
 import { photoJpeg, signaturePng } from "./pdf-fixtures";
 
 const tenants: string[] = [];
@@ -473,6 +473,52 @@ test("Bekanntes geplantes Ende: Vertrag trotzdem offen, Rückgabe vor dem Plan r
   assert.equal(r.tariff?.planned, null, "nach der Rückgabe kein Planwert mehr");
 });
 
+test("Mehrkilometer-Kulanz bei offenem Mietende: individueller Betrag gilt nicht als veraltet; ein neuer Miettag macht die Entscheidung veraltet", async () => {
+  const w = await world("ue-e-km-custom");
+  const res = await signedCase(w);
+  await pickup(w, res.bookingId);
+  const pickedAt = plus(new Date(), -(3 * DAY + 2 * HOUR)); // 4 Miettage → 800 Freikilometer
+  await backdatePickup(res.bookingId, pickedAt);
+  const r = await startReturn(w, res.bookingId, 31_100); // 1.000 km gefahren → 200 Mehrkilometer = 50 €
+  assert.equal((await getReturnComparison(w.tenantId, r.id)).proposals.find((p) => p.key === "EXTRA_MILEAGE")?.draft.amount, 50);
+  await decideMileageProposal(w.tenantId, r.id, w.actor, { mode: "CUSTOM", amount: "30,00", reason: "Kulanz wegen Werkstattverzug beim Unfallgegner", seenRegularCents: 5_000 });
+  let codes = (await getHandoverState(w.tenantId, r.id)).issues.map((i) => i.code);
+  assert.ok(!codes.includes("EXTRA_MILEAGE_STALE"), "30 € statt regulär 50 € ist eine Entscheidung, keine veraltete Position");
+  assert.ok(!codes.includes("EXTRA_MILEAGE_DECISION_STALE"));
+  // Übergabe einen Tag früher (Testdaten): 5 Miettage × 200 km frei – der reguläre Betrag ändert sich, die Entscheidung ist veraltet
+  await backdatePickup(res.bookingId, plus(pickedAt, -DAY));
+  codes = (await getHandoverState(w.tenantId, r.id)).issues.map((i) => i.code);
+  assert.ok(codes.includes("EXTRA_MILEAGE_DECISION_STALE"));
+  assert.ok(!codes.includes("EXTRA_MILEAGE_STALE"));
+  await sign({ ...w, bookingId: res.bookingId, vehicleId: w.v2 }, r.id);
+  await assert.rejects(() => finalizeHandover(w.tenantId, r.id, w.actor), /Inhaber oder Disposition muss neu entscheiden/);
+  // Zurücknehmen verwirft die Unterschrift nur mit ausdrücklicher Bestätigung; danach keine Mehrkilometer mehr → Abschluss möglich
+  await assert.rejects(() => revokeMileageDecision(w.tenantId, r.id, w.actor), /bereits unterschrieben/);
+  await revokeMileageDecision(w.tenantId, r.id, w.actor, { confirmSignatureLoss: true });
+  assert.equal((await getReturnComparison(w.tenantId, r.id)).mileageBilling?.state, "NONE");
+  await finishReturn(w, res.bookingId, r.id);
+  assert.equal((await db.booking.findUniqueOrThrow({ where: { id: res.bookingId } })).status, "RETURNED");
+});
+
+test("Mehrkilometer-Kulanz: Zwischenrechnung bis zur Rückgabe, danach Mehrkilometer erlassen – die 0-€-Position ist nichts Offenes (keine fehlende Schlussrechnung)", async () => {
+  const w = await world("ue-e-km-waived");
+  const res = await signedCase(w);
+  await pickup(w, res.bookingId);
+  await backdatePickup(res.bookingId, plus(new Date(), -(2 * DAY + 2 * HOUR))); // bis zur Rückgabe 3 Miettage → 600 Freikilometer
+  // Zwischenrechnung bis kurz vor der Rückgabe: deckt den Rückgabetag bereits ab
+  const { invoice } = await createAccidentInvoiceDraft(w.tenantId, w.actor, { caseId: res.case.id, recipientRole: "INSURER", periodEnd: plus(new Date(), -HOUR), nonce: nonce() });
+  await finalizeInvoice(w.tenantId, invoice.id, w.actor);
+  const r = await startReturn(w, res.bookingId, 31_100); // 1.000 km − 600 frei = 400 Mehrkilometer = 100 €
+  await decideMileageProposal(w.tenantId, r.id, w.actor, { mode: "WAIVED", reason: "Versicherung übernimmt keine Mehrkilometer, Kulanz", seenRegularCents: 10_000 });
+  const charge = await db.extraCharge.findFirstOrThrow({ where: { handoverId: r.id, type: "EXTRA_MILEAGE" } });
+  assert.equal(Number(charge.amount), 0);
+  await finishReturn(w, res.bookingId, r.id);
+  const b = await db.booking.findUniqueOrThrow({ where: { id: res.bookingId } });
+  const fin = await caseFinancials(w.tenantId, res.bookingId);
+  assert.equal(fin.unbilledChargeCount, 0, "erlassene Mehrkilometer (0 €) gelten nicht als nicht abgerechnet");
+  assert.equal(finalInvoiceMissing(fin, b.actualReturnAt), false, "keine Schlussrechnung nur wegen einer 0-€-Position");
+});
+
 // ---------------------------------------------------------------------------
 // Geschlossener Fall
 // ---------------------------------------------------------------------------
@@ -544,6 +590,12 @@ test("21/22: Geschlossener Fall sperrt Rückgabe, Schlüsselbox, Statuswechsel u
   await assert.rejects(() => signAmendment(w.tenantId, w.actor, amendment.id), CLOSED);
   await assert.rejects(() => sign({ ...w, bookingId: res.bookingId, vehicleId: w.v2 }, r.id), CLOSED);
   await assert.rejects(() => dismissProposal(w.tenantId, r.id, w.actor, "EXTRA_MILEAGE"), CLOSED);
+  // Mehrkilometer-Kulanz: individuell festlegen/erlassen und Zurücknehmen ebenso gesperrt (Prüfung in lockReturnForMileage, vor allen
+  // anderen Prüfungen) – mit dem aktuell angezeigten regulären Betrag, damit kein anderer Grund die Ablehnung erklärt
+  const kmSeen = Math.round((cmpBefore.proposals.find((x) => x.key === "EXTRA_MILEAGE")?.draft.amount ?? 0) * 100);
+  await assert.rejects(() => decideMileageProposal(w.tenantId, r.id, w.actor, { mode: "WAIVED", reason: "Kulanz im geschlossenen Fall", seenRegularCents: kmSeen }), CLOSED);
+  await assert.rejects(() => revokeMileageDecision(w.tenantId, r.id, w.actor, { confirmSignatureLoss: true }), CLOSED);
+  assert.equal(await db.extraCharge.count({ where: { handoverId: r.id, type: "EXTRA_MILEAGE" } }), 0, "keine Mehrkilometer-Position im geschlossenen Fall");
   await assert.rejects(() => discardEmptyReturnDraft(w.tenantId, res.bookingId, r.id, w.actor), CLOSED);
   // Phase F (Auflage aus Freigabe E): Nachtrag verwerfen bzw. Vorab-Vereinbarung zurückziehen (gleicher Serverpfad mit Grund) gesperrt
   await assert.rejects(() => discardAmendment(w.tenantId, w.actor, amendment.id), CLOSED);
@@ -562,6 +614,8 @@ test("21/22: Geschlossener Fall sperrt Rückgabe, Schlüsselbox, Statuswechsel u
   // Wiederöffnen → Rückgabe abschließbar
   await reopenCase(w.tenantId, res.case.id, w.actor, "Rückgabe nachholen");
   assert.equal((await discardAmendment(w.tenantId, w.actor, amendment.id)).status, "DISCARDED", "nach dem Wiederöffnen wieder verwerfbar");
+  // Mehrkilometer-Kulanz (D4): die 100 Mehrkilometer (25 €) werden vor dem Abschluss entschieden – hier regulär berechnet
+  await settleMileage({ ...w, bookingId: res.bookingId, vehicleId: w.v2 }, r.id);
   await finishReturn(w, res.bookingId, r.id);
   assert.equal((await db.booking.findUniqueOrThrow({ where: { id: res.bookingId } })).status, "RETURNED");
   assert.equal((await db.accidentReplacementCase.findUniqueOrThrow({ where: { id: res.case.id } })).status, "OPEN");

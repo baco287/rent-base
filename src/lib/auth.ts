@@ -126,6 +126,7 @@ export async function requireSession(opts: { skipSuspensionCheck?: boolean } = {
  *   Schadenakten (Phase 12): OWNER und DISPO alle Aktenvorgänge (Status, Haftung, Kosten, Reparatur, Sperren/Freigeben,
  *          Kundenbelastung, Schadenabrechnung, Schließen/Wiederöffnen). YARD sieht Akten, eröffnet sie, ergänzt Fotos,
  *          Dokumente und operative Notizen – keine Haftung, keine Kosten, keine Belastung, kein Fahrzeugstatus, kein Abschluss.
+ *   Mehrkilometer-Kulanz: Mehrkilometer individuell festlegen oder erlassen (und zurücknehmen) nur OWNER/DISPO; regulär auch YARD.
  */
 /**
  * Zusätzlich Rollenprüfung. Inhaber darf alles. Jede Server Action und jede geschützte Seite ruft dies als Erstes auf.

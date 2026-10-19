@@ -112,10 +112,13 @@ test("Übergabe und Rückgabe je Antrieb: Benziner, Diesel, Elektro, Plug-in-Hyb
     assert.equal(cmp.fuel !== null, !electric, `${fuel}: Kraftstoffvergleich nur mit Tank`);
     assert.equal(cmp.battery !== null, electric || phev, `${fuel}: Ladezustandsvergleich nur mit Batterie`);
     assert.equal(cmp.proposals.some((p) => p.key === "FUEL"), !electric, `${fuel}: Kraftstoffvorschlag nur mit Tank`);
-    // offene Vorschläge sind Hinweise (nie Blocker) und führen zum Zusatzkosten-Schritt
+    // offene Vorschläge sind Hinweise und führen zum Zusatzkosten-Schritt – Mehrkilometer-Kulanz (D4): offene Mehrkilometer > 0 €
+    // sind ein Blocker (Entscheidung Pflicht), dann ohne zweiten Hinweis zum selben Vorschlag
     const dmg = await addNewDamage(w.tenantId, r.id, { view: "REAR", posX: 0.5, posY: 0.5, kind: "DENT", severity: "MINOR", description: "Delle" });
     s = await getHandoverCompletionStatus(w.tenantId, r.id);
-    assert.ok(s.warnings.some((x) => x.code === "PROPOSAL_OPEN_EXTRA_MILEAGE" && x.step === 7));
+    assert.ok(s.blockers.some((x) => x.code === "EXTRA_MILEAGE_OPEN" && x.step === 7));
+    assert.equal(s.warnings.some((x) => x.code === "PROPOSAL_OPEN_EXTRA_MILEAGE"), false);
+    assert.equal(s.warnings.some((x) => x.code === "PROPOSAL_OPEN_FUEL" && x.step === 7), !electric, "andere Vorschläge bleiben Hinweise");
     assert.ok(s.blockers.some((x) => x.code === "DAMAGE_PHOTO_MISSING" && x.step === 4), "Schaden ohne Foto blockiert und zeigt auf den Zustandsschritt");
     await photo(w, r.id, "DAMAGE", dmg.id);
     for (const cat of REQUIRED_PHOTO_CATEGORIES) await photo(w, r.id, cat);

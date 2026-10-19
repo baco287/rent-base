@@ -5,7 +5,7 @@ import { REQUIRED_PHOTO_CATEGORIES } from "../src/lib/constants";
 import { ensureContractDraft, finalizeContract, getContractContentHash, saveConditions, saveContractSignature } from "../src/lib/contracts";
 import { addNewDamage, answerChecklist, finalizeHandover, getHandoverContentHash, registerPhoto, saveHandoverSignature, startHandover, updateHandoverDraft } from "../src/lib/handovers";
 import { sha256 } from "../src/lib/integrity";
-import { addManualCharge, confirmProposal } from "../src/lib/returns";
+import { addManualCharge, confirmProposal, getReturnComparison } from "../src/lib/returns";
 import { buildStorageKey } from "../src/lib/storage";
 import { createWorld, fakeSignaturePng, verifyAllDriversForPickup, type World } from "./helpers";
 
@@ -16,6 +16,17 @@ export async function photo(w: World, handoverId: string, category: string, hand
 
 export async function sign(w: World, handoverId: string) {
   return saveHandoverSignature(w.tenantId, w.actor, handoverId, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getHandoverContentHash(w.tenantId, handoverId), ipAddress: null, userAgent: "test" });
+}
+
+/**
+ * Mehrkilometer-Kulanz (D4): ein offener Mehrkilometer-Vorschlag > 0 € blockiert den Rückgabeabschluss. Für Tests, die nur eine
+ * abgeschlossene Rückgabe brauchen: bestätigt „Regulär berechnen“, wenn ein solcher Vorschlag offen ist – sonst keine Wirkung
+ * (keine Mehrkilometer, bereits entschieden oder 0 €). Vor sign() aufrufen, weil die Bestätigung den Protokollinhalt ändert.
+ */
+export async function settleMileage(w: World, returnId: string) {
+  const km = (await getReturnComparison(w.tenantId, returnId)).proposals.find((p) => p.key === "EXTRA_MILEAGE");
+  if (!km || km.confirmed || !(km.draft.amount > 0)) return null;
+  return confirmProposal(w.tenantId, returnId, w.actor.id, "EXTRA_MILEAGE");
 }
 
 export async function answerAll(w: World, handoverId: string) {

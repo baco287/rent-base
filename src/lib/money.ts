@@ -32,6 +32,26 @@ export function toCents(v: unknown): Cents {
   return toScaled(v, "Kein gültiger Betrag");
 }
 
+/**
+ * Mehrkilometer-Kulanz: strenge Euro-Eingabe aus einem Formular (rein, auch im Browser für die Vorschau nutzbar).
+ * Erlaubt sind nur eindeutige Schreibweisen: Tausenderpunkte („1.000“, „1.234,5“), Komma als Dezimalzeichen („49,99“, „50“)
+ * und Punkt mit ein bis zwei Nachkommastellen („49.99“). Alles andere ergibt null – nichts wird still gerundet oder umgedeutet
+ * („49,999“, „-5“, „abc“); toCents allein läse „1.000“ als 1,00 €.
+ */
+export function parseEuroInput(s: string): Cents | null {
+  const t = String(s ?? "").replace(/\s|€/g, "");
+  let normalized: string | null = null;
+  if (/^\d{1,3}(\.\d{3})+(,\d{1,2})?$/.test(t)) normalized = t.replace(/\./g, "").replace(",", ".");
+  else if (/^\d+(,\d{1,2})?$/.test(t)) normalized = t.replace(",", ".");
+  else if (/^\d+\.\d{1,2}$/.test(t)) normalized = t;
+  if (normalized == null) return null;
+  try {
+    return toCents(normalized);
+  } catch {
+    return null;
+  }
+}
+
 export const fromCents = (c: Cents) => c / 100;
 export const centsToDecimalString = (c: Cents) => `${c < 0 ? "-" : ""}${Math.floor(Math.abs(c) / 100)}.${String(Math.abs(c) % 100).padStart(2, "0")}`;
 export const fmtCents = (c: Cents) => (c / 100).toLocaleString("de-DE", { style: "currency", currency: "EUR" });

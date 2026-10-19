@@ -17,8 +17,8 @@ import { db } from "@/lib/db";
 import { fmtDateTime } from "@/lib/format";
 import { balanceOf } from "@/lib/deposits";
 import { contractKmPolicy, loadEffectiveContract, loadEffectiveDepositCents } from "@/lib/amendments";
-import { extraMileageCharge, mileagePeriod } from "@/lib/extra-charges";
-import { fmtCents } from "@/lib/money";
+import { hasMileageDecision, readMileageDecision, regularExtraMileage } from "@/lib/extra-charges";
+import { fmtCents, toCents } from "@/lib/money";
 import { DAMAGE_KINDS, DAMAGE_SEVERITY, DAMAGE_VIEWS, PHOTO_CATEGORIES, REQUIRED_PHOTO_CATEGORIES, RETURN_ATTENTION_ON_YES, RETURN_NOTE_OPTIONAL_ON_NO, VISIBLE_DAMAGE_STATUS, energyRequirements, type HandoverType } from "@/lib/constants";
 import { DomainError, assertHandoverDraft, contentHash, sha256 } from "@/lib/integrity";
 import { nextHandoverNumber } from "@/lib/numbering";
@@ -188,6 +188,18 @@ export async function startHandover(tenantId: string, bookingId: string, type: H
 // Inhalt, Hash, Unterschriften
 // ---------------------------------------------------------------------------
 
+/**
+ * Eine Zusatzkostenposition im Protokollinhalt (Hash) – rein, damit der Schlüsselsatz testbar ist. Der Schlüsselsatz ohne
+ * Entscheidung ist exakt der bisherige (type, description, formula, amount, source, handoverDamageId): abgeschlossene Protokolle
+ * bleiben bitgleich. Mehrkilometer-Kulanz: die Entscheidung (Rohdaten, auch die Begründung) gehört zum Inhalt – nur wenn der
+ * Schlüssel existiert und ohne Validierung, damit eine spätere strengere Prüfung den Hash nie verändert. Andere Schlüssel der
+ * Rechengrundlage (calculation) sind nicht Teil des Hashs.
+ */
+export function hashedExtraCharge(e: Pick<Prisma.ExtraChargeGetPayload<object>, "type" | "description" | "formula" | "amount" | "source" | "handoverDamageId" | "calculation">) {
+  const d = (e.calculation as Record<string, unknown> | null)?.decision;
+  return { type: e.type, description: e.description, formula: e.formula, amount: String(e.amount), source: e.source, handoverDamageId: e.handoverDamageId, ...(d !== undefined ? { decision: d } : {}) };
+}
+
 /** Alles, was das Protokoll inhaltlich ausmacht. Unterschriften sind nicht Teil des Inhalts, sie verweisen auf den Hash. */
 async function handoverContent(tx: Tx, tenantId: string, handoverId: string) {
   const h = await tx.handover.findFirst({
@@ -219,7 +231,7 @@ async function handoverContent(tx: Tx, tenantId: string, handoverId: string) {
     damages: h.damages.map((d) => ({ marker: d.marker, view: d.view, posX: d.posX, posY: d.posY, kind: d.kind, description: d.description, size: d.size, severity: d.severity, photoRefs: d.photoRefs })),
     checklist: h.checklistItems.map((c) => ({ key: c.itemKey, label: c.label, answerType: c.answerType, required: c.required, result: c.result, note: c.note, templateVersion: c.templateVersion })),
     photos: h.photos.map((p) => ({ category: p.category, storageKey: p.storageKey, checksum: p.checksum })),
-    extraCharges: h.extraCharges.map((e) => ({ type: e.type, description: e.description, formula: e.formula, amount: String(e.amount), source: e.source, handoverDamageId: e.handoverDamageId })),
+    extraCharges: h.extraCharges.map((e) => hashedExtraCharge(e)),
   };
   if (h.returnMode === "KEY_DROP") {
     const kd = h.keyDropId ? await tx.keyDropReturn.findFirst({ where: { id: h.keyDropId, tenantId }, select: { confirmationHash: true } }) : null;
@@ -736,16 +748,42 @@ async function collectIssues(tx: Tx, tenantId: string, handoverId: string, opts:
     if (missing.length > 0) err("PHOTOS", "PHOTOS_MISSING", `Es fehlen Pflichtfotos: ${missing.map((c) => PHOTO_CATEGORIES[c]).join(", ")}.`);
   }
 
-  // Befehl 29 Phase E: offenes Mietende – Freikilometer gelten je tatsächlichem Miettag bis zur Rückgabe. Ein früher bestätigter
-  // Mehrkilometer-Betrag muss zum Stand beim Abschluss passen (sonst würde z. B. ein inzwischen begonnener Miettag fehlen).
-  const confirmedKm = h.type === "RETURN" ? h.extraCharges.find((c) => c.type === "EXTRA_MILEAGE" && c.source === "PROPOSAL") : undefined;
-  if (confirmedKm && h.contractId && pickup?.mileage != null && h.mileage != null && h.mileage >= pickup.mileage) {
+  // Mehrkilometer-Kulanz: eine Prüfung für jede Rückgabe (Standardmiete und offenes Mietende) mit derselben reinen Rechenfunktion
+  // wie der Vorschlag (regularExtraMileage) und denselben Quellen: wirksamer Vertragsstand, tatsächliche Übergabe, maßgebliches
+  // Mietende. Befehl 29 Phase E: bei offenem Mietende gelten Freikilometer je tatsächlichem Miettag bis zur Rückgabe, ein früher
+  // bestätigter Betrag muss zum Stand beim Abschluss passen. Mehrkilometer werden immer entschieden: ein offener Vorschlag > 0 €
+  // blockiert („Nicht berechnet“ zählt nicht mehr), eine Entscheidung (individuell/erlassen) muss nach einer Änderung neu getroffen werden.
+  if (h.type === "RETURN" && h.contractId && pickup) {
     const original = await tx.rentalContract.findFirst({ where: { id: h.contractId, tenantId } });
-    if (original && original.endAt === null) {
+    if (original) {
       const contract = await loadEffectiveContract(tx, tenantId, original);
-      const period = mileagePeriod(contract, booking.actualPickupAt, effectiveKeyDropEnd(h) ?? new Date());
-      const current = (contract.amended?.kmPolicy ?? contractKmPolicy(contract.conditions)) === "UNLIMITED" ? null : extraMileageCharge({ pickupMileage: pickup.mileage, returnMileage: h.mileage, start: period.start, end: period.end, kmIncludedPerDay: contract.kmIncludedPerDay, extraKmRate: Number(contract.extraKmRate) });
-      if (Math.round((current?.amount ?? 0) * 100) !== Math.round(Number(confirmedKm.amount) * 100)) err("CHARGES", "EXTRA_MILEAGE_STALE", `Mehrkilometer: Der bestätigte Betrag passt nicht mehr zur Mietdauer bis jetzt (Mietende offen, Freikilometer je tatsächlichem Miettag; aktuell ${current ? `${current.quantity.toLocaleString("de-DE")} km, ${current.amount.toLocaleString("de-DE", { style: "currency", currency: "EUR" })}` : "keine Mehrkilometer"}). Bitte die Position entfernen und den Vorschlag neu bestätigen.`);
+      const current = regularExtraMileage({
+        kmPolicy: contract.amended?.kmPolicy ?? contractKmPolicy(contract.conditions),
+        pickupMileage: pickup.mileage,
+        returnMileage: h.mileage,
+        contract: { startAt: contract.startAt, endAt: contract.endAt, kmIncludedPerDay: contract.kmIncludedPerDay, extraKmRate: Number(contract.extraKmRate) },
+        actualPickupAt: booking.actualPickupAt,
+        actualEnd: effectiveKeyDropEnd(h) ?? new Date(),
+      });
+      const currentCents = current ? toCents(current.amount) : 0;
+      const currentText = current ? `${current.quantity.toLocaleString("de-DE")} km, ${fmtCents(currentCents)}` : "keine Mehrkilometer";
+      const kmCharges = h.extraCharges.filter((c) => c.type === "EXTRA_MILEAGE");
+      const decided = kmCharges.find((c) => c.source === "PROPOSAL");
+      if (kmCharges.length > 1) err("CHARGES", "EXTRA_MILEAGE_DUPLICATE", "Mehrkilometer sind mehrfach erfasst. Bitte die zusätzliche Position entfernen – je Rückgabe gibt es genau eine Mehrkilometer-Abrechnung.");
+      if (decided && hasMileageDecision(decided.calculation)) {
+        const d = readMileageDecision(decided.calculation);
+        if (!current || !d || currentCents !== d.regularCents || current.quantity !== d.extraKm) err("CHARGES", "EXTRA_MILEAGE_DECISION_STALE", `Kilometerstand oder Mietdauer haben sich nach der Mehrkilometer-Entscheidung geändert (regulär jetzt ${currentText}). Inhaber oder Disposition muss neu entscheiden.`);
+      } else if (decided) {
+        if (currentCents !== toCents(decided.amount)) err("CHARGES", "EXTRA_MILEAGE_STALE", `Mehrkilometer: Der bestätigte Betrag passt nicht mehr zu Kilometerstand und Mietdauer (aktuell ${original.endAt === null ? "Mietende offen, Freikilometer je tatsächlichem Miettag: " : ""}${currentText}). Bitte die Position entfernen und neu bestätigen.`);
+      } else if (kmCharges.length > 0) {
+        // D9: jede manuelle Mehrkilometer-Position ohne Position aus der Abrechnung ist ein Fehler (Altbestand) – auch wenn laut
+        // Vertrag gar keine Mehrkilometer-Forderung anfällt; sonst landete sie unbemerkt in der Rechnung
+        err("CHARGES", "EXTRA_MILEAGE_LEGACY_MANUAL", current && currentCents > 0
+          ? "Mehrkilometer wurden als manuelle Position erfasst. Bitte die Position entfernen und in der Mehrkilometer-Abrechnung entscheiden (regulär berechnen oder – Inhaber/Disposition – individuell festlegen bzw. erlassen)."
+          : "Mehrkilometer wurden als manuelle Position erfasst, nach dem aktuellen Stand fällt aber keine Mehrkilometer-Forderung an (unbegrenzte Kilometer, innerhalb der Inklusivkilometer, Preis je Mehrkilometer 0,00 € oder Kilometerstand fehlt). Bitte die Position entfernen.");
+      } else if (current && currentCents > 0) {
+        err("CHARGES", "EXTRA_MILEAGE_OPEN", `Mehrkilometer (${current.quantity.toLocaleString("de-DE")} km, regulär ${fmtCents(currentCents)}) sind noch nicht entschieden. Bitte vor der Unterschrift des Mieters regulär berechnen oder – Inhaber/Disposition – individuell festlegen bzw. erlassen.`);
+      }
     }
   }
 

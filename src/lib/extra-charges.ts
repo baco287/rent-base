@@ -3,7 +3,7 @@
 // eingefrorenen Vertrag, nie aus dem aktuellen Fahrzeug.
 
 import type { Prisma } from "@prisma/client";
-import type { ExtraChargeType } from "@/lib/constants";
+import type { ExtraChargeType, KmPolicy } from "@/lib/constants";
 import { DomainError } from "@/lib/integrity";
 import { rentalDays } from "@/lib/pricing";
 
@@ -52,6 +52,107 @@ export function extraMileageCharge(p: { pickupMileage: number; returnMileage: nu
     amount,
     formula: `${num(extra)} km × ${eur(p.extraKmRate)} = ${eur(amount)}`,
     calculation: { pickupMileage: p.pickupMileage, returnMileage: p.returnMileage, drivenKm: driven, rentalDays: days, kmIncludedPerDay: p.kmIncludedPerDay, includedKm: included, extraKm: extra, extraKmRate: p.extraKmRate },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Mehrkilometer-Kulanz: regulärer Betrag und Entscheidung (individueller Betrag oder Erlass)
+// ---------------------------------------------------------------------------
+
+/** CUSTOM = individueller Betrag unter dem regulären, WAIVED = aus Kulanz erlassen (0 €). „Regulär berechnen“ hat keine Entscheidung. */
+export type MileageDecisionKind = "CUSTOM" | "WAIVED";
+/** Gespeichert in ExtraCharge.calculation.decision, alle Beträge in ganzen Cent. Die Begründung ist intern (nie auf Kundendokumenten). */
+export type MileageDecision = {
+  kind: MileageDecisionKind;
+  regularCents: number;
+  agreedCents: number;
+  deviationCents: number;
+  extraKm: number;
+  reason: string;
+  decidedById: string;
+  decidedByName: string;
+  /** ISO-Zeitpunkt */
+  decidedAt: string;
+  /** Mandant rechnet netto (pricesIncludeTax = false): Beträge im Text mit „netto“ */
+  netPrices: boolean;
+  /**
+   * Steuermodus des Mandanten bei der Entscheidung (brutto true, netto false, nicht festgelegt null) – für die Kennzeichnung der
+   * Beträge, unabhängig von einer späteren Änderung der Einstellung. Fehlt bei älteren Entscheidungen (nur JSON, kein Schema).
+   */
+  pricesIncludeTax?: boolean | null;
+};
+
+/** Nur das Vorhandensein des Schlüssels zählt (Hash, Sperren) – bewusst ohne Validierung, damit sich der Hash nie durch eine strengere Prüfung ändert. */
+export function hasMileageDecision(calc: unknown): boolean {
+  return !!calc && typeof calc === "object" && !Array.isArray(calc) && "decision" in calc;
+}
+
+/** Tolerantes Lesen für die Anzeige; unlesbare Angaben ergeben null. */
+export function readMileageDecision(calc: unknown): MileageDecision | null {
+  if (!hasMileageDecision(calc)) return null;
+  const d = (calc as { decision?: unknown }).decision;
+  if (!d || typeof d !== "object" || Array.isArray(d)) return null;
+  const r = d as Record<string, unknown>;
+  const int = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.round(v) : null);
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  const kind = r.kind === "CUSTOM" || r.kind === "WAIVED" ? r.kind : null;
+  const regularCents = int(r.regularCents);
+  const agreedCents = int(r.agreedCents);
+  if (!kind || regularCents == null || agreedCents == null) return null;
+  return {
+    kind,
+    regularCents,
+    agreedCents,
+    deviationCents: int(r.deviationCents) ?? regularCents - agreedCents,
+    extraKm: int(r.extraKm) ?? 0,
+    reason: str(r.reason),
+    decidedById: str(r.decidedById),
+    decidedByName: str(r.decidedByName),
+    decidedAt: str(r.decidedAt),
+    netPrices: r.netPrices === true,
+    // ältere Entscheidungen ohne gespeicherten Steuermodus: Feld bleibt weg (die Anzeige kennt dann nur „netto“ sicher)
+    ...(r.pricesIncludeTax === true || r.pricesIncludeTax === false || r.pricesIncludeTax === null ? { pricesIncludeTax: r.pricesIncludeTax } : {}),
+  };
+}
+
+/**
+ * Regulärer Mehrkilometer-Betrag – eine reine Funktion für Vorschlag (returns.ts) und Abschlussprüfung (handovers.ts), damit
+ * beide nie auseinanderlaufen. null bei unbegrenzten Kilometern, fehlendem Kilometerstand oder Rückgabe unter dem Übergabestand.
+ * Die Kilometerregel übergibt der Aufrufer (wirksamer Vertragsstand), hier kein Import aus amendments.
+ */
+export function regularExtraMileage(p: {
+  kmPolicy: KmPolicy;
+  pickupMileage: number | null;
+  returnMileage: number | null;
+  contract: { startAt: Date; endAt: Date | null; kmIncludedPerDay: number; extraKmRate: number };
+  actualPickupAt: Date | null;
+  actualEnd: Date;
+}): ChargeDraft | null {
+  if (p.kmPolicy === "UNLIMITED") return null;
+  if (p.pickupMileage == null || p.returnMileage == null || p.returnMileage < p.pickupMileage) return null;
+  const period = mileagePeriod(p.contract, p.actualPickupAt, p.actualEnd);
+  return extraMileageCharge({ pickupMileage: p.pickupMileage, returnMileage: p.returnMileage, start: period.start, end: period.end, kmIncludedPerDay: p.contract.kmIncludedPerDay, extraKmRate: p.contract.extraKmRate });
+}
+
+/**
+ * Position mit Entscheidung: eine Pauschale über den vereinbarten Betrag mit Erläuterung (keine eigene Nachlasszeile – negative
+ * Beträge gibt es nicht). Die bisherige Rechengrundlage bleibt in calculation erhalten, ergänzt um die reguläre Formel und die Entscheidung.
+ */
+export function mileageDecisionDraft(regular: ChargeDraft, d: MileageDecision): ChargeDraft {
+  const m = (cents: number) => `${eur(cents / 100)}${d.netPrices ? " netto" : ""}`;
+  const km = num(d.extraKm);
+  const regularPart = `Regulär ${km} km × ${eur(regular.unitPrice)}${d.netPrices ? " netto" : ""} = ${m(d.regularCents)}`;
+  const description = d.kind === "WAIVED" ? `${km} km über Freikilometer (regulär ${m(d.regularCents)}), aus Kulanz erlassen` : `${km} km über Freikilometer (regulär ${m(d.regularCents)}), Kulanznachlass ${m(d.deviationCents)}`;
+  const formula = d.kind === "WAIVED" ? `${regularPart} · erlassen ${m(d.regularCents)} · berechnet ${m(0)}` : `${regularPart} · Kulanznachlass ${m(d.deviationCents)} · berechnet ${m(d.agreedCents)}`;
+  return {
+    type: "EXTRA_MILEAGE",
+    description,
+    quantity: 1,
+    unit: "pauschal",
+    unitPrice: d.agreedCents / 100,
+    amount: d.agreedCents / 100,
+    formula,
+    calculation: { ...regular.calculation, regularFormula: regular.formula, decision: d },
   };
 }
 

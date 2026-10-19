@@ -6,6 +6,7 @@
 import { getHandoverState, type HandoverIssue } from "@/lib/handovers";
 import { getReturnComparison } from "@/lib/returns";
 import { keyDropFindingsForHandover } from "@/lib/document-data";
+import { toCents } from "@/lib/money";
 
 export type CompletionItem = { code: string; message: string; step: number; stepLabel: string; blocking: boolean };
 export type CompletionStatus = { type: "PICKUP" | "RETURN"; blockers: CompletionItem[]; warnings: CompletionItem[]; renterSigned: boolean; ready: boolean };
@@ -62,7 +63,13 @@ export async function getHandoverCompletionStatus(tenantId: string, handoverId: 
   if (handover.status === "DRAFT") {
     if (type === "RETURN") {
       const cmp = await getReturnComparison(tenantId, handoverId);
+      // Mehrkilometer-Kulanz: meldet die Abschlussprüfung schon einen Mehrkilometer-Punkt (z. B. Blocker EXTRA_MILEAGE_OPEN), kein
+      // zweiter Hinweis zum selben Vorschlag. Ein 0-€-Vorschlag (Preis je Mehrkilometer 0 €) ist keine Forderung und nichts zu
+      // entscheiden (Zustand ZERO_RATE, „Nicht berechnen“ ist für Mehrkilometer gesperrt) – auch dafür kein Hinweis, sonst ließe er
+      // sich nur über eine 0,00-€-Position erledigen.
+      const mileageIssue = issues.some((i) => i.code.startsWith("EXTRA_MILEAGE_"));
       for (const p of cmp.proposals) {
+        if (p.key === "EXTRA_MILEAGE" && (mileageIssue || toCents(p.draft.amount) === 0)) continue;
         // Befehl 20.9: bewusst „Nicht berechnen“ entschiedene Vorschläge sind erledigt, kein Hinweis mehr
         if (!p.confirmed && !p.dismissed) all.push({ area: "CHARGES", code: `PROPOSAL_OPEN_${p.key}`, severity: "warning", message: `Zusatzkosten-Vorschlag „${p.draft.description}“ (${p.draft.formula}) ist weder bestätigt noch verworfen. Ohne Bestätigung wird er nicht berechnet.` });
       }

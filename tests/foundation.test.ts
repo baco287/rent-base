@@ -253,7 +253,8 @@ test("Zusatzkosten speichern die Rechengrundlage mit den Preisen aus dem Vertrag
   assert.equal(fuel.amount, 59.07); // 3/8 × 75 l = 28,13 l × 2,10 €
 
   await db.$transaction(async (tx) => {
-    await saveExtraCharge(tx, ids.tenantA, ids.user, { bookingId: ids.booking, handoverId: returnId }, km);
+    // Mehrkilometer-Kulanz (D9): Mehrkilometer sind die Position der Mehrkilometer-Abrechnung (source PROPOSAL), nie manuell
+    await saveExtraCharge(tx, ids.tenantA, ids.user, { bookingId: ids.booking, handoverId: returnId }, km, { source: "PROPOSAL" });
     await saveExtraCharge(tx, ids.tenantA, ids.user, { bookingId: ids.booking, handoverId: returnId }, fuel);
     await assert.rejects(() => saveExtraCharge(tx, ids.tenantB, null, { bookingId: ids.booking }, km), /Buchung nicht gefunden/);
   });

@@ -383,7 +383,7 @@ async function timelineFor(tenantId: string, scope: TimelineScope, limit: number
   ]);
   // Befehl 28: Zeitraumänderungen vor dem Vertrag und bewusst stehen gelassenes Guthaben stehen nur im Audit (keine Doppelhaltung)
   const bookingIds = bookings.map((b) => b.id);
-  const audits = bookingIds.length ? await db.auditLog.findMany({ where: { tenantId, bookingId: { in: bookingIds }, action: { in: ["BOOKING_PERIOD_CHANGED", "RENTAL_PAYMENT_TO_CREDIT", ...TARIFF_TIMELINE_ACTIONS] } }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, action: true, bookingId: true, amountCents: true, createdAt: true, details: true } }) : [];
+  const audits = bookingIds.length ? await db.auditLog.findMany({ where: { tenantId, bookingId: { in: bookingIds }, action: { in: ["BOOKING_PERIOD_CHANGED", "RENTAL_PAYMENT_TO_CREDIT", ...TARIFF_TIMELINE_ACTIONS, "RETURN_MILEAGE_DECIDED", "RETURN_MILEAGE_DECISION_REVOKED"] } }, orderBy: { createdAt: "desc" }, take: limit, select: { id: true, action: true, bookingId: true, amountCents: true, createdAt: true, details: true } }) : [];
   const bookingNo = new Map(bookings.map((b) => [b.id, b.number]));
   const e: TimelineEntry[] = [];
   if (customer) e.push({ key: "created", at: customer.createdAt, kind: "Kunde", title: "Kunde angelegt", detail: null, href: null });
@@ -409,6 +409,16 @@ async function timelineFor(tenantId: string, scope: TimelineScope, limit: number
     if (a.action === "BOOKING_ABROAD_CHANGED") {
       const ab = (a.details ?? {}) as { allowed?: boolean; countries?: string; surchargeCents?: number | null };
       e.push({ key: `bab-${a.id}`, at: a.createdAt, kind: "Buchung", title: ab.allowed ? `Auslandsfahrt gestattet: ${ab.countries ?? ""} · ${(ab.surchargeCents ?? 0) > 0 ? `Aufpreis einmalig ${fmt(ab.surchargeCents ?? 0)}` : "ohne Aufpreis"}` : "Auslandsfahrt nicht gestattet", detail: no, href });
+    }
+    // Mehrkilometer-Kulanz: individueller Betrag oder Erlass bei der Rückgabe und deren Rücknahme (Begründung nur in dieser internen
+    // Akte, wie bei den Tarifabweichungen). DECIDED trägt die Art in details.decision, REVOKED in details.kind – eine zurückgenommene
+    // reguläre Berechnung erscheint nicht als Kulanz.
+    if (a.action === "RETURN_MILEAGE_DECIDED" || a.action === "RETURN_MILEAGE_DECISION_REVOKED") {
+      const m = (a.details ?? {}) as { decision?: string; kind?: string; regularCents?: number; agreedCents?: number; deviationCents?: number; handoverNumber?: string; reason?: string };
+      const where = `Buchung ${bookingNo.get(a.bookingId!) ?? ""}${m.handoverNumber ? ` · ${m.handoverNumber}` : ""}`;
+      const regular = fmt(m.regularCents ?? 0), agreed = fmt(m.agreedCents ?? 0);
+      if (a.action === "RETURN_MILEAGE_DECIDED") e.push({ key: `rmd-${a.id}`, at: a.createdAt, kind: "Rückgabe", title: m.decision === "WAIVED" ? `Mehrkilometer aus Kulanz erlassen (regulär ${regular})` : `Mehrkilometer individuell ${agreed} statt ${regular} (Kulanznachlass ${fmt(m.deviationCents ?? (m.regularCents ?? 0) - (m.agreedCents ?? 0))})`, detail: `${where}${m.reason ? ` · Grund: ${m.reason}` : ""}`, href: `${href}/rueckgabe` });
+      else e.push({ key: `rmr-${a.id}`, at: a.createdAt, kind: "Rückgabe", title: `Mehrkilometer-Entscheidung zurückgenommen (${m.kind === "WAIVED" ? `Erlass, regulär ${regular}` : m.kind === "CUSTOM" ? `individuell ${agreed} statt ${regular}` : `regulär berechnet ${regular}`})`, detail: where, href: `${href}/rueckgabe` });
     }
   }
   for (const a of amendments) {

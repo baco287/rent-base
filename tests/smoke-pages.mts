@@ -151,6 +151,14 @@ const pages: [string, string][] = [
   [`/buchungen/${doneBooking.id}/rueckgabe?schritt=5`, "Übergabe (vorher)"],
   [`/buchungen/${doneBooking.id}/rueckgabe?schritt=6`, "Anzahl zurückgegebener Schlüssel"],
   [`/buchungen/${doneBooking.id}/rueckgabe?schritt=7`, "Innenreinigung"],
+  // Mehrkilometer-Kulanz: 650 km gefahren, 200 km frei je Miettag, 0,25 €/km (Standardwerte). Zeitraum 2 × 24 h ab start2: nach
+  // Wanduhr 2 Miettage → 250 Mehrkilometer = 62,50 € offen; liegt die Frühjahrs-Zeitumstellung darin, sind es 49 Std. Wanduhr =
+  // 3 Miettage → 50 Mehrkilometer = 12,50 € (rentalDays, Befehl 27) – die Erwartung folgt dem Kalender statt fest 62,50
+  [`/buchungen/${doneBooking.id}/rueckgabe?schritt=7`, "Mehrkilometer-Abrechnung"],
+  [`/buchungen/${doneBooking.id}/rueckgabe?schritt=7`, "Individuellen Betrag festlegen"],
+  [`/buchungen/${doneBooking.id}/rueckgabe?schritt=7`, (await import("../src/lib/pricing")).rentalDays(doneBooking.startAt, doneBooking.endAt!) === 3 ? "12,50" : "62,50"],
+  [`/buchungen/${doneBooking.id}/rueckgabe?schritt=2`, "Eine individuelle Anpassung oder ein Erlass ist später unter Zusatzkosten möglich"],
+  [`/buchungen/${retBooking.id}/rueckgabe`, "Mehrkilometer-Abrechnung"],
   [`/buchungen/${doneBooking.id}/rueckgabe?schritt=8`, "kein Anerkenntnis"],
   [`/buchungen/${doneBooking.id}/rueckgabe?schritt=9`, "Fahrzeugrückgabe verbindlich abschließen"],
   [`/buchungen/${retBooking.id}`, "Rückgabeprotokoll anzeigen"],
@@ -550,6 +558,50 @@ report(yardSigned.status === 200 && (await yardSigned.text()).includes("Untersch
 const yardReturn = await fetch(`${base}/buchungen/${retBooking.id}/rueckgabe`, { headers: { cookie: `rb_session=${yardSession}` } });
 const yardReturnHtml = await yardReturn.text();
 report(yardReturn.status === 200 && yardReturnHtml.includes("Herunterladen") && /Unterlagen (jetzt|erneut) senden|E-Mail erneut senden/.test(yardReturnHtml), `${yardReturn.status} Hofmitarbeiter: Rückgabeprotokoll, Dokumente und E-Mail erneut senden`);
+const yardKm = await plain(await fetch(`${base}/buchungen/${doneBooking.id}/rueckgabe?schritt=7`, { headers: { cookie: `rb_session=${yardSession}` } }));
+// Erwartung wie oben aus dem Kalender: 2 Miettage → 62,50 €, über die Frühjahrs-Zeitumstellung 3 Miettage → 12,50 €
+const kmRegularText = (await import("../src/lib/pricing")).rentalDays(doneBooking.startAt, doneBooking.endAt!) === 3 ? "12,50" : "62,50";
+report(yardKm.includes("Mehrkilometer-Abrechnung") && yardKm.includes(kmRegularText) && yardKm.includes("Regulär berechnen") && yardKm.includes("nur durch Inhaber oder Disposition") && !yardKm.includes("Individuellen Betrag festlegen") && !yardKm.includes("Aus Kulanz erlassen"), "Hofmitarbeiter: Mehrkilometer-Abrechnung nur regulär – individueller Betrag und Erlass nur Inhaber/Disposition");
+// Mehrkilometer-Kulanz: die Seite liefert die gebundenen Aktionen auch an den Hof aus – geschützt sind sie allein über
+// requireRole("DISPO"). Direkter Aufruf (wie ein Skript ohne Oberfläche): ID wie boundIdOf weiter unten (Entwicklungsserver nennt sie
+// „bound <Name>“), Argumente wie callAction mit json: gebundene Buchungs-ID, dann die Eingabe. Jede ID wird geprüft – mit leerer ID
+// ginge der POST an die Seite selbst, und deren Umleitung (z. B. fehler=support) sähe fälschlich wie eine Ablehnung der Aktion aus.
+const kmActionId = (html: string, name: string) => [...html.matchAll(/([0-9a-f]{42})\\?",\\?"bound\\?":\\?"\$@[0-9a-f]+\\?",\\?"name\\?":\\?"bound (\w+)/g)].find((m) => m[2] === name)?.[1] ?? "";
+const isKmActionId = (id: string) => /^[0-9a-f]{42}$/.test(id);
+/** Angezeigter regulärer Betrag in Cent (Option „Regulär berechnen“: „62,50 € laut Vertrag“) – so, wie die Seite ihn mitschicken würde. */
+const kmShownCents = (html: string) => { const m = /(\d{1,3}(?:\.\d{3})*,\d{2})\s€ laut Vertrag/.exec(html); return m ? Number(m[1].replace(/[.,]/g, "")) : NaN; };
+const kmCall = async (cookieValue: string, actionId: string, input: unknown) => {
+  const form = new FormData();
+  form.append("0", JSON.stringify([doneBooking.id, input]));
+  const res = await fetch(`${base}/buchungen/${doneBooking.id}/rueckgabe?schritt=7`, { method: "POST", headers: { cookie: cookieValue, "Next-Action": actionId }, body: form, redirect: "manual" });
+  const text = await res.text();
+  // Rückgabewert { error } der Aktion steht als eigene Zeile in der RSC-Antwort (wie actionState weiter unten)
+  return { status: res.status, redirectTo: res.headers.get("x-action-redirect") ?? res.headers.get("location") ?? "", error: /^[0-9a-f]+:\{"error":/m.test(text) };
+};
+const kmMileageRows = () => db.extraCharge.findMany({ where: { tenantId: w.tenantId, handoverId: ret.id, type: "EXTRA_MILEAGE" } });
+const kmMileageCharges = () => db.extraCharge.count({ where: { tenantId: w.tenantId, handoverId: ret.id, type: "EXTRA_MILEAGE" } });
+const kmDecideId = kmActionId(yardKm, "decideMileageAction");
+const kmRevokeId = kmActionId(yardKm, "revokeMileageDecisionAction");
+const kmDeniedInput = { mode: "WAIVED", reason: "Direktaufruf ohne Berechtigung (Smoke)", seenRegularCents: kmShownCents(yardKm) };
+// Hof: Entscheiden und Zurücknehmen abgewiesen, nichts geändert – unabhängig vom späteren Inhaber-Teil (Vergleich mit dem Stand davor)
+const kmBeforeYard = await kmMileageCharges();
+const yardKmCall = await kmCall(`rb_session=${yardSession}`, kmDecideId, kmDeniedInput);
+report(isKmActionId(kmDecideId) && yardKmCall.redirectTo.includes("fehler=rechte") && (await kmMileageCharges()) === kmBeforeYard, `${yardKmCall.status} Direkter Aufruf „Mehrkilometer erlassen“ als Hofmitarbeiter: abgewiesen (fehler=rechte), keine Mehrkilometer-Position`);
+const yardKmRevoke = await kmCall(`rb_session=${yardSession}`, kmRevokeId, { confirmSignatureLoss: true });
+report(isKmActionId(kmRevokeId) && kmRevokeId !== kmDecideId && yardKmRevoke.redirectTo.includes("fehler=rechte") && (await kmMileageCharges()) === kmBeforeYard, `${yardKmRevoke.status} Direkter Aufruf „Entscheidung zurücknehmen“ als Hofmitarbeiter: abgewiesen (fehler=rechte), nichts geändert`);
+// Inhaber: echter Durchlauf über die Server Actions – individueller Betrag (Hälfte des angezeigten regulären Betrags, der Server
+// rechnet neu und prüft seenRegularCents), danach Rücknahme. Ausgangszustand für alle späteren Schritte bleibt: keine Mehrkilometer-Position.
+const ownerKm = await plain(await fetch(`${base}/buchungen/${doneBooking.id}/rueckgabe?schritt=7`, { headers: { cookie } }));
+const ownerKmShown = kmShownCents(ownerKm);
+const ownerDecideId = kmActionId(ownerKm, "decideMileageAction"), ownerRevokeId = kmActionId(ownerKm, "revokeMileageDecisionAction");
+report(ownerKm.includes("Individuellen Betrag festlegen") && ownerKm.includes("Aus Kulanz erlassen") && Number.isInteger(ownerKmShown) && ownerKmShown === Number(kmRegularText.replace(",", "")) && isKmActionId(ownerDecideId) && isKmActionId(ownerRevokeId), `Inhaber: Mehrkilometer-Abrechnung mit individuellem Betrag und Erlass, angezeigt regulär ${kmRegularText} €`);
+const ownerAgreedCents = Math.floor(ownerKmShown / 2);
+const ownerKmDecide = await kmCall(cookie, ownerDecideId, { mode: "CUSTOM", amount: `${Math.floor(ownerAgreedCents / 100)},${String(ownerAgreedCents % 100).padStart(2, "0")}`, reason: "Smoke: Kulanz durch den Inhaber, Umweg nachgewiesen", seenRegularCents: ownerKmShown });
+const ownerKmRows = await kmMileageRows();
+const ownerKmDecision = (ownerKmRows[0]?.calculation as { decision?: { kind?: string; regularCents?: number; agreedCents?: number } } | null)?.decision;
+report(!ownerKmDecide.redirectTo.includes("fehler=") && !ownerKmDecide.error && ownerKmRows.length === 1 && ownerKmRows[0].source === "PROPOSAL" && ownerKmDecision?.kind === "CUSTOM" && ownerKmDecision.regularCents === ownerKmShown && ownerKmDecision.agreedCents === ownerAgreedCents, `${ownerKmDecide.status} Inhaber: individueller Mehrkilometer-Betrag über die Server Action gespeichert (genau eine Position mit Entscheidung)`);
+const ownerKmRevoke = await kmCall(cookie, ownerRevokeId, {});
+report(!ownerKmRevoke.redirectTo.includes("fehler=") && !ownerKmRevoke.error && (await kmMileageCharges()) === 0, `${ownerKmRevoke.status} Inhaber: Mehrkilometer-Entscheidung über die Server Action zurückgenommen (keine Position mehr)`);
 const yardDoc = await fetch(`${base}/api/documents/${returnPdf.document.id}?download=1`, { headers: { cookie: `rb_session=${yardSession}` } });
 report(yardDoc.status === 200, `${yardDoc.status} Hofmitarbeiter: Dokument herunterladen`);
 const yardInvoice = await fetch(`${base}/buchungen/${retBooking.id}/rechnung`, { headers: { cookie: `rb_session=${yardSession}` } });
@@ -978,6 +1030,15 @@ const supportSettings = await plain(await fetch(`${base}/einstellungen/mitarbeit
 const supportInvoice = await plain(await fetch(`${base}/einstellungen/rechnungen`, { headers: { cookie: supportCookies } }));
 const supportCompany = await plain(await fetch(`${base}/einstellungen`, { headers: { cookie: supportCookies } }));
 report(!supportSettings.includes("Mitarbeiter einladen") && !supportSettings.includes(">Deaktivieren<") && !supportInvoice.includes("Rechnungsdaten speichern") && !supportInvoice.includes("Mahnwesen speichern") && !supportCompany.includes("Firmendaten speichern"), "Supportmodus: keine Inhaber-Aktionen sichtbar (read-only)");
+const supportReturn = await fetch(`${base}/buchungen/${doneBooking.id}/rueckgabe?schritt=7`, { headers: { cookie: supportCookies }, redirect: "manual" });
+report(supportReturn.status === 307 && (supportReturn.headers.get("location") ?? "").includes("fehler=support"), `${supportReturn.status} Supportmodus: Rückgabe und Mehrkilometer-Abrechnung nicht erreichbar`);
+// Mehrkilometer-Kulanz: auch der direkte Aufruf der Server Actions ist im Supportmodus read-only (IDs aus dem Hof-Block oben, hier
+// erneut geprüft – mit leerer ID käme fehler=support von der Seitenumleitung und die Prüfung wäre fälschlich grün)
+const kmBeforeSupport = await kmMileageCharges();
+const supportKmCall = await kmCall(supportCookies, kmDecideId, kmDeniedInput);
+report(isKmActionId(kmDecideId) && supportKmCall.redirectTo.includes("fehler=support") && (await kmMileageCharges()) === kmBeforeSupport, `${supportKmCall.status} Direkter Aufruf „Mehrkilometer erlassen“ im Supportmodus: abgewiesen (fehler=support), keine Mehrkilometer-Position`);
+const supportKmRevoke = await kmCall(supportCookies, kmRevokeId, { confirmSignatureLoss: true });
+report(isKmActionId(kmRevokeId) && supportKmRevoke.redirectTo.includes("fehler=support") && (await kmMileageCharges()) === kmBeforeSupport, `${supportKmRevoke.status} Direkter Aufruf „Entscheidung zurücknehmen“ im Supportmodus: abgewiesen (fehler=support), nichts geändert`);
 // Server Actions sind über requireRole() gesperrt (tests/platform.test.ts); API-Routen über apiSession() –
 // die lassen sich hier direkt per HTTP prüfen. Sperre greift vor jeder Datenbankabfrage, daher genügt eine beliebige ID.
 for (const [path, label] of [["driver-documents", "Ausweis-/Führerscheinkopie"], ["authority-documents", "Behördendokument"], ["damage-documents", "Schadendokument"]] as const) {

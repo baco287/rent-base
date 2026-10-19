@@ -91,7 +91,8 @@ async function signAndPickup(w: AWorld, bookingId: string, deposit = 0) {
 async function doReturn(w: AWorld, bookingId: string) {
   const ww = { ...w, bookingId, vehicleId: w.v2 };
   const r = await startHandover(w.tenantId, bookingId, "RETURN", w.actor);
-  await updateHandoverDraft(w.tenantId, r.id, { mileage: 30_400, fuelLevelEighths: 8 });
+  // Mehrkilometer-Kulanz (D4): 200 km = Freikilometer eines Miettags – kein offener Mehrkilometer-Vorschlag, der den Abschluss blockiert
+  await updateHandoverDraft(w.tenantId, r.id, { mileage: 30_300, fuelLevelEighths: 8 });
   for (const cat of REQUIRED_PHOTO_CATEGORIES) await photo(ww, r.id, cat);
   await answerAll(ww, r.id);
   await sign(ww, r.id);

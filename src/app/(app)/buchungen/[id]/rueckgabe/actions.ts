@@ -12,7 +12,7 @@ import { getStorage } from "@/lib/storage";
 import { runReturnFollowUp } from "@/lib/followup";
 import { addNewDamage, answerChecklist, finalizeHandover, removeHandoverSignature, removeNewDamage, saveHandoverSignature, setHandoverStep, setReturnTimeOverride, startHandover, updateHandoverDraft, updateNewDamage } from "@/lib/handovers";
 import { parseLocalDateTime } from "@/lib/time";
-import { addManualCharge, confirmProposal, dismissProposal, removeCharge, type ProposalKey } from "@/lib/returns";
+import { addManualCharge, confirmProposal, decideMileageProposal, dismissProposal, removeCharge, revokeMileageDecision, type ProposalKey } from "@/lib/returns";
 
 export type StepState = { error?: string } | undefined;
 type Result = { error?: string } | undefined;
@@ -218,6 +218,41 @@ export async function addChargeAction(bookingId: string, payload: unknown): Prom
 export async function removeChargeAction(bookingId: string, chargeId: string): Promise<Result> {
   const { tenant, handover } = await context(bookingId);
   try { await removeCharge(tenant.id, handover.id, chargeId); } catch (e) { return asResult(e); }
+  revalidatePath(base(bookingId));
+}
+
+/**
+ * Mehrkilometer-Kulanz: individuellen Betrag festlegen oder aus Kulanz erlassen – nur Inhaber und Disposition (requireRole leitet
+ * Hofmitarbeiter auf fehler=rechte und den Supportmodus auf fehler=support um), mandantengebunden, mit Pflichtbegründung.
+ * Den regulären Betrag rechnet der Server neu; „Regulär berechnen“ bleibt confirmProposalAction (alle Rollen).
+ */
+const mileageDecisionSchema = z.object({
+  mode: z.enum(["CUSTOM", "WAIVED"], { message: "Bitte „Individuellen Betrag festlegen“ oder „Aus Kulanz erlassen“ wählen." }),
+  amount: z.string().max(20, "Bitte einen gültigen Betrag angeben (z. B. 50,00).").optional(),
+  reason: z.string().trim().min(10, "Bitte den Grund für die Abweichung nachvollziehbar angeben (mindestens 10 Zeichen).").max(500, "Die Begründung ist zu lang (höchstens 500 Zeichen)."),
+  seenRegularCents: z.number().int().min(0),
+  confirmSignatureLoss: z.boolean().optional(),
+});
+export async function decideMileageAction(bookingId: string, payload: unknown): Promise<Result> {
+  const { tenant, user } = await requireRole("DISPO");
+  const handover = await db.handover.findFirst({ where: { bookingId, tenantId: tenant.id, type: "RETURN", correctsId: null, status: "DRAFT" }, select: { id: true } });
+  if (!handover) return { error: "Keine offene Rückgabe gefunden." };
+  const parsed = mileageDecisionSchema.safeParse(payload);
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  // veralteter Stand („hat sich geändert“, „bereits entschieden“): Anzeige samt regulärem Betrag erneuern, sonst liefe die Karte
+  // mit den alten Werten immer wieder in denselben Fehler (Muster saveSignatureAction)
+  try { await decideMileageProposal(tenant.id, handover.id, { id: user.id, name: user.name }, parsed.data); } catch (e) { revalidatePath(base(bookingId)); return asResult(e); }
+  revalidatePath(base(bookingId));
+}
+/** Mehrkilometer-Kulanz: Entscheidung zurücknehmen (auch „Regulär berechnen“) – nur Inhaber und Disposition, mit Audit. */
+const revokeMileageSchema = z.object({ confirmSignatureLoss: z.boolean().optional() });
+export async function revokeMileageDecisionAction(bookingId: string, payload: unknown): Promise<Result> {
+  const { tenant, user } = await requireRole("DISPO");
+  const handover = await db.handover.findFirst({ where: { bookingId, tenantId: tenant.id, type: "RETURN", correctsId: null, status: "DRAFT" }, select: { id: true } });
+  if (!handover) return { error: "Keine offene Rückgabe gefunden." };
+  const parsed = revokeMileageSchema.safeParse(payload ?? {});
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  try { await revokeMileageDecision(tenant.id, handover.id, { id: user.id, name: user.name }, parsed.data); } catch (e) { revalidatePath(base(bookingId)); return asResult(e); } // veralteter Stand: Anzeige erneuern
   revalidatePath(base(bookingId));
 }
 

@@ -775,7 +775,7 @@ export async function caseFinancials(tenantId: string, bookingId: string, client
   const [rows, booking, ret] = await Promise.all([
     client.invoice.findMany({ where: { tenantId, bookingId, kind: "ACCIDENT_REPLACEMENT", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, select: FINANCE_SELECT, orderBy: { createdAt: "asc" } }),
     client.booking.findFirst({ where: { id: bookingId, tenantId }, select: { actualPickupAt: true, actualReturnAt: true } }),
-    client.handover.findFirst({ where: { tenantId, bookingId, type: "RETURN", status: "FINALIZED", correctsId: null }, orderBy: { finalizedAt: "desc" }, select: { extraCharges: { select: { id: true } } } }),
+    client.handover.findFirst({ where: { tenantId, bookingId, type: "RETURN", status: "FINALIZED", correctsId: null }, orderBy: { finalizedAt: "desc" }, select: { extraCharges: { select: { id: true, amount: true } } } }),
   ]);
   const finals = rows.filter((r) => r.status === "FINALIZED" && r.currentVersion);
   // Mahngebühren zu Rechnungen des Falls (eigene Gebührenrechnungen, z. B. an die Versicherung)
@@ -786,7 +786,8 @@ export async function caseFinancials(tenantId: string, bookingId: string, client
     reductionsFor(tenantId, finals.map((r) => r.id), client),
     financialsFor(tenantId, feeRows.map((f) => ({ id: f.id, grossTotal: f.currentVersion!.grossTotal })), client),
   ]);
-  return summarizeCaseFinance(rows, fin, red, { pickupAt: booking?.actualPickupAt ?? null, returnedAt: booking?.actualReturnAt ?? null, returnChargeIds: ret?.extraCharges.map((e) => e.id) ?? [], feesOpenCents: [...feeFin.values()].reduce((s, f) => s + f.openCents, 0) });
+  // Mehrkilometer-Kulanz: 0-€-Positionen (z. B. erlassene Mehrkilometer) sind nichts, was noch abzurechnen wäre
+  return summarizeCaseFinance(rows, fin, red, { pickupAt: booking?.actualPickupAt ?? null, returnedAt: booking?.actualReturnAt ?? null, returnChargeIds: ret?.extraCharges.filter((e) => Number(e.amount) > 0).map((e) => e.id) ?? [], feesOpenCents: [...feeFin.values()].reduce((s, f) => s + f.openCents, 0) });
 }
 
 /**
@@ -801,7 +802,7 @@ export async function caseFinancialsMany(tenantId: string, bookings: readonly { 
   if (ids.length === 0) return new Map();
   const [rows, rets] = await Promise.all([
     client.invoice.findMany({ where: { tenantId, bookingId: { in: ids }, kind: "ACCIDENT_REPLACEMENT", documentType: "INVOICE", status: { in: ["DRAFT", "FINALIZED"] } }, select: { ...FINANCE_SELECT, bookingId: true }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] }),
-    client.handover.findMany({ where: { tenantId, bookingId: { in: ids }, type: "RETURN", status: "FINALIZED", correctsId: null }, orderBy: [{ finalizedAt: "desc" }, { id: "asc" }], select: { bookingId: true, extraCharges: { select: { id: true } } } }),
+    client.handover.findMany({ where: { tenantId, bookingId: { in: ids }, type: "RETURN", status: "FINALIZED", correctsId: null }, orderBy: [{ finalizedAt: "desc" }, { id: "asc" }], select: { bookingId: true, extraCharges: { select: { id: true, amount: true } } } }),
   ]);
   const finals = rows.filter((r) => r.status === "FINALIZED" && r.currentVersion);
   const fees = finals.length ? await client.dunningNotice.findMany({ where: { tenantId, invoiceId: { in: finals.map((r) => r.id) }, feeInvoice: { status: "FINALIZED" } }, select: { invoiceId: true, feeInvoice: { select: { id: true, currentVersion: { select: { grossTotal: true } } } } } }) : [];
@@ -814,7 +815,8 @@ export async function caseFinancialsMany(tenantId: string, bookings: readonly { 
   const rowsBy = new Map<string, typeof rows>();
   for (const r of rows) { const list = rowsBy.get(r.bookingId!) ?? []; list.push(r); rowsBy.set(r.bookingId!, list); }
   const charges = new Map<string, string[]>();
-  for (const h of rets) if (!charges.has(h.bookingId)) charges.set(h.bookingId, h.extraCharges.map((e) => e.id));
+  // Mehrkilometer-Kulanz: wie caseFinancials nur Positionen > 0 € (Paritätstest)
+  for (const h of rets) if (!charges.has(h.bookingId)) charges.set(h.bookingId, h.extraCharges.filter((e) => Number(e.amount) > 0).map((e) => e.id));
   const bookingOfInvoice = new Map(rows.map((r) => [r.id, r.bookingId!]));
   const feesOpen = new Map<string, Cents>();
   for (const f of feeRows) { const b = bookingOfInvoice.get(f.invoiceId); if (b) feesOpen.set(b, (feesOpen.get(b) ?? 0) + (fin.get(f.fee.id)?.openCents ?? 0)); }

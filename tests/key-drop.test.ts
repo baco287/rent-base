@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { db } from "../src/lib/db";
 import { purgeTenants, fakeSignaturePng } from "./helpers";
-import { pickedUpWorld, returnedWorld, type PickedUpWorld } from "./rental-flow";
+import { pickedUpWorld, returnedWorld, settleMileage, type PickedUpWorld } from "./rental-flow";
 import { setMailTransport, type MailMessage, type MailTransport } from "../src/lib/mail";
 import { clearAllRateLimits } from "../src/lib/rate-limit";
 import { DomainError, sha256 } from "../src/lib/integrity";
@@ -364,6 +364,8 @@ test("Kontrolle mit Abweichungen: Hinweise blockieren nicht; Mietende nur mit Gr
   await db.booking.update({ where: { id: w.bookingId }, data: { endAt: new Date(Date.now() - 7 * HOUR) } });
   await confirmKeyDrop(token!, confirmInput({ dropOffAt: dropOff, mileage: 45_600, fuelEighths: 6, newDamages: false }));
   const r = await staffInspect(w, { mileage: 46_600, damage: true });
+  // Mehrkilometer-Kulanz (D4): 190 Mehrkilometer (47,50 €) müssen entschieden sein – hier regulär berechnet
+  await settleMileage(w, r.id);
   const st = await getHandoverCompletionStatus(w.tenantId, r.id);
   const codes = st.warnings.map((x) => x.code);
   for (const c of ["MILEAGE_KEYDROP_DIFF", "FUEL_KEYDROP_DIFF", "DAMAGE_KEYDROP_UNREPORTED", "TIME_KEYDROP_CONFIRM_LATE"]) assert.ok(codes.includes(c), `${c} als Hinweis`);
