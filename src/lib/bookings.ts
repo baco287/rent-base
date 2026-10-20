@@ -28,6 +28,16 @@ export function isOverdue(b: OccupancyLike, now = new Date()): boolean {
   const end = operationalEnd(b);
   return b.status === "ACTIVE" && end !== null && end < now;
 }
+/**
+ * Befehl 29.7: die eine fachliche Kennzahl „Rückgabe überfällig“ – für /heute (Dashboard und Menü-Zähler) und die
+ * Rückgabezentrale: isOverdue (vereinbarte Verlängerung zählt, Verkürzung wirkt operativ nicht, offenes Ende nie) ohne
+ * Unfallersatz (Vertrag „bis zur Rückgabe“; ein überschrittenes Planende ist Disposition) und ohne vom Kunden gemeldete
+ * Schlüsselbox-Rückgabe (Kontrolle ausstehend). Gegenstück in Prisma: returnsOverdueWhere (handover-center.ts).
+ * Belegung, Konfliktprüfung und Dispo bleiben bei isOverdue/occupiedUntil – das Fahrzeug ist bis zur Kontrolle belegt.
+ */
+export function isReturnOverdue(b: OccupancyLike & { rentalType: string; keyDropReported: boolean }, now: Date): boolean {
+  return b.rentalType !== "ACCIDENT_REPLACEMENT" && !b.keyDropReported && isOverdue(b, now);
+}
 /** Bis wann das Fahrzeug belegt ist: bei Überfälligkeit „jetzt“, sonst das operative Ende; null = offen (bis zur Rückgabe). */
 export function occupiedUntil(b: OccupancyLike, now = new Date()): Date | null {
   return isOverdue(b, now) ? now : operationalEnd(b);

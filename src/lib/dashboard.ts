@@ -20,6 +20,7 @@ import { fmtCents, type Cents } from "@/lib/money";
 import { openPayoutClaims } from "@/lib/payouts";
 import { isFeatureEnabled } from "@/lib/features";
 import { accidentDashboard, type AccidentDashboard } from "@/lib/accident-replacement";
+import { AGREED_EXTENSION_SELECT, agreedEndOf, isReturnOverdue, operationalEnd } from "@/lib/bookings";
 import { zonedDayRange, zonedDayStartPlus, zonedDaysBetween } from "@/lib/time";
 
 /** Zentrale Bedeutung von „bald“: innerhalb der nächsten 7 Kalendertage (Mieten, Rechnungen, Führerscheine). Behörden- und Wartungsfristen bringen ihre eigene Vorwarnung mit (deadlineInfo, dueStatus). */
@@ -100,7 +101,9 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
   const staleStart = zonedDayStartPlus(now, -STALE_PICKUP_DAYS);
 
   const [bookings, activeRentals, finalInvoices, depositRows, claims, damageCases, maint, authorityCases, failedMails, contractsNoDoc, handoversNoDoc, versionsNoDoc, payoutsNoDoc] = await Promise.all([
-    db.booking.findMany({ where: { tenantId, OR: [{ status: "RESERVED", startAt: { gte: staleStart, lt: fetchEnd } }, { status: "ACTIVE", endAt: { lt: fetchEnd } }] }, select: { id: true, number: true, status: true, startAt: true, endAt: true, customer: cust, vehicle: veh }, orderBy: { startAt: "asc" } }),
+    // Befehl 29.7: Art und vereinbarte Verlängerung für das operative Ende (isReturnOverdue); endAt < fetchEnd bleibt vollständig,
+    // weil das operative Ende nie vor endAt liegt
+    db.booking.findMany({ where: { tenantId, OR: [{ status: "RESERVED", startAt: { gte: staleStart, lt: fetchEnd } }, { status: "ACTIVE", endAt: { lt: fetchEnd } }] }, select: { id: true, number: true, status: true, rentalType: true, startAt: true, endAt: true, customer: cust, vehicle: veh, contractAmendments: { where: { tenantId, ...AGREED_EXTENSION_SELECT.where }, select: AGREED_EXTENSION_SELECT.select } }, orderBy: { startAt: "asc" } }),
     db.booking.count({ where: { tenantId, status: "ACTIVE" } }),
     db.invoice.findMany({ where: { tenantId, status: "FINALIZED", documentType: "INVOICE", currentVersionId: { not: null }, ...(opts.hideAccidentBilling ? { NOT: ACCIDENT_BILLING_WHERE } : {}) }, select: { id: true, number: true, kind: true, bookingId: true, customer: cust, booking: { select: { number: true, customer: cust } }, currentVersion: { select: { grossTotal: true, paymentDueDate: true } } } }),
     openDepositRows(tenantId),
@@ -173,20 +176,32 @@ export async function loadDashboard(tenantId: string, opts: { horizon?: Horizon;
       // oben (endAt < fetchEnd) liefert sie nicht – die Fallakte führt sie über Wiedervorlagen, nicht über Rückgabe-Aufgaben.
       const plannedEnd = b.endAt;
       if (plannedEnd === null) continue;
+      // Befehl 29.7: Rückgabetermine nach dem operativen Ende (vereinbarte, noch nicht unterschriebene Verlängerung zählt, eine
+      // Verkürzung wirkt operativ nicht); „überfällig“ ausschließlich über die zentrale Kennzahl isReturnOverdue – dieselbe wie
+      // Menü-Zähler und Rückgabezentrale (returnsOverdueWhere)
+      const agreedEnd = agreedEndOf(b);
+      const dueAt = operationalEnd({ status: b.status, endAt: plannedEnd, agreedEndAt: agreedEnd }) ?? plannedEnd;
+      const extended = dueAt > plannedEnd ? ` · Verlängerung bis ${fmtDateTime(dueAt)} vereinbart – Unterschrift ausstehend` : "";
+      const returnEvent = () => events.push({ kind: "RETURN", at: dueAt, bookingId: b.id, bookingNumber: b.number, customer: name, vehicle: vehicleText(b.vehicle), plate: b.vehicle.plate, licenseMissing: false });
       if (keyDropReported.has(b.id)) {
         // Befehl 20.6: kontaktlos zurückgegeben – nicht „überfällig“, sondern Kontrolle ausstehend
         add({ ...base, href: `/buchungen/${b.id}/rueckgabe`, key: `keydrop-${b.id}`, group: "TODAY", title: `Schlüsselbox-Rückgabe prüfen · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)} · Rückgabe gemeldet, Kontrolle ausstehend`, at: plannedEnd, status: "Kontrolle ausstehend" });
-      } else if (plannedEnd < now) {
+      } else if (isReturnOverdue({ status: b.status, endAt: plannedEnd, agreedEndAt: agreedEnd, rentalType: b.rentalType, keyDropReported: false }, now)) {
         counts.overdueReturns++;
-        const daysLate = zonedDaysBetween(plannedEnd, now);
-        add({ ...base, key: `return-overdue-${b.id}`, group: "OVERDUE", title: `Rückgabe überfällig · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)} · sollte ${fmtDate(plannedEnd)} um ${fmtTime(plannedEnd)} zurück sein${daysLate > 0 ? ` · ${daysLate} ${daysLate === 1 ? "Tag" : "Tage"}` : ""}`, at: plannedEnd, status: "Überfällig" });
-        if (inRange(plannedEnd, start, end)) { counts.returnsToday++; events.push({ kind: "RETURN", at: plannedEnd, bookingId: b.id, bookingNumber: b.number, customer: name, vehicle: vehicleText(b.vehicle), plate: b.vehicle.plate, licenseMissing: false }); }
-      } else if (inRange(plannedEnd, start, end)) {
+        const daysLate = zonedDaysBetween(dueAt, now);
+        add({ ...base, key: `return-overdue-${b.id}`, group: "OVERDUE", title: `Rückgabe überfällig · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)} · sollte ${fmtDate(dueAt)} um ${fmtTime(dueAt)} zurück sein${daysLate > 0 ? ` · ${daysLate} ${daysLate === 1 ? "Tag" : "Tage"}` : ""}${extended}`, at: dueAt, status: "Überfällig" });
+        if (inRange(dueAt, start, end)) { counts.returnsToday++; returnEvent(); }
+      } else if (b.rentalType === "ACCIDENT_REPLACEMENT" && dueAt < now) {
+        // Befehl 29.7 (E2a): Unfallersatz ist nie „überfällig“ (Vertrag bis zur Rückgabe) – das überschrittene Planende ist eine
+        // Dispositionsaufgabe (Wortwahl wie Fallakte und Rückgabezentrale); die Fall-Hinweise lassen OVERDUE bewusst aus
+        if (inRange(dueAt, start, end)) { counts.returnsToday++; returnEvent(); }
+        add({ ...base, key: `return-planned-exceeded-${b.id}`, group: "TODAY", title: `Geplantes Mietende überschritten · ${name}`, detail: `Unfallersatz · Buchung ${b.number} · ${vehicleText(b.vehicle)} · geplant ${fmtDateTime(dueAt)} (Disposition) – Mietdauer aktualisieren oder Rückgabe durchführen`, at: dueAt, status: "Disposition" });
+      } else if (inRange(dueAt, start, end)) {
         counts.returnsToday++;
-        events.push({ kind: "RETURN", at: plannedEnd, bookingId: b.id, bookingNumber: b.number, customer: name, vehicle: vehicleText(b.vehicle), plate: b.vehicle.plate, licenseMissing: false });
-        add({ ...base, key: `return-${b.id}`, group: "TODAY", title: `Rückgabe ${fmtTime(plannedEnd)} · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)}`, at: plannedEnd, status: "Rückgabe heute" });
-      } else if (days > 0 && inRange(plannedEnd, end, horizonEnd)) {
-        add({ ...base, key: `return-${b.id}`, group: "SOON", title: `Rückgabe ${fmtDate(plannedEnd)} ${fmtTime(plannedEnd)} · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)}`, at: plannedEnd, status: "Rückgabe bald" });
+        returnEvent();
+        add({ ...base, key: `return-${b.id}`, group: "TODAY", title: `Rückgabe ${fmtTime(dueAt)} · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)}${extended}`, at: dueAt, status: "Rückgabe heute" });
+      } else if (days > 0 && inRange(dueAt, end, horizonEnd)) {
+        add({ ...base, key: `return-${b.id}`, group: "SOON", title: `Rückgabe ${fmtDate(dueAt)} ${fmtTime(dueAt)} · ${name}`, detail: `Buchung ${b.number} · ${vehicleText(b.vehicle)}${extended}`, at: dueAt, status: "Rückgabe bald" });
       }
       if (b.customer.licenseValidUntil && b.customer.licenseValidUntil < plannedEnd && b.customer.licenseValidUntil >= start) {
         counts.licenses++;

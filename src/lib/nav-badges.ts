@@ -7,7 +7,7 @@ import { zonedDayRange, zonedDayStartPlus } from "@/lib/time";
 import { fleetDues } from "@/lib/maintenance";
 import { receivablesSummary } from "@/lib/dunning";
 import { AUTHORITY_OPEN_STATUS } from "@/lib/authority";
-import { returnsOverdueWhere, returnsTodayOrOverdueWhere } from "@/lib/handover-center";
+import { operationalEndWhere, returnsOverdueWhere, returnsTodayOrOverdueWhere } from "@/lib/handover-center";
 
 export type NavBadgeTone = "info" | "warn" | "bad";
 export type NavBadge = { count: number; tone: NavBadgeTone; title: string };
@@ -35,9 +35,12 @@ export async function navBadges(tenantId: string, hiddenPaths: readonly string[]
     safe(async () => {
       const [pickups, returnsToday, overdue] = await Promise.all([
         db.booking.count({ where: { tenantId, status: "RESERVED", startAt: { gte: start, lt: end } } }),
-        db.booking.count({ where: { tenantId, status: "ACTIVE", endAt: { gte: now, lt: end } } }),
-        // kontaktlos gemeldete Rückgaben gelten nicht als überfällig (wie im Dashboard)
-        db.booking.count({ where: { tenantId, status: "ACTIVE", endAt: { lt: now }, keyDropReturns: { none: { status: "CUSTOMER_CONFIRMED" } } } }),
+        // Befehl 29.7: ausstehende Rückgaben des Tages [jetzt, Tagesende) nach dem operativen Ende (vereinbarte Verlängerung zählt) –
+        // ohne Überschneidung mit „überfällig“, damit die Summe nichts doppelt zählt
+        db.booking.count({ where: { tenantId, status: "ACTIVE", ...operationalEndWhere(tenantId, now, end) } }),
+        // die eine Kennzahl „Rückgabe überfällig“ – dieselbe wie Dashboard (isReturnOverdue) und Rückgabezentrale: vereinbarte
+        // Verlängerung zählt, Unfallersatz und gemeldete Schlüsselbox-Rückgaben sind nie überfällig
+        db.booking.count({ where: returnsOverdueWhere(tenantId, now) }),
       ]);
       return { pickups, returnsToday, overdue };
     }),

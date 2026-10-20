@@ -5,7 +5,8 @@
 //
 // Festgelegte Entscheidungen (Plan 29.7, Abschnitt 10):
 //   E1  Rückgabe überfällig = isOverdue (vereinbarte, noch nicht unterschriebene Verlängerung zählt) ohne gemeldete
-//       Schlüsselbox-Rückgabe – gemeinsam für Liste, Kennzahl und Zähler. /heute und Dashboard bleiben unverändert (G1).
+//       Schlüsselbox-Rückgabe – gemeinsam für Liste, Kennzahl und Zähler; seit der Korrektur vor dem Deployment auch für /heute
+//       (Dashboard und Menü-Zähler): eine Kennzahl, im Speicher isReturnOverdue (bookings.ts), in Prisma returnsOverdueWhere.
 //   E2a Unfallersatz ist nie „überfällig“ (Vertrag bis zur Rückgabe); das geplante Ende wirkt als Disposition in Heute/Anstehend,
 //       „Offenes Mietende“ zeigt alle laufenden Unfallersatzmieten.
 //   E3  Übergabe überfällig = reserviert mit Abholtermin vor dem Berliner Tagesbeginn, ohne Zeitgrenze, Ton Hinweis (amber).
@@ -195,7 +196,7 @@ export const pickupsUpcomingWhere = (T: string, from: Date, to: Date | null): Pr
 
 /** E4/E6: operatives Ende heute (ganzer Tag) oder Schlüsselbox-Rückgabe gemeldet (unabhängig vom Ende, auch offenes Ende). */
 export const returnsTodayWhere = (T: string, b: DayWindow): Prisma.BookingWhereInput => ({ tenantId: T, status: "ACTIVE", OR: [operationalEndWhere(T, b.start, b.end), keyDropReported(T)] });
-/** E1/E2a: isOverdue ohne gemeldete Schlüsselbox-Rückgabe und ohne Unfallersatz. */
+/** E1/E2a: isOverdue ohne gemeldete Schlüsselbox-Rückgabe und ohne Unfallersatz – Prisma-Fassung von isReturnOverdue (bookings.ts). */
 export const returnsOverdueWhere = (T: string, now: Date): Prisma.BookingWhereInput => ({ tenantId: T, status: "ACTIVE", ...STANDARD, AND: [operationalEndWhere(T, null, now), keyDropNotReported(T)] });
 export const returnsUpcomingWhere = (T: string, from: Date, to: Date | null): Prisma.BookingWhereInput => ({ tenantId: T, status: "ACTIVE", AND: [operationalEndWhere(T, from, to), keyDropNotReported(T)] });
 /** Alle laufenden Unfallersatzmieten (Vertrag „bis zur Rückgabe“), offenes oder geplantes Ende. */
