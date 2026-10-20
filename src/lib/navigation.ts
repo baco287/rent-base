@@ -5,13 +5,13 @@
 import { zonedParts } from "@/lib/time";
 
 export type NavIcon =
-  | "today" | "booking" | "calendar" | "customer" | "car" | "wrench"
+  | "today" | "booking" | "handover" | "return" | "calendar" | "customer" | "car" | "wrench"
   | "invoice" | "receivable" | "payout" | "damage" | "shield" | "authority" | "settings";
 
 export type NavItem = { href: string; label: string; icon: NavIcon };
 export type NavGroup = { key: string; label: string | null; items: readonly NavItem[] };
 
-/** Reihenfolge und Gruppen der Hauptnavigation. Routen unverändert – nur gruppiert. */
+/** Reihenfolge und Gruppen der Hauptnavigation. Routen wie vor 29.2 (nur gruppiert), seit Befehl 29.7 ergänzt um Übergaben und Rückgaben. */
 export const NAV_GROUPS: readonly NavGroup[] = [
   { key: "start", label: null, items: [{ href: "/heute", label: "Heute", icon: "today" }] },
   {
@@ -19,6 +19,9 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     label: "Vermietung",
     items: [
       { href: "/buchungen", label: "Buchungen", icon: "booking" },
+      // Befehl 29.7: Übergabe- und Rückgabezentrale – immer sichtbar (kein Modul), auch für Hof und Supportmodus (nur lesend)
+      { href: "/uebergaben", label: "Übergaben", icon: "handover" },
+      { href: "/rueckgaben", label: "Rückgaben", icon: "return" },
       { href: "/dispo", label: "Dispo-Kalender", icon: "calendar" },
       { href: "/kunden", label: "Kunden", icon: "customer" },
     ],

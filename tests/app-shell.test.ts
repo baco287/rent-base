@@ -12,24 +12,38 @@ import { FEATURES, FEATURE_KEYS } from "../src/lib/constants";
 
 const src = (p: string) => readFile(path.join(process.cwd(), p), "utf8");
 
-// Stand vor Befehl 29.2 (sidebar.tsx, NAV): genau diese 13 Routen – keine entfernt, keine neu, keine verändert
+// Stand vor Befehl 29.2 (sidebar.tsx, NAV): genau diese 13 Routen – keine entfernt, keine verändert
 const BEFORE = ["/heute", "/dispo", "/fahrzeuge", "/fahrzeuge/wartung", "/kunden", "/buchungen", "/unfallersatz", "/rechnungen", "/forderungen", "/auszahlungen", "/schaeden", "/behoerden", "/einstellungen"];
+// Befehl 29.7: Übergabe- und Rückgabezentrale – zwei neue Menüpunkte in der Gruppe „Vermietung“
+const ADDED_297 = ["/uebergaben", "/rueckgaben"];
 
-test("Navigation: dieselben 13 Routen wie vorher, jede genau einmal, in Gruppen", () => {
+test("Navigation: die 13 Routen von vorher plus Übergaben und Rückgaben (15), jede genau einmal, in Gruppen", () => {
   const hrefs = NAV_ITEMS.map((i) => i.href);
-  assert.deepEqual([...hrefs].sort(), [...BEFORE].sort());
+  assert.equal(hrefs.length, 15);
+  for (const h of BEFORE) assert.ok(hrefs.includes(h), `${h} bleibt Menüpunkt`);
+  assert.deepEqual([...hrefs].sort(), [...BEFORE, ...ADDED_297].sort());
   assert.equal(new Set(hrefs).size, hrefs.length, "kein Menüpunkt doppelt");
   assert.deepEqual(NAV_GROUPS.map((g) => g.label), [null, "Vermietung", "Flotte", "Finanzen", "Fälle"]);
-  assert.deepEqual(NAV_GROUPS.find((g) => g.key === "vermietung")!.items.map((i) => i.href), ["/buchungen", "/dispo", "/kunden"]);
+  assert.deepEqual(NAV_GROUPS.find((g) => g.key === "vermietung")!.items.map((i) => i.href), ["/buchungen", "/uebergaben", "/rueckgaben", "/dispo", "/kunden"]);
   assert.deepEqual(NAV_GROUPS.find((g) => g.key === "flotte")!.items.map((i) => i.href), ["/fahrzeuge", "/fahrzeuge/wartung"]);
   assert.deepEqual(NAV_GROUPS.find((g) => g.key === "finanzen")!.items.map((i) => i.href), ["/rechnungen", "/forderungen", "/auszahlungen"]);
   assert.deepEqual(NAV_GROUPS.find((g) => g.key === "faelle")!.items.map((i) => i.href), ["/schaeden", "/unfallersatz", "/behoerden"]);
   assert.deepEqual(NAV_SYSTEM.map((i) => i.href), ["/einstellungen"]);
-  // Bezeichnungen wie bisher
+  // Bezeichnungen wie bisher, dazu „Übergaben“ und „Rückgaben“
   const label = Object.fromEntries(NAV_ITEMS.map((i) => [i.href, i.label]));
-  assert.deepEqual(label, { "/heute": "Heute", "/dispo": "Dispo-Kalender", "/fahrzeuge": "Fahrzeuge", "/fahrzeuge/wartung": "Wartung", "/kunden": "Kunden", "/buchungen": "Buchungen", "/unfallersatz": "Unfallersatz", "/rechnungen": "Rechnungen", "/forderungen": "Forderungen", "/auszahlungen": "Auszahlungen", "/schaeden": "Schäden", "/behoerden": "Behörden", "/einstellungen": "Einstellungen" });
-  // Jedes Symbol nur einmal (vorher dreimal dasselbe Euro-Zeichen)
+  assert.deepEqual(label, { "/heute": "Heute", "/dispo": "Dispo-Kalender", "/fahrzeuge": "Fahrzeuge", "/fahrzeuge/wartung": "Wartung", "/kunden": "Kunden", "/buchungen": "Buchungen", "/uebergaben": "Übergaben", "/rueckgaben": "Rückgaben", "/unfallersatz": "Unfallersatz", "/rechnungen": "Rechnungen", "/forderungen": "Forderungen", "/auszahlungen": "Auszahlungen", "/schaeden": "Schäden", "/behoerden": "Behörden", "/einstellungen": "Einstellungen" });
+  // Jedes Symbol nur einmal (vorher dreimal dasselbe Euro-Zeichen); die Pfade selbst sichert die Typprüfung (PATHS ist ein Record)
   assert.equal(new Set(NAV_ITEMS.map((i) => i.icon)).size, NAV_ITEMS.length);
+  assert.deepEqual(NAV_ITEMS.filter((i) => ADDED_297.includes(i.href)).map((i) => i.icon), ["handover", "return"]);
+});
+
+test("Befehl 29.7: Übergaben und Rückgaben sind kein Modul – immer sichtbar, Symbole vorhanden", async () => {
+  for (const k of FEATURE_KEYS) for (const p of FEATURES[k].nav) assert.ok(!ADDED_297.includes(p), `${k} blendet ${p} nicht aus`);
+  const vermietung = visibleNavGroups([]).find((g) => g.key === "vermietung")!.items.map((i) => i.href);
+  assert.ok(ADDED_297.every((h) => vermietung.includes(h)));
+  const icons = await src("src/components/shell-icons.tsx");
+  assert.match(icons, /\n {2}handover: </);
+  assert.match(icons, /\n {2}return: </);
 });
 
 test("Navigation: jeder Feature-Pfad (Control Center) ist ein Menüpunkt; gesperrte Module verschwinden, leere Gruppen ganz", () => {
@@ -59,6 +73,15 @@ test("Navigation: aktiver Menüpunkt = längster passender Pfad (wie bisher), oh
   assert.equal(activeNavHref("/fahrzeugexport", all), null, "nur ganze Pfadsegmente zählen");
   // Wartung gesperrt: wie bisher greift dann der kürzere Eintrag
   assert.equal(activeNavHref("/fahrzeuge/wartung", all.filter((i) => i.href !== "/fahrzeuge/wartung")), "/fahrzeuge");
+  // Befehl 29.7: die Zentralen markieren sich selbst; die Assistenten bleiben unter „Buchungen“ (G7); der öffentliche
+  // Rückgabelink (/rueckgabe/<token>) und ähnlich beginnende Pfade markieren nichts
+  assert.equal(activeNavHref("/uebergaben", all), "/uebergaben");
+  assert.equal(activeNavHref("/rueckgaben", all), "/rueckgaben");
+  assert.equal(activeNavHref("/buchungen/x/uebergabe", all), "/buchungen");
+  assert.equal(activeNavHref("/buchungen/x/rueckgabe", all), "/buchungen");
+  assert.equal(activeNavHref("/rueckgabe/tok", all), null);
+  assert.equal(activeNavHref("/rueckgabenx", all), null);
+  assert.equal(activeNavHref("/uebergabe", all), null);
 });
 
 test("Schnellaktionen: gleiche Regeln wie vorher – Buchung nur mit Anlegerecht, Kunde für alle Rollen, Supportmodus keine", async () => {

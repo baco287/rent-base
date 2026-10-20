@@ -7,6 +7,7 @@ import { zonedDayRange, zonedDayStartPlus } from "@/lib/time";
 import { fleetDues } from "@/lib/maintenance";
 import { receivablesSummary } from "@/lib/dunning";
 import { AUTHORITY_OPEN_STATUS } from "@/lib/authority";
+import { returnsOverdueWhere, returnsTodayOrOverdueWhere } from "@/lib/handover-center";
 
 export type NavBadgeTone = "info" | "warn" | "bad";
 export type NavBadge = { count: number; tone: NavBadgeTone; title: string };
@@ -30,7 +31,7 @@ export async function navBadges(tenantId: string, hiddenPaths: readonly string[]
   const in4 = zonedDayStartPlus(now, 4);
   const badges: NavBadges = {};
 
-  const [today, damages, maintenance, receivables, authorities] = await Promise.all([
+  const [today, returns, damages, maintenance, receivables, authorities] = await Promise.all([
     safe(async () => {
       const [pickups, returnsToday, overdue] = await Promise.all([
         db.booking.count({ where: { tenantId, status: "RESERVED", startAt: { gte: start, lt: end } } }),
@@ -39,6 +40,15 @@ export async function navBadges(tenantId: string, hiddenPaths: readonly string[]
         db.booking.count({ where: { tenantId, status: "ACTIVE", endAt: { lt: now }, keyDropReturns: { none: { status: "CUSTOMER_CONFIRMED" } } } }),
       ]);
       return { pickups, returnsToday, overdue };
+    }),
+    // Befehl 29.7: Rückgabezentrale – dieselben Bedingungen wie die Seite (heute ∪ überfällig; überfällig ohne Unfallersatz und
+    // ohne gemeldete Schlüsselbox-Rückgabe, vereinbarte Verlängerung zählt). Eigener Eintrag: ein Fehler kostet nur diesen Zähler.
+    hidden.has("/rueckgaben") ? null : safe(async () => {
+      const [due, overdue] = await Promise.all([
+        db.booking.count({ where: returnsTodayOrOverdueWhere(tenantId, now) }),
+        db.booking.count({ where: returnsOverdueWhere(tenantId, now) }),
+      ]);
+      return { due, overdue };
     }),
     hidden.has("/schaeden") ? null : safe(async () => {
       const [open, liability] = await Promise.all([
@@ -65,7 +75,10 @@ export async function navBadges(tenantId: string, hiddenPaths: readonly string[]
   if (today) {
     const n = today.pickups + today.returnsToday + today.overdue;
     if (n > 0) badges["/heute"] = { count: n, tone: today.overdue > 0 ? "bad" : "warn", title: [plural(today.pickups, "Abholung", "Abholungen") + " heute", plural(today.returnsToday, "Rückgabe", "Rückgaben") + " heute", today.overdue ? plural(today.overdue, "Rückgabe überfällig", "Rückgaben überfällig") : null].filter(Boolean).join(" · ") };
+    // Befehl 29.7: Übergabezentrale – genau die Kennzahl „Heute geplant“ (keine zusätzliche Abfrage)
+    if (today.pickups > 0) badges["/uebergaben"] = { count: today.pickups, tone: "warn", title: `${plural(today.pickups, "Übergabe", "Übergaben")} heute` };
   }
+  if (returns && returns.due > 0) badges["/rueckgaben"] = { count: returns.due, tone: returns.overdue > 0 ? "bad" : "warn", title: `${plural(returns.due, "Rückgabe", "Rückgaben")} heute/überfällig${returns.overdue ? ` · ${returns.overdue} überfällig` : ""}` };
   if (damages && damages.open > 0) badges["/schaeden"] = { count: damages.open, tone: damages.liability > 0 ? "bad" : "warn", title: `${plural(damages.open, "offene Schadenakte", "offene Schadenakten")}${damages.liability ? ` · ${damages.liability} mit ungeklärter Haftung` : ""}` };
   if (maintenance && maintenance.overdue + maintenance.due > 0) badges["/fahrzeuge/wartung"] = { count: maintenance.overdue + maintenance.due, tone: maintenance.overdue > 0 ? "bad" : "warn", title: `${maintenance.overdue} überfällig · ${maintenance.due} fällig` };
   if (receivables && receivables.overdue > 0) badges["/forderungen"] = { count: receivables.overdue, tone: "bad", title: `${plural(receivables.overdue, "überfällige Forderung", "überfällige Forderungen")}` };

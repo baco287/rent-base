@@ -2251,6 +2251,147 @@ await setTenantFeature({ id: admin.id, name: admin.name }, ue.tenantId, "ACCIDEN
   await endSupportSession({ id: admin.id, name: admin.name }, iSupport.id);
 }
 
+// Befehl 29.7: Übergabe- und Rückgabezentrale – Seiten für Inhaber, Disposition, Hof und Supportmodus, Seitenleiste (Einträge,
+// Zähler, genau ein aktiver Menüpunkt), Kennzahlen, Filter, Suche, Datum, Seiten, Leerzustände, Mandantentrennung; Entwürfe und
+// Abschluss des Haupttestmandanten (SIGN-1, DONE-1, RET-1). Eigener Mandant (Aufräumen über platformTenants); Funktionen per
+// dynamischem Import, damit der Kopf dieser Datei unverändert bleibt.
+{
+  const { berlinDay } = await import("./helpers");
+  const get = async (c: string, p: string) => { const r = await fetch(`${base}${p}`, { headers: { cookie: c }, redirect: "manual" }); return { status: r.status, location: r.headers.get("location") ?? "", html: r.status === 200 ? await plain(r) : "" }; };
+  const assistantLink = /href="\/buchungen\/[^"]+\/(uebergabe|rueckgabe)"/;
+  const contractLink = /href="\/buchungen\/[^"]+\/vertrag"/;
+  const asideOf = (html: string) => /<aside[\s\S]*?<\/aside>/.exec(html)?.[0] ?? "";
+
+  // Haupttestmandant: Übergabeentwurf SIGN-1, Rückgabeentwurf DONE-1, abgeschlossene Rückgabe RET-1
+  const zPickDraft = await get(cookie, "/uebergaben?filter=in_bearbeitung");
+  report(zPickDraft.status === 200 && zPickDraft.html.includes("SIGN-1") && zPickDraft.html.includes(pickup.number) && zPickDraft.html.includes("Übergabe fortsetzen"), `${zPickDraft.status} Übergaben „In Bearbeitung“: SIGN-1 mit Protokollnummer und „Übergabe fortsetzen“`);
+  const zRetDraft = await get(cookie, "/rueckgaben?filter=in_bearbeitung");
+  report(zRetDraft.status === 200 && zRetDraft.html.includes("DONE-1") && zRetDraft.html.includes(ret.number) && zRetDraft.html.includes("Rückgabe fortsetzen"), `${zRetDraft.status} Rückgaben „In Bearbeitung“: DONE-1 mit Protokollnummer und „Rückgabe fortsetzen“`);
+  const zRetDone = await get(cookie, "/rueckgaben?filter=abgeschlossen&q=RET-1");
+  report(zRetDone.status === 200 && zRetDone.html.includes("RET-1") && zRetDone.html.includes("Rückgabeprotokoll anzeigen") && zRetDone.html.includes("Zurückgegeben"), `${zRetDone.status} Rückgaben „Abgeschlossen“ mit Suche: RET-1 mit Protokollansicht`);
+
+  // Eigener Mandant: überfällige Rückgabe mit begonnenem Protokoll, Übergabe heute mit Entwurf, 31 anstehende Übergaben,
+  // morgen eine Übergabe mit Vertragsentwurf (Vertragslink nur Inhaber/Disposition), eine gemeldete Schlüsselbox-Rückgabe.
+  // Prüfbefund T7: kein Berliner Tageswechsel zwischen Anlage und den „heute“-Prüfungen – kurz vor Mitternacht erst danach anlegen
+  {
+    const z = zonedParts(new Date());
+    if (z.hour === 23 && z.minute >= 50) {
+      const waitMs = ((59 - z.minute) * 60 + (60 - z.second)) * 1000 + 5000;
+      console.log(`Übergabezentrale: warte ${Math.round(waitMs / 1000)} s bis nach Mitternacht (Berlin), damit „heute“ stabil bleibt`);
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+  const uz = await pickedUpWorld("smoke-uz");
+  platformTenants.push(uz.tenantId);
+  await db.booking.update({ where: { id: uz.bookingId }, data: { startAt: new Date(Date.now() - 3 * 86400_000), endAt: new Date(Date.now() - 3600_000) } });
+  const uzRet = await startHandover(uz.tenantId, uz.bookingId, "RETURN", uz.actor);
+  const uzBooking = await db.booking.findUniqueOrThrow({ where: { id: uz.bookingId } });
+  const uzV = await db.vehicle.create({ data: { tenantId: uz.tenantId, plate: "HB-UZ 297", make: "VW", model: "Golf", groupId: uz.groupId, dailyRate: 49, deposit: 0, requiredLicenseClass: "B" } });
+  const uzStart = berlinDay(0, 23, 30);
+  const uzPickBooking = await db.booking.create({ data: { tenantId: uz.tenantId, number: "UZ-SMOKE-1", vehicleId: uzV.id, customerId: uz.customerId, startAt: uzStart, endAt: new Date(uzStart.getTime() + 2 * 86400_000), dailyRate: 49, deposit: 0 } });
+  const uzContract = await ensureContractDraft(uz.tenantId, uzPickBooking.id, uz.actor);
+  await saveContractSignature(uz.tenantId, uz.actor, uzContract.id, { role: "RENTER", signerName: "Erika Muster", imageDataUrl: fakeSignaturePng(), seenHash: await getContractContentHash(uz.tenantId, uzContract.id) });
+  await finalizeContract(uz.tenantId, uzContract.id);
+  const uzPick = await startHandover(uz.tenantId, uzPickBooking.id, "PICKUP", uz.actor);
+  const uzV2 = await db.vehicle.create({ data: { tenantId: uz.tenantId, plate: "HB-UZ 298", make: "Ford", model: "Transit", groupId: uz.groupId, dailyRate: 89, deposit: 0 } });
+  for (let i = 0; i < 31; i++) {
+    const s = berlinDay(3 + Math.floor(i / 10), 8 + (i % 10), 0);
+    await db.booking.create({ data: { tenantId: uz.tenantId, number: `UZ-PG-${String(i).padStart(2, "0")}`, vehicleId: uzV2.id, customerId: uz.customerId, startAt: s, endAt: new Date(s.getTime() + 3600_000), dailyRate: 89, deposit: 0 } });
+  }
+  // Prüfbefunde R1/T3: Übergabe morgen mit Vertragsentwurf – „Mietvertrag fortsetzen“ (/vertrag) nur für Inhaber und Disposition.
+  // Morgen: Zähler „1 Übergabe heute“ bleibt; „Anstehend“ hat 32 Einträge (Seite 2 von 2, UZ-PG-30 weiter auf Seite 2).
+  const uzV3 = await db.vehicle.create({ data: { tenantId: uz.tenantId, plate: "HB-UZ 296", make: "Opel", model: "Corsa", groupId: uz.groupId, dailyRate: 45, deposit: 0, requiredLicenseClass: "B" } });
+  const uzContractStart = berlinDay(1, 10, 0);
+  const uzContractBooking = await db.booking.create({ data: { tenantId: uz.tenantId, number: "UZ-SMOKE-V", vehicleId: uzV3.id, customerId: uz.customerId, startAt: uzContractStart, endAt: new Date(uzContractStart.getTime() + 2 * 86400_000), dailyRate: 45, deposit: 0 } });
+  await ensureContractDraft(uz.tenantId, uzContractBooking.id, uz.actor);
+  const uzContractHref = `href="/buchungen/${uzContractBooking.id}/vertrag"`;
+  // Prüfbefund T5 (d): gemeldete Schlüsselbox-Rückgabe (Testdaten) – „Heute“ mit „davon 1 Kontrolle ausstehend“; zählt im Menü
+  // als heute (Rückgaben-Zähler damit 2, davon 1 überfällig), nie als überfällig
+  const uzV4 = await db.vehicle.create({ data: { tenantId: uz.tenantId, plate: "HB-UZ 295", make: "VW", model: "Caddy", groupId: uz.groupId, dailyRate: 59, deposit: 0 } });
+  const uzKdStart = new Date(Date.now() - 4 * 86400_000);
+  const uzKdBooking = await db.booking.create({ data: { tenantId: uz.tenantId, number: "UZ-SMOKE-KD", vehicleId: uzV4.id, customerId: uz.customerId, status: "ACTIVE", startAt: uzKdStart, endAt: berlinDay(2, 12, 0), actualPickupAt: uzKdStart, dailyRate: 59, deposit: 0 } });
+  await db.keyDropReturn.create({ data: { tenantId: uz.tenantId, bookingId: uzKdBooking.id, status: "CUSTOMER_CONFIRMED", agreedById: uz.userId, agreedByName: "Test Mitarbeiter", location: "Schlüsselbox Hof", expectedReturnAt: berlinDay(2, 12, 0), settingsSnapshot: {}, recipientName: "Erika Muster", customerDropOffAt: new Date(Date.now() - 30 * 60_000) } });
+  const uzSession = async (role: string) => {
+    const u = await db.user.create({ data: { tenantId: uz.tenantId, email: `uz-${role.toLowerCase()}-${Date.now()}@example.test`, name: `UZ ${role}`, passwordHash: "x", role } });
+    const id = randomBytes(32).toString("base64url");
+    await db.session.create({ data: { id, userId: u.id, expiresAt: new Date(Date.now() + 3600_000) } });
+    return `rb_session=${id}`;
+  };
+  const uzOwner = await uzSession("OWNER");
+  const uzDispo = await uzSession("DISPO");
+  const uzYard = await uzSession("YARD");
+
+  // Rollen: Inhaber, Disposition und Hof lesen beide Seiten (datumsunabhängige Filter, Prüfbefund T7)
+  for (const [label, c] of [["Inhaber", uzOwner], ["Disposition", uzDispo], ["Hof", uzYard]] as const) {
+    const u = await get(c, "/uebergaben?filter=in_bearbeitung");
+    const r = await get(c, "/rueckgaben?filter=ueberfaellig");
+    report(u.status === 200 && u.html.includes("Anstehende, laufende und abgeschlossene Fahrzeugübergaben.") && u.html.includes("UZ-SMOKE-1") && r.status === 200 && r.html.includes("Geplante, laufende und abgeschlossene Fahrzeugrückgaben.") && r.html.includes(uzBooking.number), `${u.status}/${r.status} ${label}: Übergaben und Rückgaben mit eigenen Buchungen`);
+  }
+  const yPick = await get(uzYard, "/uebergaben?filter=in_bearbeitung");
+  const yRet = await get(uzYard, "/rueckgaben?filter=in_bearbeitung");
+  report(yPick.html.includes("Übergabe fortsetzen") && yPick.html.includes(uzPick.number) && yRet.html.includes("Rückgabe fortsetzen") && yRet.html.includes(uzRet.number), "Hof: Übergabe und Rückgabe fortsetzen");
+  // Vertragslink: Gegenprobe Inhaber/Disposition, dann Hof ohne Link (dieselbe Zeile, nur „Buchung öffnen“)
+  const cOwner = await get(uzOwner, "/uebergaben?filter=anstehend");
+  const cDispo = await get(uzDispo, "/uebergaben?filter=anstehend");
+  const cYard = await get(uzYard, "/uebergaben?filter=anstehend");
+  report([cOwner, cDispo].every((x) => x.html.includes(uzContractHref) && x.html.includes("Mietvertrag fortsetzen")), "Inhaber und Disposition: „Mietvertrag fortsetzen“ bei Vertragsentwurf");
+  report(cYard.status === 200 && cYard.html.includes("UZ-SMOKE-V") && cYard.html.includes("Vertrag in Arbeit") && !contractLink.test(cYard.html), `${cYard.status} Hof: Zeile mit Vertragsentwurf ohne Vertragslink`);
+
+  // Seitenleiste: Einträge, Zähler (Übergaben = „Heute geplant“, Rückgaben = heute ∪ überfällig, rot bei überfällig), ein aktiver Eintrag
+  const oPick = await get(uzOwner, "/uebergaben");
+  const oAside = asideOf(oPick.html);
+  report(navLink(oAside, "/uebergaben").includes("1 Übergabe heute") && navLink(oAside, "/uebergaben").includes('aria-current="page"') && navLink(oAside, "/rueckgaben").includes("2 Rückgaben heute/überfällig · 1 überfällig") && oAside.split('aria-current="page"').length === 2, "Seitenleiste: Übergaben aktiv mit Zähler, Rückgaben mit Zähler (überfällig + gemeldete Schlüsselbox), genau ein aktiver Eintrag");
+  const oRetToday = await get(uzOwner, "/rueckgaben");
+  report(oRetToday.html.includes("UZ-SMOKE-KD") && oRetToday.html.includes("Kontrolle ausstehend") && oRetToday.html.includes("davon 1 Kontrolle ausstehend"), "Rückgaben „Heute“: gemeldete Schlüsselbox mit Status und Kachelzusatz „davon 1 Kontrolle ausstehend“");
+  report(["Heute geplant", "Überfällig", "Nächste 7 Tage", "In Bearbeitung"].every((t) => oPick.html.includes(t)) && oPick.html.includes('aria-label="Kennzahlen"') && oPick.html.includes('aria-label="Filter"') && oPick.html.includes('role="search"'), "Übergaben: Kennzahlen, Filterleiste und Suche");
+  report(oPick.html.includes('class="xl:hidden divide-y divide-line-soft"') && oPick.html.includes('class="hidden xl:block overflow-x-auto"') && oPick.html.includes("sm:grid-cols-2"), "Übergaben: Karten bis xl, Tabelle ab xl, Aktionen einspaltig unter sm");
+  const oRet = await get(uzOwner, "/rueckgaben?filter=ueberfaellig");
+  report(oRet.status === 200 && oRet.html.includes(uzBooking.number) && oRet.html.includes("Überfällig seit") && navLink(asideOf(oRet.html), "/rueckgaben").includes('aria-current="page"'), `${oRet.status} Rückgaben „Überfällig“ mit Status und aktivem Menüeintrag`);
+
+  // Suche (Kennzeichen normalisiert, Buchungsnummer), Datum ungültig, Seiten, Leerzustände
+  const sPlate = await get(uzOwner, "/uebergaben?q=hbuz297");
+  report(sPlate.html.includes("UZ-SMOKE-1") && !sPlate.html.includes("UZ-PG-00"), "Übergaben: Suche nach Kennzeichen ohne Leer- und Bindestriche");
+  const sNumber = await get(uzOwner, `/rueckgaben?filter=ueberfaellig&q=${encodeURIComponent(uzBooking.number)}`);
+  report(sNumber.html.includes(uzBooking.number) && sNumber.html.includes("Suche löschen"), "Rückgaben: Suche nach Buchungsnummer, kombiniert mit Filter");
+  const sNone = await get(uzOwner, "/rueckgaben?filter=ueberfaellig&q=gibt-es-nicht");
+  report(sNone.html.includes("Keine Treffer für „gibt-es-nicht“ in „Überfällig“.") && sNone.html.includes("Suche löschen"), "Rückgaben: Suche ohne Treffer mit „Suche löschen“");
+  const dNone = await get(uzOwner, "/uebergaben?filter=anstehend&von=2099-01-01&bis=2099-01-02");
+  report(dNone.html.includes("Keine Einträge im gewählten Zeitraum in „Anstehend“.") && dNone.html.includes("Zeitraum zurücksetzen"), "Übergaben: leerer Zeitraum mit „Zeitraum zurücksetzen“ (Reiter bleibt)");
+  const dBad = await get(uzOwner, "/uebergaben?filter=anstehend&von=abc&bis=9999-12-31");
+  report(dBad.status === 200 && dBad.html.includes("Datum nicht erkannt – Filter ignoriert"), `${dBad.status} Übergaben: ungültiges Datum ohne Fehler, mit Hinweis`);
+  // Prüfbefund Q2: Steuerzeichen in der Suche (?q=%00) ergeben keinen Serverfehler, sondern die ungefilterte Liste
+  const qNulPick = await get(uzOwner, "/uebergaben?q=%00");
+  const qNulRet = await get(uzOwner, "/rueckgaben?filter=ueberfaellig&q=%00");
+  report(qNulPick.status === 200 && qNulPick.html.includes("UZ-SMOKE-1") && qNulRet.status === 200 && qNulRet.html.includes(uzBooking.number), `${qNulPick.status}/${qNulRet.status} Suche mit NUL-Zeichen ohne Fehler`);
+  const page1 = await get(uzOwner, "/uebergaben?filter=anstehend");
+  const page2 = await get(uzOwner, "/uebergaben?filter=anstehend&seite=2");
+  report(page1.html.includes('href="/uebergaben?filter=anstehend&amp;seite=2"') && page1.html.includes("Seite 1 von 2") && page2.html.includes("Seite 2 von 2") && page2.html.includes("UZ-PG-30") && !page2.html.includes("UZ-PG-00"), "Übergaben: Paginierung (Weiter-Link, Seite 2)");
+  const big = await get(uzOwner, `/uebergaben?filter=anstehend&seite=${"9".repeat(30)}`);
+  report(big.status === 200 && big.html.includes("Seite 2 von 2"), `${big.status} Übergaben: zu große Seite wird auf die letzte geklammert`);
+  const eRet = await get(uzOwner, "/rueckgaben?filter=abgeschlossen");
+  const ePick = await get(uzOwner, "/uebergaben?filter=ueberfaellig");
+  // Prüfbefund T4: Seitenleiste entfernen (sie enthält „Dispo-Kalender“ immer), dann die Links des Leerzustands prüfen
+  const ePickMain = ePick.html.replace(/<aside[\s\S]*?<\/aside>/, "");
+  report(eRet.html.includes("Noch keine abgeschlossenen Rückgabeprotokolle.") && ePickMain.includes("Aktuell gibt es keine überfälligen Übergaben.") && ePickMain.includes("Zu den Buchungen") && ePickMain.includes('href="/dispo"') && ePickMain.includes("Dispo-Kalender"), "Leerzustände mit erklärendem Text und Links (Buchungen, Dispo-Kalender)");
+  const fBad = await get(uzOwner, "/uebergaben?filter=offenes_ende");
+  report(fBad.status === 200 && fBad.html.includes("UZ-SMOKE-1"), `${fBad.status} Übergaben: unbekannter Filter fällt auf „Heute“ zurück`);
+
+  // Supportmodus: lesend, ohne Assistenten-Links
+  const zSupport = await startSupportSession({ id: admin.id, name: admin.name }, uz.tenantId, "Smoke-Test Übergabezentrale");
+  const zSupportCookie = `${adminCookie}; rb_support=${zSupport.id}`;
+  const zs = await Promise.all(["/uebergaben", "/rueckgaben", "/uebergaben?filter=in_bearbeitung", "/rueckgaben?filter=in_bearbeitung", "/rueckgaben?filter=ueberfaellig", "/uebergaben?filter=anstehend"].map((p) => get(zSupportCookie, p)));
+  report(zs.every((x) => x.status === 200 && x.html.includes("SUPPORTMODUS") && !assistantLink.test(x.html) && !contractLink.test(x.html)) && zs[2].html.includes("UZ-SMOKE-1") && zs[5].html.includes("UZ-SMOKE-V"), `Supportmodus: beide Seiten lesbar (${zs.map((x) => x.status).join("/")}), keine Assistenten- und Vertragslinks (auch nicht beim Vertragsentwurf)`);
+  await endSupportSession({ id: admin.id, name: admin.name }, zSupport.id);
+
+  // Mandantentrennung und Anmeldung
+  const zMain = await get(cookie, "/uebergaben?filter=in_bearbeitung");
+  const zMainSearch = await get(cookie, "/uebergaben?filter=anstehend&q=UZ-PG");
+  const zUz = await get(uzOwner, "/uebergaben?filter=in_bearbeitung");
+  report(zMain.html.includes("SIGN-1") && !zMain.html.includes("UZ-SMOKE-1") && !zMainSearch.html.includes("UZ-PG-") && zUz.html.includes("UZ-SMOKE-1") && !zUz.html.includes("SIGN-1"), "Mandantentrennung: Übergaben und Rückgaben zeigen nur den eigenen Mandanten (auch in der Suche)");
+  const anon = await get("", "/rueckgaben");
+  report((anon.status === 307 || anon.status === 302) && anon.location.includes("/login?weiter=%2Frueckgaben"), `${anon.status} Rückgaben ohne Sitzung leitet zum Login (${anon.location})`);
+}
+
 // Befehl 29.5: Selbstbeteiligung im Miettarif – Tarifverwaltung, Vertragsschritt (gesperrt), Vertrag und Schadenakte (nur Information).
 // Eigener Mandant; Funktionen per dynamischem Import, damit der Kopf dieser Datei unverändert bleibt.
 {

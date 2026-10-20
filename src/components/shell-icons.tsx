@@ -8,6 +8,9 @@ export type ShellIconName = NavIcon | "search" | "plus" | "menu" | "close" | "lo
 const PATHS: Record<ShellIconName, ReactNode> = {
   today: <><rect x="3.5" y="3.5" width="7" height="8" rx="1.5" /><rect x="13.5" y="3.5" width="7" height="5" rx="1.5" /><rect x="13.5" y="11.5" width="7" height="9" rx="1.5" /><rect x="3.5" y="14.5" width="7" height="6" rx="1.5" /></>,
   booking: <><rect x="5" y="4.5" width="14" height="16.5" rx="2" /><path d="M9 4.5V3.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1" /><path d="M8.5 10.5h7M8.5 14h7M8.5 17.5h4" /></>,
+  // Befehl 29.7: Übergabe = Schlüssel mit Pfeil nach außen, Rückgabe = Wendepfeil
+  handover: <><circle cx="6.5" cy="12" r="3.5" /><path d="M10 12h11M13.5 12v3" /><path d="m17.5 8.5 3.5 3.5-3.5 3.5" /></>,
+  return: <><path d="M9 14 4.5 9.5 9 5" /><path d="M4.5 9.5H14a5.5 5.5 0 0 1 0 11h-3" /></>,
   calendar: <><rect x="3.5" y="5" width="17" height="15.5" rx="2" /><path d="M3.5 9.5h17M8 3v4M16 3v4M7.5 13.5h3M13.5 13.5h3M7.5 17h3" /></>,
   customer: <><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20c.6-3.6 3.2-5.5 6.5-5.5s5.9 1.9 6.5 5.5" /><path d="M15.5 4.7a3.3 3.3 0 0 1 0 6.4M18 14.9c1.9.7 3.1 2.4 3.5 5.1" /></>,
   car: <><path d="M5 16.5H3.5v-4.2l1.9-5a2 2 0 0 1 1.9-1.3h9.4a2 2 0 0 1 1.9 1.3l1.9 5v4.2H19" /><path d="M3.5 12.3h17M9.5 16.5h5" /><circle cx="7.3" cy="16.5" r="2" /><circle cx="16.7" cy="16.5" r="2" /></>,
